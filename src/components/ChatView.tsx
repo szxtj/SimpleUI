@@ -177,7 +177,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       <div className="flex-1 overflow-y-auto px-4 md:px-8 py-6">
         <div className="max-w-4xl mx-auto min-h-full flex flex-col justify-start">
           {messages.length === 0 ? (
-            <div className="my-auto py-12 flex flex-col items-center text-center max-w-lg mx-auto">
+            <div className="my-auto py-12 flex flex-col items-center text-center w-full max-w-lg mx-auto">
               <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/20 mb-4">
                 <Sparkles className="w-6 h-6 text-white" />
               </div>

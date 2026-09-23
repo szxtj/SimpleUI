@@ -63,7 +63,7 @@ npm run dev
 ## 🛠️ 项目结构
 
 ```text
-/Users/justinxie/Projects/turbo-fieldfare-chat/
+/Users/justinxie/Projects/SimpleUI/
 ├── package.json                   # 核心依赖 (React 19, Vite, Tailwind CSS, Lucide, KaTeX)
 ├── tsconfig.json                  # TypeScript 严格模式配置
 ├── vite.config.ts                 # Vite 开发配置与本地反向代理

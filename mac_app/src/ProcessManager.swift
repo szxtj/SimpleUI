@@ -53,7 +53,7 @@ class ProcessManager {
             projectDir = potentialRoot
         } else {
             projectDir = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Projects/turbo-fieldfare-chat").path
+                .appendingPathComponent("Projects/SimpleUI").path
         }
 
         let scriptPath = "\(projectDir)/server/proxy.js"
