@@ -1,5 +1,6 @@
 import Cocoa
 import WebKit
+import UniformTypeIdentifiers
 
 class TitleBarDragView: NSView {
     var isSidebarOpen: Bool = true
@@ -77,7 +78,7 @@ class TitleBarDragView: NSView {
     }
 }
 
-class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDelegate, WKScriptMessageHandler {
+class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     private var webView: WKWebView!
     private var dragView: TitleBarDragView!
 
@@ -124,6 +125,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         webView = WKWebView(frame: win.contentView?.bounds ?? .zero, configuration: config)
         webView.autoresizingMask = [.width, .height]
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.setValue(true, forKey: "drawsBackground") // Main window uses solid background to avoid GPU compositor blur bugs
 
         win.contentView?.addSubview(webView)
@@ -177,5 +179,17 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         sender.orderOut(nil)
         return false
+    }
+
+    // MARK: - WKUIDelegate (File Upload Panel)
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+        let openPanel = NSOpenPanel()
+        openPanel.canChooseFiles = true
+        openPanel.canChooseDirectories = false
+        openPanel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        openPanel.allowedContentTypes = [.image]
+        openPanel.beginSheetModal(for: webView.window!) { response in
+            completionHandler(response == .OK ? openPanel.urls : nil)
+        }
     }
 }

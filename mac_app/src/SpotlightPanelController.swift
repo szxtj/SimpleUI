@@ -1,5 +1,6 @@
 import Cocoa
 import WebKit
+import UniformTypeIdentifiers
 
 class SpotlightPanel: NSPanel {
     override var canBecomeKey: Bool {
@@ -10,7 +11,7 @@ class SpotlightPanel: NSPanel {
     }
 }
 
-class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNavigationDelegate {
+class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
     private var webView: WKWebView!
     var onOpenMainWindow: (() -> Void)?
 
@@ -60,6 +61,7 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         webView = WKWebView(frame: panel.contentView?.bounds ?? .zero, configuration: config)
         webView.autoresizingMask = [.width, .height]
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.setValue(false, forKey: "drawsBackground") // Fully transparent background
 
         panel.contentView?.addSubview(webView)
@@ -141,6 +143,18 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             let width = (dict["width"] as? CGFloat) ?? 540
             let height = (dict["height"] as? CGFloat) ?? 88
             animateTo(width: width, height: height)
+        }
+    }
+
+    // MARK: - WKUIDelegate (File Upload Panel)
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+        let openPanel = NSOpenPanel()
+        openPanel.canChooseFiles = true
+        openPanel.canChooseDirectories = false
+        openPanel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        openPanel.allowedContentTypes = [.image]
+        openPanel.begin { response in
+            completionHandler(response == .OK ? openPanel.urls : nil)
         }
     }
 }
