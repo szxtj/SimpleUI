@@ -119,7 +119,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {/* Hidden file input for attachment upload */}
+      {/* Hidden file input for image upload */}
       <input
         ref={fileInputRef}
         type="file"
@@ -164,7 +164,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 ? 'bg-blue-600 text-white shadow-sm'
                 : 'bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white'
             }`}
-            title={visionReady ? '添加附件/图片 (支持拖入与剪贴板粘贴)' : '图片模块就绪'}
+            title={visionReady ? '添加图片 (支持拖入与剪贴板粘贴)' : '图片模块就绪'}
           >
             <Plus className="w-4 h-4 stroke-[2.5]" />
           </button>
