@@ -181,12 +181,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/20 mb-4">
                 <Sparkles className="w-6 h-6 text-white" />
               </div>
-              <h1 className="text-xl font-semibold text-[#f3f5f8] mb-2 tracking-tight">
-                TurboFieldfare 知识问答
+              <h1 className="text-xl font-semibold text-[#f3f5f8] mb-8 tracking-tight">
+                对话问答
               </h1>
-              <p className="text-xs text-zinc-400 mb-8 leading-relaxed">
-                基于 Apple Silicon Metal 4 引擎加速，支持全功能 Markdown、KaTeX 公式渲染、深度思考与多模态图文输入。
-              </p>
 
               {/* Quick suggestion cards */}
               <div className="w-full grid grid-cols-1 gap-2.5 text-left">
