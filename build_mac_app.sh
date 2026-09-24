@@ -58,18 +58,9 @@ if [ -d "node_modules/opencc-js" ]; then
     cp -R "node_modules/opencc-js" "$RESOURCES_DIR/node_modules/"
 fi
 
-# 4. 代码签名 (优先使用本地免费个人开发证书，若无则使用纯本地无签名 Ad-hoc)
-echo "[4/4] 正在执行应用代码签名..."
-SIGNING_IDENTITY=""
-DEV_IDENTITY=$(security find-identity -p codesigning -v 2>/dev/null | grep "Apple Development" | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
-
-if [ -n "$DEV_IDENTITY" ]; then
-    echo "  -> 发现本地免费个人开发者证书: \"$DEV_IDENTITY\""
-    SIGNING_IDENTITY="$DEV_IDENTITY"
-else
-    echo "  -> 未发现个人证书，采用无签名 / 本地 Ad-hoc 签名模式 (-)..."
-    SIGNING_IDENTITY="-"
-fi
+# 4. 代码签名 (开源项目严格采用纯本地免费 Ad-hoc 签名 / 无账号证书签名)
+echo "[4/4] 正在执行纯本地 Ad-hoc 免费代码签名 (无开发者证书绑定)..."
+SIGNING_IDENTITY="-"
 
 codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP_DIR"
 touch "$APP_DIR"
