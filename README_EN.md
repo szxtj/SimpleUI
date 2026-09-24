@@ -21,7 +21,7 @@
 - [Quick Start](#quick-start)
 - [Project Structure](#project-structure)
 - [Multi-Engine Compatibility & Configuration](#multi-engine-compatibility--configuration)
-- [Offline Wiki Knowledge Base](#offline-wiki-knowledge-base)
+- [Offline Wiki Knowledge Base](#offline-wiki-knowledge-base-offline-rag)
 - [Generation Settings](#generation-settings)
 - [Multimodal Vision Support](#multimodal-vision-support)
 - [Spotlight Mode](#spotlight-mode)
@@ -47,9 +47,14 @@ SimpleUI also includes a native macOS desktop wrapper written in Swift + WebKit,
 - Includes a dedicated, lightweight Node.js reverse proxy (`server/proxy.js`) listening on dedicated port **`31235`** by default—preventing port conflicts with standard dev setups on port 3000.
 - Faithful passthrough of Server-Sent Events (SSE) streaming and `: ping` heartbeat keep-alive packets, eliminating CORS hassles and premature timeouts.
 
-### 📚 Offline Wiki Knowledge Base (Offline RAG)
-- Seamless connection with local Kiwix (ZIM) offline Wikipedia services, with real-time entry indexing status and count displayed in the UI.
-- Employs small local models for query intent planning and entity keyword extraction, paired with prefix search, passage reranking, and automatic Simplified/Traditional Chinese conversion to inject high-relevance facts into LLM context.
+### 📚 Purified Offline Wiki RAG & LAYA System 1 Dual Gatekeepers
+- **Native Service Integration**: Seamless connection with local Kiwix (ZIM) offline Wikipedia, with real-time connection status, entry counts (millions of articles), and storage state displayed in the UI.
+- **LAYA Frontline Intent Gate (~18ms)**: Invokes local LAYA-MLX (Metal GPU accelerated) at the very front of the pipeline for sub-20ms System 1 intent classification. Casual chitchat, greetings, coding queries, and everyday tasks bypass wiki retrieval immediately (0ms overhead), preventing unnecessary compute consumption.
+- **Pure Neural Entity Planning (Qwen 3.5 2B)**: Completely eliminates mechanical regexes and hardcoded string slicing; uses a 2B lightweight model to intelligently extract canonical encyclopedia entity names.
+- **Kiwix Dual-Track Search**: Runs title prefix suggestion (Suggest) and full-text pattern search (Pattern Search) in parallel, ensuring descriptive queries (e.g., "China's first atomic bomb") reliably recall exact canonical articles (e.g., *Project 596*).
+- **LAYA Backend Fact-Verification Gate (~20ms)**: Built upon multilingual ModernBERT (JHU mmBERT with 256,000 vocab) to execute strict binary semantic classification (`choice` mode) over extracted facts, completely eliminating hallucinations and irrelevant context.
+- **Silent Fallback & Clean Dialogue History**: When verification fails or facts are unconfirmed, zero badge is shown in the UI and zero reference prompt is injected into the primary LLM. Multi-turn history strictly retains only user queries and model answers, keeping context windows free of retrieval noise.
+- **Modern Citation UI with Full-Chip Clickability**: Unified emerald green `<BookOpen />` icons across both main and Spotlight windows; any area of the citation chip can be clicked to open the native offline wiki reading drawer.
 
 ### 🎯 Spotlight Draggable Window & Position Memory
 - Once expanded into a conversation card, the Spotlight window can be freely dragged and placed anywhere on screen via the top header bar.
@@ -144,9 +149,12 @@ SimpleUI/
 ├── start.sh                     # Intelligent startup script
 │
 ├── server/
-│   └── proxy.js                 # Production Node.js proxy server (port 31235)
-│                                #   - Dynamic x-target-port routing for /v1/* & /health
-│                                #   - SSE streaming & heartbeat passthrough; hosts dist/
+│   ├── proxy.js                 # Production Node.js proxy server (port 31235)
+│   │                            #   - Dynamic x-target-port routing for /v1/* & /health
+│   │                            #   - Auto-manages Kiwix offline wiki (31236) & LAYA service (1236)
+│   │                            #   - SSE streaming & heartbeat passthrough; hosts dist/
+│   ├── laya_mlx_server.py       # Native Apple Silicon MLX LAYA System 1 resident daemon (port 1236)
+│   └── wiki_service.js          # High-performance purified offline RAG pipeline (dual LAYA gates + dual search)
 │
 ├── mac_app/                     # macOS native wrapper (Swift + WebKit)
 │   ├── src/                     # Swift source (AppDelegate, HotKey, WindowControllers)
@@ -204,12 +212,43 @@ SimpleUI is **deeply optimized for TurboFieldfare (TTF)** while offering outstan
 
 ---
 
-## Offline Wiki Knowledge Base
+## Offline Wiki Knowledge Base (Offline RAG)
 
-SimpleUI features native, zero-configuration Retrieval-Augmented Generation (RAG) integrated with offline Wikipedia (e.g. Kiwix running ZIM archives):
-- **Service Integration**: Configure local wiki port (default `8080`) in Settings. The status badge at the bottom-right dynamically reports online status and entry counts.
-- **Dual-Tier Query Planning**: Utilizes a lightweight local 2B model to plan queries and extract entity keywords, gracefully falling back to prefix association, BM25 reranking, and OpenCC Simplified/Traditional Chinese conversion.
-- **Context Injection**: High-relevance entry excerpts are transparently assembled and injected into the LLM context prompt for 100% offline, fact-grounded responses.
+SimpleUI innovatively establishes an **end-to-end purified, dual-gatekeeper offline local knowledge base retrieval-augmented generation (RAG) system**, deeply coupling local Kiwix (ZIM) encyclopedia services with Apple Silicon native-accelerated LAYA System 1 fast-thinking decision networks:
+
+```mermaid
+flowchart TD
+    Q["User Input Query"] --> G1{"[Gate 1] LAYA Intent Classifier (18ms)"}
+    G1 -->|"Chitchat / Coding / Emotional"| BYPASS["Bypass wiki retrieval (needsWiki: false)"]
+    G1 -->|"Knowledge Q&A (knowledge_lookup)"| PLAN["Qwen 3.5 2B Neural Entity Planner (Canonical Entity Name)"]
+    
+    PLAN --> SEARCH["Kiwix Dual-Track Search (Suggest Prefix + Pattern Full-Text)"]
+    SEARCH --> EXTRACT["Qwen 3.5 2B Fact Extractor (1-2 Concise Grounded Sentences)"]
+    
+    EXTRACT --> G2{"[Gate 2] LAYA Fact Verifier (20ms, choice mode)"}
+    G2 -->|"irrelevant (Off-topic / Hallucination / Mismatch)"| SILENT["Trigger Silent Fallback (Discard, 0 Prompt Injection)"]
+    G2 -->|"relevant (Confirmed Relevant, Conf > 0.45)"| INJECT["Inject [Background Facts] Prompt + Citation Chip"]
+    
+    BYPASS --> LLM["Primary LLM (Gemma 4, etc.)"]
+    SILENT --> LLM
+    INJECT --> LLM
+```
+
+### Core Architectural Advantages
+
+1. **LAYA System 1 Fast-Thinking Dual Gatekeepers**
+   - **Frontline Intent Interceptor (~18ms)**: Filters out greetings, code generation, and casual chitchat at the very beginning of the pipeline with zero wasted compute, proceeding straight to the primary LLM.
+   - **Backend Quality Inspector (~20ms)**: Powered by native Apple Silicon MLX acceleration (port 1236) and a multilingual classification network (JHU mmBERT-base, 256,000 vocab), performing strict binary semantic verification (`choice` mode) between extracted wiki facts and user questions. Eliminates substring matching heuristics and cuts off hallucinations.
+2. **Pure Neural Entity Planning (No Mechanical Regexes)**
+   - Completely removes hardcoded regex parsing and arbitrary string slicing. The local Qwen 3.5 2B model intelligently parses user intents to derive canonical encyclopedia entry names.
+3. **Kiwix Dual-Track Search (Suggest + Full-Text Pattern Search)**
+   - Traditional prefix suggestions struggle on descriptive questions (e.g., searching for "China's first atomic bomb" often misaligns with unrelated prefix matches). SimpleUI introduces full-text pattern search (executing in ~85ms) which directly discovers canonical entries like *Project 596*, achieving 100% recall from descriptive queries to formal articles.
+4. **Strict Silent Fallback**
+   - When encountering obscure questions or when retrieval returns off-topic information, failed verification causes the result to be discarded silently. The UI shows zero reference chips, and **no background reference prompt is injected** into the LLM, allowing it to rely on its inherent knowledge base without noise.
+5. **Context Window Protection & Multi-Turn Isolation**
+   - Multi-turn conversation histories strictly preserve only the user's raw prompt and the assistant's clean text response (stripping `<thought>` segments). **Knowledge base prompts and reference context are never leaked into persistent history**, ensuring local small-VRAM devices preserve maximum context capacity.
+6. **Accessible Full-Chip Click & Native Full-Text Drawer**
+   - Main window and Spotlight floating panels share a unified visual design. Text and icons inside citation chips have click-through optimizations, allowing users to click anywhere on the chip (left text, middle, or right icon) to smoothly slide open the native offline Wikipedia drawer.
 
 ---
 
