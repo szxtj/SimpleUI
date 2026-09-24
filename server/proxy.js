@@ -164,4 +164,16 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`🚀 SimpleUI running at http://127.0.0.1:${PORT}`);
   console.log(`🔗 Upstream API configured to ${TARGET_API}`);
   wikiService.initWatcher();
+
+  // Automatically exit if parent process (e.g. SimpleUI app) terminates
+  if (process.ppid && process.ppid > 1) {
+    setInterval(() => {
+      try {
+        process.kill(process.ppid, 0);
+      } catch (e) {
+        console.log('[Proxy] Parent process no longer running, exiting.');
+        process.exit(0);
+      }
+    }, 2500);
+  }
 });

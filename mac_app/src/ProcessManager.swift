@@ -47,19 +47,26 @@ class ProcessManager {
     private func launchNodeProxy(completion: @escaping (Bool) -> Void) {
         // Resolve project root directory
         let bundlePath = Bundle.main.bundlePath
+        let resourcesDir = Bundle.main.resourcePath ?? "\(bundlePath)/Contents/Resources"
         let projectDir: String
+        let scriptPath: String
 
-        // If running from build/SimpleUI.app, project root is ../..
-        let potentialParent = (bundlePath as NSString).deletingLastPathComponent
-        let potentialRoot = (potentialParent as NSString).deletingLastPathComponent
-        if FileManager.default.fileExists(atPath: "\(potentialRoot)/server/proxy.js") {
-            projectDir = potentialRoot
+        if FileManager.default.fileExists(atPath: "\(resourcesDir)/server/proxy.js") {
+            // Self-contained bundled application
+            projectDir = resourcesDir
+            scriptPath = "\(resourcesDir)/server/proxy.js"
         } else {
-            projectDir = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Projects/SimpleUI").path
+            // If running from build/SimpleUI.app during dev, project root is ../..
+            let potentialParent = (bundlePath as NSString).deletingLastPathComponent
+            let potentialRoot = (potentialParent as NSString).deletingLastPathComponent
+            if FileManager.default.fileExists(atPath: "\(potentialRoot)/server/proxy.js") {
+                projectDir = potentialRoot
+            } else {
+                projectDir = FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent("Projects/SimpleUI").path
+            }
+            scriptPath = "\(projectDir)/server/proxy.js"
         }
-
-        let scriptPath = "\(projectDir)/server/proxy.js"
         guard FileManager.default.fileExists(atPath: scriptPath) else {
             print("Cannot find proxy script at: \(scriptPath)")
             completion(false)

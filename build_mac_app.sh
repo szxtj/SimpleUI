@@ -50,6 +50,13 @@ if [ -d "bin/kiwix" ]; then
     mkdir -p "$RESOURCES_DIR/bin"
     cp -R "bin/kiwix" "$RESOURCES_DIR/bin/"
 fi
+cp -R dist "$RESOURCES_DIR/dist"
+cp -R server "$RESOURCES_DIR/server"
+cp package.json "$RESOURCES_DIR/package.json"
+if [ -d "node_modules/opencc-js" ]; then
+    mkdir -p "$RESOURCES_DIR/node_modules"
+    cp -R "node_modules/opencc-js" "$RESOURCES_DIR/node_modules/"
+fi
 
 # 4. 代码签名 (优先使用本地免费个人开发证书，若无则使用纯本地无签名 Ad-hoc)
 echo "[4/4] 正在执行应用代码签名..."

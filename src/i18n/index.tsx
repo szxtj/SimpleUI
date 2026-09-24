@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useMemo } from 'react';
-import { translations, TranslationKeys, Language } from './translations';
+import { translations, TranslationKeys, Language, formatArticleCount } from './translations';
 
+export { formatArticleCount, translations };
+export type { Language, TranslationKeys };
 export type LanguagePreference = 'system' | 'zh' | 'en';
 
 interface I18nContextType {

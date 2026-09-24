@@ -24,11 +24,12 @@ import {
 import { TurboFieldfareAPI, WikiAPI } from './services/api';
 import { SpotlightView } from './components/SpotlightView';
 import { WikiDrawer } from './components/WikiDrawer';
-import { I18nProvider } from './i18n';
+import { I18nProvider, resolveLanguage } from './i18n';
 import { useTheme } from './hooks/useTheme';
 
 export const App: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings>(loadSettings());
+  const activeLang = resolveLanguage(settings.language);
 
   // Real-time synchronization of settings across Main and Spotlight windows
   useEffect(() => {
@@ -98,7 +99,7 @@ export const App: React.FC = () => {
     port: 31236,
     zimPath: null,
     contentId: null,
-    bookTitle: '维基百科',
+    bookTitle: 'Knowledge Base',
     articleCount: 0,
     mediaCount: 0,
   });
@@ -378,7 +379,7 @@ export const App: React.FC = () => {
       setImages([]);
       return;
     }
-    const newSession = createNewSession();
+    const newSession = createNewSession(activeLang === 'en' ? 'New Chat' : '新对话');
     setSessions((prev) => [newSession, ...prev]);
     setCurrentSessionId(newSession.id);
     setLastMetrics(undefined);
@@ -453,31 +454,17 @@ export const App: React.FC = () => {
 
     if (sessionEnableWiki && wikiStatus.connected && textToSend) {
       try {
-        const queryTerm = textToSend
-          .replace(/[？?！!。，,、：“”"''（）()\n\r]/g, ' ')
-          .replace(/^(请问|請問|什么是|什麼是|请简要|請簡要|帮我|幫我|介绍一下|介紹一下|总结一下|總結一下|关于|關於|谈谈|談談|讲讲|講講|你知道)\s*/gi, '')
-          .trim()
-          .slice(0, 30);
-
-        if (queryTerm) {
-          const wikiMatches = await WikiAPI.search(queryTerm);
-          if (wikiMatches && wikiMatches.length > 0) {
-            const topMatch = wikiMatches[0];
-            const summaryData = await WikiAPI.getSummary(topMatch.title);
-            if (summaryData && summaryData.summary) {
-              foundCitations = [
-                {
-                  title: summaryData.title,
-                  url: summaryData.url,
-                  summary: summaryData.summary,
-                },
-              ];
-              promptToSend = `[以下为从本地离线维基百科全量数据库（包含354万词条）中检索到的权威参考资料]\n【词条：${summaryData.title}】\n${summaryData.summary}\n\n[用户问题]\n${textToSend}\n\n[请根据上述离线维基百科资料准确客观地回答用户问题]`;
-            }
-          }
+        const rag = await WikiAPI.getRagContext(textToSend);
+        if (rag.needsWiki && rag.citations && rag.citations.length > 0) {
+          foundCitations = rag.citations;
+          const userQuestionHeader = activeLang === 'en' ? '[User Question]' : '[用户问题]';
+          const instructionHeader = activeLang === 'en'
+            ? '[Please answer the user\'s question accurately and objectively using the knowledge base references above, providing relevant facts and data directly]'
+            : '[请结合上述知识库参考资料准确客观地回答用户问题，直接给出相关数据与事实]';
+          promptToSend = `${rag.promptContext}\n\n${userQuestionHeader}\n${textToSend}\n\n${instructionHeader}`;
         }
       } catch (err) {
-        console.warn('Wiki RAG retrieval error:', err);
+        console.warn('Knowledge Base retrieval error:', err);
       }
     }
 
@@ -504,8 +491,8 @@ export const App: React.FC = () => {
     const activeMessages = targetSession.messages || [];
     const isFirstUserMessage = activeMessages.length === 0;
     const sessionTitle = isFirstUserMessage
-      ? textToSend.slice(0, 24) || '图文分析'
-      : targetSession.title || '新对话';
+      ? textToSend.slice(0, 24) || (activeLang === 'en' ? 'Image Analysis' : '图文分析')
+      : targetSession.title || (activeLang === 'en' ? 'New Chat' : '新对话');
 
     const updatedMessages = [...activeMessages, userMessage, assistantMessage];
 
@@ -715,6 +702,7 @@ export const App: React.FC = () => {
           onRenameSession={handleRenameSession}
           onOpenSettings={() => setIsSettingsOpen(true)}
           healthInfo={healthInfo}
+          wikiStatus={wikiStatus}
           isOpen={isSidebarOpen}
           onToggleOpen={() => setIsSidebarOpen(!isSidebarOpen)}
         />

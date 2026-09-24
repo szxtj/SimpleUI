@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { AppSettings, WikiStatusInfo } from '../types/chat';
 import { DEFAULT_SETTINGS } from '../services/storage';
 import { WikiAPI } from '../services/api';
-import { useI18n } from '../i18n';
+import { resolveLanguage, formatArticleCount, translations, Language, TranslationKeys } from '../i18n';
 import { X, RotateCcw, Check, BookOpen } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -18,7 +18,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   settings,
   onSave,
 }) => {
-  const { t } = useI18n();
   const getSafeSettings = (s?: AppSettings): AppSettings => ({
     ...DEFAULT_SETTINGS,
     ...(s || {}),
@@ -26,16 +25,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   });
 
   const [formData, setFormData] = useState<AppSettings>(() => getSafeSettings(settings));
+
+  const activeLang: Language = useMemo(() => {
+    return resolveLanguage(formData.language || 'system');
+  }, [formData.language]);
+
+  const t = useMemo(() => {
+    return (key: TranslationKeys) => {
+      const dict = translations[activeLang] || translations.zh;
+      return dict[key] || translations.zh[key] || key;
+    };
+  }, [activeLang]);
   const [stopInput, setStopInput] = useState<string>(() =>
     (settings?.stopStrings || []).join(', ')
   );
   const [wikiStatus, setWikiStatus] = useState<WikiStatusInfo | null>(null);
-
-  useEffect(() => {
-    if (isOpen) {
-      WikiAPI.getStatus().then(setWikiStatus);
-    }
-  }, [isOpen]);
+  const [customZimPath, setCustomZimPath] = useState('');
+  const [isApplyingPath, setIsApplyingPath] = useState(false);
+  const [pathMessage, setPathMessage] = useState<{ text: string; isError: boolean } | null>(null);
 
   // Sync state whenever modal is opened
   useEffect(() => {
@@ -43,8 +50,42 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       const safe = getSafeSettings(settings);
       setFormData(safe);
       setStopInput((safe.stopStrings || []).join(', '));
+      setPathMessage(null);
+
+      WikiAPI.getStatus().then((status) => {
+        setWikiStatus(status);
+        if (status?.zimPath) {
+          setCustomZimPath(status.zimPath);
+        } else if (safe.customWikiDir) {
+          setCustomZimPath(safe.customWikiDir);
+        }
+      });
     }
   }, [isOpen, settings]);
+
+  const handleApplyZimPath = async () => {
+    if (!customZimPath.trim()) return;
+    setIsApplyingPath(true);
+    setPathMessage(null);
+    try {
+      const res = await WikiAPI.updateConfig(customZimPath.trim());
+      setWikiStatus(res);
+      if (res.connected) {
+        const countStr = formatArticleCount(res.articleCount, activeLang);
+        setPathMessage({
+          text: `${t('kbPathSuccess')}${countStr ? ` (${countStr})` : ''}`,
+          isError: false,
+        });
+        setFormData((prev) => ({ ...prev, customWikiDir: customZimPath.trim() }));
+      } else {
+        setPathMessage({ text: t('kbPathFileNotFound'), isError: true });
+      }
+    } catch (e) {
+      setPathMessage({ text: t('kbPathFileNotFound'), isError: true });
+    } finally {
+      setIsApplyingPath(false);
+    }
+  };
 
   // Close on Escape key
   useEffect(() => {
@@ -79,7 +120,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   return (
     <div
-      onClick={onClose}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm select-none"
     >
       <div
@@ -172,9 +212,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </p>
           </div>
 
-          {/* Offline Wiki Knowledge Base Configuration Card */}
+          {/* Knowledge Base Configuration Card */}
           <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between mb-2.5">
               <div className="flex items-center gap-2">
                 <BookOpen className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                 <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
@@ -186,7 +226,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className={`w-2 h-2 rounded-full ${
                     wikiStatus?.connected
                       ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.8)]'
-                      : 'bg-red-500'
+                      : 'bg-zinc-400 dark:bg-zinc-600'
                   }`}
                 />
                 <span
@@ -197,17 +237,48 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   }
                 >
                   {wikiStatus?.connected
-                    ? `${t('wikiStatusConnected')}`
+                    ? `${t('wikiStatusConnected')}${
+                        wikiStatus.articleCount > 0
+                          ? ` (${formatArticleCount(wikiStatus.articleCount, activeLang)})`
+                          : ''
+                      }`
                     : t('wikiStatusDisconnected')}
                 </span>
               </div>
             </div>
 
-            {wikiStatus?.zimPath && (
-              <div className="text-[11px] font-mono text-zinc-500 dark:text-zinc-400 truncate mb-2.5">
-                {wikiStatus.zimPath}
+            {/* Custom ZIM Path Input */}
+            <div className="mb-3">
+              <label className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                {t('kbPathLabel')}
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={customZimPath}
+                  onChange={(e) => setCustomZimPath(e.target.value)}
+                  placeholder={t('kbPathPlaceholder')}
+                  className="flex-1 bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-[#1f2328] dark:text-[#f1f3f7] font-mono focus:outline-none focus:border-blue-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleApplyZimPath}
+                  disabled={isApplyingPath || !customZimPath.trim()}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-50 text-white text-xs font-medium transition-all flex items-center gap-1.5 flex-shrink-0"
+                >
+                  {isApplyingPath ? t('kbPathApplying') : t('kbPathApply')}
+                </button>
               </div>
-            )}
+              {pathMessage && (
+                <div
+                  className={`mt-1 text-[11px] ${
+                    pathMessage.isError ? 'text-red-500' : 'text-emerald-600 dark:text-emerald-400 font-medium'
+                  }`}
+                >
+                  {pathMessage.text}
+                </div>
+              )}
+            </div>
 
             <label className="flex items-center justify-between cursor-pointer pt-2 border-t border-black/5 dark:border-white/5">
               <div>

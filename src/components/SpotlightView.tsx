@@ -38,7 +38,7 @@ import { useI18n } from '../i18n';
 import { useTheme } from '../hooks/useTheme';
 
 export const SpotlightView: React.FC = () => {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [settings, setSettings] = useState<AppSettings>(loadSettings());
   useTheme(settings.theme, true);
   const [input, setInput] = useState('');
@@ -55,7 +55,7 @@ export const SpotlightView: React.FC = () => {
     port: 31236,
     zimPath: null,
     contentId: null,
-    bookTitle: '维基百科',
+    bookTitle: 'Knowledge Base',
     articleCount: 0,
     mediaCount: 0,
   });
@@ -432,7 +432,7 @@ export const SpotlightView: React.FC = () => {
       activeSessionIdRef.current = currentSessionId;
     }
 
-    const title = (messages[0]?.content || userMessage.content).slice(0, 24) || t('quickChat') || '快捷对话';
+    const title = (messages[0]?.content || userMessage.content).slice(0, 24) || t('quickChat');
     try {
       const allSessions = loadSessions();
       const existingIdx = allSessions.findIndex((s) => s.id === currentSessionId);
@@ -471,31 +471,17 @@ export const SpotlightView: React.FC = () => {
 
     if (enableWikiSearch && wikiStatus.connected && textToSend) {
       try {
-        const queryTerm = textToSend
-          .replace(/[？?！!。，,、：“”"''（）()\n\r]/g, ' ')
-          .replace(/^(请问|請問|什么是|什麼是|请简要|請簡要|帮我|幫我|介绍一下|介紹一下|总结一下|總結一下|关于|關於|谈谈|談談|讲讲|講講|你知道)\s*/gi, '')
-          .trim()
-          .slice(0, 30);
-
-        if (queryTerm) {
-          const wikiMatches = await WikiAPI.search(queryTerm);
-          if (wikiMatches && wikiMatches.length > 0) {
-            const topMatch = wikiMatches[0];
-            const summaryData = await WikiAPI.getSummary(topMatch.title);
-            if (summaryData && summaryData.summary) {
-              foundCitations = [
-                {
-                  title: summaryData.title,
-                  url: summaryData.url,
-                  summary: summaryData.summary,
-                },
-              ];
-              promptToSend = `[以下为从本地离线维基百科全量数据库（包含354万词条）中检索到的权威参考资料]\n【词条：${summaryData.title}】\n${summaryData.summary}\n\n[用户问题]\n${textToSend}\n\n[请根据上述离线维基百科资料准确客观地回答用户问题]`;
-            }
-          }
+        const rag = await WikiAPI.getRagContext(textToSend);
+        if (rag.needsWiki && rag.citations && rag.citations.length > 0) {
+          foundCitations = rag.citations;
+          const userQuestionHeader = lang === 'en' ? '[User Question]' : '[用户问题]';
+          const instructionHeader = lang === 'en'
+            ? '[Please answer the user\'s question accurately and objectively using the knowledge base references above, providing relevant facts and data directly]'
+            : '[请结合上述知识库参考资料准确客观地回答用户问题，直接给出相关数据与事实]';
+          promptToSend = `${rag.promptContext}\n\n${userQuestionHeader}\n${textToSend}\n\n${instructionHeader}`;
         }
       } catch (err) {
-        console.warn('Wiki RAG retrieval error in spotlight:', err);
+        console.warn('Knowledge Base retrieval error in spotlight:', err);
       }
     }
 
@@ -914,14 +900,14 @@ export const SpotlightView: React.FC = () => {
                   }`}
                   title={
                     !wikiStatus.connected
-                      ? t('wikiDisconnectedTooltip') || '未检测到外置SSD维基百科'
+                      ? t('wikiDisconnectedTooltip')
                       : enableWikiSearch
-                      ? t('wikiSearchOnTooltip') || '离线百科知识库检索已开启'
-                      : t('wikiSearchOffTooltip') || '离线百科知识库检索已关闭'
+                      ? t('wikiSearchOnTooltip')
+                      : t('wikiSearchOffTooltip')
                   }
                 >
                   <BookOpen className={`w-3.5 h-3.5 ${enableWikiSearch && wikiStatus.connected ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
-                  <span>{t('offlineWiki') || '离线维基'}</span>
+                  <span>{t('offlineWiki')}</span>
                 </button>
               </div>
 
@@ -1174,14 +1160,14 @@ export const SpotlightView: React.FC = () => {
                   }`}
                   title={
                     !wikiStatus.connected
-                      ? t('wikiDisconnectedTooltip') || '未检测到外置SSD维基百科'
-                    : enableWikiSearch
-                      ? t('wikiSearchOnTooltip') || '离线百科知识库检索已开启'
-                      : t('wikiSearchOffTooltip') || '离线百科知识库检索已关闭'
+                      ? t('wikiDisconnectedTooltip')
+                      : enableWikiSearch
+                      ? t('wikiSearchOnTooltip')
+                      : t('wikiSearchOffTooltip')
                   }
                 >
                   <BookOpen className={`w-3.5 h-3.5 ${enableWikiSearch && wikiStatus.connected ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
-                  <span>{t('offlineWiki') || '离线维基'}</span>
+                  <span>{t('offlineWiki')}</span>
                 </button>
               </div>
 

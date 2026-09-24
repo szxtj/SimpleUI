@@ -161,10 +161,25 @@ export function saveCurrentSessionId(id: string | null): void {
   }
 }
 
-export function createNewSession(title = '新对话'): ChatSession {
+export function createNewSession(title?: string): ChatSession {
+  let defaultTitle = '新对话';
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (raw) {
+      const s = JSON.parse(raw);
+      if (s?.language === 'en') {
+        defaultTitle = 'New Chat';
+      } else if (s?.language === 'system') {
+        if (typeof navigator !== 'undefined' && navigator.language && !navigator.language.toLowerCase().startsWith('zh')) {
+          defaultTitle = 'New Chat';
+        }
+      }
+    }
+  } catch (e) {}
+
   return {
     id: 'session-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7),
-    title,
+    title: title || defaultTitle,
     messages: [],
     createdAt: Date.now(),
     updatedAt: Date.now(),

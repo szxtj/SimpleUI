@@ -116,12 +116,12 @@ export const WikiDrawer: React.FC<WikiDrawerProps> = ({
             </div>
             <div className="min-w-0">
               <div className="text-[11px] text-zinc-500 dark:text-zinc-400 font-medium leading-none flex items-center gap-1.5">
-                <span>{t('offlineWikiTitle') || '离线维基百科'}</span>
+                <span>{t('offlineWikiTitle')}</span>
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
-                <span className="text-[10px] text-emerald-600 dark:text-emerald-400">SSD 已连接</span>
+                <span className="text-[10px] text-emerald-600 dark:text-emerald-400">{t('wikiStatusConnected')}</span>
               </div>
               <h2 className="text-sm font-semibold text-[#1f2328] dark:text-[#f1f3f7] truncate mt-0.5">
-                {currentTitle || '维基百科词条'}
+                {currentTitle || t('wikiArticleDefault')}
               </h2>
             </div>
           </div>
@@ -131,14 +131,14 @@ export const WikiDrawer: React.FC<WikiDrawerProps> = ({
             <button
               onClick={handleReload}
               className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
-              title={t('reload') || '刷新'}
+              title={t('reload')}
             >
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
             </button>
             <button
               onClick={handleOpenExternal}
               className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
-              title={t('openExternal') || '新窗口打开'}
+              title={t('openExternal')}
             >
               <ExternalLink className="w-4 h-4" />
             </button>
@@ -146,7 +146,7 @@ export const WikiDrawer: React.FC<WikiDrawerProps> = ({
             <button
               onClick={onClose}
               className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
-              title={t('close') || '关闭 (Esc)'}
+              title={t('close')}
             >
               <X className="w-4 h-4" />
             </button>
@@ -158,7 +158,7 @@ export const WikiDrawer: React.FC<WikiDrawerProps> = ({
           {isLoading && (
             <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-white/80 dark:bg-[#1b1c20]/80 backdrop-blur-sm text-zinc-500 gap-3">
               <Loader2 className="w-6 h-6 animate-spin text-emerald-500" />
-              <span className="text-xs font-medium">正在读取离线维基数据...</span>
+              <span className="text-xs font-medium">{t('wikiLoading')}</span>
             </div>
           )}
 
@@ -174,7 +174,7 @@ export const WikiDrawer: React.FC<WikiDrawerProps> = ({
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-zinc-400 text-xs">
               <BookOpen className="w-8 h-8 mb-2 opacity-50" />
-              <span>请选择要阅读的维基词条</span>
+              <span>{t('wikiSelectPrompt')}</span>
             </div>
           )}
         </div>

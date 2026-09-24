@@ -1,5 +1,6 @@
 import React from 'react';
 import { X } from 'lucide-react';
+import { useI18n } from '../i18n';
 
 interface ImageAttachmentProps {
   images: string[];
@@ -7,6 +8,7 @@ interface ImageAttachmentProps {
 }
 
 export const ImageAttachment: React.FC<ImageAttachmentProps> = ({ images, onRemove }) => {
+  const { t } = useI18n();
   if (!images || images.length === 0) return null;
 
   return (
@@ -25,7 +27,7 @@ export const ImageAttachment: React.FC<ImageAttachmentProps> = ({ images, onRemo
             type="button"
             onClick={() => onRemove(idx)}
             className="absolute top-1 right-1 p-0.5 rounded-full bg-black/75 text-white/90 hover:bg-red-500 transition-colors shadow"
-            title="移除图片"
+            title={t('removeImage')}
           >
             <X className="w-3.5 h-3.5" />
           </button>

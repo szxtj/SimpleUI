@@ -36,3 +36,6 @@ pnpm-debug.log*
 .idea/
 *.swp
 *.swo
+
+# Local runtime configs
+server/wiki_config.json

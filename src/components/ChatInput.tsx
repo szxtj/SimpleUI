@@ -215,14 +215,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             }`}
             title={
               !wikiConnected
-                ? t('wikiDisconnectedTooltip') || '未检测到外置SSD维基百科'
+                ? t('wikiDisconnectedTooltip')
                 : enableWikiSearch
-                ? t('wikiSearchOnTooltip') || '离线百科知识库检索已开启'
-                : t('wikiSearchOffTooltip') || '离线百科知识库检索已关闭'
+                ? t('wikiSearchOnTooltip')
+                : t('wikiSearchOffTooltip')
             }
           >
             <BookOpen className={`w-3.5 h-3.5 ${enableWikiSearch && wikiConnected ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
-            <span>{t('offlineWiki') || '离线维基'}</span>
+            <span>{t('offlineWiki')}</span>
           </button>
         </div>
 

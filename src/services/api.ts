@@ -1,4 +1,18 @@
-import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiStatusInfo } from '../types/chat';
+import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo } from '../types/chat';
+
+export interface RagContextResponse {
+  needsWiki: boolean;
+  citations: WikiCitation[];
+  promptContext: string;
+  metadata?: {
+    fromCache?: boolean;
+    planner?: string;
+    latencyMs?: number;
+    plan?: any;
+    articleCount?: number;
+  };
+  error?: string;
+}
 
 export interface StreamCallbacks {
   onFirstToken?: () => void;
@@ -333,7 +347,7 @@ export class WikiAPI {
       port: 31236,
       zimPath: null,
       contentId: null,
-      bookTitle: '维基百科',
+      bookTitle: 'Knowledge Base',
       articleCount: 0,
       mediaCount: 0,
     };
@@ -352,9 +366,16 @@ export class WikiAPI {
     return [];
   }
 
-  static async getSummary(title: string): Promise<{ title: string; summary: string; url: string } | null> {
+  static async getSummary(
+    title: string,
+    userQuery?: string
+  ): Promise<{ title: string; summary: string; url: string } | null> {
     try {
-      const res = await fetch(`/api/wiki/summary?title=${encodeURIComponent(title)}`);
+      let url = `/api/wiki/summary?title=${encodeURIComponent(title)}`;
+      if (userQuery) {
+        url += `&query=${encodeURIComponent(userQuery)}`;
+      }
+      const res = await fetch(url);
       if (res.ok) {
         return await res.json();
       }
@@ -362,5 +383,41 @@ export class WikiAPI {
       console.error('Wiki getSummary failed:', e);
     }
     return null;
+  }
+
+  static async updateConfig(zimPath: string): Promise<WikiStatusInfo> {
+    try {
+      const res = await fetch('/api/wiki/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ zimPath }),
+      });
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch (e) {
+      console.error('Wiki updateConfig failed:', e);
+    }
+    return await this.getStatus();
+  }
+
+  static async getRagContext(query: string): Promise<RagContextResponse> {
+    try {
+      const res = await fetch('/api/wiki/rag-context', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query }),
+      });
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch (e) {
+      console.error('Wiki getRagContext failed:', e);
+    }
+    return {
+      needsWiki: false,
+      citations: [],
+      promptContext: '',
+    };
   }
 }

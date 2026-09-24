@@ -81,7 +81,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki })
             <div className="mt-3 flex flex-wrap items-center gap-1.5 select-none animate-in fade-in duration-200">
               <span className="text-[11px] font-medium text-zinc-400 dark:text-zinc-500 mr-1 flex items-center gap-1">
                 <BookOpen className="w-3.5 h-3.5 text-emerald-500" />
-                {t('wikiCitations') || '参考词条'}:
+                {t('wikiCitations')}:
               </span>
               {message.citations.map((c, idx) => (
                 <button

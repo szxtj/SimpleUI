@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { ChatSession, ServerHealthInfo } from '../types/chat';
-import { useI18n } from '../i18n';
+import { ChatSession, ServerHealthInfo, WikiStatusInfo } from '../types/chat';
+import { useI18n, formatArticleCount } from '../i18n';
 import {
   Plus,
   Trash2,
@@ -22,6 +22,7 @@ interface SidebarProps {
   onRenameSession: (id: string, newTitle: string) => void;
   onOpenSettings: () => void;
   healthInfo: ServerHealthInfo;
+  wikiStatus?: WikiStatusInfo;
   isOpen: boolean;
   onToggleOpen: () => void;
 }
@@ -35,10 +36,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onRenameSession,
   onOpenSettings,
   healthInfo,
+  wikiStatus,
   isOpen,
   onToggleOpen,
 }) => {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -63,10 +65,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setEditingId(null);
   };
 
-  const filteredSessions = searchQuery.trim()
-    ? sessions.filter((s) =>
-        s.title.toLowerCase().includes(searchQuery.toLowerCase())
-      )
+  const query = searchQuery.trim().toLowerCase();
+  const filteredSessions = query
+    ? sessions.filter((s) => {
+        if (s.title.toLowerCase().includes(query)) return true;
+        return s.messages?.some(
+          (m) => m.role === 'user' && m.content.toLowerCase().includes(query)
+        );
+      })
     : sessions;
 
   return (
@@ -165,6 +171,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
             const isLastBlankSession =
               sessions.length <= 1 && (!session.messages || session.messages.length === 0);
 
+            let matchedUserQuestion: string | null = null;
+            if (query && !session.title.toLowerCase().includes(query)) {
+              const userMsg = session.messages?.find(
+                (m) => m.role === 'user' && m.content.toLowerCase().includes(query)
+              );
+              if (userMsg) {
+                matchedUserQuestion = userMsg.content.trim();
+              }
+            }
+
             return (
               <div
                 key={session.id}
@@ -175,7 +191,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     : 'text-zinc-600 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-zinc-200 dark:hover:bg-[#212227]'
                 }`}
               >
-                <div className="truncate mr-2 flex-1">
+                <div className="truncate mr-2 flex-1 min-w-0">
                   {isEditing ? (
                     <input
                       type="text"
@@ -192,7 +208,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       className="w-full bg-white dark:bg-[#1b1c20] text-zinc-900 dark:text-white px-2 py-0.5 rounded-lg border border-blue-500/80 focus:outline-none"
                     />
                   ) : (
-                    <span className="truncate block">{session.title}</span>
+                    <div>
+                      <span className="truncate block font-medium">{session.title}</span>
+                      {matchedUserQuestion && (
+                        <span className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate block mt-0.5">
+                          💬 {t('matchedInQuery')}: {matchedUserQuestion}
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
 
@@ -246,30 +269,69 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* Footer: User / Service Status & Settings */}
-      <div className="p-3 border-t border-black/5 dark:border-white/5 bg-[#eaecef] dark:bg-[#17181c] flex items-center justify-between">
-        {/* Status indicator: "本地服务"大写在上，"就绪"小写在下 */}
-        <div className="flex items-center gap-2.5 px-1 min-w-0">
-          <span
-            className={`w-2 h-2 rounded-full flex-shrink-0 ${
-              healthInfo.online
-                ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]'
-                : 'bg-red-400'
+      <div className="p-2.5 border-t border-black/5 dark:border-white/5 bg-[#eaecef] dark:bg-[#17181c] flex items-center justify-between gap-1.5">
+        <div className="flex flex-col gap-1.5 px-1 min-w-0 flex-1">
+          {/* 1. Model Service Status */}
+          <div
+            className="flex items-center gap-2 min-w-0 cursor-default"
+            title={`${t('modelService')}: ${healthInfo.online ? t('statusReady') : t('statusOffline')}`}
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                healthInfo.online
+                  ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.7)]'
+                  : 'bg-red-400'
+              }`}
+            />
+            <div className="flex items-center gap-1.5 min-w-0 text-[11px] leading-none truncate">
+              <span className="font-semibold text-[#1f2328] dark:text-[#f1f3f7]">
+                {t('modelService')}
+              </span>
+              <span className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                {healthInfo.online ? t('statusReady') : t('statusOffline')}
+              </span>
+            </div>
+          </div>
+
+          {/* 2. Knowledge Base Service Status */}
+          <div
+            className="flex items-center gap-2 min-w-0 cursor-default"
+            title={`${t('kbService')}: ${
+              wikiStatus?.connected
+                ? `${t('statusReady')}${
+                    wikiStatus.articleCount > 0
+                      ? ` (${formatArticleCount(wikiStatus.articleCount, lang)})`
+                      : ''
+                  }`
+                : t('statusOffline')
             }`}
-          />
-          <div className="flex flex-col min-w-0">
-            <span className="text-xs font-semibold text-[#1f2328] dark:text-[#f1f3f7] leading-none truncate">
-              {t('localService')}
-            </span>
-            <span className="text-[10px] text-zinc-500 dark:text-zinc-400 mt-1 leading-none truncate max-w-[150px]">
-              {healthInfo.online ? t('statusReady') : t('statusOffline')}
-            </span>
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                wikiStatus?.connected
+                  ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.7)]'
+                  : 'bg-zinc-400 dark:bg-zinc-600'
+              }`}
+            />
+            <div className="flex items-center gap-1.5 min-w-0 text-[11px] leading-none truncate">
+              <span className="font-semibold text-[#1f2328] dark:text-[#f1f3f7]">
+                {t('kbService')}
+              </span>
+              <span className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                {wikiStatus?.connected
+                  ? wikiStatus.articleCount > 0
+                    ? formatArticleCount(wikiStatus.articleCount, lang)
+                    : t('statusReady')
+                  : t('statusOffline')}
+              </span>
+            </div>
           </div>
         </div>
 
         {/* Settings button */}
         <button
           onClick={onOpenSettings}
-          className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
+          className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors flex-shrink-0"
           title={t('settings')}
         >
           <Settings className="w-4 h-4" />
