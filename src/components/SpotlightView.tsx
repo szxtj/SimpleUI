@@ -33,6 +33,8 @@ import {
   Maximize2,
   X,
   MessageSquarePlus,
+  RotateCcw,
+  Trash2,
 } from 'lucide-react';
 import { useI18n } from '../i18n';
 import { useTheme } from '../hooks/useTheme';
@@ -60,7 +62,7 @@ export const SpotlightView: React.FC = () => {
     mediaCount: 0,
   });
   const [usedTokens, setUsedTokens] = useState<number>(0);
-  const [copied, setCopied] = useState(false);
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
   const isGeneratingRef = useRef(false);
   const messagesRef = useRef<ChatMessage[]>(messages);
@@ -394,15 +396,11 @@ export const SpotlightView: React.FC = () => {
     updateActiveSessionToggles(enableThinking, enabled);
   };
 
-  const handleSend = async () => {
-    const textToSend = input.trim();
-    if (!textToSend && images.length === 0) return;
-    if (isGenerating) return;
-
-    const currentImages = [...images];
-    setInput('');
-    setImages([]);
-
+  const executeSend = async (
+    textToSend: string,
+    currentImages: string[],
+    historyMessages: ChatMessage[]
+  ) => {
     const userMessage: ChatMessage = {
       id: 'msg-' + Date.now() + '-user',
       role: 'user',
@@ -422,7 +420,7 @@ export const SpotlightView: React.FC = () => {
       timestamp: Date.now() + 1,
     };
 
-    const nextMessages = [...messages, userMessage, initialAsstMessage];
+    const nextMessages = [...historyMessages, userMessage, initialAsstMessage];
     setMessages(nextMessages);
     setIsGenerating(true);
     recordActivity();
@@ -434,7 +432,7 @@ export const SpotlightView: React.FC = () => {
       activeSessionIdRef.current = currentSessionId;
     }
 
-    const title = (messages[0]?.content || userMessage.content).slice(0, 24) || t('quickChat');
+    const title = (historyMessages[0]?.content || userMessage.content).slice(0, 24) || t('quickChat');
     try {
       const allSessions = loadSessions();
       const existingIdx = allSessions.findIndex((s) => s.id === currentSessionId);
@@ -525,7 +523,7 @@ export const SpotlightView: React.FC = () => {
           };
           all[idx] = {
             ...all[idx],
-            messages: [...messages, userMessage, asstMsg],
+            messages: [...historyMessages, userMessage, asstMsg],
             contextUsed: metrics?.contextUsed ?? all[idx].contextUsed,
             updatedAt: Date.now(),
           };
@@ -538,7 +536,7 @@ export const SpotlightView: React.FC = () => {
     };
 
     const messagesWithPrompt: ChatMessage[] = [
-      ...messages,
+      ...historyMessages,
       {
         ...userMessage,
         content: promptToSend,
@@ -649,6 +647,7 @@ export const SpotlightView: React.FC = () => {
           setIsGenerating(false);
           abortControllerRef.current = null;
           recordActivity();
+
           const finalAsstMessage: ChatMessage = {
             id: asstMessageId,
             role: 'assistant',
@@ -678,6 +677,86 @@ export const SpotlightView: React.FC = () => {
       },
       abortController.signal
     );
+  };
+
+  const handleSend = async () => {
+    const textToSend = input.trim();
+    if (!textToSend && images.length === 0) return;
+    if (isGenerating) return;
+
+    const currentImages = [...images];
+    setInput('');
+    setImages([]);
+
+    await executeSend(textToSend, currentImages, messages);
+  };
+
+  const handleRetry = async (assistantMessageId: string) => {
+    if (isGenerating) {
+      handleStop();
+    }
+
+    const asstIdx = messages.findIndex((m) => m.id === assistantMessageId);
+    if (asstIdx === -1) return;
+
+    let userIdx = -1;
+    for (let i = asstIdx - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        userIdx = i;
+        break;
+      }
+    }
+    if (userIdx === -1) return;
+
+    const userMessage = messages[userIdx];
+    const historyBeforeUser = messages.slice(0, userIdx);
+
+    await executeSend(userMessage.content, userMessage.images || [], historyBeforeUser);
+  };
+
+  const handleDeleteTurn = (assistantMessageId: string) => {
+    if (isGenerating && currentAsstMsgIdRef.current === assistantMessageId) {
+      handleStop();
+    }
+
+    const asstIdx = messages.findIndex((m) => m.id === assistantMessageId);
+    if (asstIdx === -1) return;
+
+    let userIdx = -1;
+    for (let i = asstIdx - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        userIdx = i;
+        break;
+      }
+    }
+
+    const idsToDelete = new Set<string>([assistantMessageId]);
+    if (userIdx !== -1) {
+      idsToDelete.add(messages[userIdx].id);
+    }
+
+    const nextMessages = messages.filter((m) => !idsToDelete.has(m.id));
+    setMessages(nextMessages);
+
+    const currentSessionId = activeSessionIdRef.current;
+    if (currentSessionId) {
+      try {
+        const all = loadSessions();
+        const idx = all.findIndex((s) => s.id === currentSessionId);
+        if (idx >= 0) {
+          all[idx] = {
+            ...all[idx],
+            messages: nextMessages,
+            updatedAt: Date.now(),
+          };
+          saveSessions(all);
+          notifySessionUpdate(currentSessionId, 'SPOTLIGHT');
+        }
+      } catch (e) {
+        console.error('Failed to sync deleted turn in spotlight:', e);
+      }
+    }
+    recordActivity();
   };
 
   const handleStop = () => {
@@ -764,11 +843,11 @@ export const SpotlightView: React.FC = () => {
     handleNewChat();
   };
 
-  const handleCopyText = async (text: string) => {
+  const handleCopyText = async (id: string, text: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setCopiedMsgId(id);
+      setTimeout(() => setCopiedMsgId((cur) => (cur === id ? null : cur)), 2000);
     } catch (e) {
       console.error(e);
     }
@@ -997,9 +1076,10 @@ export const SpotlightView: React.FC = () => {
         <div className="flex-1 overflow-y-auto p-4 space-y-4 text-sm">
           {messages.map((msg) => {
             if (msg.role === 'user') {
+              const isCopied = copiedMsgId === msg.id;
               return (
-                <div key={msg.id} className="flex justify-end">
-                  <div className="max-w-[85%] bg-blue-600 text-white rounded-2xl px-4 py-2.5 text-[14.5px] leading-relaxed break-words">
+                <div key={msg.id} className="flex flex-col items-end group">
+                  <div className="max-w-[85%] bg-blue-600 text-white rounded-2xl px-4 py-2.5 text-[14.5px] leading-relaxed break-words shadow-sm">
                     {msg.images && msg.images.length > 0 && (
                       <div className="flex flex-wrap gap-2 mb-2">
                         {msg.images.map((url, i) => (
@@ -1013,6 +1093,21 @@ export const SpotlightView: React.FC = () => {
                       </div>
                     )}
                     {msg.content}
+                  </div>
+
+                  {/* User question action bar: icon-only Copy */}
+                  <div className="mt-1 flex items-center pr-1.5 opacity-60 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={() => handleCopyText(msg.id, msg.content)}
+                      className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-black/5 dark:text-zinc-500 dark:hover:text-zinc-200 dark:hover:bg-white/5 transition-colors cursor-pointer"
+                      title={isCopied ? t('copied') : t('copyQuestionTooltip')}
+                    >
+                      {isCopied ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                    </button>
                   </div>
                 </div>
               );
@@ -1059,26 +1154,41 @@ export const SpotlightView: React.FC = () => {
                   </div>
                 )}
 
-                {/* Action Toolbar under message: ONLY "复制" button + Gray Prefill/tok/s metrics */}
+                {/* Action Toolbar under message: Action buttons (Copy, Retry, Delete) - NO TEXT + Metrics */}
                 {msg.content && !isGenerating && (
-                  <div className="flex items-center gap-3 pt-1 text-xs select-none">
-                    <button
-                      onClick={() => handleCopyText(msg.content)}
-                      className="flex items-center gap-1.5 px-2 py-1 rounded-md text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
-                      title={t('copyTooltip')}
-                    >
-                      {copied ? (
-                        <>
+                  <div className="mt-2 flex items-center gap-3 select-none">
+                    <div className="flex items-center gap-0.5 text-zinc-500 dark:text-zinc-400">
+                      {/* 复制 */}
+                      <button
+                        onClick={() => handleCopyText(msg.id, msg.content)}
+                        className="p-1.5 rounded-lg hover:text-zinc-900 hover:bg-black/5 dark:hover:text-white dark:hover:bg-white/5 transition-colors cursor-pointer"
+                        title={copiedMsgId === msg.id ? t('copied') : t('copyTooltip')}
+                      >
+                        {copiedMsgId === msg.id ? (
                           <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                          <span className="text-emerald-600 dark:text-emerald-400 text-xs">{t('copied')}</span>
-                        </>
-                      ) : (
-                        <>
+                        ) : (
                           <Copy className="w-3.5 h-3.5" />
-                          <span className="text-xs">{t('copy')}</span>
-                        </>
-                      )}
-                    </button>
+                        )}
+                      </button>
+
+                      {/* 重试 */}
+                      <button
+                        onClick={() => handleRetry(msg.id)}
+                        className="p-1.5 rounded-lg hover:text-zinc-900 hover:bg-black/5 dark:hover:text-white dark:hover:bg-white/5 transition-colors cursor-pointer"
+                        title={t('retryTooltip')}
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                      </button>
+
+                      {/* 删除此轮对话 (连带删除问和答) */}
+                      <button
+                        onClick={() => handleDeleteTurn(msg.id)}
+                        className="p-1.5 rounded-lg hover:text-red-600 hover:bg-red-500/10 dark:hover:text-red-400 dark:hover:bg-red-500/10 transition-colors cursor-pointer"
+                        title={t('deleteTurnTooltip')}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
 
                     {/* Gray Prefill & tok/s metrics */}
                     {msg.metrics && (

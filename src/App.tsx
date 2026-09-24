@@ -425,26 +425,15 @@ export const App: React.FC = () => {
     saveSettings(newSettings);
   };
 
-  // Chat generation handler
-  const handleSend = async (overridePrompt?: string) => {
-    const textToSend = (overridePrompt ?? input).trim();
-    if (!textToSend && images.length === 0) return;
-    if (isGenerating) return;
-
-    let targetSessionId = currentSessionId;
-    let targetSession = sessions.find((s) => s.id === targetSessionId);
-
-    if (!targetSession) {
-      const fresh = createNewSession();
-      targetSessionId = fresh.id;
-      targetSession = fresh;
-      setSessions((prev) => [fresh, ...prev]);
-      setCurrentSessionId(fresh.id);
-    }
-
-    const currentImages = [...images];
-    setInput('');
-    setImages([]);
+  // Helper to execute chat streaming with given prompt, attachments and history
+  const executeChat = async (
+    textToSend: string,
+    currentImages: string[],
+    historyMessages: ChatMessage[],
+    targetSessionId: string
+  ) => {
+    const targetSession = sessions.find((s) => s.id === targetSessionId);
+    if (!targetSession) return;
 
     // Optional Offline Wiki RAG Retrieval (session-level toggle, defaults to false)
     let promptToSend = textToSend;
@@ -488,13 +477,12 @@ export const App: React.FC = () => {
     };
 
     // Update session title on first message
-    const activeMessages = targetSession.messages || [];
-    const isFirstUserMessage = activeMessages.length === 0;
+    const isFirstUserMessage = historyMessages.length === 0;
     const sessionTitle = isFirstUserMessage
       ? textToSend.slice(0, 24) || (activeLang === 'en' ? 'Image Analysis' : '图文分析')
       : targetSession.title || (activeLang === 'en' ? 'New Chat' : '新对话');
 
-    const updatedMessages = [...activeMessages, userMessage, assistantMessage];
+    const updatedMessages = [...historyMessages, userMessage, assistantMessage];
 
     setSessions((prev) =>
       prev.map((s) => {
@@ -528,7 +516,7 @@ export const App: React.FC = () => {
     };
 
     await TurboFieldfareAPI.streamChat(
-      [...activeMessages, { ...userMessage, content: promptToSend }],
+      [...historyMessages, { ...userMessage, content: promptToSend }],
       sessionSettings,
       {
         onFirstToken: () => {
@@ -671,6 +659,98 @@ export const App: React.FC = () => {
     );
   };
 
+  // Chat generation handler
+  const handleSend = async (overridePrompt?: string) => {
+    const textToSend = (overridePrompt ?? input).trim();
+    if (!textToSend && images.length === 0) return;
+    if (isGenerating) return;
+
+    let targetSessionId = currentSessionId;
+    let targetSession = sessions.find((s) => s.id === targetSessionId);
+
+    if (!targetSession) {
+      const fresh = createNewSession();
+      targetSessionId = fresh.id;
+      targetSession = fresh;
+      setSessions((prev) => [fresh, ...prev]);
+      setCurrentSessionId(fresh.id);
+    }
+
+    const currentImages = [...images];
+    setInput('');
+    setImages([]);
+
+    const activeMessages = targetSession.messages || [];
+    await executeChat(textToSend, currentImages, activeMessages, targetSession.id);
+  };
+
+  // Retry generating an assistant response
+  const handleRetry = async (assistantMessageId: string) => {
+    if (isGenerating) {
+      handleStop();
+    }
+
+    const targetSession =
+      sessions.find((s) => s.id === currentSessionId) ||
+      sessions.find((s) => s.messages.some((m) => m.id === assistantMessageId));
+    if (!targetSession) return;
+
+    const asstIdx = targetSession.messages.findIndex((m) => m.id === assistantMessageId);
+    if (asstIdx === -1) return;
+
+    let userIdx = -1;
+    for (let i = asstIdx - 1; i >= 0; i--) {
+      if (targetSession.messages[i].role === 'user') {
+        userIdx = i;
+        break;
+      }
+    }
+    if (userIdx === -1) return;
+
+    const userMessage = targetSession.messages[userIdx];
+    const historyBeforeUser = targetSession.messages.slice(0, userIdx);
+
+    await executeChat(
+      userMessage.content,
+      userMessage.images || [],
+      historyBeforeUser,
+      targetSession.id
+    );
+  };
+
+  // Delete a turn (both question and assistant response)
+  const handleDeleteTurn = (assistantMessageId: string) => {
+    if (isGenerating && currentAssistantMsgIdRef.current === assistantMessageId) {
+      handleStop();
+    }
+
+    setSessions((prev) =>
+      prev.map((s) => {
+        const asstIdx = s.messages.findIndex((m) => m.id === assistantMessageId);
+        if (asstIdx === -1) return s;
+
+        let userIdx = -1;
+        for (let i = asstIdx - 1; i >= 0; i--) {
+          if (s.messages[i].role === 'user') {
+            userIdx = i;
+            break;
+          }
+        }
+
+        const idsToDelete = new Set<string>([assistantMessageId]);
+        if (userIdx !== -1) {
+          idsToDelete.add(s.messages[userIdx].id);
+        }
+
+        return {
+          ...s,
+          messages: s.messages.filter((m) => !idsToDelete.has(m.id)),
+          updatedAt: Date.now(),
+        };
+      })
+    );
+  };
+
   const handleStop = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -746,6 +826,8 @@ export const App: React.FC = () => {
           }}
           wikiConnected={wikiStatus.connected}
           onOpenWiki={(title) => setActiveWikiArticle(title)}
+          onRetry={handleRetry}
+          onDelete={handleDeleteTurn}
         />
 
         {/* Wikipedia Offline Article Reader Drawer */}

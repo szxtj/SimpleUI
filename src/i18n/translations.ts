@@ -55,7 +55,12 @@ export const translations = {
     // MessageItem & Markdown
     copy: '复制',
     copied: '已复制',
-    copyTooltip: '复制回复',
+    copyTooltip: '复制',
+    copyQuestionTooltip: '复制问题',
+    retryTooltip: '重新回答',
+    deleteTurnTooltip: '删除此轮对话',
+    retry: '重试',
+    delete: '删除',
     copyCodeTooltip: '复制代码',
     thinkingNotice: '正在思考...',
 
@@ -217,7 +222,12 @@ export const translations = {
     // MessageItem & Markdown
     copy: 'Copy',
     copied: 'Copied',
-    copyTooltip: 'Copy response',
+    copyTooltip: 'Copy',
+    copyQuestionTooltip: 'Copy question',
+    retryTooltip: 'Regenerate response',
+    deleteTurnTooltip: 'Delete this turn',
+    retry: 'Retry',
+    delete: 'Delete',
     copyCodeTooltip: 'Copy code',
     thinkingNotice: 'Thinking...',
 

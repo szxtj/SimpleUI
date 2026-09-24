@@ -39,6 +39,8 @@ interface ChatViewProps {
   setEnableWikiSearch?: (val: boolean) => void;
   wikiConnected?: boolean;
   onOpenWiki?: (title: string) => void;
+  onRetry?: (messageId: string) => void;
+  onDelete?: (messageId: string) => void;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -65,6 +67,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   setEnableWikiSearch,
   wikiConnected,
   onOpenWiki,
+  onRetry,
+  onDelete,
 }) => {
   const { t } = useI18n();
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -226,7 +230,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
           ) : (
             <div className="space-y-4">
               {messages.map((message) => (
-                <MessageItem key={message.id} message={message} onOpenWiki={onOpenWiki} />
+                <MessageItem
+                  key={message.id}
+                  message={message}
+                  onOpenWiki={onOpenWiki}
+                  onRetry={onRetry}
+                  onDelete={onDelete}
+                />
               ))}
               <div ref={messagesEndRef} className="h-4" />
             </div>
