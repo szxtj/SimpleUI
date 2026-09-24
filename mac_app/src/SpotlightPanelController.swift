@@ -11,9 +11,66 @@ class SpotlightPanel: NSPanel {
     }
 }
 
+/// A dedicated native overlay view across the top 46px header bar of the expanded Spotlight panel.
+/// It enables fluid window dragging via `performDrag(with: event)` while transparently passing
+/// clicks on the ✖ button (left) and action buttons (right) through to WKWebView.
+class SpotlightDragView: NSView {
+    var onDidDrag: ((NSPoint) -> Void)?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden, frame.contains(point) else { return nil }
+
+        let localPoint = convert(point, from: superview)
+        let x = localPoint.x
+        let totalWidth = bounds.width
+
+        // 1. Left button area (✖ close button at x: 0 ... 44):
+        // Return nil so clicks hit the web button directly
+        if x < 44.0 {
+            return nil
+        }
+
+        // 2. Right action buttons (New Chat & Expand buttons at x: totalWidth - 85 ... totalWidth):
+        // Return nil so clicks hit the web action buttons directly
+        if x > (totalWidth - 85.0) {
+            return nil
+        }
+
+        // 3. Middle header area (x: 44.0 ... totalWidth - 85.0):
+        // Intercept mouse to drag window smoothly
+        return self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window = self.window else { return }
+        window.performDrag(with: event)
+        onDidDrag?(window.frame.origin)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        let draggableWidth = max(0, bounds.width - 129.0)
+        if draggableWidth > 0 {
+            let draggableRect = NSRect(x: 44.0, y: 0, width: draggableWidth, height: bounds.height)
+            addCursorRect(draggableRect, cursor: .openHand)
+        }
+    }
+
+    override var mouseDownCanMoveWindow: Bool {
+        return true
+    }
+}
+
 class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
     private var webView: WKWebView!
+    private var dragView: SpotlightDragView!
     var onOpenMainWindow: (() -> Void)?
+
+    // State tracking for window position preservation and reset
+    private var isExpanded: Bool = false
+    private var hasUserCustomPosition: Bool = false
+    private var customExpandedOrigin: NSPoint? = nil
+    private var isProgrammaticAnimating: Bool = false
 
     init() {
         // Initial compact input capsule size: 540 x 88
@@ -32,7 +89,7 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
-        panel.isMovableByWindowBackground = true
+        panel.isMovableByWindowBackground = false // Window dragging is handled by SpotlightDragView
         panel.backgroundColor = .clear
         panel.hasShadow = false // Clean flat presentation without outer halos
         panel.isOpaque = false
@@ -40,6 +97,8 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         super.init(window: panel)
 
         setupWebView()
+        setupDragView()
+        setupNotificationObservers()
     }
 
     required init?(coder: NSCoder) {
@@ -66,6 +125,42 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
 
         panel.contentView?.addSubview(webView)
         loadContent()
+    }
+
+    private func setupDragView() {
+        guard let panel = window, let contentView = panel.contentView else { return }
+        let headerHeight: CGFloat = 46.0
+        let frame = NSRect(
+            x: 0,
+            y: panel.frame.height - headerHeight,
+            width: panel.frame.width,
+            height: headerHeight
+        )
+        dragView = SpotlightDragView(frame: frame)
+        dragView.autoresizingMask = [.width, .minYMargin]
+        dragView.isHidden = true // Initially hidden in compact capsule state
+        dragView.onDidDrag = { [weak self] newOrigin in
+            guard let self = self, self.isExpanded else { return }
+            self.hasUserCustomPosition = true
+            self.customExpandedOrigin = newOrigin
+        }
+        contentView.addSubview(dragView, positioned: .above, relativeTo: webView)
+    }
+
+    private func setupNotificationObservers() {
+        guard let panel = window else { return }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleWindowDidMove(_:)),
+            name: NSWindow.didMoveNotification,
+            object: panel
+        )
+    }
+
+    @objc private func handleWindowDidMove(_ notification: Notification) {
+        guard !isProgrammaticAnimating, isExpanded, let panel = window else { return }
+        hasUserCustomPosition = true
+        customExpandedOrigin = panel.frame.origin
     }
 
     func loadContent() {
@@ -100,15 +195,28 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         let screen = currentScreen()
         let screenRect = screen.visibleFrame
 
-        let width = panel.frame.width
-        let height = panel.frame.height
-        let x = screenRect.origin.x + (screenRect.width - width) / 2
-        let y = targetY(for: height, on: screen)
+        if isExpanded && hasUserCustomPosition, let origin = customExpandedOrigin {
+            // Restore to the exact user-dragged position, clamped safely within active screens
+            let targetSize = panel.frame.size
+            let clampedX = min(screenRect.maxX - 100, max(screenRect.minX - targetSize.width + 100, origin.x))
+            let clampedY = min(screenRect.maxY - targetSize.height, max(screenRect.minY, origin.y))
+            let targetFrame = NSRect(x: clampedX, y: clampedY, width: targetSize.width, height: targetSize.height)
 
-        panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+            isProgrammaticAnimating = true
+            panel.setFrame(targetFrame, display: true)
+            isProgrammaticAnimating = false
+        } else {
+            // In compact state OR no custom position: default Dock-aligned bottom center
+            let width = panel.frame.width
+            let height = panel.frame.height
+            let x = screenRect.origin.x + (screenRect.width - width) / 2
+            let y = targetY(for: height, on: screen)
 
-        // Only bring the Spotlight panel key and front, NEVER activate the full application
-        // so that the main window remains untouched and in its current position
+            isProgrammaticAnimating = true
+            panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+            isProgrammaticAnimating = false
+        }
+
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
         if let view = webView {
@@ -121,20 +229,57 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         window?.orderOut(nil)
     }
 
-    func animateTo(width: CGFloat, height: CGFloat) {
+    func handleResizePanel(width: CGFloat, height: CGFloat, isExpanding: Bool) {
         guard let panel = window else { return }
+        self.isExpanded = isExpanding
+
         let screen = currentScreen()
         let screenRect = screen.visibleFrame
 
-        let newX = screenRect.origin.x + (screenRect.width - width) / 2
-        let newY = targetY(for: height, on: screen)
-        let newFrame = NSRect(x: newX, y: newY, width: width, height: height)
+        var targetFrame: NSRect
 
-        NSAnimationContext.runAnimationGroup { context in
+        if isExpanding {
+            // EXPANDED:
+            dragView.isHidden = false
+            dragView.frame = NSRect(x: 0, y: height - 46, width: width, height: 46)
+            panel.invalidateCursorRects(for: dragView)
+
+            if hasUserCustomPosition, let origin = customExpandedOrigin {
+                // User already dragged it previously: preserve location
+                let clampedX = min(screenRect.maxX - 100, max(screenRect.minX - width + 100, origin.x))
+                let clampedY = min(screenRect.maxY - height, max(screenRect.minY, origin.y))
+                targetFrame = NSRect(x: clampedX, y: clampedY, width: width, height: height)
+            } else {
+                // Initial expansion: centered horizontally, bottom above Dock
+                let x = screenRect.origin.x + (screenRect.width - width) / 2
+                let y = targetY(for: height, on: screen)
+                targetFrame = NSRect(x: x, y: y, width: width, height: height)
+            }
+        } else {
+            // COLLAPSED / NEW CHAT RESET:
+            // "当然，当新建对话之后，收起来之后，位置应当归位"
+            dragView.isHidden = true
+            hasUserCustomPosition = false
+            customExpandedOrigin = nil
+
+            let defaultX = screenRect.origin.x + (screenRect.width - width) / 2
+            let defaultY = targetY(for: height, on: screen)
+            targetFrame = NSRect(x: defaultX, y: defaultY, width: width, height: height)
+        }
+
+        animateTo(newFrame: targetFrame)
+    }
+
+    private func animateTo(newFrame: NSRect) {
+        guard let panel = window else { return }
+        isProgrammaticAnimating = true
+        NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.22
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().setFrame(newFrame, display: true)
-        }
+        }, completionHandler: { [weak self] in
+            self?.isProgrammaticAnimating = false
+        })
     }
 
     // MARK: - WKScriptMessageHandler
@@ -146,8 +291,9 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             onOpenMainWindow?()
         } else if message.name == "resizePanel", let dict = message.body as? [String: Any] {
             let width = (dict["width"] as? CGFloat) ?? 540
-            let height = (dict["height"] as? CGFloat) ?? 84
-            animateTo(width: width, height: height)
+            let height = (dict["height"] as? CGFloat) ?? 88
+            let isExpanding = (dict["expanded"] as? Bool) ?? (height > 100)
+            handleResizePanel(width: width, height: height, isExpanding: isExpanding)
         }
     }
 

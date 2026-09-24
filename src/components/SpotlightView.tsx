@@ -164,12 +164,14 @@ export const SpotlightView: React.FC = () => {
         window.webkit.messageHandlers.resizePanel.postMessage({
           width: 500,
           height: 640,
+          expanded: true,
         });
       } else {
         // @ts-expect-error WebKit bridge
         window.webkit.messageHandlers.resizePanel.postMessage({
           width: 540,
           height: 88,
+          expanded: false,
         });
       }
     }
@@ -757,6 +759,9 @@ export const SpotlightView: React.FC = () => {
       // @ts-expect-error WebKit bridge
       window.webkit.messageHandlers.openMainFromSpotlight.postMessage({});
     }
+
+    // Reset Spotlight to fresh state and default position
+    handleNewChat();
   };
 
   const handleCopyText = async (text: string) => {
@@ -943,7 +948,7 @@ export const SpotlightView: React.FC = () => {
     <div className="w-full h-full select-none bg-transparent">
       <div className="w-full h-full flex flex-col bg-white dark:bg-[#1c1d22] border border-black/10 dark:border-white/10 rounded-[22px] overflow-hidden text-[#1f2328] dark:text-[#f1f3f7] select-none">
         {/* Top Header Row */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/5">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/5 cursor-grab active:cursor-grabbing select-none">
           {/* Left: ✖ inside circle + Title + Status dot */}
           <div className="flex items-center gap-2.5">
             <button
@@ -952,7 +957,7 @@ export const SpotlightView: React.FC = () => {
                 // @ts-expect-error WebKit bridge
                 window.webkit?.messageHandlers?.closeSpotlight?.postMessage?.({});
               }}
-              className="w-5 h-5 rounded-full bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/20 flex items-center justify-center text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white transition-colors"
+              className="w-5 h-5 rounded-full bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/20 flex items-center justify-center text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white transition-colors cursor-pointer"
               title={t('closeEsc')}
             >
               <X className="w-3 h-3" />
@@ -972,7 +977,7 @@ export const SpotlightView: React.FC = () => {
           <div className="flex items-center gap-1.5 text-zinc-500 dark:text-zinc-400">
             <button
               onClick={handleNewChat}
-              className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 hover:text-zinc-900 dark:hover:text-white transition-colors"
+              className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 hover:text-zinc-900 dark:hover:text-white transition-colors cursor-pointer"
               title={t('newChat')}
             >
               <MessageSquarePlus className="w-4 h-4" />
@@ -980,7 +985,7 @@ export const SpotlightView: React.FC = () => {
 
             <button
               onClick={handleOpenInMain}
-              className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 hover:text-zinc-900 dark:hover:text-white transition-colors"
+              className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 hover:text-zinc-900 dark:hover:text-white transition-colors cursor-pointer"
               title={t('openInMainWindow')}
             >
               <Maximize2 className="w-4 h-4" />
