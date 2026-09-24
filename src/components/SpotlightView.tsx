@@ -20,6 +20,7 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 import { ThinkingAccordion } from './ThinkingAccordion';
 import { ImageAttachment } from './ImageAttachment';
 import { ContextRing } from './ContextRing';
+import { WikiDrawer } from './WikiDrawer';
 import { extractImagesFromPaste, fileToDataURL } from '../utils/image';
 import {
   ArrowUp,
@@ -35,6 +36,7 @@ import {
   MessageSquarePlus,
   RotateCcw,
   Trash2,
+  ExternalLink,
 } from 'lucide-react';
 import { useI18n } from '../i18n';
 import { useTheme } from '../hooks/useTheme';
@@ -63,6 +65,7 @@ export const SpotlightView: React.FC = () => {
   });
   const [usedTokens, setUsedTokens] = useState<number>(0);
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+  const [activeWikiArticle, setActiveWikiArticle] = useState<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
   const isGeneratingRef = useRef(false);
   const messagesRef = useRef<ChatMessage[]>(messages);
@@ -1134,15 +1137,26 @@ export const SpotlightView: React.FC = () => {
 
                 {/* Citations if any */}
                 {msg.citations && msg.citations.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-1.5 items-center">
-                    <span className="text-[10px] text-zinc-500 font-medium">📚 {t('wikiCitations')}:</span>
+                  <div className="mt-2.5 flex flex-wrap items-center gap-1.5 select-none animate-in fade-in duration-200">
+                    <span className="text-[11px] font-medium text-zinc-400 dark:text-zinc-500 mr-1 flex items-center gap-1">
+                      <BookOpen className="w-3.5 h-3.5 text-emerald-500" />
+                      {t('wikiCitations')}:
+                    </span>
                     {msg.citations.map((c, idx) => (
-                      <span
+                      <button
                         key={idx}
-                        className="text-[11px] px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-medium"
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setActiveWikiArticle(c.title);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-emerald-500/10 hover:bg-emerald-500/20 active:bg-emerald-500/30 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 hover:border-emerald-500/35 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer select-none"
+                        title={c.summary || c.title}
                       >
-                        {c.title}
-                      </span>
+                        <span className="font-medium truncate max-w-[200px] pointer-events-none select-none">{c.title}</span>
+                        <ExternalLink className="w-3 h-3 opacity-60 pointer-events-none flex-shrink-0" />
+                      </button>
                     ))}
                   </div>
                 )}
@@ -1319,6 +1333,14 @@ export const SpotlightView: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Wikipedia Offline Article Reader Drawer */}
+      <WikiDrawer
+        isOpen={!!activeWikiArticle}
+        title={activeWikiArticle}
+        onClose={() => setActiveWikiArticle(null)}
+        theme={settings.theme}
+      />
     </div>
   );
 };

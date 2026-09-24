@@ -3,6 +3,7 @@ import https from 'https';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -160,10 +161,59 @@ const server = http.createServer((req, res) => {
   serveStatic(req, res);
 });
 
+let layaProcess = null;
+
+function findPythonExecutable() {
+  const candidates = [
+    '/opt/homebrew/Caskroom/miniforge/base/bin/python3',
+    '/opt/homebrew/bin/python3',
+    '/usr/local/bin/python3',
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch (e) {
+      // ignore
+    }
+  }
+  return 'python3';
+}
+
+async function startLayaServer() {
+  try {
+    const res = await fetch('http://127.0.0.1:1236/health', { signal: AbortSignal.timeout(600) });
+    if (res.ok) {
+      console.log('⚡ LAYA-MLX server is already active and healthy on port 1236.');
+      return;
+    }
+  } catch (e) {
+    // Port not yet responding, spawn process
+  }
+
+  const pythonPath = findPythonExecutable();
+  const scriptPath = path.resolve(__dirname, 'laya_mlx_server.py');
+  if (!fs.existsSync(scriptPath)) return;
+
+  try {
+    console.log('⚡ Launching embedded LAYA-MLX server on port 1236...');
+    layaProcess = spawn(pythonPath, [scriptPath], {
+      stdio: 'ignore',
+      detached: false,
+    });
+    layaProcess.on('exit', (code) => {
+      console.log(`[LAYA-MLX] process exited with code ${code}`);
+      layaProcess = null;
+    });
+  } catch (err) {
+    console.warn('[Proxy] Failed to auto-start embedded LAYA server:', err.message);
+  }
+}
+
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`🚀 SimpleUI running at http://127.0.0.1:${PORT}`);
   console.log(`🔗 Upstream API configured to ${TARGET_API}`);
   wikiService.initWatcher();
+  startLayaServer();
 
   // Automatically exit if parent process (e.g. SimpleUI app) terminates
   if (process.ppid && process.ppid > 1) {
@@ -179,6 +229,14 @@ server.listen(PORT, '127.0.0.1', () => {
 });
 
 function cleanupAndExit(code = 0) {
+  if (layaProcess) {
+    try {
+      layaProcess.kill('SIGTERM');
+    } catch (e) {
+      // ignore
+    }
+    layaProcess = null;
+  }
   if (wikiService && wikiService.kiwixProcess) {
     try {
       wikiService.kiwixProcess.kill('SIGTERM');
@@ -192,6 +250,13 @@ function cleanupAndExit(code = 0) {
 process.on('SIGINT', () => cleanupAndExit(0));
 process.on('SIGTERM', () => cleanupAndExit(0));
 process.on('exit', () => {
+  if (layaProcess) {
+    try {
+      layaProcess.kill('SIGKILL');
+    } catch (e) {
+      // ignore
+    }
+  }
   if (wikiService && wikiService.kiwixProcess) {
     try {
       wikiService.kiwixProcess.kill('SIGKILL');

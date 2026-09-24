@@ -446,11 +446,11 @@ export const App: React.FC = () => {
         const rag = await WikiAPI.getRagContext(textToSend);
         if (rag.needsWiki && rag.citations && rag.citations.length > 0) {
           foundCitations = rag.citations;
-          const userQuestionHeader = activeLang === 'en' ? '[User Question]' : '[用户问题]';
-          const instructionHeader = activeLang === 'en'
-            ? '[Please answer the user\'s question accurately and objectively using the knowledge base references above, providing relevant facts and data directly]'
-            : '[请结合上述知识库参考资料准确客观地回答用户问题，直接给出相关数据与事实]';
-          promptToSend = `${rag.promptContext}\n\n${userQuestionHeader}\n${textToSend}\n\n${instructionHeader}`;
+          const isEn = activeLang === 'en';
+          const groundingGuidelines = isEn
+            ? `[Background Reference Facts]\n${rag.promptContext}\n\n[Instruction & Guidelines]\nPlease answer the user's question based on the following principles:\n1. [Fact Grounding]: Use the objective facts, dates, and numbers provided in the [Background Reference Facts] as your factual anchor.\n2. [Deep Reasoning & Synthesis]: The facts serve as your baseline; please fully unleash your analytical reasoning, logical synthesis, and broad world knowledge to provide an in-depth, structured, and insightful response.\n3. [Natural & Expressive]: Keep the tone natural, clear, and articulate. Do not mechanically copy the source verbatim.\n\n[User Question]\n${textToSend}`
+            : `[背景事实参考]\n${rag.promptContext}\n\n[回答指引与准则]\n请按以下原则回答用户问题：\n1. 【事实锚定】：优先将上述[背景事实参考]中提及的客观事实、时间、人物与数据作为真实性基石。\n2. 【深度推导与发散】：参考事实仅作为基础支撑，请充分发挥你的深度逻辑分析、综合归纳与通用常识储备。若事实仅为局部信息，鼓励主动进行深层推论、背景对比与全面展开。\n3. 【自然生动】：保持自然清晰、有深度的表达风格，严禁机械式照抄或受限于参考资料的行文。\n\n[用户问题]\n${textToSend}`;
+          promptToSend = groundingGuidelines;
         }
       } catch (err) {
         console.warn('Knowledge Base retrieval error:', err);

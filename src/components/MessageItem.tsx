@@ -105,12 +105,17 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, o
               {message.citations.map((c, idx) => (
                 <button
                   key={idx}
-                  onClick={() => onOpenWiki?.(c.title)}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onOpenWiki?.(c.title);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-emerald-500/10 hover:bg-emerald-500/20 active:bg-emerald-500/30 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 hover:border-emerald-500/35 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer select-none"
                   title={c.summary || c.title}
                 >
-                  <span className="font-medium truncate max-w-[200px]">{c.title}</span>
-                  <ExternalLink className="w-3 h-3 opacity-60" />
+                  <span className="font-medium truncate max-w-[200px] pointer-events-none select-none">{c.title}</span>
+                  <ExternalLink className="w-3 h-3 opacity-60 pointer-events-none flex-shrink-0" />
                 </button>
               ))}
             </div>
