@@ -8,7 +8,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DIST_DIR = path.resolve(__dirname, '../dist');
 
-const PORT = parseInt(process.env.PORT || '3000', 10);
+const PORT = parseInt(process.env.PORT || '31235', 10);
 const TARGET_API = process.env.TURBO_API_URL || 'http://127.0.0.1:1235';
 
 const MIME_TYPES = {

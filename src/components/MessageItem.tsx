@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ChatMessage } from '../types/chat';
+import { useI18n } from '../i18n';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ThinkingAccordion } from './ThinkingAccordion';
 import { Check, Copy, AlertCircle } from 'lucide-react';
@@ -9,6 +10,7 @@ interface MessageItemProps {
 }
 
 export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const isUser = message.role === 'user';
 
@@ -26,7 +28,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
     <div className={`py-3 w-full flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       {isUser ? (
         /* User Message: Rounded pill bubble on the right (Qianwen Style) */
-        <div className="max-w-[85%] lg:max-w-[75%] rounded-[20px] px-4 py-2.5 bg-[#2d3037] text-[#f1f3f7] border border-white/5 shadow-sm">
+        <div className="max-w-[85%] lg:max-w-[75%] rounded-[20px] px-4 py-2.5 bg-[#e9ebf0] text-[#1f2328] dark:bg-[#2d3037] dark:text-[#f1f3f7] border border-black/5 dark:border-white/5 shadow-sm">
           {/* User image attachments */}
           {message.images && message.images.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-2">
@@ -35,7 +37,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
                   key={i}
                   src={imgUrl}
                   alt={`upload-${i}`}
-                  className="max-w-[240px] max-h-[240px] rounded-xl object-cover border border-white/10 shadow-sm"
+                  className="max-w-[240px] max-h-[240px] rounded-xl object-cover border border-black/10 dark:border-white/10 shadow-sm"
                 />
               ))}
             </div>
@@ -46,7 +48,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
         </div>
       ) : (
         /* Assistant Message: Clean full-width flow on the left (Qianwen Style) */
-        <div className="w-full text-[#ecedf1]">
+        <div className="w-full text-[#1f2328] dark:text-[#ecedf1]">
           {/* Thinking Process Accordion */}
           {(message.reasoningContent || message.isThinking) && (
             <ThinkingAccordion
@@ -61,13 +63,13 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
             {message.content ? (
               <MarkdownRenderer content={message.content} />
             ) : message.isThinking ? (
-              <span className="text-xs text-zinc-500 italic">正在思考...</span>
+              <span className="text-xs text-zinc-500 italic">{t('thinkingNotice')}</span>
             ) : null}
           </div>
 
           {/* Error Message notice if any */}
           {message.error && (
-            <div className="mt-2.5 flex items-center gap-1.5 text-xs text-red-400 bg-red-950/40 border border-red-800/50 px-3 py-2 rounded-xl">
+            <div className="mt-2.5 flex items-center gap-1.5 text-xs text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/50 px-3 py-2 rounded-xl">
               <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
               <span>{message.error}</span>
             </div>
@@ -79,25 +81,25 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
               {/* Only "复制" button */}
               <button
                 onClick={handleCopy}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-white/5 transition-colors"
-                title="复制回复"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
+                title={t('copyTooltip')}
               >
                 {copied ? (
                   <>
-                    <Check className="w-3.5 h-3.5 text-emerald-400" />
-                    <span className="text-emerald-400 text-xs">已复制</span>
+                    <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                    <span className="text-emerald-600 dark:text-emerald-400 text-xs">{t('copied')}</span>
                   </>
                 ) : (
                   <>
                     <Copy className="w-3.5 h-3.5" />
-                    <span className="text-xs">复制</span>
+                    <span className="text-xs">{t('copy')}</span>
                   </>
                 )}
               </button>
 
               {/* Next to "复制" button: Gray Prefill & tok/s Metrics */}
               {message.metrics && (
-                <span className="text-xs font-mono text-zinc-500">
+                <span className="text-xs font-mono text-zinc-500 dark:text-zinc-400">
                   Prefill {message.metrics.ttftMs}ms · {message.metrics.tokensPerSecond} tok/s
                 </span>
               )}

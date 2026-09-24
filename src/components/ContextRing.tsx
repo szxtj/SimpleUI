@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useI18n } from '../i18n';
 
 interface ContextRingProps {
   usedTokens: number;
@@ -11,6 +12,7 @@ export const ContextRing: React.FC<ContextRingProps> = ({
   maxContext,
   placement = 'top',
 }) => {
+  const { t } = useI18n();
   const [showTooltip, setShowTooltip] = useState(false);
 
   const safeMax = Math.max(1, maxContext || 32768);
@@ -59,7 +61,7 @@ export const ContextRing: React.FC<ContextRingProps> = ({
       className="relative flex items-center justify-center cursor-pointer select-none p-1"
       onMouseEnter={() => setShowTooltip(true)}
       onMouseLeave={() => setShowTooltip(false)}
-      aria-label={`上下文占用 ${percent.toFixed(1)}%`}
+      aria-label={`${t('contextOccupancy')} ${percent.toFixed(1)}%`}
     >
       <svg width={size} height={size} className="transform -rotate-90">
         {/* Background track circle */}
@@ -68,8 +70,8 @@ export const ContextRing: React.FC<ContextRingProps> = ({
           cy={size / 2}
           r={radius}
           fill="transparent"
-          stroke="#383a42"
           strokeWidth={strokeWidth}
+          className="stroke-black/15 dark:stroke-[#383a42]"
         />
         {/* Active progress arc */}
         <circle
@@ -89,18 +91,18 @@ export const ContextRing: React.FC<ContextRingProps> = ({
       {/* Floating Detailed Context Tooltip */}
       {showTooltip && (
         <div className={`absolute ${getPlacementClass()} z-50 pointer-events-none`}>
-          <div className="bg-[#1e2025] text-white text-[11px] font-sans px-3 py-2 rounded-xl shadow-2xl border border-white/10 whitespace-nowrap animate-in fade-in zoom-in-95">
+          <div className="bg-white dark:bg-[#1e2025] text-zinc-900 dark:text-white text-[11px] font-sans px-3 py-2 rounded-xl shadow-2xl border border-black/10 dark:border-white/10 whitespace-nowrap animate-in fade-in zoom-in-95">
             <div className="flex items-center gap-2 mb-1">
               <span
                 className="w-2 h-2 rounded-full"
                 style={{ backgroundColor: progressColor }}
               />
-              <span className="font-semibold text-zinc-200">
-                上下文余量: {formatTokens(remaining)} tokens
+              <span className="font-semibold text-zinc-800 dark:text-zinc-200">
+                {t('contextRemaining')}: {formatTokens(remaining)} {t('tokens')}
               </span>
             </div>
-            <div className="text-zinc-400 font-mono text-[10px]">
-              已用 {safeUsed.toLocaleString()} / {safeMax.toLocaleString()} ({percent.toFixed(1)}%)
+            <div className="text-zinc-500 dark:text-zinc-400 font-mono text-[10px]">
+              {t('contextUsed')} {safeUsed.toLocaleString()} / {safeMax.toLocaleString()} ({percent.toFixed(1)}%)
             </div>
           </div>
         </div>

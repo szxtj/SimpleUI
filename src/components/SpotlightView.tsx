@@ -31,8 +31,10 @@ import {
   X,
   MessageSquarePlus,
 } from 'lucide-react';
+import { useI18n } from '../i18n';
 
 export const SpotlightView: React.FC = () => {
+  const { t } = useI18n();
   const [settings, setSettings] = useState<AppSettings>(loadSettings());
   const [input, setInput] = useState('');
   const [images, setImages] = useState<string[]>([]);
@@ -224,7 +226,7 @@ export const SpotlightView: React.FC = () => {
           // Persist current session into storage for Main Window sync
           try {
             const allSessions = loadSessions();
-            const title = (messages[0]?.content || userMessage.content).slice(0, 24) || '快捷问答';
+            const title = (messages[0]?.content || userMessage.content).slice(0, 24) || t('quickChat');
             const sessionId = activeSessionIdRef.current || ('sess-' + Date.now());
             activeSessionIdRef.current = sessionId;
 
@@ -277,7 +279,7 @@ export const SpotlightView: React.FC = () => {
 
           try {
             const allSessions = loadSessions();
-            const title = (messages[0]?.content || userMessage.content).slice(0, 24) || '快捷问答';
+            const title = (messages[0]?.content || userMessage.content).slice(0, 24) || t('quickChat');
             const sessionId = activeSessionIdRef.current || ('sess-' + Date.now());
             activeSessionIdRef.current = sessionId;
 
@@ -336,7 +338,7 @@ export const SpotlightView: React.FC = () => {
     // If there is any content, ensure it is written to storage before transitioning
     if (messages.length > 0) {
       try {
-        const title = (messages[0]?.content || '').slice(0, 24) || '快捷问答';
+        const title = (messages[0]?.content || '').slice(0, 24) || t('quickChat');
         const currentId =
           activeSessionIdRef.current || loadCurrentSessionId() || ('sess-' + Date.now());
         activeSessionIdRef.current = currentId;
@@ -413,7 +415,7 @@ export const SpotlightView: React.FC = () => {
   if (!hasMessages) {
     return (
       <div className="w-full h-full select-none bg-transparent">
-        <div className="w-full h-full bg-[#25262c] border border-white/10 rounded-[28px] shadow-2xl px-4 py-2 flex flex-col justify-between">
+        <div className="w-full h-full bg-white/95 dark:bg-[#25262c] border border-black/10 dark:border-white/10 rounded-[28px] shadow-2xl px-4 py-2 flex flex-col justify-between">
           {/* Hidden file input */}
           <input
             ref={fileInputRef}
@@ -444,9 +446,9 @@ export const SpotlightView: React.FC = () => {
                 }
               }}
               onPaste={handlePaste}
-              placeholder="向 SimpleUI 提问..."
+              placeholder={t('placeholderInitial')}
               autoFocus
-              className="w-full bg-transparent text-[15px] text-[#f1f3f7] placeholder-zinc-500 focus:outline-none font-normal"
+              className="w-full bg-transparent text-[15px] text-[#1f2328] dark:text-[#f1f3f7] placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none font-normal"
             />
           </div>
 
@@ -455,7 +457,7 @@ export const SpotlightView: React.FC = () => {
             <div className="flex gap-1.5 px-1 py-0.5">
               {images.map((img, idx) => (
                 <div key={idx} className="relative group">
-                  <img src={img} alt="thumb" className="w-6 h-6 rounded-md object-cover border border-white/20" />
+                  <img src={img} alt="thumb" className="w-6 h-6 rounded-md object-cover border border-black/10 dark:border-white/20" />
                   <button
                     onClick={() => setImages((prev) => prev.filter((_, i) => i !== idx))}
                     className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full text-[8px] text-white flex items-center justify-center"
@@ -477,9 +479,9 @@ export const SpotlightView: React.FC = () => {
                 className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors ${
                   images.length > 0
                     ? 'bg-blue-600 text-white shadow-sm'
-                    : 'bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white'
+                    : 'bg-black/5 hover:bg-black/10 text-zinc-600 hover:text-black dark:bg-white/5 dark:hover:bg-white/10 dark:text-zinc-300 dark:hover:text-white'
                 }`}
-                title="添加附件或图片"
+                title={t('attachImage')}
               >
                 <Plus className="w-4 h-4 stroke-[2.5]" />
               </button>
@@ -490,20 +492,20 @@ export const SpotlightView: React.FC = () => {
                 onClick={() => toggleThinking(!settings.enableThinking)}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all active:scale-95 border ${
                   settings.enableThinking
-                    ? 'bg-blue-950/70 text-blue-300 border-blue-500/40 hover:bg-blue-900/80 shadow-sm'
-                    : 'bg-white/5 text-zinc-300 border-white/5 hover:bg-white/10 hover:text-white'
+                    ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 dark:bg-blue-950/70 dark:text-blue-300 dark:border-blue-500/40 dark:hover:bg-blue-900/80 shadow-sm'
+                    : 'bg-black/5 text-zinc-600 border-black/5 hover:bg-black/10 hover:text-black dark:bg-white/5 dark:text-zinc-300 dark:border-white/5 dark:hover:bg-white/10 dark:hover:text-white'
                 }`}
-                title={settings.enableThinking ? '深度思考模式（点击切换为快速）' : '极速回复模式（点击切换为思考）'}
+                title={settings.enableThinking ? t('thinkingOnTooltip') : t('thinkingOffTooltip')}
               >
                 {settings.enableThinking ? (
                   <>
-                    <Brain className="w-3.5 h-3.5 text-blue-400" />
-                    <span>思考</span>
+                    <Brain className="w-3.5 h-3.5 text-blue-500 dark:text-blue-400" />
+                    <span>{t('thinkingOn')}</span>
                   </>
                 ) : (
                   <>
-                    <Zap className="w-3.5 h-3.5 text-amber-400" />
-                    <span>快速</span>
+                    <Zap className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" />
+                    <span>{t('thinkingOff')}</span>
                   </>
                 )}
               </button>
@@ -517,10 +519,10 @@ export const SpotlightView: React.FC = () => {
                 disabled={!input.trim() && images.length === 0}
                 className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${
                   input.trim() || images.length > 0
-                    ? 'bg-white hover:bg-zinc-200 text-black shadow-md active:scale-95'
-                    : 'bg-[#35363d] text-zinc-500 cursor-not-allowed'
+                    ? 'bg-zinc-900 hover:bg-black text-white dark:bg-white dark:hover:bg-zinc-200 dark:text-black shadow-md active:scale-95'
+                    : 'bg-zinc-200 text-zinc-400 dark:bg-[#35363d] dark:text-zinc-500 cursor-not-allowed'
                 }`}
-                title="发送 (Enter)"
+                title={t('spotlightSend')}
               >
                 <ArrowUp className="w-4 h-4 stroke-[2.5]" />
               </button>
@@ -537,9 +539,9 @@ export const SpotlightView: React.FC = () => {
   /* STATE 2: EXPANDED CONVERSATION CARD                                       */
   /* ========================================================================= */
   return (
-    <div className="w-full h-full flex flex-col bg-[#1c1d22] border border-white/10 rounded-[26px] shadow-2xl overflow-hidden text-[#f1f3f7] select-none">
+    <div className="w-full h-full flex flex-col bg-white/95 dark:bg-[#1c1d22] border border-black/10 dark:border-white/10 rounded-[26px] shadow-2xl overflow-hidden text-[#1f2328] dark:text-[#f1f3f7] select-none">
       {/* Top Header Row */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/5">
         {/* Left: ✖ inside circle + Title + Status dot */}
         <div className="flex items-center gap-2.5">
           <button
@@ -547,36 +549,36 @@ export const SpotlightView: React.FC = () => {
               // @ts-expect-error WebKit bridge
               window.webkit?.messageHandlers?.closeSpotlight?.postMessage?.({});
             }}
-            className="w-5 h-5 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-zinc-400 hover:text-white transition-colors"
-            title="关闭 (Esc)"
+            className="w-5 h-5 rounded-full bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/20 flex items-center justify-center text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white transition-colors"
+            title={t('closeEsc')}
           >
             <X className="w-3 h-3" />
           </button>
-          <span className="font-semibold text-sm text-[#f1f3f7] tracking-tight">
+          <span className="font-semibold text-sm text-[#1f2328] dark:text-[#f1f3f7] tracking-tight">
             SimpleUI
           </span>
           <span
             className={`w-1.5 h-1.5 rounded-full ${
-              healthInfo.online ? 'bg-emerald-400' : 'bg-red-400'
+              healthInfo.online ? 'bg-emerald-500' : 'bg-red-400'
             }`}
-            title={healthInfo.online ? '服务就绪' : '服务未就绪'}
+            title={healthInfo.online ? t('serviceReady') : t('serviceNotReady')}
           />
         </div>
 
         {/* Right: New Chat + Expand to Main Window */}
-        <div className="flex items-center gap-1.5 text-zinc-400">
+        <div className="flex items-center gap-1.5 text-zinc-500 dark:text-zinc-400">
           <button
             onClick={handleNewChat}
-            className="p-1.5 rounded-lg hover:bg-white/5 hover:text-white transition-colors"
-            title="新对话"
+            className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 hover:text-zinc-900 dark:hover:text-white transition-colors"
+            title={t('newChat')}
           >
             <MessageSquarePlus className="w-4 h-4" />
           </button>
 
           <button
             onClick={handleOpenInMain}
-            className="p-1.5 rounded-lg hover:bg-white/5 hover:text-white transition-colors"
-            title="在主窗口中打开 (⌘O)"
+            className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 hover:text-zinc-900 dark:hover:text-white transition-colors"
+            title={t('openInMainWindow')}
           >
             <Maximize2 className="w-4 h-4" />
           </button>
@@ -591,7 +593,7 @@ export const SpotlightView: React.FC = () => {
           if (isUser) {
             return (
               <div key={msg.id} className="flex justify-end">
-                <div className="max-w-[85%] px-4 py-2.5 rounded-[18px] bg-[#2d3037] text-sm text-white leading-relaxed shadow-sm">
+                <div className="max-w-[85%] px-4 py-2.5 rounded-[18px] bg-[#e9ebf0] text-sm text-[#1f2328] dark:bg-[#2d3037] dark:text-white leading-relaxed shadow-sm border border-black/5 dark:border-white/5">
                   {msg.images && msg.images.length > 0 && (
                     <div className="flex flex-wrap gap-2 mb-2">
                       {msg.images.map((url, i) => (
@@ -624,14 +626,14 @@ export const SpotlightView: React.FC = () => {
 
               {/* Message Markdown content */}
               {msg.content && (
-                <div className="text-[14.5px] leading-relaxed text-[#ecedf1]">
+                <div className="text-[14.5px] leading-relaxed text-[#1f2328] dark:text-[#ecedf1]">
                   <MarkdownRenderer content={msg.content} />
                 </div>
               )}
 
               {/* Error if any */}
               {msg.error && (
-                <div className="p-2.5 rounded-lg bg-red-950/50 border border-red-800/60 text-xs text-red-300">
+                <div className="p-2.5 rounded-lg bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800/60 text-xs text-red-600 dark:text-red-300">
                   {msg.error}
                 </div>
               )}
@@ -641,25 +643,25 @@ export const SpotlightView: React.FC = () => {
                 <div className="flex items-center gap-3 pt-1 text-xs select-none">
                   <button
                     onClick={() => handleCopyText(msg.content)}
-                    className="flex items-center gap-1.5 px-2 py-1 rounded-md text-zinc-400 hover:text-white hover:bg-white/5 transition-colors"
-                    title="复制回复"
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-md text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
+                    title={t('copyTooltip')}
                   >
                     {copied ? (
                       <>
-                        <Check className="w-3.5 h-3.5 text-emerald-400" />
-                        <span className="text-emerald-400 text-xs">已复制</span>
+                        <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                        <span className="text-emerald-600 dark:text-emerald-400 text-xs">{t('copied')}</span>
                       </>
                     ) : (
                       <>
                         <Copy className="w-3.5 h-3.5" />
-                        <span className="text-xs">复制</span>
+                        <span className="text-xs">{t('copy')}</span>
                       </>
                     )}
                   </button>
 
                   {/* Gray Prefill & tok/s metrics */}
                   {msg.metrics && (
-                    <span className="text-xs font-mono text-zinc-500">
+                    <span className="text-xs font-mono text-zinc-500 dark:text-zinc-400">
                       Prefill {msg.metrics.ttftMs}ms · {msg.metrics.tokensPerSecond} tok/s
                     </span>
                   )}
@@ -672,13 +674,13 @@ export const SpotlightView: React.FC = () => {
       </div>
 
       {/* Bottom Input Capsule (Consistent with Main Window Input) */}
-      <div className="p-3 bg-[#17181c] border-t border-white/5">
+      <div className="p-3 bg-[#f8f9fb] dark:bg-[#17181c] border-t border-black/5 dark:border-white/5">
         <ImageAttachment
           images={images}
           onRemove={(idx) => setImages((prev) => prev.filter((_, i) => i !== idx))}
         />
 
-        <div className="bg-[#25262c] border border-white/10 rounded-[22px] p-2.5 flex flex-col justify-between">
+        <div className="bg-white dark:bg-[#25262c] border border-black/10 dark:border-white/10 rounded-[22px] p-2.5 flex flex-col justify-between shadow-sm">
           <input
             type="text"
             value={input}
@@ -689,8 +691,8 @@ export const SpotlightView: React.FC = () => {
                 handleSend();
               }
             }}
-            placeholder="追问 SimpleUI..."
-            className="w-full bg-transparent text-sm text-[#f1f3f7] placeholder-zinc-500 px-2 py-1 focus:outline-none"
+            placeholder={t('spotlightInputPlaceholder')}
+            className="w-full bg-transparent text-sm text-[#1f2328] dark:text-[#f1f3f7] placeholder-zinc-400 dark:placeholder-zinc-500 px-2 py-1 focus:outline-none"
           />
 
           <div className="flex items-center justify-between pt-1">
@@ -699,8 +701,8 @@ export const SpotlightView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="w-6 h-6 rounded-full flex items-center justify-center bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white transition-colors"
-                title="添加图片"
+                className="w-6 h-6 rounded-full flex items-center justify-center bg-black/5 hover:bg-black/10 text-zinc-600 hover:text-black dark:bg-white/5 dark:hover:bg-white/10 dark:text-zinc-300 dark:hover:text-white transition-colors"
+                title={t('spotlightAddImage')}
               >
                 <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
               </button>
@@ -710,20 +712,20 @@ export const SpotlightView: React.FC = () => {
                 onClick={() => toggleThinking(!settings.enableThinking)}
                 className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all active:scale-95 border ${
                   settings.enableThinking
-                    ? 'bg-blue-950/70 text-blue-300 border-blue-500/40 hover:bg-blue-900/80 shadow-sm'
-                    : 'bg-white/5 text-zinc-300 border-white/5 hover:bg-white/10 hover:text-white'
+                    ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 dark:bg-blue-950/70 dark:text-blue-300 dark:border-blue-500/40 dark:hover:bg-blue-900/80 shadow-sm'
+                    : 'bg-black/5 text-zinc-600 border-black/5 hover:bg-black/10 hover:text-black dark:bg-white/5 dark:text-zinc-300 dark:border-white/5 dark:hover:bg-white/10 dark:hover:text-white'
                 }`}
-                title={settings.enableThinking ? '深度思考模式（点击切换为快速）' : '极速回复模式（点击切换为思考）'}
+                title={settings.enableThinking ? t('thinkingOnTooltip') : t('thinkingOffTooltip')}
               >
                 {settings.enableThinking ? (
                   <>
-                    <Brain className="w-3.5 h-3.5 text-blue-400" />
-                    <span>思考</span>
+                    <Brain className="w-3.5 h-3.5 text-blue-500 dark:text-blue-400" />
+                    <span>{t('thinkingOn')}</span>
                   </>
                 ) : (
                   <>
-                    <Zap className="w-3.5 h-3.5 text-amber-400" />
-                    <span>快速</span>
+                    <Zap className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" />
+                    <span>{t('thinkingOff')}</span>
                   </>
                 )}
               </button>
@@ -736,7 +738,7 @@ export const SpotlightView: React.FC = () => {
                   type="button"
                   onClick={handleStop}
                   className="w-7 h-7 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center transition-transform active:scale-95"
-                  title="停止生成"
+                  title={t('stop')}
                 >
                   <Square className="w-3 h-3 fill-white" />
                 </button>
@@ -747,10 +749,10 @@ export const SpotlightView: React.FC = () => {
                   disabled={!input.trim() && images.length === 0}
                   className={`w-7 h-7 rounded-full flex items-center justify-center transition-all ${
                     input.trim() || images.length > 0
-                      ? 'bg-white hover:bg-zinc-200 text-black shadow-md active:scale-95'
-                      : 'bg-[#35363d] text-zinc-500 cursor-not-allowed'
+                      ? 'bg-zinc-900 hover:bg-black text-white dark:bg-white dark:hover:bg-zinc-200 dark:text-black shadow-md active:scale-95'
+                      : 'bg-zinc-200 text-zinc-400 dark:bg-[#35363d] dark:text-zinc-500 cursor-not-allowed'
                   }`}
-                  title="发送 (Enter)"
+                  title={t('spotlightSend')}
                 >
                   <ArrowUp className="w-3.5 h-3.5 stroke-[2.5]" />
                 </button>

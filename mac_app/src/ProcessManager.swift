@@ -2,8 +2,11 @@ import Foundation
 
 class ProcessManager {
     static let shared = ProcessManager()
+    static let serverPort = 31235
+    static let baseURLString = "http://127.0.0.1:\(serverPort)"
+    static let spotlightURLString = "http://127.0.0.1:\(serverPort)/#/spotlight"
     private var process: Process?
-    private let port = 3000
+    private var port: Int { ProcessManager.serverPort }
     private(set) var isRunning = false
 
     func startProxyIfNeeded(completion: @escaping (Bool) -> Void) {

@@ -21,19 +21,28 @@ import {
 } from './services/storage';
 import { TurboFieldfareAPI } from './services/api';
 import { SpotlightView } from './components/SpotlightView';
+import { I18nProvider } from './i18n';
+import { useTheme } from './hooks/useTheme';
 
 export const App: React.FC = () => {
+  const [settings, setSettings] = useState<AppSettings>(loadSettings());
+
   const isSpotlight =
     window.location.hash === '#/spotlight' ||
     window.location.search.includes('mode=spotlight');
 
+  useTheme(settings.theme, isSpotlight);
+
   if (isSpotlight) {
-    return <SpotlightView />;
+    return (
+      <I18nProvider preference={settings.language}>
+        <SpotlightView />
+      </I18nProvider>
+    );
   }
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-  const [settings, setSettings] = useState<AppSettings>(loadSettings());
   const [input, setInput] = useState('');
   const [images, setImages] = useState<string[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -49,17 +58,6 @@ export const App: React.FC = () => {
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const isSyncingRef = useRef(false);
-
-  // Synchronize background color with current window mode
-  useEffect(() => {
-    if (isSpotlight) {
-      document.documentElement.style.backgroundColor = 'transparent';
-      document.body.style.backgroundColor = 'transparent';
-    } else {
-      document.documentElement.style.backgroundColor = '#18191c';
-      document.body.style.backgroundColor = '#18191c';
-    }
-  }, [isSpotlight]);
 
   // Real-time synchronization helper
   const reloadFromStorage = () => {
@@ -369,60 +367,62 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#18191c]">
-      {/* Sessions Sidebar */}
-      <Sidebar
-        sessions={sessions}
-        currentSessionId={currentSessionId}
-        onSelectSession={(id) => {
-          setCurrentSessionId(id);
-        }}
-        onNewSession={handleNewSession}
-        onDeleteSession={handleDeleteSession}
-        onRenameSession={handleRenameSession}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        healthInfo={healthInfo}
-        isOpen={isSidebarOpen}
-        onToggleOpen={() => setIsSidebarOpen(!isSidebarOpen)}
-      />
+    <I18nProvider preference={settings.language}>
+      <div className="flex h-screen w-screen overflow-hidden bg-[#f8f9fb] dark:bg-[#18191c] text-[#1f2328] dark:text-[#f1f3f7]">
+        {/* Sessions Sidebar */}
+        <Sidebar
+          sessions={sessions}
+          currentSessionId={currentSessionId}
+          onSelectSession={(id) => {
+            setCurrentSessionId(id);
+          }}
+          onNewSession={handleNewSession}
+          onDeleteSession={handleDeleteSession}
+          onRenameSession={handleRenameSession}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          healthInfo={healthInfo}
+          isOpen={isSidebarOpen}
+          onToggleOpen={() => setIsSidebarOpen(!isSidebarOpen)}
+        />
 
-      {/* Main Chat Interface */}
-      <ChatView
-        messages={messages}
-        input={input}
-        setInput={setInput}
-        images={images}
-        setImages={setImages}
-        isGenerating={isGenerating}
-        onSend={handleSend}
-        onStop={handleStop}
-        usedTokens={usedTokens}
-        maxContext={settings.maxContext}
-        enableThinking={settings.enableThinking}
-        setEnableThinking={(val) => {
-          setSettings((prev) => ({ ...prev, enableThinking: val }));
-          saveSettings({ ...settings, enableThinking: val });
-        }}
-        modelId={settings.modelId}
-        availableModels={availableModels}
-        onSelectModel={(m) => {
-          setSettings((prev) => ({ ...prev, modelId: m }));
-          saveSettings({ ...settings, modelId: m });
-        }}
-        visionReady={healthInfo.vision === 'ready'}
-        lastMetrics={lastMetrics}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        isSidebarOpen={isSidebarOpen}
-        onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
-      />
+        {/* Main Chat Interface */}
+        <ChatView
+          messages={messages}
+          input={input}
+          setInput={setInput}
+          images={images}
+          setImages={setImages}
+          isGenerating={isGenerating}
+          onSend={handleSend}
+          onStop={handleStop}
+          usedTokens={usedTokens}
+          maxContext={settings.maxContext}
+          enableThinking={settings.enableThinking}
+          setEnableThinking={(val) => {
+            setSettings((prev) => ({ ...prev, enableThinking: val }));
+            saveSettings({ ...settings, enableThinking: val });
+          }}
+          modelId={settings.modelId}
+          availableModels={availableModels}
+          onSelectModel={(m) => {
+            setSettings((prev) => ({ ...prev, modelId: m }));
+            saveSettings({ ...settings, modelId: m });
+          }}
+          visionReady={healthInfo.vision === 'ready'}
+          lastMetrics={lastMetrics}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          isSidebarOpen={isSidebarOpen}
+          onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+        />
 
-      {/* Settings Modal */}
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        settings={settings}
-        onSave={handleSaveSettings}
-      />
-    </div>
+        {/* Settings Modal */}
+        <SettingsModal
+          isOpen={isSettingsOpen}
+          onClose={() => setIsSettingsOpen(false)}
+          settings={settings}
+          onSave={handleSaveSettings}
+        />
+      </div>
+    </I18nProvider>
   );
 };

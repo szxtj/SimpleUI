@@ -98,7 +98,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.backgroundColor = NSColor(red: 24/255.0, green: 25/255.0, blue: 28/255.0, alpha: 1.0)
+        window.backgroundColor = NSColor.windowBackgroundColor
         window.center()
 
         super.init(window: window)
@@ -149,7 +149,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
     }
 
     func loadContent() {
-        if let url = URL(string: "http://127.0.0.1:3000") {
+        if let url = URL(string: ProcessManager.baseURLString) {
             webView.load(URLRequest(url: url))
         }
     }

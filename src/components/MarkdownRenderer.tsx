@@ -4,6 +4,7 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import { Check, Copy } from 'lucide-react';
+import { useI18n } from '../i18n';
 
 interface MarkdownRendererProps {
   content: string;
@@ -48,6 +49,7 @@ interface CodeBlockProps {
 }
 
 const CodeBlock: React.FC<CodeBlockProps> = ({ language, code }) => {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -69,17 +71,17 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ language, code }) => {
         <button
           onClick={handleCopy}
           className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-[#32363e] text-[#b0b4bd] transition-colors"
-          title="复制代码"
+          title={t('copyCodeTooltip')}
         >
           {copied ? (
             <>
               <Check className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="text-emerald-400 text-[11px]">已复制</span>
+              <span className="text-emerald-400 text-[11px]">{t('copied')}</span>
             </>
           ) : (
             <>
               <Copy className="w-3.5 h-3.5" />
-              <span className="text-[11px]">复制</span>
+              <span className="text-[11px]">{t('copy')}</span>
             </>
           )}
         </button>

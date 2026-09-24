@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { AppSettings } from '../types/chat';
 import { DEFAULT_SETTINGS } from '../services/storage';
+import { useI18n } from '../i18n';
 import { X, RotateCcw, Check } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -16,6 +17,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   settings,
   onSave,
 }) => {
+  const { t } = useI18n();
   const getSafeSettings = (s?: AppSettings): AppSettings => ({
     ...DEFAULT_SETTINGS,
     ...(s || {}),
@@ -70,34 +72,77 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 select-none"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm select-none"
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="relative w-full max-w-lg rounded-2xl bg-[#202227] border border-[#353842] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+        className="relative w-full max-w-lg rounded-2xl bg-white dark:bg-[#202227] border border-black/10 dark:border-[#353842] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-[#1f2328] dark:text-[#cfd3dc]"
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#2d3038]">
-          <h2 className="text-sm font-semibold text-[#f1f3f7]">
-            SimpleUI 本地服务与生成参数设置
+        <div className="flex items-center justify-between px-5 py-4 border-b border-black/5 dark:border-[#2d3038]">
+          <h2 className="text-sm font-semibold text-[#1f2328] dark:text-[#f1f3f7]">
+            {t('settingsTitle')}
           </h2>
           <button
             type="button"
             onClick={onClose}
-            className="p-1 rounded-lg text-[#888e9b] hover:text-white hover:bg-[#2d3038] transition-colors cursor-pointer"
-            title="关闭设置 (Esc)"
+            className="p-1 rounded-lg text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-[#888e9b] dark:hover:text-white dark:hover:bg-[#2d3038] transition-colors cursor-pointer"
+            title={t('closeSettings')}
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Form Body */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs text-[#cfd3dc]">
+        <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
+          {/* Appearance Theme & Display Language */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                {t('themeLabel')}
+              </label>
+              <select
+                value={formData.theme || 'system'}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    theme: e.target.value as 'system' | 'light' | 'dark',
+                  })
+                }
+                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none"
+              >
+                <option value="system">{t('themeSystem')}</option>
+                <option value="light">{t('themeLight')}</option>
+                <option value="dark">{t('themeDark')}</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                {t('languageLabel')}
+              </label>
+              <select
+                value={formData.language || 'system'}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    language: e.target.value as 'system' | 'zh' | 'en',
+                  })
+                }
+                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none"
+              >
+                <option value="system">{t('langSystem')}</option>
+                <option value="zh">{t('langZh')}</option>
+                <option value="en">{t('langEn')}</option>
+              </select>
+            </div>
+          </div>
+
           {/* Local Service Port Selection */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block font-medium mb-1 text-[#9aa0ac]">
-                本地推理服务端口 (OpenAI 兼容)
+              <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                {t('servicePortLabel')}
               </label>
               <select
                 value={[1235, 11434, 8000, 8080, 1234, 5000].includes(formData.apiPort) ? formData.apiPort : 'custom'}
@@ -107,21 +152,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     setFormData({ ...formData, apiPort: Number(val) });
                   }
                 }}
-                className="w-full bg-[#18191c] border border-[#343740] rounded-lg px-3 py-2 text-[#e2e5eb] focus:border-blue-500 focus:outline-none"
+                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none"
               >
-                <option value={1235}>1235 (TurboFieldfare 默认)</option>
-                <option value={11434}>11434 (Ollama)</option>
-                <option value={8000}>8000 (vLLM)</option>
-                <option value={8080}>8080 (llama.cpp server)</option>
-                <option value={1234}>1234 (LM Studio)</option>
-                <option value={5000}>5000 (TextGen WebUI)</option>
-                <option value="custom">自定义端口...</option>
+                <option value={1235}>{t('portOptionTTF')}</option>
+                <option value={11434}>{t('portOptionOllama')}</option>
+                <option value={8000}>{t('portOptionVLLM')}</option>
+                <option value={8080}>{t('portOptionLlamaCpp')}</option>
+                <option value={1234}>{t('portOptionLMStudio')}</option>
+                <option value={5000}>{t('portOptionTextGen')}</option>
+                <option value="custom">{t('portOptionCustom')}</option>
               </select>
             </div>
 
             <div>
-              <label className="block font-medium mb-1 text-[#9aa0ac]">
-                端口数值 (http://127.0.0.1:端口)
+              <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                {t('portValueLabel')}
               </label>
               <input
                 type="number"
@@ -130,7 +175,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 value={formData.apiPort ?? 1235}
                 onChange={(e) => setFormData({ ...formData, apiPort: Number(e.target.value) || 1235 })}
                 placeholder="1235"
-                className="w-full bg-[#18191c] border border-[#343740] rounded-lg px-3 py-2 text-[#e2e5eb] focus:border-blue-500 focus:outline-none font-mono"
+                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none font-mono"
               />
             </div>
           </div>
@@ -138,20 +183,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {/* Model ID & Max Context */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block font-medium mb-1 text-[#9aa0ac]">
-                模型标识符 (model)
+              <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                {t('modelLabel')}
               </label>
               <input
                 type="text"
                 value={formData.modelId ?? 'gemma-4-26b-a4b-it'}
                 onChange={(e) => setFormData({ ...formData, modelId: e.target.value })}
-                className="w-full bg-[#18191c] border border-[#343740] rounded-lg px-3 py-2 text-[#e2e5eb] focus:border-blue-500 focus:outline-none font-mono"
+                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none font-mono"
               />
             </div>
 
             <div>
-              <label className="block font-medium mb-1 text-[#9aa0ac]">
-                上下文窗口 (tokens)
+              <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                {t('maxContextLabel')}
               </label>
               <select
                 value={formData.maxContext ?? 16384}
@@ -163,14 +208,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     maxTokens: Math.floor(val / 2),
                   });
                 }}
-                className="w-full bg-[#18191c] border border-[#343740] rounded-lg px-3 py-2 text-[#e2e5eb] focus:border-blue-500 focus:outline-none"
+                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none"
               >
                 <option value={8192}>8,192 (8K)</option>
-                <option value={16384}>16,384 (16K 默认)</option>
+                <option value={16384}>16,384 (16K)</option>
                 <option value={32768}>32,768 (32K)</option>
                 <option value={65536}>65,536 (64K)</option>
                 <option value={131072}>131,072 (128K)</option>
-                <option value={262144}>262,144 (256K 极限)</option>
+                <option value={262144}>262,144 (256K)</option>
               </select>
             </div>
           </div>
@@ -178,9 +223,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {/* Temperature & Top-P */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <div className="flex justify-between font-medium mb-1 text-[#9aa0ac]">
-                <span>Temperature (采样温度)</span>
-                <span className="font-mono text-blue-400">{formData.temperature ?? 1.0}</span>
+              <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                <span>{t('temperatureLabel')}</span>
+                <span className="font-mono text-blue-500 dark:text-blue-400">{formData.temperature ?? 1.0}</span>
               </div>
               <input
                 type="range"
@@ -191,13 +236,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 onChange={(e) => setFormData({ ...formData, temperature: Number(e.target.value) })}
                 className="w-full accent-blue-500"
               />
-              <span className="text-[10px] text-[#6f7582]">Gemma 4 官方基准 1.0，越低越严谨</span>
+              <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('temperatureTip')}</span>
             </div>
 
             <div>
-              <div className="flex justify-between font-medium mb-1 text-[#9aa0ac]">
-                <span>Top-P (核采样)</span>
-                <span className="font-mono text-blue-400">{formData.topP ?? 0.95}</span>
+              <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                <span>{t('topPLabel')}</span>
+                <span className="font-mono text-blue-500 dark:text-blue-400">{formData.topP ?? 0.95}</span>
               </div>
               <input
                 type="range"
@@ -208,16 +253,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 onChange={(e) => setFormData({ ...formData, topP: Number(e.target.value) })}
                 className="w-full accent-blue-500"
               />
-              <span className="text-[10px] text-[#6f7582]">候选词累积概率阀值 (默认 0.95)</span>
+              <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('topPTip')}</span>
             </div>
           </div>
 
           {/* Top-K & Repetition Penalty */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <div className="flex justify-between font-medium mb-1 text-[#9aa0ac]">
-                <span>Top-K (采样窗口)</span>
-                <span className="font-mono text-blue-400">{formData.topK ?? 64}</span>
+              <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                <span>{t('topKLabel')}</span>
+                <span className="font-mono text-blue-500 dark:text-blue-400">{formData.topK ?? 64}</span>
               </div>
               <input
                 type="range"
@@ -228,13 +273,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 onChange={(e) => setFormData({ ...formData, topK: Number(e.target.value) })}
                 className="w-full accent-blue-500"
               />
-              <span className="text-[10px] text-[#6f7582]">限制前 K 个概率最大词 (1-256)</span>
+              <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('topKTip')}</span>
             </div>
 
             <div>
-              <div className="flex justify-between font-medium mb-1 text-[#9aa0ac]">
-                <span>重复惩罚 (Repetition Penalty)</span>
-                <span className="font-mono text-blue-400">{formData.repetitionPenalty ?? 1.0}</span>
+              <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                <span>{t('repetitionPenaltyLabel')}</span>
+                <span className="font-mono text-blue-500 dark:text-blue-400">{formData.repetitionPenalty ?? 1.0}</span>
               </div>
               <input
                 type="range"
@@ -245,7 +290,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 onChange={(e) => setFormData({ ...formData, repetitionPenalty: Number(e.target.value) })}
                 className="w-full accent-blue-500"
               />
-              <span className="text-[10px] text-[#6f7582]">抑制文字重复循环 (默认 1.0)</span>
+              <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('repetitionPenaltyTip')}</span>
             </div>
           </div>
 
@@ -253,25 +298,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="font-medium text-[#9aa0ac]">
-                  单次最大生成长度 (max_tokens)
+                <label className="font-medium text-zinc-600 dark:text-[#9aa0ac]">
+                  {t('maxTokensLabel')}
                 </label>
-                <span className="text-[10px] text-blue-400 font-medium bg-blue-500/10 px-1.5 py-0.5 rounded">
-                  自动联动 50%
+                <span className="text-[10px] text-blue-600 dark:text-blue-400 font-medium bg-blue-500/10 px-1.5 py-0.5 rounded">
+                  {t('linkedHalf')}
                 </span>
               </div>
               <input
                 type="text"
                 readOnly
                 value={`${formData.maxTokens || Math.floor((formData.maxContext || 16384) / 2)} tokens (${Math.round((formData.maxTokens || Math.floor((formData.maxContext || 16384) / 2)) / 1024)}K)`}
-                className="w-full bg-[#151619] border border-[#2d3038] rounded-lg px-3 py-2 text-[#abb0bc] cursor-not-allowed font-mono select-none"
+                className="w-full bg-zinc-100 dark:bg-[#151619] border border-black/10 dark:border-[#2d3038] rounded-lg px-3 py-2 text-zinc-600 dark:text-[#abb0bc] cursor-not-allowed font-mono select-none"
               />
-              <span className="text-[10px] text-[#6f7582] mt-1 block">自动固定为上下文窗口的一半，保障推理与正文充足空间</span>
+              <span className="text-[10px] text-zinc-500 dark:text-[#6f7582] mt-1 block">{t('maxTokensTip')}</span>
             </div>
 
             <div>
-              <label className="block font-medium mb-1 text-[#9aa0ac]">
-                随机种子 (seed，可选固定输出)
+              <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                {t('seedLabel')}
               </label>
               <input
                 type="number"
@@ -282,58 +327,58 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     seed: e.target.value ? Number(e.target.value) : undefined,
                   })
                 }
-                placeholder="留空表示随机"
-                className="w-full bg-[#18191c] border border-[#343740] rounded-lg px-3 py-2 text-[#e2e5eb] focus:border-blue-500 focus:outline-none font-mono"
+                placeholder={t('seedPlaceholder')}
+                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none font-mono"
               />
             </div>
           </div>
 
           {/* Stop Sequences */}
           <div>
-            <label className="block font-medium mb-1 text-[#9aa0ac]">
-              自定义停止序列 (英文逗号分隔)
+            <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+              {t('stopLabel')}
             </label>
             <input
               type="text"
               value={stopInput}
               onChange={(e) => setStopInput(e.target.value)}
-              placeholder="例如: <end_of_turn>, User:"
-              className="w-full bg-[#18191c] border border-[#343740] rounded-lg px-3 py-2 text-[#e2e5eb] focus:border-blue-500 focus:outline-none font-mono"
+              placeholder={t('stopPlaceholder')}
+              className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none font-mono"
             />
           </div>
 
           {/* System Prompt */}
           <div>
-            <label className="block font-medium mb-1 text-[#9aa0ac]">
-              系统提示词 (System Prompt)
+            <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+              {t('systemPromptLabel')}
             </label>
             <textarea
               rows={3}
               value={formData.systemPrompt ?? ''}
               onChange={(e) => setFormData({ ...formData, systemPrompt: e.target.value })}
-              className="w-full bg-[#18191c] border border-[#343740] rounded-lg px-3 py-2 text-[#e2e5eb] focus:border-blue-500 focus:outline-none resize-none leading-relaxed"
+              className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none resize-none leading-relaxed"
             />
           </div>
         </div>
 
         {/* Footer actions */}
-        <div className="flex items-center justify-between px-5 py-3 border-t border-[#2d3038] bg-[#1a1b1e]">
+        <div className="flex items-center justify-between px-5 py-3 border-t border-black/5 dark:border-[#2d3038] bg-[#f8f9fb] dark:bg-[#1a1b1e]">
           <button
             type="button"
             onClick={handleReset}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-[#8c929f] hover:text-white hover:bg-[#2b2d35] transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-zinc-500 dark:text-[#8c929f] hover:text-zinc-900 dark:hover:text-white hover:bg-black/5 dark:hover:bg-[#2b2d35] transition-colors"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span>恢复官方默认</span>
+            <span>{t('restoreDefaults')}</span>
           </button>
 
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={onClose}
-              className="px-3.5 py-1.5 rounded-lg text-xs text-[#a2a8b5] hover:bg-[#2b2d35] transition-colors"
+              className="px-3.5 py-1.5 rounded-lg text-xs text-zinc-600 dark:text-[#a2a8b5] hover:bg-black/5 dark:hover:bg-[#2b2d35] transition-colors"
             >
-              取消
+              {t('cancel')}
             </button>
             <button
               type="button"
@@ -341,7 +386,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs bg-blue-600 hover:bg-blue-500 text-white font-medium shadow transition-colors"
             >
               <Check className="w-3.5 h-3.5" />
-              <span>保存配置</span>
+              <span>{t('saveSettings')}</span>
             </button>
           </div>
         </div>

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Brain, ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
+import { useI18n } from '../i18n';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
 interface ThinkingAccordionProps {
@@ -13,6 +14,7 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
   isThinking = false,
   duration = 0,
 }) => {
+  const { t } = useI18n();
   const [isOpen, setIsOpen] = useState(isThinking);
   const prevIsThinkingRef = useRef(isThinking);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -39,24 +41,24 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
   if (!content && !isThinking) return null;
 
   return (
-    <div className="my-2.5 rounded-xl border border-[#30333b] bg-[#1e2025]/80 overflow-hidden text-sm transition-all duration-200 shadow-sm">
+    <div className="my-2.5 rounded-xl border border-black/10 bg-[#f0f2f6] dark:border-[#30333b] dark:bg-[#1e2025]/80 overflow-hidden text-sm transition-all duration-200 shadow-sm">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center justify-between px-3.5 py-2 hover:bg-[#252830] transition-colors select-none text-left cursor-pointer"
+        className="w-full flex items-center justify-between px-3.5 py-2 hover:bg-black/5 dark:hover:bg-[#252830] transition-colors select-none text-left cursor-pointer"
       >
-        <div className="flex items-center gap-2 text-xs font-medium text-[#9aa2b1]">
+        <div className="flex items-center gap-2 text-xs font-medium text-[#57606a] dark:text-[#9aa2b1]">
           {isThinking ? (
-            <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />
+            <Loader2 className="w-3.5 h-3.5 text-blue-500 dark:text-blue-400 animate-spin" />
           ) : (
-            <Brain className="w-3.5 h-3.5 text-indigo-400" />
+            <Brain className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400" />
           )}
           <span>
             {isThinking
-              ? '正在深度思考中...'
-              : `思考过程 ${duration > 0 ? `(${duration.toFixed(1)} 秒)` : ''}`}
+              ? t('thinkingActive')
+              : `${t('thoughtProcess')} ${duration > 0 ? `(${duration.toFixed(1)} ${t('seconds')})` : ''}`}
           </span>
         </div>
-        <div className="text-[#757c8a]">
+        <div className="text-zinc-400 dark:text-[#757c8a]">
           {isOpen ? (
             <ChevronDown className="w-3.5 h-3.5" />
           ) : (
@@ -68,7 +70,7 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
       {isOpen && (
         <div
           ref={scrollContainerRef}
-          className="px-3.5 pb-3 pt-2 text-xs border-t border-[#292c34] bg-[#17181c]/70 max-h-96 overflow-y-auto select-text"
+          className="px-3.5 pb-3 pt-2 text-xs border-t border-black/5 bg-white/70 dark:border-[#292c34] dark:bg-[#17181c]/70 max-h-96 overflow-y-auto select-text"
         >
           {content ? (
             <MarkdownRenderer
@@ -76,10 +78,10 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
               className="markdown-thinking text-xs leading-relaxed"
             />
           ) : (
-            <span className="text-zinc-500 italic">组织思绪中...</span>
+            <span className="text-zinc-500 italic">{t('organizingThoughts')}</span>
           )}
           {isThinking && (
-            <span className="inline-block w-1.5 h-3 ml-1 bg-blue-400 animate-pulse align-middle" />
+            <span className="inline-block w-1.5 h-3 ml-1 bg-blue-500 dark:bg-blue-400 animate-pulse align-middle" />
           )}
         </div>
       )}

@@ -32,6 +32,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   maxTokens: 8192, // Linked: half of maxContext (16384 / 2)
   stopStrings: [],
   systemPrompt: 'You are a helpful assistant.', // Google Gemma official canonical prompt
+  language: 'system',
+  theme: 'system',
 };
 
 export function loadSettings(): AppSettings {
@@ -43,6 +45,8 @@ export function loadSettings(): AppSettings {
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      language: parsed?.language || 'system',
+      theme: parsed?.theme || 'system',
       apiPort: parsed?.apiPort || 1235,
       maxContext,
       maxTokens: Math.floor(maxContext / 2),
@@ -60,6 +64,8 @@ export function saveSettings(settings: AppSettings): void {
     const sanitized: AppSettings = {
       ...DEFAULT_SETTINGS,
       ...settings,
+      language: settings?.language || 'system',
+      theme: settings?.theme || 'system',
       apiPort: settings?.apiPort || 1235,
       maxContext,
       maxTokens: Math.floor(maxContext / 2),

@@ -51,6 +51,8 @@ export interface AppSettings {
   seed?: number;                // UInt64 seed
   stopStrings: string[];        // Stop sequence array
   systemPrompt: string;         // System instructions
+  language?: 'system' | 'zh' | 'en'; // Display language preference
+  theme?: 'system' | 'light' | 'dark'; // Appearance theme preference
 }
 
 export interface ServerHealthInfo {

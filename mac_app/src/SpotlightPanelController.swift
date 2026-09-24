@@ -69,7 +69,7 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
     }
 
     func loadContent() {
-        if let url = URL(string: "http://127.0.0.1:3000/#/spotlight") {
+        if let url = URL(string: ProcessManager.spotlightURLString) {
             webView.load(URLRequest(url: url))
         }
     }

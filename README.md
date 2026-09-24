@@ -1,11 +1,15 @@
 # SimpleUI
 
 <p align="center">
-  <strong>专为 <a href="https://github.com/drumih/turbo-fieldfare">TurboFieldfare</a>（Gemma 4 26B-A4B）深度定制的轻量级现代化 AI 问答客户端</strong>
+  <a href="README.md"><b>简体中文</b></a> · <a href="README_EN.md">English</a>
 </p>
 
 <p align="center">
-  React 19 · TypeScript · Vite · Tailwind CSS · KaTeX · Node.js 代理
+  <strong>专为 <a href="https://github.com/drumih/turbo-fieldfare">TurboFieldfare</a> 深度定制，全面兼容通用推理引擎的现代化轻量级 AI 客户端</strong>
+</p>
+
+<p align="center">
+  React 19 · TypeScript · Vite · Tailwind CSS · KaTeX · 原生 macOS 双窗口 · 中英双语
 </p>
 
 ---
@@ -16,122 +20,105 @@
 - [核心特性](#核心特性)
 - [快速启动](#快速启动)
 - [项目结构](#项目结构)
-- [配置参数](#配置参数)
+- [多推理引擎兼容与配置](#多推理引擎兼容与配置)
+- [生成配置参数](#生成配置参数)
 - [多模态图片支持](#多模态图片支持)
 - [Spotlight 模式](#spotlight-模式)
-- [macOS 原生包装层](#macos-原生包装层)
-- [兼容性](#兼容性)
+- [macOS 原生桌面应用](#macos-原生桌面应用)
 - [开源协议](#开源协议)
 
 ---
 
 ## 项目简介
 
-SimpleUI 是一款为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 推理服务量身定制的 Web 客户端。相比 Open WebUI 等通用方案，SimpleUI 没有 Python 虚拟环境、FastAPI、SQLite 或 ChromaDB，整个前端冷启动耗时 **< 300 ms**，进程内存占用约 **30 MB**。
+SimpleUI 是一款专为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare)（TTF）量身打造的高性能、极致轻量的前端客户端与 macOS 原生桌面应用。同时，基于对 OpenAI 兼容规范的全面支持，SimpleUI 亦可无缝连接 **Ollama、vLLM、llama.cpp server、LM Studio** 等主流本地与远程推理引擎。
 
-SimpleUI 同时提供一个 **macOS 原生包装层**（Swift + WKWebView），将浏览器窗口包装为一个独立的 `.app`，支持全局快捷键唤醒的 Spotlight 悬浮面板。
+相比 Open WebUI 等重型方案，SimpleUI 剥离了一切多余依赖（无需 Python 虚拟环境、FastAPI、SQLite 或向量数据库），前端静态体积极小，冷启动耗时 **< 300 ms**，内存占用仅约 **30 MB**。
+
+SimpleUI 还内建了由 Swift + WebKit 打造的 **macOS 原生桌面包装层**，支持系统全局热键（`⌥ Option + Space`）秒级唤起如 Spotlight 般的独立胶囊悬浮对话面板。
 
 ---
 
 ## 核心特性
 
-### ⚡ 极致轻量
+### ⚡ 极致轻量与专属安全端口
+- 基于 **React 19 + TypeScript + Vite + Tailwind CSS**，界面丝滑无卡顿。
+- 内置专用 Node.js 高性能代理服务器（`server/proxy.js`），默认监听独立且不易冲突的 **`31235`** 端口，解决常规开发 3000 端口占用难题。
+- 原生保真透传 Server-Sent Events (SSE) 流式传输与 `: ping` 心跳包，彻底杜绝跨域（CORS）与请求超时截断。
 
-- 基于 **React 19 + TypeScript + Vite**，无任何重型框架依赖。
-- 内置极简 Node.js 反向代理（`server/proxy.js`），保真透传 SSE 流式传输与 `: ping` 心跳包，彻底告别 CORS 困扰。
-- Vite 开发代理同步支持，`/v1` 自动转发至本机推理服务。
+### 🌐 智能中英双语 (i18n)
+- **自适应系统语言**：首选依据当前操作系统环境语言（`navigator.language`）自动无缝切换中英文。
+- **手动偏好锁定**：支持在设置面板中显式指定「跟随系统 (System Default) / 简体中文 / English」，配置跨会话本地持久化。
 
-### ⭕ 上下文圆环（Context Ring）
-
-- 发送按钮左侧内嵌微型 SVG 环形进度圈，随当前会话累计 Token 比例动态填充。
-- 颜色语义：正常 → 橙色预警（> 75%）→ 红色警示（> 90%）。
-- 悬浮 Tooltip 精确显示：`已用 2,140 / 32,768（剩余 30,628 tokens · 6.5%）`。
+### ⭕ 动态上下文圆环（Context Ring）
+- 发送按钮旁边内嵌优雅微型 SVG 环形进度圈，随当前会话累计消耗的 Token 比例实时动态充能。
+- 智能色彩警示：正常浅灰/蓝 → 警告橙色（> 75%）→ 告警红色（> 90%）。
+- 悬浮精确 Tooltip：即时掌握 `上下文余量: 14.2K tokens` 与 `已用 2,140 / 16,384 (13.1%)`。
 
 ### 📊 实时性能指标栏
+- 每轮回复完成后，输入框下方精确输出推理性能流水线：
+  ```
+  ⚡ 380ms TTFT · 18.5 tok/s · 2.45s 生成 · 剩余 14.2K / 16K tokens 上下文 · 3 轮对话
+  ```
+- 包含首 Token 延迟（Prefill / TTFT）、解码生成速度（tok/s）、本轮耗时、上下文余量及累计对话轮次。
 
-每轮对话完成后，在输入框下方展示：
+### 🧠 深度思考与极速双模式
+- 输入框内置「快速 (⚡) / 思考 (🧠)」一键极速切换开关。
+- **思考模式**：传递 `chat_template_kwargs: {enable_thinking: true}` 与 `reasoning_effort: "high"`，以带实时计时器与呼吸流光的折叠动效展示深度思考推导全过程。
+- **快速模式**：极速直出回复，减少推理资源消耗。
 
-```
-⚡ 380ms TTFT · 18.5 tok/s · 2.45s 生成 · 剩余 30.1K / 32K 上下文
-```
+### 📐 专业 Markdown 与 LaTeX 公式排版
+- 集成 **KaTeX + remark-math + rehype-katex + remark-gfm**，完美呈现复杂行内公式 `$...$` 与跨行块级推导 `$$...$$`。
+- 代码块自带语言标识符标签与一键复制代码按钮。
 
-指标包括：首 Token 延迟（TTFT）、解码速度（tok/s）、本轮生成耗时、Prompt/Completion/Cache 用量及上下文剩余量。
+### 🖼️ 原生多模态视觉交互（Vision）
+- 随时向模型发送图片进行视觉理解与多模态分析。
+- 支持三类便捷录入：
+  1. 剪贴板截图粘贴（`Cmd + V`）
+  2. 拖拽外部图片至输入框
+  3. 点击 ＋ 号唤起本地系统文件选取
+- 支持待发缩略图预览与随时剔除，与推理引擎格式（PNG / JPEG / HEIC / HEIF）深度对齐。
 
-### 🧠 深度思考模式
-
-- 输入框内置「快速 / 思考」一键切换按钮。
-  - **思考模式**：随请求发送 `chat_template_kwargs: {enable_thinking: true}` + `reasoning_effort: "high"`。
-  - **快速模式**：`enable_thinking: false` + `reasoning_effort: "none"`，极速直接回复。
-- 思考过程以带计时器和呼吸动画指示器的折叠卡片呈现，支持一键展开/收起。
-
-### 📐 Markdown 与 LaTeX 渲染
-
-- 基于 **KaTeX + remark-math + rehype-katex**，完整支持行内公式 `$...$` 与独占行 `$$...$$`。
-- GitHub Flavored Markdown：表格、引用、强调、删除线全支持。
-- 代码块带语言标签与一键复制按钮。
-
-### 🖼️ 多模态图片问答（Vision）
-
-- 支持三种输入方式：截图粘贴（`Cmd + V`）、拖拽至输入框、点击 ＋ 按钮选择文件。
-- 发送前提供缩略图预览与一键移除。
-- 仅支持图片格式（PNG / JPEG / HEIC / HEIF），与推理服务端白名单完全对齐。
-
-### ⚙️ 完整参数配置面板
-
-- 实时调节 `temperature`、`top_p`、`top_k`、`repetition_penalty`、`max_tokens`、`seed`、`stop` 序列与 `System Prompt`。
-- 严格剔除未声明字段，杜绝后端 400 `unknown_parameter` 错误。
-- 所有设置通过 `localStorage` 持久化，刷新后自动恢复。
-
-### 📂 多会话管理
-
-- 侧边栏展示历史会话列表，支持新建、重命名、删除。
-- 基于 `localStorage` 持久化，通过 `BroadcastChannel` 在多窗口（主窗口 ↔ Spotlight 面板）间实时同步。
+### 📂 跨窗口即时同步会话管理
+- 历史会话随时检索、新建、重命名与删除。
+- 底层利用 `BroadcastChannel` + `localStorage`，实现**主界面 ↔ Spotlight 胶囊悬浮窗**之间的无感毫秒级实时双向数据同步。
 
 ---
 
 ## 快速启动
 
 ### 前提条件
-
 - Node.js ≥ 18
-- 已在本机运行 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 推理服务（默认端口 `1235`）
+- 本地或局域网已启动推理服务（推荐搭配 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 默认端口 `1235`，或任何兼容端口）
 
-### 方式一：一键脚本（推荐生产/演示）
-
+### 方式一：一键启动脚本（推荐生产/演示）
 ```bash
 ./start.sh
 ```
+脚本将自动完成：
+1. 探测推理服务状态；
+2. 自动检查并安装前端依赖包（首次执行 `npm install`）；
+3. 若无构建产物，自动运行 `npm run build`；
+4. 启动 Node.js 代理服务并自动在浏览器打开专属端口：`http://127.0.0.1:31235`。
 
-脚本会自动：
-1. 探测 `http://127.0.0.1:1235/health` 状态并给出提示。
-2. 检测并安装前端依赖（首次运行执行 `npm install`）。
-3. 若 `dist/` 目录不存在，自动执行 `npm run build`。
-4. 启动 Node.js 代理服务，并在系统浏览器打开 `http://127.0.0.1:3000`。
+> 如需自定义代理监听端口或指定推理服务地址，可直接通过环境变量覆盖：
+> ```bash
+> PORT=32000 TURBO_API_URL=http://127.0.0.1:1235 ./start.sh
+> ```
 
-环境变量覆盖：
-
-```bash
-PORT=8080 TURBO_API_URL=http://192.168.1.100:1235 ./start.sh
-```
-
-### 方式二：Vite 开发模式（热重载）
-
+### 方式二：Vite 本地热重载开发模式
 ```bash
 ./start.sh dev
 # 或
 npm run dev
 ```
+开发服务器将运行在 `http://127.0.0.1:5173`，并通过 `vite.config.ts` 代理 API 请求。
 
-访问：`http://127.0.0.1:5173`
-
-Vite 配置（`vite.config.ts`）会将所有 `/v1`、`/health` 请求代理至 `http://127.0.0.1:1235`。
-
-### 方式三：手动构建
-
+### 方式三：手动编译生产包
 ```bash
 npm install
-npm run build       # 输出至 dist/
-npm start           # 启动 Node.js 代理，服务 dist/ 静态资源
+npm run build       # 编译打包至 dist/
+npm start           # 运行 server/proxy.js (端口 31235)
 ```
 
 ---
@@ -140,158 +127,142 @@ npm start           # 启动 Node.js 代理，服务 dist/ 静态资源
 
 ```
 SimpleUI/
-├── index.html                   # HTML 入口
-├── package.json                 # 依赖声明
-├── tsconfig.json                # TypeScript 严格模式配置
-├── vite.config.ts               # Vite 开发配置与本地反向代理
-├── tailwind.config.js           # 暗色主题样式配置
-├── start.sh                     # 一键启动脚本
+├── index.html                   # HTML 模板入口
+├── package.json                 # 依赖声明与运行脚本
+├── tsconfig.json                # TypeScript 配置
+├── vite.config.ts               # Vite 打包与开发反向代理配置
+├── tailwind.config.js           # Tailwind 暗黑风格样式配置
+├── start.sh                     # 智能化快速启动脚本
 │
 ├── server/
-│   └── proxy.js                 # 生产模式 Node.js 反向代理
-│                                #   - 转发 /v1/* → 推理服务
-│                                #   - 保真透传 SSE 流与心跳
-│                                #   - 静态托管 dist/
+│   └── proxy.js                 # 生产模式 Node.js 代理服务器（端口 31235）
+│                                #   - 动态路由 x-target-port，转发 /v1/* 与 /health
+│                                #   - 高保真透传 SSE 流与心跳，静态托管 dist/
 │
-├── mac_app/                     # macOS 原生包装层（Swift）
-│   ├── src/                     # Swift 源码（AppDelegate、窗口管理、WebKit 桥接）
-│   └── Resources/               # 图标等资源文件
+├── mac_app/                     # macOS 原生双窗口应用包装层（Swift + WebKit）
+│   ├── src/                     # Swift 源代码（AppDelegate、HotKey、WindowControllers）
+│   └── Resources/               # Info.plist 与应用高清 AppIcon.icns
 │
 └── src/
-    ├── main.tsx                 # 应用入口（React DOM 挂载）
-    ├── App.tsx                  # 顶层状态机与布局路由
-    ├── index.css                # 全局样式、KaTeX 字体导入
+    ├── main.tsx                 # React DOM 渲染入口
+    ├── App.tsx                  # 顶层状态管理、路由与全局 i18n 注入
+    ├── index.css                # 全局样式与 KaTeX 字体
+    │
+    ├── i18n/                    # 完整中英双语国际化模块
+    │   ├── translations.ts      # 类型安全的中英词典
+    │   └── index.tsx            # I18nProvider 与系统语言自动检测 Hook
     │
     ├── types/
-    │   └── chat.ts              # 严格 TypeScript 类型定义
-    │                            #   ChatMessage / ChatSession / AppSettings /
-    │                            #   ServerHealthInfo / TurnMetrics
+    │   └── chat.ts              # TypeScript 类型定义
     │
     ├── services/
-    │   ├── api.ts               # TurboFieldfareAPI 封装
-    │   │                        #   checkHealth / fetchModels / streamChat
-    │   └── storage.ts           # localStorage 持久化与跨窗口 BroadcastChannel
+    │   ├── api.ts               # 推理服务通信引擎（支持 TTF 与标准 OpenAI 规范）
+    │   └── storage.ts           # 本地持久化与 BroadcastChannel 跨窗口通道
     │
     ├── components/
-    │   ├── Sidebar.tsx          # 会话历史侧边栏与服务健康状态徽章
-    │   ├── ChatView.tsx         # 消息主视窗与欢迎建议卡片
-    │   ├── MessageItem.tsx      # 单条消息（思考折叠、Markdown、复制）
-    │   ├── ThinkingAccordion.tsx # 深度思考过程折叠展示
-    │   ├── MarkdownRenderer.tsx  # Markdown + KaTeX + 代码高亮
-    │   ├── ChatInput.tsx        # 复合输入栏（图片上传、快速/思考切换）
-    │   ├── ContextRing.tsx      # SVG 上下文环形进度条
-    │   ├── PerformanceFooter.tsx # 微型性能指标栏
-    │   ├── ImageAttachment.tsx  # 待发送图片缩略图预览
-    │   ├── SettingsModal.tsx    # 采样参数与连接设置模态框
-    │   └── SpotlightView.tsx    # Spotlight 悬浮面板独立视图
+    │   ├── Sidebar.tsx          # 会话管理侧边栏、状态指示灯与设置入口
+    │   ├── ChatView.tsx         # 对话主视窗、快捷示例卡片与模型切换
+    │   ├── MessageItem.tsx      # 单条消息渲染（思考流、Markdown、复制、耗时）
+    │   ├── ThinkingAccordion.tsx # 深度思考折叠动效与计时指示
+    │   ├── MarkdownRenderer.tsx  # KaTeX 数学公式与语法高亮
+    │   ├── ChatInput.tsx        # 复合输入框（快捷/思考切换、图片选择、发送/停止）
+    │   ├── ContextRing.tsx      # SVG 动态上下文圆环进度条
+    │   ├── PerformanceFooter.tsx # 推理指标流水线栏
+    │   ├── ImageAttachment.tsx  # 图片缩略预览与删除
+    │   ├── SettingsModal.tsx    # 参数配置与推理端口/语言设置模态框
+    │   └── SpotlightView.tsx    # 独立 Spotlight 胶囊悬浮对话卡片
     │
     └── utils/
-        └── image.ts             # 图片提取（剪贴板/拖拽）、格式转换、Base64 编码
+        └── image.ts             # 剪贴板提取、文件转换与 Base64 编码
 ```
 
 ---
 
-## 配置参数
+## 多推理引擎兼容与配置
 
-所有参数可在右上角 ⚙️ 设置面板实时调整，保存后立即生效。
+SimpleUI **最深度适配 TurboFieldfare (TTF)**，同时兼具对通用 OpenAI API 标准的卓越兼容性。通过设置面板（右上角 ⚙️），您可以快速一键切换或输入常用本地引擎端口：
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `API 地址` | 推理服务 Base URL | `http://127.0.0.1` |
-| `端口` | 推理服务端口 | `1235` |
-| `模型 ID` | 当前加载模型（从 `/v1/models` 自动获取） | `gemma-4-26b-a4b-it` |
-| `Max Context` | 上下文窗口大小（用于圆环计算） | `32768` |
-| `temperature` | 采样温度，越高越随机 | `0.7` |
-| `top_p` | 核采样概率阈值 | `0.9` |
-| `top_k` | Top-K 候选数 | `50` |
-| `repetition_penalty` | 重复惩罚系数 | `1.0` |
-| `max_tokens` | 单次最大生成 Token 数 | `8192` |
-| `seed` | 随机种子（留空则随机） | — |
-| `stop` | 停止词序列（逗号分隔） | — |
-| `System Prompt` | 全局系统提示词 | — |
-| `reasoning_effort` | 思考模式推理力度 | `high` |
-| `深度思考` | 是否开启思考模式 | `false` |
+| 推理服务 | 常用端口 | 健康探测机制 | 视觉（Vision）支持 | 深度思考（Thinking）支持 |
+| :--- | :--- | :--- | :--- | :--- |
+| **TurboFieldfare (TTF)** | `1235` (默认) | 原生 `/health` | ✅ 自动识别（`data.vision`） | ✅ 原生支持 (`chat_template_kwargs` + `reasoning_effort`) |
+| **Ollama** | `11434` | `/v1/models` | 依赖加载的模型（如 llava 等） | 依赖模型原生 template |
+| **vLLM** | `8000` | `/v1/models` | 依赖加载的模型 | 依赖模型原生 template |
+| **llama.cpp server** | `8080` | `/v1/models` | 依赖加载的模型 | 依赖模型原生 template |
+| **LM Studio** | `1234` | `/v1/models` | 依赖加载的模型 | 依赖模型原生 template |
+| **TextGen WebUI** | `5000` | `/v1/models` | 依赖加载的模型 | 依赖模型原生 template |
 
-> **注意**：请求体会严格按照 TurboFieldfare 服务端 API 白名单构建，未声明字段不会发送，避免 `unknown_parameter` 错误。
+> **工作机制**：SimpleUI 发起请求时会附带 `x-target-port` 标头，Node.js 代理会按需实时转发到目标端口。即使切换推理引擎，也无需重启 SimpleUI 代理。
+
+---
+
+## 生成配置参数
+
+在设置模态框中可实时调控生成参数，配置自动保存于 `localStorage`：
+
+| 参数名称 | 说明 | 默认基准值 |
+| :--- | :--- | :--- |
+| **界面语言** | 跟随系统 (System) / 简体中文 / English | `system` (跟随系统) |
+| **推理端口** | 本地推理服务监听端口（支持快捷预置与自定义） | `1235` |
+| **模型 ID** | 调用的模型唯一标识（自动从 `/v1/models` 提取） | `gemma-4-26b-a4b-it` |
+| **Max Context** | 上下文窗口限制，驱动圆环与余量计算（8K ~ 256K） | `16384` (16K) |
+| **Max Tokens** | 单次生成最大 Token 数（**自动固定联动为 Context 的 50%**） | `8192` (自动联动) |
+| **Temperature** | 采样温度，越低越严谨确定，越高越发散创新 | `1.0` (Gemma 4 官方推荐) |
+| **Top-P** | 核采样累积概率阈值 | `0.95` |
+| **Top-K** | 候选词采样窗口（限制在 Top K 个词元中选取） | `64` |
+| **重复惩罚** | Repetition Penalty，抑制模型车轱辘话和重复循环 | `1.0` |
+| **随机种子** | Seed，填入具体数值可复现相同回答，留空随机 | *（留空）* |
+| **停止词** | 自定义 Stop Sequences（以英文逗号分隔） | *（留空）* |
+| **System Prompt** | 全局系统人格提示词 | `You are a helpful assistant.` |
 
 ---
 
 ## 多模态图片支持
 
-SimpleUI 支持在对话中附带图片，图片以 Base64 Data URL 格式发送至推理服务。
+SimpleUI 支持在提问中附带图片进行视觉解析，图片转换为标准 Base64 Data URL 随请求体发送。
 
-**支持的图片格式**（与服务端白名单完全对齐）：
-- `image/jpeg`
-- `image/png`
-- `image/heic`
-- `image/heif`
-
-**输入方式**：
-
-| 方式 | 操作 |
-|------|------|
-| 剪贴板粘贴 | 截图后在输入框内按 `Cmd + V` |
-| 拖拽 | 将图片文件拖入输入框区域 |
-| 文件选择 | 点击输入框左下角 ＋ 按钮 |
-
-图片在发送前会显示缩略图预览，支持单独移除任意一张。每次请求最多 64 张图片，单张上限 16 MB，每次请求总量上限 64 MB（服务端限制）。
+- **支持格式**：`image/png`, `image/jpeg`, `image/heic`, `image/heif`。
+- **添加方式**：
+  1. 截图后直接在输入区域粘贴（`Cmd + V`）；
+  2. 拖拽图片文件到输入框上方；
+  3. 点击输入栏左侧的 ＋ 按钮选择本地文件。
+- 发送前会显示图片微型预览药丸，点击右上角 × 即可随时移除。
 
 ---
 
 ## Spotlight 模式
 
-Spotlight 是一个独立的轻量对话面板，通过 URL hash 或 query 参数路由触发：
+Spotlight 是专为 macOS 快速提问打造的高效胶囊对话卡片，无需打开完整的主窗口界面：
 
-```
-http://127.0.0.1:3000/#/spotlight
-http://127.0.0.1:3000/?mode=spotlight
-```
-
-与主窗口的区别：
-- 背景透明，适合以悬浮窗形式叠加在桌面之上。
-- 不包含侧边栏，界面更紧凑，专注于单次快速问答。
-- 支持「展开」按钮跳转至主窗口并加载当前对话。
-- 通过 `BroadcastChannel` 与主窗口实时双向同步会话数据。
-- 支持动态通知原生 AppKit 面板调整窗口高度（通过 WebKit MessageHandler）。
+- **访问地址**：
+  ```
+  http://127.0.0.1:31235/#/spotlight
+  http://127.0.0.1:31235/?mode=spotlight
+  ```
+- **核心特点**：
+  - 极简居中无边框浮动卡片；
+  - 初态为紧凑输入条，发送后自动通过 WebKit MessageHandler 动态扩屏为对话卡片；
+  - 支持随时点击右上角放大按钮，将会话无缝接力跳转至主聊天大窗口。
 
 ---
 
-## macOS 原生包装层
+## macOS 原生桌面应用
 
-`mac_app/` 目录包含一个 Swift 编写的轻量级 macOS 原生包装层，将 Web 前端包装为独立的 `.app`：
+项目包含基于 Swift 和 WebKit 构建的 macOS 原生桌面包装层（源码位于 `mac_app/`）：
 
-- **双窗口架构**：主聊天窗口（常规 `NSWindow`）+ Spotlight 悬浮面板（透明 `NSPanel`）。
-- **全局快捷键**：可绑定系统级快捷键唤起/隐藏 Spotlight 面板，无需切换应用。
-- **WKWebView 桥接**：
-  - `setModalOpen`：主窗口设置面板打开时禁用标题栏拖拽区域。
-  - `setSidebarOpen`：侧边栏展开/折叠时通知原生层同步调整拖拽区域。
-  - `reloadSessionsFromStorage`：原生层可通过 JavaScript 注入触发会话重载。
-- **文件选择器代理**：通过 `WKUIDelegate` 支持在 WKWebView 内唤起系统原生文件选择对话框（用于图片上传）。
+- **双窗口形态**：
+  - 常规全功能主窗口（支持收起侧栏、交通灯按钮美化适配）；
+  - 透明浮动胶囊窗口（Spotlight Panel）。
+- **全局快捷键**：默认绑定 `⌥ Option + Space`，在 macOS 任何界面随叫随到，按 `Esc` 随时秒速隐藏。
+- **自动进程托管**：启动桌面 App 时自动拉起后台 Node.js 代理（端口 31235），退出应用时自动释放子进程与端口。
 
-构建 macOS 应用：
-
+### 编译与安装桌面应用
 ```bash
-./build_mac_app.sh
+./build_mac_app.sh install
 ```
-
----
-
-## 兼容性
-
-SimpleUI 的 API 客户端层（`src/services/api.ts`）遵循 OpenAI Chat Completions API 规范，理论上可对接任何兼容的推理服务：
-
-| 服务 | 健康检查端点 | Vision 支持 |
-|------|------------|-------------|
-| TurboFieldfare | `/health` + `/v1/models` | ✅ 自动检测（`data.vision`） |
-| Ollama | `/v1/models` | ⚠️ 取决于模型 |
-| vLLM | `/v1/models` | ⚠️ 取决于模型 |
-| llama.cpp server | `/v1/models` | ⚠️ 取决于模型 |
-| LM Studio | `/v1/models` | ⚠️ 取决于模型 |
-
-> **注意**：深度思考模式（`chat_template_kwargs`、`reasoning_effort`）及 `/health` 的 `vision` 字段为 TurboFieldfare 专有扩展，其他服务会忽略这些字段。
+编译成功后，应用将自动安装至 `/Applications/SimpleUI.app`，您可以在“聚焦搜索 (Spotlight)”或“启动台”中直接打开使用。
 
 ---
 
 ## 开源协议
 
-Apache License 2.0
+本项目基于 [Apache License 2.0](LICENSE) 开源。
