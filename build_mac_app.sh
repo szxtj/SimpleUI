@@ -58,15 +58,11 @@ if [ -d "node_modules/opencc-js" ]; then
     cp -R "node_modules/opencc-js" "$RESOURCES_DIR/node_modules/"
 fi
 
-# 4. 代码签名 (支持本地纯免费自签名证书 / 免费个人开发证书 / 无签名降级)
+# 4. 代码签名 (优先使用本地免费个人开发证书，若无则使用纯本地无签名 Ad-hoc)
 # 策略说明：
-#   为了防止应用每次重新编译/更新后系统辅助功能(Accessibility)与快捷键权限丢失，需要稳定的代码签名标识。
+#   优先使用本地免费个人开发证书 (Apple Development: ...)，保证应用更新后系统辅助功能与快捷键权限不丢失。
 #   开源项目坚决排除 Apple 付费分发证书 (Apple Distribution / Developer ID)。
-# 优先级：
-#   1. 环境变量 CODESIGN_IDENTITY (若手动指定)
-#   2. 本地建立的自建免费证书 (如 SimpleUI-CodeSign 或自定义本地自签名证书)
-#   3. 本地免费个人开发证书 (Apple Development: ...)
-#   4. 兜底降级为无签名 / 本地 Ad-hoc 模式 (-)
+#   若未检测到个人开发证书，则兜底降级为纯本地无签名 Ad-hoc 模式 (-)。
 echo "[4/4] 正在检测代码签名配置..."
 SIGNING_IDENTITY=""
 
@@ -74,27 +70,15 @@ if [ -n "$CODESIGN_IDENTITY" ]; then
     echo "  -> [指定] 使用环境变量指定的签名身份: \"$CODESIGN_IDENTITY\""
     SIGNING_IDENTITY="$CODESIGN_IDENTITY"
 else
-    # 查找本地自建代码签名证书 (优先匹配 SimpleUI，或任何非 Apple 官方的本地证书)
-    LOCAL_CERT=$(security find-identity -p codesigning -v 2>/dev/null | grep -E '"SimpleUI' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
-    if [ -z "$LOCAL_CERT" ]; then
-        LOCAL_CERT=$(security find-identity -p codesigning -v 2>/dev/null | grep -v 'Apple Development' | grep -v 'Apple Distribution' | grep -v 'Developer ID' | grep -v '3rd Party Mac Developer' | grep '"' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
-    fi
-
     # 查找本地免费个人开发证书 (严格排除 Apple Distribution / Developer ID 等付费企业/分发证书)
     FREE_DEV_CERT=$(security find-identity -p codesigning -v 2>/dev/null | grep "Apple Development" | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
 
-    if [ -n "$LOCAL_CERT" ]; then
-        echo "  -> [首选] 发现本地建立的免费自签名证书: \"$LOCAL_CERT\""
-        echo "     (本地自建证书完全免费且永久有效，更新后可保留辅助功能与快捷键权限)"
-        SIGNING_IDENTITY="$LOCAL_CERT"
-    elif [ -n "$FREE_DEV_CERT" ]; then
-        echo "  -> [次选] 发现本地免费个人开发证书: \"$FREE_DEV_CERT\""
-        echo "     (免费个人开发证书，更新后可保留辅助功能与快捷键权限)"
+    if [ -n "$FREE_DEV_CERT" ]; then
+        echo "  -> 发现本地免费个人开发证书: \"$FREE_DEV_CERT\""
+        echo "     (免付费本地证书，更新后可保留辅助功能与快捷键权限)"
         SIGNING_IDENTITY="$FREE_DEV_CERT"
     else
-        echo "  -> [兜底] 未发现本地签名证书，降级采用无签名 / 本地 Ad-hoc 模式 (-)..."
-        echo "     💡 提示: 无签名模式在应用更新后可能会导致系统权限丢失。若需保持权限，可运行:"
-        echo "        ./scripts/setup_local_cert.sh 创建本地自签名证书。"
+        echo "  -> 未发现个人证书，采用无签名 / 本地 Ad-hoc 模式 (-)..."
         SIGNING_IDENTITY="-"
     fi
 fi

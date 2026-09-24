@@ -21,6 +21,7 @@
 - [Quick Start](#quick-start)
 - [Project Structure](#project-structure)
 - [Multi-Engine Compatibility & Configuration](#multi-engine-compatibility--configuration)
+- [Offline Wiki Knowledge Base](#offline-wiki-knowledge-base)
 - [Generation Settings](#generation-settings)
 - [Multimodal Vision Support](#multimodal-vision-support)
 - [Spotlight Mode](#spotlight-mode)
@@ -46,9 +47,17 @@ SimpleUI also includes a native macOS desktop wrapper written in Swift + WebKit,
 - Includes a dedicated, lightweight Node.js reverse proxy (`server/proxy.js`) listening on dedicated port **`31235`** by default—preventing port conflicts with standard dev setups on port 3000.
 - Faithful passthrough of Server-Sent Events (SSE) streaming and `: ping` heartbeat keep-alive packets, eliminating CORS hassles and premature timeouts.
 
-### 🌐 Automatic Bilingual (i18n) Support
-- **Adaptive System Locale**: Automatically detects the operating system environment language (`navigator.language`) to switch seamlessly between English and Chinese.
-- **Manual Preference Override**: Select between "Follow System (System Default)", "简体中文", or "English" from the Settings modal, persisted across sessions in `localStorage`.
+### 📚 Offline Wiki Knowledge Base (Offline RAG)
+- Seamless connection with local Kiwix (ZIM) offline Wikipedia services, with real-time entry indexing status and count displayed in the UI.
+- Employs small local models for query intent planning and entity keyword extraction, paired with prefix search, passage reranking, and automatic Simplified/Traditional Chinese conversion to inject high-relevance facts into LLM context.
+
+### 🎯 Spotlight Draggable Window & Position Memory
+- Once expanded into a conversation card, the Spotlight window can be freely dragged and placed anywhere on screen via the top header bar.
+- Coordinates are preserved across hotkey invocations, and automatically smoothly re-center upon starting a new chat.
+
+### 🌐 Intelligent Bilingual Support & UI Polish (i18n)
+- **Adaptive System Locale**: Automatically detects operating system language (`navigator.language`) to switch seamlessly between English and Chinese, with optional manual locking in Settings.
+- **Exhaustive UI Alignment**: English and Chinese texts thoroughly unified, with backdrop dismissal protection in the Settings modal.
 
 ### ⭕ Dynamic Context Ring
 - An elegant micro SVG circular progress ring next to the send button fills up dynamically in proportion to cumulative token consumption.
@@ -195,6 +204,15 @@ SimpleUI is **deeply optimized for TurboFieldfare (TTF)** while offering outstan
 
 ---
 
+## Offline Wiki Knowledge Base
+
+SimpleUI features native, zero-configuration Retrieval-Augmented Generation (RAG) integrated with offline Wikipedia (e.g. Kiwix running ZIM archives):
+- **Service Integration**: Configure local wiki port (default `8080`) in Settings. The status badge at the bottom-right dynamically reports online status and entry counts.
+- **Dual-Tier Query Planning**: Utilizes a lightweight local 2B model to plan queries and extract entity keywords, gracefully falling back to prefix association, BM25 reranking, and OpenCC Simplified/Traditional Chinese conversion.
+- **Context Injection**: High-relevance entry excerpts are transparently assembled and injected into the LLM context prompt for 100% offline, fact-grounded responses.
+
+---
+
 ## Generation Settings
 
 All hyperparameters can be calibrated in the Settings modal and are persisted in `localStorage`:
@@ -241,6 +259,7 @@ Spotlight mode provides a compact, floating query card designed for quick questi
 - **Highlights**:
   - Centered borderless floating card with transparent backdrop;
   - Starts as a compact input capsule, automatically expanding via WebKit MessageHandler upon submission;
+  - Supports dragging the top bar when expanded to freely reposition anywhere on screen, preserves dragged coordinates across hotkey toggles, and auto-resets position on new chat;
   - Includes an "Expand" button in the upper right to relay the conversation to the main window.
 
 ---
@@ -254,6 +273,7 @@ The project contains a lightweight native macOS desktop wrapper written in Swift
   - Transparent floating panel (Spotlight Panel).
 - **Global Hotkey**: Bound to `⌥ Option + Space` by default to summon or dismiss the Spotlight bar anywhere in macOS.
 - **Process Lifecycle Management**: Automatically launches the local Node.js proxy (port 31235) upon app launch, and terminates the background process on exit.
+- **Free & Secure Code Signing**: Automatically prioritizes local free personal developer certificates (`Apple Development`) to guarantee that Accessibility and shortcut permissions persist across app updates; seamlessly falls back to local ad-hoc signing, strictly excluding paid enterprise certificates.
 
 ### Build and Install macOS App
 ```bash
