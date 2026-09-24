@@ -514,21 +514,41 @@ class WikiService {
     }
   }
 
-  // Periodic health check
+  // Periodic health check & external disk disconnect/reconnect watcher
   initWatcher() {
     this.startService();
     if (this.scanInterval) clearInterval(this.scanInterval);
     this.scanInterval = setInterval(async () => {
+      // 1. 如果配置了 ZIM 路径，先检测文件是否在磁盘上依然存在 (支持硬盘弹出平滑断开)
+      if (this.currentZimPath && !fs.existsSync(this.currentZimPath)) {
+        if (this.isOnline || this.kiwixProcess) {
+          console.log(`[WikiService] 检测到 ZIM 文件已断开或被移走: ${this.currentZimPath}`);
+          this.isOnline = false;
+          this.articleCount = 0;
+          if (this.kiwixProcess) {
+            try {
+              this.kiwixProcess.kill('SIGKILL');
+            } catch (e) {
+              // ignore
+            }
+            this.kiwixProcess = null;
+          }
+        }
+        return;
+      }
+
+      // 2. 文件就绪时检测服务健康状态；若断开或异常退出则自动重新拉起
       const alive = await this.checkHealth();
       if (!alive && this.currentZimPath && fs.existsSync(this.currentZimPath)) {
+        console.log(`[WikiService] 检测到 ZIM 服务离线但文件就绪，正在自动重新连接...`);
         await this.startService(this.currentZimPath);
       }
-    }, 8000);
+    }, 5000);
   }
 
   // Search articles with robust entity extraction & bidirectional matching
   async search(rawQuery) {
-    if (!rawQuery || !rawQuery.trim()) return [];
+    if (!rawQuery || !rawQuery.trim() || !this.isOnline) return [];
     const entityCandidates = cleanQueryToEntityCandidates(rawQuery);
     const content = this.contentId || 'wikipedia_zh_all_maxi';
 
@@ -546,7 +566,7 @@ class WikiService {
     const suggestPromises = Array.from(allSearchTerms).map(async (v) => {
       try {
         const suggestUrl = `http://127.0.0.1:${KIWIX_PORT}/suggest?content=${encodeURIComponent(content)}&term=${encodeURIComponent(v)}`;
-        const res = await fetch(suggestUrl);
+        const res = await fetch(suggestUrl, { signal: AbortSignal.timeout(2000) });
         if (res.ok) {
           const json = await res.json();
           if (Array.isArray(json)) {
@@ -579,7 +599,7 @@ class WikiService {
       const searchPromises = Array.from(allSearchTerms).slice(0, 3).map(async (v) => {
         try {
           const searchUrl = `http://127.0.0.1:${KIWIX_PORT}/search?content=${encodeURIComponent(content)}&pattern=${encodeURIComponent(v)}`;
-          const res = await fetch(searchUrl);
+          const res = await fetch(searchUrl, { signal: AbortSignal.timeout(2500) });
           if (res.ok) {
             const html = await res.text();
             const matches = [...html.matchAll(/<a href="\/content\/[^/]+\/([^"]+)">\s*([^<]+)\s*<\/a>/g)];
@@ -650,11 +670,12 @@ class WikiService {
   }
 
   async _fetchSummaryForTitle(title, userQuery = '') {
+    if (!this.isOnline) return null;
     const content = this.contentId || 'wikipedia_zh_all_maxi';
     const articleUrl = `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(title)}`;
 
     try {
-      const res = await fetch(articleUrl);
+      const res = await fetch(articleUrl, { signal: AbortSignal.timeout(2500) });
       if (!res.ok) return null;
       const html = await res.text();
 
@@ -836,6 +857,16 @@ class WikiService {
   async getRagContext(query) {
     if (!query || typeof query !== 'string' || !query.trim()) {
       return { needsWiki: false, citations: [], promptContext: '', metadata: { latencyMs: 0 } };
+    }
+
+    // 快速熔断：若知识库离线或文件已拔出/移走，0ms 立即退出，避免浪费小模型推理和产生网络挂起
+    if (!this.isOnline || !this.currentZimPath || !fs.existsSync(this.currentZimPath)) {
+      return {
+        needsWiki: false,
+        citations: [],
+        promptContext: '',
+        metadata: { latencyMs: 0, offline: true },
+      };
     }
 
     const trimmed = query.trim();
