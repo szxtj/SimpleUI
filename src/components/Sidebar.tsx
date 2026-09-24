@@ -162,6 +162,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
           filteredSessions.map((session) => {
             const isSelected = session.id === currentSessionId;
             const isEditing = session.id === editingId;
+            const isLastBlankSession =
+              sessions.length <= 1 && (!session.messages || session.messages.length === 0);
 
             return (
               <div
@@ -222,16 +224,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       >
                         <Edit2 className="w-3.5 h-3.5" />
                       </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDeleteSession(session.id);
-                        }}
-                        className="p-1 text-zinc-500 hover:text-red-500 dark:text-zinc-400 dark:hover:text-red-400 transition-colors"
-                        title={t('deleteChat')}
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      {!isLastBlankSession && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteSession(session.id);
+                          }}
+                          className="p-1 text-zinc-500 hover:text-red-500 dark:text-zinc-400 dark:hover:text-red-400 transition-colors"
+                          title={t('deleteChat')}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </>
                   )}
                 </div>

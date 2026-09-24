@@ -35,6 +35,10 @@ interface ChatViewProps {
   onOpenSettings: () => void;
   isSidebarOpen: boolean;
   onToggleSidebar: () => void;
+  enableWikiSearch?: boolean;
+  setEnableWikiSearch?: (val: boolean) => void;
+  wikiConnected?: boolean;
+  onOpenWiki?: (title: string) => void;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -57,6 +61,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onOpenSettings,
   isSidebarOpen,
   onToggleSidebar,
+  enableWikiSearch,
+  setEnableWikiSearch,
+  wikiConnected,
+  onOpenWiki,
 }) => {
   const { t } = useI18n();
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -218,7 +226,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           ) : (
             <div className="space-y-4">
               {messages.map((message) => (
-                <MessageItem key={message.id} message={message} />
+                <MessageItem key={message.id} message={message} onOpenWiki={onOpenWiki} />
               ))}
               <div ref={messagesEndRef} className="h-4" />
             </div>
@@ -244,6 +252,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
             setEnableThinking={setEnableThinking}
             visionReady={visionReady}
             hasMessages={messages.length > 0}
+            enableWikiSearch={enableWikiSearch}
+            setEnableWikiSearch={setEnableWikiSearch}
+            wikiConnected={wikiConnected}
           />
 
           {/* Qianwen Style Disclaimer below input box */}

@@ -46,6 +46,10 @@ cp mac_app/Resources/Info.plist "$CONTENTS_DIR/Info.plist"
 if [ -f "mac_app/Resources/AppIcon.icns" ]; then
     cp mac_app/Resources/AppIcon.icns "$RESOURCES_DIR/AppIcon.icns"
 fi
+if [ -d "bin/kiwix" ]; then
+    mkdir -p "$RESOURCES_DIR/bin"
+    cp -R "bin/kiwix" "$RESOURCES_DIR/bin/"
+fi
 
 # 4. 代码签名 (优先使用本地免费个人开发证书，若无则使用纯本地无签名 Ad-hoc)
 echo "[4/4] 正在执行应用代码签名..."

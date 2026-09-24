@@ -34,7 +34,7 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = true
         panel.backgroundColor = .clear
-        panel.hasShadow = false // Web content provides clean soft shadow to prevent double-border halos
+        panel.hasShadow = false // Clean flat presentation without outer halos
         panel.isOpaque = false
 
         super.init(window: panel)
@@ -107,9 +107,14 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
 
         panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
 
-        NSApp.activate(ignoringOtherApps: true)
+        // Only bring the Spotlight panel key and front, NEVER activate the full application
+        // so that the main window remains untouched and in its current position
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
+        if let view = webView {
+            panel.makeFirstResponder(view)
+        }
+        webView.evaluateJavaScript("window.onSpotlightShown && window.onSpotlightShown()") { _, _ in }
     }
 
     func hide() {
@@ -141,7 +146,7 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             onOpenMainWindow?()
         } else if message.name == "resizePanel", let dict = message.body as? [String: Any] {
             let width = (dict["width"] as? CGFloat) ?? 540
-            let height = (dict["height"] as? CGFloat) ?? 88
+            let height = (dict["height"] as? CGFloat) ?? 84
             animateTo(width: width, height: height)
         }
     }

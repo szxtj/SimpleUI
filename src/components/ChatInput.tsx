@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { ArrowUp, Plus, Square, Zap, Brain } from 'lucide-react';
+import { ArrowUp, Plus, Square, Zap, Brain, BookOpen } from 'lucide-react';
 import { useI18n } from '../i18n';
 import { ContextRing } from './ContextRing';
 import { ImageAttachment } from './ImageAttachment';
@@ -19,6 +19,9 @@ interface ChatInputProps {
   setEnableThinking: (val: boolean) => void;
   visionReady: boolean;
   hasMessages?: boolean;
+  enableWikiSearch?: boolean;
+  setEnableWikiSearch?: (val: boolean) => void;
+  wikiConnected?: boolean;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = ({
@@ -35,6 +38,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   setEnableThinking,
   visionReady,
   hasMessages = false,
+  enableWikiSearch = true,
+  setEnableWikiSearch,
+  wikiConnected = false,
 }) => {
   const { t } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -193,6 +199,30 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <span>{t('thinkingOff')}</span>
               </>
             )}
+          </button>
+
+          {/* Offline Wiki Knowledge Toggle Button */}
+          <button
+            type="button"
+            onClick={() => wikiConnected && setEnableWikiSearch?.(!enableWikiSearch)}
+            disabled={!wikiConnected}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all active:scale-95 border ${
+              !wikiConnected
+                ? 'opacity-40 cursor-not-allowed bg-black/5 text-zinc-400 dark:bg-white/5 dark:text-zinc-500 border-transparent'
+                : enableWikiSearch
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border-emerald-500/40 dark:hover:bg-emerald-900/80 shadow-sm'
+                : 'bg-black/5 text-zinc-600 border-black/5 hover:bg-black/10 hover:text-black dark:bg-white/5 dark:text-zinc-300 dark:border-white/5 dark:hover:bg-white/10 dark:hover:text-white'
+            }`}
+            title={
+              !wikiConnected
+                ? t('wikiDisconnectedTooltip') || '未检测到外置SSD维基百科'
+                : enableWikiSearch
+                ? t('wikiSearchOnTooltip') || '离线百科知识库检索已开启'
+                : t('wikiSearchOffTooltip') || '离线百科知识库检索已关闭'
+            }
+          >
+            <BookOpen className={`w-3.5 h-3.5 ${enableWikiSearch && wikiConnected ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
+            <span>{t('offlineWiki') || '离线维基'}</span>
           </button>
         </div>
 

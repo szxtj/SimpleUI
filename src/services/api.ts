@@ -1,4 +1,4 @@
-import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics } from '../types/chat';
+import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiStatusInfo } from '../types/chat';
 
 export interface StreamCallbacks {
   onFirstToken?: () => void;
@@ -282,6 +282,11 @@ export class TurboFieldfareAPI {
         return;
       }
     } finally {
+      try {
+        await reader.cancel();
+      } catch {
+        // ignore if already closed or aborted
+      }
       reader.releaseLock();
     }
 
@@ -310,5 +315,52 @@ export class TurboFieldfareAPI {
     };
 
     callbacks.onDone?.(metrics);
+  }
+}
+
+export class WikiAPI {
+  static async getStatus(): Promise<WikiStatusInfo> {
+    try {
+      const res = await fetch('/api/wiki/status');
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch (e) {
+      // ignore
+    }
+    return {
+      connected: false,
+      port: 31236,
+      zimPath: null,
+      contentId: null,
+      bookTitle: '维基百科',
+      articleCount: 0,
+      mediaCount: 0,
+    };
+  }
+
+  static async search(query: string): Promise<Array<{ title: string; path: string; url: string }>> {
+    try {
+      const res = await fetch(`/api/wiki/search?q=${encodeURIComponent(query)}`);
+      if (res.ok) {
+        const data = await res.json();
+        return data.results || [];
+      }
+    } catch (e) {
+      console.error('Wiki search failed:', e);
+    }
+    return [];
+  }
+
+  static async getSummary(title: string): Promise<{ title: string; summary: string; url: string } | null> {
+    try {
+      const res = await fetch(`/api/wiki/summary?title=${encodeURIComponent(title)}`);
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch (e) {
+      console.error('Wiki getSummary failed:', e);
+    }
+    return null;
   }
 }

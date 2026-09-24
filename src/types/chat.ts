@@ -14,6 +14,12 @@ export interface TurnMetrics {
   contextPercent: number;      // 0 - 100
 }
 
+export interface WikiCitation {
+  title: string;
+  url: string;
+  summary?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: MessageRole;
@@ -25,6 +31,7 @@ export interface ChatMessage {
   metrics?: TurnMetrics;
   timestamp: number;
   error?: string;
+  citations?: WikiCitation[];   // Offline Wiki citations
 }
 
 export interface ChatSession {
@@ -34,6 +41,8 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   contextUsed: number;
+  enableThinking?: boolean;   // Conversation-level independent thinking toggle (default false)
+  enableWikiSearch?: boolean; // Conversation-level independent offline wiki toggle (default false)
 }
 
 export interface AppSettings {
@@ -53,6 +62,9 @@ export interface AppSettings {
   systemPrompt: string;         // System instructions
   language?: 'system' | 'zh' | 'en'; // Display language preference
   theme?: 'system' | 'light' | 'dark'; // Appearance theme preference
+  enableWikiSearch?: boolean;   // Offline Wiki RAG switch (📚)
+  customWikiDir?: string;       // Custom ZIM storage directory
+  spotlightResetMinutes?: number; // Spotlight idle auto-reset duration in minutes (0 = never, default 15)
 }
 
 export interface ServerHealthInfo {
@@ -60,4 +72,14 @@ export interface ServerHealthInfo {
   vision: 'ready' | 'missing' | 'unsupported';
   modelId?: string;
   online: boolean;
+}
+
+export interface WikiStatusInfo {
+  connected: boolean;
+  port: number;
+  zimPath: string | null;
+  contentId: string | null;
+  bookTitle: string;
+  articleCount: number;
+  mediaCount: number;
 }

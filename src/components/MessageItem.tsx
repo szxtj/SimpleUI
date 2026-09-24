@@ -3,13 +3,14 @@ import { ChatMessage } from '../types/chat';
 import { useI18n } from '../i18n';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ThinkingAccordion } from './ThinkingAccordion';
-import { Check, Copy, AlertCircle } from 'lucide-react';
+import { Check, Copy, AlertCircle, BookOpen, ExternalLink } from 'lucide-react';
 
 interface MessageItemProps {
   message: ChatMessage;
+  onOpenWiki?: (title: string) => void;
 }
 
-export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
+export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki }) => {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const isUser = message.role === 'user';
@@ -72,6 +73,27 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
             <div className="mt-2.5 flex items-center gap-1.5 text-xs text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/50 px-3 py-2 rounded-xl">
               <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
               <span>{message.error}</span>
+            </div>
+          )}
+
+          {/* Offline Wiki Citations */}
+          {message.citations && message.citations.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center gap-1.5 select-none animate-in fade-in duration-200">
+              <span className="text-[11px] font-medium text-zinc-400 dark:text-zinc-500 mr-1 flex items-center gap-1">
+                <BookOpen className="w-3.5 h-3.5 text-emerald-500" />
+                {t('wikiCitations') || '参考词条'}:
+              </span>
+              {message.citations.map((c, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => onOpenWiki?.(c.title)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                  title={c.summary || c.title}
+                >
+                  <span className="font-medium truncate max-w-[200px]">{c.title}</span>
+                  <ExternalLink className="w-3 h-3 opacity-60" />
+                </button>
+              ))}
             </div>
           )}
 

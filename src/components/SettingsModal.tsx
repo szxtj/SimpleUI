@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { AppSettings } from '../types/chat';
+import { AppSettings, WikiStatusInfo } from '../types/chat';
 import { DEFAULT_SETTINGS } from '../services/storage';
+import { WikiAPI } from '../services/api';
 import { useI18n } from '../i18n';
-import { X, RotateCcw, Check } from 'lucide-react';
+import { X, RotateCcw, Check, BookOpen } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -28,6 +29,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [stopInput, setStopInput] = useState<string>(() =>
     (settings?.stopStrings || []).join(', ')
   );
+  const [wikiStatus, setWikiStatus] = useState<WikiStatusInfo | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      WikiAPI.getStatus().then(setWikiStatus);
+    }
+  }, [isOpen]);
 
   // Sync state whenever modal is opened
   useEffect(() => {
@@ -136,6 +144,89 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <option value="en">{t('langEn')}</option>
               </select>
             </div>
+          </div>
+
+          {/* Spotlight Idle Auto-Reset Setting */}
+          <div>
+            <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+              {t('spotlightResetLabel')}
+            </label>
+            <select
+              value={formData.spotlightResetMinutes ?? 15}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  spotlightResetMinutes: Number(e.target.value),
+                })
+              }
+              className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none"
+            >
+              <option value={5}>{t('spotlightReset5m')}</option>
+              <option value={15}>{t('spotlightReset15m')}</option>
+              <option value={30}>{t('spotlightReset30m')}</option>
+              <option value={60}>{t('spotlightReset60m')}</option>
+              <option value={0}>{t('spotlightResetNever')}</option>
+            </select>
+            <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+              {t('spotlightResetTip')}
+            </p>
+          </div>
+
+          {/* Offline Wiki Knowledge Base Configuration Card */}
+          <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <BookOpen className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
+                  {t('wikiKnowledgeBase')}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 text-[11px]">
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    wikiStatus?.connected
+                      ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.8)]'
+                      : 'bg-red-500'
+                  }`}
+                />
+                <span
+                  className={
+                    wikiStatus?.connected
+                      ? 'text-emerald-600 dark:text-emerald-400 font-medium'
+                      : 'text-zinc-500'
+                  }
+                >
+                  {wikiStatus?.connected
+                    ? `${t('wikiStatusConnected')}`
+                    : t('wikiStatusDisconnected')}
+                </span>
+              </div>
+            </div>
+
+            {wikiStatus?.zimPath && (
+              <div className="text-[11px] font-mono text-zinc-500 dark:text-zinc-400 truncate mb-2.5">
+                {wikiStatus.zimPath}
+              </div>
+            )}
+
+            <label className="flex items-center justify-between cursor-pointer pt-2 border-t border-black/5 dark:border-white/5">
+              <div>
+                <div className="font-medium text-zinc-700 dark:text-zinc-200">
+                  {t('wikiDefaultToggle')}
+                </div>
+                <div className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                  {t('wikiDefaultToggleDesc')}
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={formData.enableWikiSearch ?? true}
+                onChange={(e) =>
+                  setFormData({ ...formData, enableWikiSearch: e.target.checked })
+                }
+                className="w-4 h-4 rounded text-blue-600 accent-blue-600 cursor-pointer"
+              />
+            </label>
           </div>
 
           {/* Local Service Port Selection */}

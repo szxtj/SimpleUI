@@ -43,8 +43,12 @@ function proxyRequest(req, res, targetUrl) {
   delete options.headers['origin'];
   delete options.headers['referer'];
 
+  let completed = false;
+  let upstreamRes = null;
+
   const transport = urlObj.protocol === 'https:' ? https : http;
   const proxyReq = transport.request(options, (proxyRes) => {
+    upstreamRes = proxyRes;
     // Add CORS headers for good measure
     res.writeHead(proxyRes.statusCode, {
       ...proxyRes.headers,
@@ -55,7 +59,27 @@ function proxyRequest(req, res, targetUrl) {
     proxyRes.pipe(res);
   });
 
+  const abortUpstream = () => {
+    if (!completed) {
+      if (!proxyReq.destroyed) proxyReq.destroy();
+      if (upstreamRes && !upstreamRes.destroyed) upstreamRes.destroy();
+    }
+  };
+
+  res.on('finish', () => {
+    completed = true;
+  });
+
+  res.on('close', () => {
+    if (!completed) abortUpstream();
+  });
+
+  req.on('aborted', abortUpstream);
+
   proxyReq.on('error', (err) => {
+    if (err.code === 'ECONNRESET' || proxyReq.destroyed) {
+      return;
+    }
     console.error('[Proxy Error]:', err.message);
     if (!res.headersSent) {
       res.writeHead(502, { 'Content-Type': 'application/json' });
@@ -96,6 +120,8 @@ function serveStatic(req, res) {
   fs.createReadStream(filePath).pipe(res);
 }
 
+import { wikiService, KIWIX_PORT } from './wiki_service.js';
+
 const server = http.createServer((req, res) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -106,6 +132,19 @@ const server = http.createServer((req, res) => {
       'Access-Control-Max-Age': '86400',
     });
     res.end();
+    return;
+  }
+
+  // Handle Wiki Knowledge Base APIs
+  if (req.url.startsWith('/api/wiki/')) {
+    wikiService.handleApi(req, res);
+    return;
+  }
+
+  // Handle Wiki content proxy (for iframe embedding on the same origin)
+  if (req.url.startsWith('/wiki-content/')) {
+    const targetPath = req.url.replace('/wiki-content/', '/');
+    proxyRequest(req, res, `http://127.0.0.1:${KIWIX_PORT}${targetPath}`);
     return;
   }
 
@@ -122,6 +161,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`🚀 TurboFieldfare Chat running at http://127.0.0.1:${PORT}`);
+  console.log(`🚀 SimpleUI running at http://127.0.0.1:${PORT}`);
   console.log(`🔗 Upstream API configured to ${TARGET_API}`);
+  wikiService.initWatcher();
 });
