@@ -323,7 +323,7 @@ export const App: React.FC = () => {
     checkServer();
     const timer = setInterval(checkServer, 10000);
     return () => clearInterval(timer);
-  }, [settings]);
+  }, [settings.apiPort, settings.modelId]);
 
   // Poll local offline Wiki status
   useEffect(() => {

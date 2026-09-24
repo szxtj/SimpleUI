@@ -116,7 +116,6 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         guard let win = window else { return }
 
         let config = WKWebViewConfiguration()
-        config.processPool = AppState.processPool
         let userContent = WKUserContentController()
         userContent.add(self, name: "setModalOpen")
         userContent.add(self, name: "setSidebarOpen")

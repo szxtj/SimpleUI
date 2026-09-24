@@ -172,8 +172,31 @@ server.listen(PORT, '127.0.0.1', () => {
         process.kill(process.ppid, 0);
       } catch (e) {
         console.log('[Proxy] Parent process no longer running, exiting.');
-        process.exit(0);
+        cleanupAndExit(0);
       }
     }, 2500);
+  }
+});
+
+function cleanupAndExit(code = 0) {
+  if (wikiService && wikiService.kiwixProcess) {
+    try {
+      wikiService.kiwixProcess.kill('SIGTERM');
+    } catch (e) {
+      // ignore
+    }
+  }
+  process.exit(code);
+}
+
+process.on('SIGINT', () => cleanupAndExit(0));
+process.on('SIGTERM', () => cleanupAndExit(0));
+process.on('exit', () => {
+  if (wikiService && wikiService.kiwixProcess) {
+    try {
+      wikiService.kiwixProcess.kill('SIGKILL');
+    } catch (e) {
+      // ignore
+    }
   }
 });

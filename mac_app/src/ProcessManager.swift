@@ -115,12 +115,26 @@ class ProcessManager {
     }
 
     private func findNodeExecutable() -> String? {
-        let candidates = [
-            "/Users/justinxie/.nvm/versions/node/v24.13.0/bin/node",
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        var candidates: [String] = [
             "/opt/homebrew/bin/node",
             "/usr/local/bin/node",
             "/usr/bin/node"
         ]
+
+        // Dynamically discover all installed NVM Node versions
+        let nvmDir = "\(home)/.nvm/versions/node"
+        if let versions = try? FileManager.default.contentsOfDirectory(atPath: nvmDir) {
+            for ver in versions.sorted().reversed() {
+                candidates.insert("\(nvmDir)/\(ver)/bin/node", at: 0)
+            }
+        }
+
+        // Additional common Node version managers (fnm, volta, asdf)
+        candidates.append("\(home)/.local/share/fnm/current/bin/node")
+        candidates.append("\(home)/.volta/bin/node")
+        candidates.append("\(home)/.asdf/shims/node")
+
         for path in candidates {
             if FileManager.default.isExecutableFile(atPath: path) {
                 return path

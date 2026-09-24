@@ -109,7 +109,6 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         guard let panel = window else { return }
 
         let config = WKWebViewConfiguration()
-        config.processPool = AppState.processPool
         let userContent = WKUserContentController()
         userContent.add(self, name: "openMainWindow")
         userContent.add(self, name: "openMainFromSpotlight")
