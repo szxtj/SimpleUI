@@ -31,8 +31,8 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, o
     <div className={`py-3 w-full flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       {isUser ? (
         /* User Message: Rounded pill bubble on the right with icon-only copy button below */
-        <div className="flex flex-col items-end max-w-[85%] lg:max-w-[75%] group">
-          <div className="rounded-[20px] px-4 py-2.5 bg-[#e9ebf0] text-[#1f2328] dark:bg-[#2d3037] dark:text-[#f1f3f7] border border-black/5 dark:border-white/5 shadow-sm">
+        <div className="flex flex-col items-end max-w-[90%] sm:max-w-[85%] lg:max-w-[75%] group">
+          <div className="rounded-[20px] px-3.5 sm:px-4 py-2 sm:py-2.5 bg-[#e9ebf0] text-[#1f2328] dark:bg-[#2d3037] dark:text-[#f1f3f7] border border-black/5 dark:border-white/5 shadow-sm">
             {/* User image attachments */}
             {message.images && message.images.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-2">
@@ -41,12 +41,12 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, o
                     key={i}
                     src={imgUrl}
                     alt={`upload-${i}`}
-                    className="max-w-[240px] max-h-[240px] rounded-xl object-cover border border-black/10 dark:border-white/10 shadow-sm"
+                    className="max-w-[200px] sm:max-w-[240px] max-h-[200px] sm:max-h-[240px] rounded-xl object-cover border border-black/10 dark:border-white/10 shadow-sm"
                   />
                 ))}
               </div>
             )}
-            <div className="whitespace-pre-wrap text-[15px] leading-relaxed">
+            <div className="whitespace-pre-wrap break-words text-[14.5px] sm:text-[15px] leading-relaxed">
               {message.content}
             </div>
           </div>

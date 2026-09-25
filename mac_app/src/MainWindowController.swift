@@ -34,18 +34,22 @@ class TitleBarDragView: NSView {
             }
 
             // 3. Chat View Top Area (260 ... totalWidth):
-            // Model Selector button: x: 260 ... (sidebarWidth + 210)
-            if x >= sidebarWidth && x <= (sidebarWidth + 210.0) {
+            // Model Selector button: x: 260 ... (sidebarWidth + 210), capped to never overlap right tools
+            let maxModelSelectorX = min(sidebarWidth + 210.0, totalWidth - 65.0)
+            if x >= sidebarWidth && x <= maxModelSelectorX {
                 return nil // Click Model Selector!
             }
 
-            // Settings button on far-right: x: (totalWidth - 60) ... totalWidth
+            // Shrink / Action button on far-right: x: (totalWidth - 60) ... totalWidth
             if x >= (totalWidth - 60.0) {
-                return nil // Click Settings!
+                return nil // Click Shrink to Spotlight!
             }
 
-            // Empty title bar in Chat View: x: (sidebarWidth + 210) ... (totalWidth - 60)
-            return self // Drag window!
+            // Empty title bar in Chat View: drag window!
+            if x > maxModelSelectorX && x < (totalWidth - 60.0) {
+                return self
+            }
+            return nil
         } else {
             // Sidebar is COLLAPSED (width = 0):
             // Open Sidebar button: x: 78 ... 122
@@ -53,18 +57,22 @@ class TitleBarDragView: NSView {
                 return nil // Click Open Sidebar!
             }
 
-            // Model Selector button: x: 122 ... 332
-            if x > 122.0 && x <= 332.0 {
+            // Model Selector button: x: 122 ... capped to never overlap right tools
+            let maxModelSelectorX = min(332.0, totalWidth - 65.0)
+            if x > 122.0 && x <= maxModelSelectorX {
                 return nil // Click Model Selector!
             }
 
-            // Settings button on far-right: x: (totalWidth - 60) ... totalWidth
+            // Shrink / Action button on far-right: x: (totalWidth - 60) ... totalWidth
             if x >= (totalWidth - 60.0) {
-                return nil // Click Settings!
+                return nil // Click Shrink to Spotlight!
             }
 
-            // Empty title bar in Chat View: x: 332 ... (totalWidth - 60)
-            return self // Drag window!
+            // Empty title bar in Chat View: drag window!
+            if x > maxModelSelectorX && x < (totalWidth - 60.0) {
+                return self
+            }
+            return nil
         }
     }
 
@@ -94,7 +102,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             defer: false
         )
 
-        window.minSize = NSSize(width: 920, height: 580)
+        window.minSize = NSSize(width: 700, height: 400)
         window.title = "SimpleUI"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -130,23 +138,35 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         webView.setValue(true, forKey: "drawsBackground") // Main window uses solid background to avoid GPU compositor blur bugs
 
         win.contentView?.addSubview(webView)
-        loadContent()
     }
 
     private func setupDragArea() {
         guard let win = window, let contentView = win.contentView else { return }
 
-        // Top 52px drag area covering the entire window width with smart button hit-testing
-        let topBarHeight: CGFloat = 52.0
-        let dragRect = NSRect(
-            x: 0,
-            y: contentView.bounds.height - topBarHeight,
-            width: contentView.bounds.width,
-            height: topBarHeight
-        )
-        dragView = TitleBarDragView(frame: dragRect)
-        dragView.autoresizingMask = [.width, .minYMargin]
+        dragView = TitleBarDragView()
+        dragView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(dragView, positioned: .above, relativeTo: webView)
+
+        NSLayoutConstraint.activate([
+            dragView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            dragView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            dragView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            dragView.heightAnchor.constraint(equalToConstant: 52.0)
+        ])
+    }
+
+    func updateWindowMinSize(isSidebarOpen: Bool) {
+        guard let win = window else { return }
+        // When sidebar is closed, user can shrink the window down to chat-only width (~450px)
+        let minWidth: CGFloat = isSidebarOpen ? 700.0 : 450.0
+        let minHeight: CGFloat = 400.0
+        win.minSize = NSSize(width: minWidth, height: minHeight)
+
+        if isSidebarOpen && win.frame.width < minWidth {
+            var newFrame = win.frame
+            newFrame.size.width = minWidth
+            win.setFrame(newFrame, display: true, animate: true)
+        }
     }
 
     func loadContent() {
@@ -156,7 +176,26 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
     }
 
     func reload() {
-        webView.reload()
+        if webView.url == nil {
+            loadContent()
+        } else {
+            webView.reload()
+        }
+    }
+
+    // MARK: - WKNavigationDelegate
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        print("MainWindow provisional navigation failed: \(error.localizedDescription). Retrying in 0.5s...")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.loadContent()
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        print("MainWindow navigation failed: \(error.localizedDescription). Retrying in 0.5s...")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.loadContent()
+        }
     }
 
     func showAndFocus() {
@@ -173,6 +212,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             dragView?.isHidden = isOpen
         } else if message.name == "setSidebarOpen", let isOpen = message.body as? Bool {
             dragView?.isSidebarOpen = isOpen
+            updateWindowMinSize(isSidebarOpen: isOpen)
         } else if message.name == "shrinkToSpotlight" {
             let dict = message.body as? [String: Any]
             let sessionId = dict?["sessionId"] as? String

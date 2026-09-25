@@ -150,7 +150,6 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         webView.setValue(false, forKey: "drawsBackground") // Fully transparent background
 
         panel.contentView?.addSubview(webView)
-        loadContent()
     }
 
     private func setupDragView() {
@@ -332,6 +331,21 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             let height = (dict["height"] as? CGFloat) ?? 88
             let isExpanding = (dict["expanded"] as? Bool) ?? (height > 100)
             handleResizePanel(width: width, height: height, isExpanding: isExpanding)
+        }
+    }
+
+    // MARK: - WKNavigationDelegate
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        print("Spotlight provisional navigation failed: \(error.localizedDescription). Retrying in 0.5s...")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.loadContent()
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        print("Spotlight navigation failed: \(error.localizedDescription). Retrying in 0.5s...")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.loadContent()
         }
     }
 
