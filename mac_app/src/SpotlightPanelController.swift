@@ -12,10 +12,13 @@ class SpotlightPanel: NSPanel {
 }
 
 /// A dedicated native overlay view across the top 46px header bar of the expanded Spotlight panel.
-/// It enables fluid window dragging via `performDrag(with: event)` while transparently passing
+/// Tracks mouse events directly to move the NSPanel smoothly, while transparently passing
 /// clicks on the ✖ button (left) and action buttons (right) through to WKWebView.
 class SpotlightDragView: NSView {
     var onDidDrag: ((NSPoint) -> Void)?
+    private var initialMouseLocation: NSPoint = .zero
+    private var initialWindowOrigin: NSPoint = .zero
+    private var isDragging: Bool = false
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden, frame.contains(point) else { return nil }
@@ -41,10 +44,38 @@ class SpotlightDragView: NSView {
         return self
     }
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        return true
+    }
+
     override func mouseDown(with event: NSEvent) {
         guard let window = self.window else { return }
-        window.performDrag(with: event)
-        onDidDrag?(window.frame.origin)
+        isDragging = true
+        initialMouseLocation = NSEvent.mouseLocation
+        initialWindowOrigin = window.frame.origin
+        window.invalidateCursorRects(for: self)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard isDragging, let window = self.window else { return }
+        let currentMouseLocation = NSEvent.mouseLocation
+        let deltaX = currentMouseLocation.x - initialMouseLocation.x
+        let deltaY = currentMouseLocation.y - initialMouseLocation.y
+        let newOrigin = NSPoint(
+            x: initialWindowOrigin.x + deltaX,
+            y: initialWindowOrigin.y + deltaY
+        )
+        window.setFrameOrigin(newOrigin)
+        onDidDrag?(newOrigin)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard isDragging else { return }
+        isDragging = false
+        if let window = self.window {
+            window.invalidateCursorRects(for: self)
+            onDidDrag?(window.frame.origin)
+        }
     }
 
     override func resetCursorRects() {
@@ -52,12 +83,8 @@ class SpotlightDragView: NSView {
         let draggableWidth = max(0, bounds.width - 129.0)
         if draggableWidth > 0 {
             let draggableRect = NSRect(x: 44.0, y: 0, width: draggableWidth, height: bounds.height)
-            addCursorRect(draggableRect, cursor: .openHand)
+            addCursorRect(draggableRect, cursor: isDragging ? .closedHand : .openHand)
         }
-    }
-
-    override var mouseDownCanMoveWindow: Bool {
-        return true
     }
 }
 
@@ -128,15 +155,8 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
 
     private func setupDragView() {
         guard let panel = window, let contentView = panel.contentView else { return }
-        let headerHeight: CGFloat = 46.0
-        let frame = NSRect(
-            x: 0,
-            y: panel.frame.height - headerHeight,
-            width: panel.frame.width,
-            height: headerHeight
-        )
-        dragView = SpotlightDragView(frame: frame)
-        dragView.autoresizingMask = [.width, .minYMargin]
+        dragView = SpotlightDragView()
+        dragView.translatesAutoresizingMaskIntoConstraints = false
         dragView.isHidden = true // Initially hidden in compact capsule state
         dragView.onDidDrag = { [weak self] newOrigin in
             guard let self = self, self.isExpanded else { return }
@@ -144,6 +164,13 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             self.customExpandedOrigin = newOrigin
         }
         contentView.addSubview(dragView, positioned: .above, relativeTo: webView)
+
+        NSLayoutConstraint.activate([
+            dragView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            dragView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            dragView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            dragView.heightAnchor.constraint(equalToConstant: 46.0)
+        ])
     }
 
     private func setupNotificationObservers() {
@@ -247,7 +274,7 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         if isExpanding {
             // EXPANDED:
             dragView.isHidden = false
-            dragView.frame = NSRect(x: 0, y: height - 46, width: width, height: 46)
+            panel.contentView?.layoutSubtreeIfNeeded()
             panel.invalidateCursorRects(for: dragView)
 
             if hasUserCustomPosition, let origin = customExpandedOrigin {
@@ -284,7 +311,12 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().setFrame(newFrame, display: true)
         }, completionHandler: { [weak self] in
-            self?.isProgrammaticAnimating = false
+            guard let self = self else { return }
+            self.isProgrammaticAnimating = false
+            self.window?.contentView?.layoutSubtreeIfNeeded()
+            if let dragView = self.dragView {
+                self.window?.invalidateCursorRects(for: dragView)
+            }
         })
     }
 

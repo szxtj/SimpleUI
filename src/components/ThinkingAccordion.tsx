@@ -16,19 +16,15 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
 }) => {
   const { t } = useI18n();
   const [isOpen, setIsOpen] = useState(isThinking);
-  const prevIsThinkingRef = useRef(isThinking);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   // Auto expand when thinking starts, and auto collapse when thinking finishes
   useEffect(() => {
-    if (isThinking && !prevIsThinkingRef.current) {
-      // Thinking started -> auto expand
+    if (isThinking) {
       setIsOpen(true);
-    } else if (!isThinking && prevIsThinkingRef.current) {
-      // Thinking finished -> auto collapse
+    } else {
       setIsOpen(false);
     }
-    prevIsThinkingRef.current = isThinking;
   }, [isThinking]);
 
   // While thinking, auto scroll to the latest line of thought

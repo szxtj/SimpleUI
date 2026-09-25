@@ -5,12 +5,14 @@ interface ContextRingProps {
   usedTokens: number;
   maxContext: number;
   placement?: 'top' | 'bottom' | 'left';
+  showRemainingPercent?: boolean;
 }
 
 export const ContextRing: React.FC<ContextRingProps> = ({
   usedTokens,
   maxContext,
   placement = 'top',
+  showRemainingPercent = false,
 }) => {
   const { t } = useI18n();
   const [showTooltip, setShowTooltip] = useState(false);
@@ -19,6 +21,7 @@ export const ContextRing: React.FC<ContextRingProps> = ({
   const safeUsed = Math.max(0, usedTokens || 0);
   const percent = Math.min(100, (safeUsed / safeMax) * 100);
   const remaining = Math.max(0, safeMax - safeUsed);
+  const remainingPercent = Math.max(0, 100 - percent);
 
   // SVG ring parameters (sleek 22px ring)
   const size = 22;
@@ -63,30 +66,38 @@ export const ContextRing: React.FC<ContextRingProps> = ({
       onMouseLeave={() => setShowTooltip(false)}
       aria-label={`${t('contextOccupancy')} ${percent.toFixed(1)}%`}
     >
-      <svg width={size} height={size} className="transform -rotate-90">
-        {/* Background track circle */}
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="transparent"
-          strokeWidth={strokeWidth}
-          className="stroke-black/15 dark:stroke-[#383a42]"
-        />
-        {/* Active progress arc */}
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="transparent"
-          stroke={progressColor}
-          strokeWidth={strokeWidth}
-          strokeDasharray={circumference}
-          strokeDashoffset={strokeDashoffset}
-          strokeLinecap="round"
-          className="transition-all duration-300 ease-out"
-        />
-      </svg>
+      <div className="flex items-center gap-1.5">
+        <svg width={size} height={size} className="transform -rotate-90 shrink-0">
+          {/* Background track circle */}
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="transparent"
+            strokeWidth={strokeWidth}
+            className="stroke-black/15 dark:stroke-[#383a42]"
+          />
+          {/* Active progress arc */}
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="transparent"
+            stroke={progressColor}
+            strokeWidth={strokeWidth}
+            strokeDasharray={circumference}
+            strokeDashoffset={strokeDashoffset}
+            strokeLinecap="round"
+            className="transition-all duration-300 ease-out"
+          />
+        </svg>
+
+        {showRemainingPercent && (
+          <span className="text-[11px] font-mono font-medium tracking-tight text-zinc-500 dark:text-zinc-400 select-none tabular-nums leading-none">
+            {remainingPercent >= 99.95 ? '100%' : `${remainingPercent.toFixed(1)}%`}
+          </span>
+        )}
+      </div>
 
       {/* Floating Detailed Context Tooltip */}
       {showTooltip && (

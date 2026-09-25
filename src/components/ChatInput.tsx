@@ -255,7 +255,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           )}
 
           {/* Context Ring RIGHT NEXT TO (to the right of) Send Icon */}
-          <ContextRing usedTokens={usedTokens} maxContext={maxContext} />
+          <ContextRing usedTokens={usedTokens} maxContext={maxContext} showRemainingPercent={true} />
         </div>
       </div>
     </div>

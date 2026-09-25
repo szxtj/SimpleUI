@@ -1,4 +1,5 @@
 import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo } from '../types/chat';
+import { estimateHistoryTokens } from '../utils/token';
 
 export interface RagContextResponse {
   needsWiki: boolean;
@@ -18,6 +19,7 @@ export interface StreamCallbacks {
   onFirstToken?: () => void;
   onThought?: (delta: string) => void;
   onContent?: (delta: string) => void;
+  onTokenProgress?: (liveTokens: number) => void;
   onDone?: (metrics: TurnMetrics) => void;
   onError?: (error: Error) => void;
 }
@@ -184,6 +186,9 @@ export class TurboFieldfareAPI {
       payload.stop = settings.stopStrings;
     }
 
+    const initialPromptTokens = estimateHistoryTokens(messages, settings.systemPrompt);
+    let lastReportedMilestone = 0;
+
     const startTime = performance.now();
     let firstTokenTime: number | null = null;
     let generatedTokensCount = 0;
@@ -240,6 +245,8 @@ export class TurboFieldfareAPI {
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
 
+    callbacks.onTokenProgress?.(initialPromptTokens);
+
     try {
       while (true) {
         if (signal?.aborted) break;
@@ -279,20 +286,31 @@ export class TurboFieldfareAPI {
               const delta = choice.delta;
               if (!delta) continue;
 
-              // Mark first token time (TTFT)
+              // Mark first token time (TTFT) and notify initial prompt load
               if (!firstTokenTime && (delta.content || delta.reasoning_content)) {
                 firstTokenTime = performance.now();
                 callbacks.onFirstToken?.();
+                callbacks.onTokenProgress?.(initialPromptTokens);
               }
 
               if (delta.reasoning_content) {
                 generatedTokensCount++;
                 callbacks.onThought?.(delta.reasoning_content);
+                if (generatedTokensCount - lastReportedMilestone >= 20) {
+                  lastReportedMilestone = generatedTokensCount;
+                  const livePrompt = finalUsage?.prompt_tokens ?? initialPromptTokens;
+                  callbacks.onTokenProgress?.(livePrompt + generatedTokensCount);
+                }
               }
 
               if (delta.content) {
                 generatedTokensCount++;
                 callbacks.onContent?.(delta.content);
+                if (generatedTokensCount - lastReportedMilestone >= 20) {
+                  lastReportedMilestone = generatedTokensCount;
+                  const livePrompt = finalUsage?.prompt_tokens ?? initialPromptTokens;
+                  callbacks.onTokenProgress?.(livePrompt + generatedTokensCount);
+                }
               }
             } catch (jsonErr) {
               console.warn('Failed to parse SSE JSON chunk:', dataStr, jsonErr);
@@ -324,7 +342,8 @@ export class TurboFieldfareAPI {
     const decodeDurationMs = firstTokenTime ? Math.max(1, Math.round(endTime - firstTokenTime)) : 1;
     const completionTokens = finalUsage?.completion_tokens ?? generatedTokensCount;
     const tokensPerSecond = Number(((completionTokens / (decodeDurationMs / 1000))).toFixed(1));
-    const totalTokens = finalUsage?.total_tokens ?? (completionTokens + 150);
+    const promptTokens = finalUsage?.prompt_tokens ?? initialPromptTokens;
+    const totalTokens = finalUsage?.total_tokens ?? (promptTokens + completionTokens);
     const maxContext = settings.maxContext || 32768;
     const contextRemaining = Math.max(0, maxContext - totalTokens);
     const contextPercent = Math.min(100, Number(((totalTokens / maxContext) * 100).toFixed(1)));
@@ -333,7 +352,7 @@ export class TurboFieldfareAPI {
       ttftMs,
       decodeDurationMs,
       tokensPerSecond,
-      promptTokens: finalUsage?.prompt_tokens ?? Math.max(0, totalTokens - completionTokens),
+      promptTokens,
       completionTokens,
       totalTokens,
       cachedTokens: finalUsage?.cached_tokens,
@@ -343,6 +362,7 @@ export class TurboFieldfareAPI {
       contextPercent,
     };
 
+    callbacks.onTokenProgress?.(totalTokens);
     callbacks.onDone?.(metrics);
   }
 }

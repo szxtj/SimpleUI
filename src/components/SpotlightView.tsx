@@ -40,6 +40,7 @@ import {
 } from 'lucide-react';
 import { useI18n } from '../i18n';
 import { useTheme } from '../hooks/useTheme';
+import { estimateHistoryTokens } from '../utils/token';
 
 export const SpotlightView: React.FC = () => {
   const { t, lang } = useI18n();
@@ -64,6 +65,15 @@ export const SpotlightView: React.FC = () => {
     mediaCount: 0,
   });
   const [usedTokens, setUsedTokens] = useState<number>(0);
+  const [liveStreamingTokens, setLiveStreamingTokens] = useState<number | null>(null);
+
+  // Clean persistent conversation history tokens (user text + assistant text only)
+  const persistentHistoryTokens = React.useMemo(() => {
+    if (!messages || messages.length === 0) return 0;
+    return estimateHistoryTokens(messages, settings.systemPrompt);
+  }, [messages, settings.systemPrompt]);
+
+  const displayTokens = (isGenerating && liveStreamingTokens !== null) ? liveStreamingTokens : persistentHistoryTokens;
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [activeWikiArticle, setActiveWikiArticle] = useState<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
@@ -220,7 +230,9 @@ export const SpotlightView: React.FC = () => {
     if (target) {
       activeSessionIdRef.current = sessionId;
       setMessages(target.messages || []);
-      setUsedTokens(target.contextUsed || 0);
+      const cleanTokens = estimateHistoryTokens(target.messages || [], settings.systemPrompt);
+      setUsedTokens(cleanTokens);
+      setLiveStreamingTokens(null);
       setEnableThinking(target.enableThinking ?? false);
       setEnableWikiSearch(target.enableWikiSearch ?? false);
       notifyResize((target.messages && target.messages.length > 0) || false);
@@ -252,6 +264,10 @@ export const SpotlightView: React.FC = () => {
       } else if (data.type === 'LOAD_SESSION_IN_SPOTLIGHT') {
         if (data.sessionId) {
           loadSessionById(data.sessionId);
+        }
+      } else if (data.type === 'STREAM_TOKEN_PROGRESS') {
+        if (data.source !== 'SPOTLIGHT' && activeSessionIdRef.current === data.sessionId) {
+          setLiveStreamingTokens(data.liveTokens);
         }
       } else if (data.type === 'STREAM_CHUNK') {
         if (data.source !== 'SPOTLIGHT') {
@@ -289,9 +305,10 @@ export const SpotlightView: React.FC = () => {
           const { sessionId, messageId, reasoningContent, content, thinkingDuration, metrics } = data;
           if (activeSessionIdRef.current === sessionId) {
             setIsGenerating(false);
+            setLiveStreamingTokens(null);
             recordActivity();
-            setMessages((prev) =>
-              prev.map((m) =>
+            setMessages((prev) => {
+              const updated = prev.map((m) =>
                 m.id === messageId
                   ? {
                       ...m,
@@ -302,8 +319,11 @@ export const SpotlightView: React.FC = () => {
                       metrics,
                     }
                   : m
-              )
-            );
+              );
+              const cleanTokens = estimateHistoryTokens(updated, settings.systemPrompt);
+              setUsedTokens(cleanTokens);
+              return updated;
+            });
           }
         }
       } else if (data.type === 'STREAM_ABORT') {
@@ -313,6 +333,7 @@ export const SpotlightView: React.FC = () => {
             abortControllerRef.current = null;
           }
           setIsGenerating(false);
+          setLiveStreamingTokens(null);
         }
       } else if (data.type === 'STREAM_QUERY') {
         if (isGeneratingRef.current && abortControllerRef.current && activeSessionIdRef.current) {
@@ -580,10 +601,22 @@ export const SpotlightView: React.FC = () => {
       enableWikiSearch,
     };
 
+    const promptTokensEstimate = estimateHistoryTokens(messagesWithPrompt, settings.systemPrompt);
+    setLiveStreamingTokens(promptTokensEstimate);
+
     await TurboFieldfareAPI.streamChat(
       messagesWithPrompt,
       sessionSettings,
       {
+        onTokenProgress: (liveTokens) => {
+          setLiveStreamingTokens(liveTokens);
+          syncChannel?.postMessage({
+            type: 'STREAM_TOKEN_PROGRESS',
+            sessionId: currentSessionId,
+            liveTokens,
+            source: 'SPOTLIGHT',
+          });
+        },
         onFirstToken: () => {},
         onThought: (delta) => {
           accumulatedThought += delta;
@@ -625,6 +658,7 @@ export const SpotlightView: React.FC = () => {
                     ...m,
                     content: accumulatedContent,
                     isThinking: false,
+                    thinkingDuration: finalThinkingDuration,
                   }
                 : m
             )
@@ -643,9 +677,9 @@ export const SpotlightView: React.FC = () => {
         },
         onDone: (metrics) => {
           setIsGenerating(false);
+          setLiveStreamingTokens(null);
           abortControllerRef.current = null;
           recordActivity();
-          setUsedTokens(metrics.contextUsed);
 
           const finalAsstMessage: ChatMessage = {
             id: asstMessageId,
@@ -659,10 +693,16 @@ export const SpotlightView: React.FC = () => {
             citations: foundCitations.length > 0 ? foundCitations : undefined,
           };
 
+          const cleanHistoryTokens = estimateHistoryTokens(
+            [...historyMessages, userMessage, finalAsstMessage],
+            settings.systemPrompt
+          );
+          setUsedTokens(cleanHistoryTokens);
+
           setMessages((prev) =>
             prev.map((m) => (m.id === asstMessageId ? finalAsstMessage : m))
           );
-          persistSession(true, metrics);
+          persistSession(true, { ...metrics, contextUsed: cleanHistoryTokens });
           syncChannel?.postMessage({
             type: 'STREAM_DONE',
             sessionId: currentSessionId,
@@ -670,14 +710,21 @@ export const SpotlightView: React.FC = () => {
             reasoningContent: accumulatedThought,
             content: accumulatedContent,
             thinkingDuration: finalThinkingDuration,
-            metrics,
+            metrics: { ...metrics, contextUsed: cleanHistoryTokens },
             source: 'SPOTLIGHT',
           });
         },
         onError: (err) => {
           setIsGenerating(false);
+          setLiveStreamingTokens(null);
           abortControllerRef.current = null;
           recordActivity();
+
+          const cleanHistoryTokens = estimateHistoryTokens(
+            [...historyMessages, userMessage],
+            settings.systemPrompt
+          );
+          setUsedTokens(cleanHistoryTokens);
 
           const finalAsstMessage: ChatMessage = {
             id: asstMessageId,
@@ -799,6 +846,7 @@ export const SpotlightView: React.FC = () => {
       abortControllerRef.current = null;
     }
     setIsGenerating(false);
+    setLiveStreamingTokens(null);
     syncChannel?.postMessage({
       type: 'STREAM_ABORT',
       sessionId: activeSessionIdRef.current,
@@ -812,6 +860,8 @@ export const SpotlightView: React.FC = () => {
       abortControllerRef.current = null;
     }
     setIsGenerating(false);
+    setLiveStreamingTokens(null);
+    setUsedTokens(0);
     activeSessionIdRef.current = null;
     setMessages([]);
     setInput('');
@@ -880,6 +930,8 @@ export const SpotlightView: React.FC = () => {
     setMessages([]);
     setInput('');
     setImages([]);
+    setLiveStreamingTokens(null);
+    setUsedTokens(0);
     setEnableThinking(false);
     setEnableWikiSearch(false);
     notifyResize(false);
@@ -1054,7 +1106,7 @@ export const SpotlightView: React.FC = () => {
                   <ArrowUp className="w-3.5 h-3.5 stroke-[2.5]" />
                 </button>
 
-                <ContextRing usedTokens={usedTokens} maxContext={settings.maxContext} placement="left" />
+                <ContextRing usedTokens={displayTokens} maxContext={settings.maxContext} placement="left" />
               </div>
             </div>
           </div>
@@ -1367,7 +1419,7 @@ export const SpotlightView: React.FC = () => {
                   </button>
                 )}
 
-                <ContextRing usedTokens={usedTokens} maxContext={settings.maxContext} />
+                <ContextRing usedTokens={displayTokens} maxContext={settings.maxContext} />
               </div>
             </div>
           </div>

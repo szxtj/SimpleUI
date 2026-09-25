@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
 import { SettingsModal } from './components/SettingsModal';
@@ -26,6 +26,7 @@ import { SpotlightView } from './components/SpotlightView';
 import { WikiDrawer } from './components/WikiDrawer';
 import { I18nProvider, resolveLanguage } from './i18n';
 import { useTheme } from './hooks/useTheme';
+import { estimateHistoryTokens } from './utils/token';
 
 export const App: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings>(loadSettings());
@@ -85,6 +86,7 @@ export const App: React.FC = () => {
   const [input, setInput] = useState('');
   const [images, setImages] = useState<string[]>([]);
   const [generatingSessionIds, setGeneratingSessionIds] = useState<string[]>([]);
+  const [liveStreamingTokens, setLiveStreamingTokens] = useState<Record<string, number>>({});
   const isGenerating = currentSessionId ? generatingSessionIds.includes(currentSessionId) : false;
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -182,6 +184,10 @@ export const App: React.FC = () => {
           reloadFromStorage();
         } else if (data.type === 'SETTINGS_CHANGED') {
           setSettings(loadSettings());
+        } else if (data.type === 'STREAM_TOKEN_PROGRESS') {
+          if (data.source !== 'MAIN' && data.sessionId) {
+            setLiveStreamingTokens((prev) => ({ ...prev, [data.sessionId]: data.liveTokens }));
+          }
         } else if (data.type === 'STREAM_CHUNK') {
           if (data.source !== 'MAIN') {
             const { sessionId, messageId, reasoningContent, content, isThinking, thinkingDuration } = data;
@@ -226,27 +232,33 @@ export const App: React.FC = () => {
           if (data.source !== 'MAIN') {
             const { sessionId, messageId, reasoningContent, content, thinkingDuration, metrics } = data;
             setGeneratingSessionIds((prev) => prev.filter((id) => id !== sessionId));
+            setLiveStreamingTokens((prev) => {
+              const next = { ...prev };
+              delete next[sessionId];
+              return next;
+            });
             setSessions((prev) =>
-              prev.map((s) =>
-                s.id === sessionId
-                  ? {
-                      ...s,
-                      contextUsed: metrics?.contextUsed ?? s.contextUsed,
-                      messages: s.messages.map((m) =>
-                        m.id === messageId
-                          ? {
-                              ...m,
-                              reasoningContent,
-                              content,
-                              isThinking: false,
-                              thinkingDuration,
-                              metrics,
-                            }
-                          : m
-                      ),
-                    }
-                  : s
-              )
+              prev.map((s) => {
+                if (s.id !== sessionId) return s;
+                const updatedMsgs = s.messages.map((m) =>
+                  m.id === messageId
+                    ? {
+                        ...m,
+                        reasoningContent,
+                        content,
+                        isThinking: false,
+                        thinkingDuration,
+                        metrics,
+                      }
+                    : m
+                );
+                const cleanHistoryTokens = estimateHistoryTokens(updatedMsgs, settings.systemPrompt);
+                return {
+                  ...s,
+                  contextUsed: cleanHistoryTokens,
+                  messages: updatedMsgs,
+                };
+              })
             );
             if (currentSessionIdRef.current === sessionId && metrics) {
               setLastMetrics(metrics);
@@ -262,11 +274,17 @@ export const App: React.FC = () => {
             }
             activeStreamsRef.current.delete(targetId);
             setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetId));
+            setLiveStreamingTokens((prev) => {
+              const next = { ...prev };
+              delete next[targetId];
+              return next;
+            });
           } else {
             abortControllersRef.current.forEach((controller) => controller.abort());
             abortControllersRef.current.clear();
             activeStreamsRef.current.clear();
             setGeneratingSessionIds([]);
+            setLiveStreamingTokens({});
           }
         } else if (data.type === 'STREAM_QUERY') {
           activeStreamsRef.current.forEach((stream, sessId) => {
@@ -376,7 +394,15 @@ export const App: React.FC = () => {
   // Current session helper
   const currentSession = sessions.find((s) => s.id === currentSessionId);
   const messages = currentSession?.messages || [];
-  const usedTokens = currentSession?.contextUsed || 0;
+
+  // Persistent conversation history baseline tokens (excluding temporary RAG prompts & reasoning tokens)
+  const persistentHistoryTokens = useMemo(() => {
+    if (!messages || messages.length === 0) return 0;
+    return estimateHistoryTokens(messages, settings.systemPrompt);
+  }, [messages, settings.systemPrompt]);
+
+  const currentLiveTokens = currentSessionId ? liveStreamingTokens[currentSessionId] : undefined;
+  const usedTokens = (isGenerating && currentLiveTokens !== undefined) ? currentLiveTokens : persistentHistoryTokens;
 
   // Session management handlers
   const handleNewSession = () => {
@@ -542,10 +568,25 @@ export const App: React.FC = () => {
       enableWikiSearch: sessionEnableWiki,
     };
 
+    const promptTokensEstimate = estimateHistoryTokens(
+      [...historyMessages, { ...userMessage, content: promptToSend }],
+      settings.systemPrompt
+    );
+    setLiveStreamingTokens((prev) => ({ ...prev, [targetSessionId]: promptTokensEstimate }));
+
     await TurboFieldfareAPI.streamChat(
       [...historyMessages, { ...userMessage, content: promptToSend }],
       sessionSettings,
       {
+        onTokenProgress: (liveTokens) => {
+          setLiveStreamingTokens((prev) => ({ ...prev, [targetSessionId]: liveTokens }));
+          syncChannel?.postMessage({
+            type: 'STREAM_TOKEN_PROGRESS',
+            sessionId: targetSessionId,
+            liveTokens,
+            source: 'MAIN',
+          });
+        },
         onFirstToken: () => {
           // first token received
         },
@@ -626,6 +667,7 @@ export const App: React.FC = () => {
                     ...m,
                     content: accumulatedContent,
                     isThinking: false,
+                    thinkingDuration: thinkingDuration,
                   };
                 }),
               };
@@ -636,10 +678,28 @@ export const App: React.FC = () => {
           abortControllersRef.current.delete(targetSessionId);
           activeStreamsRef.current.delete(targetSessionId);
           setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetSessionId));
+          setLiveStreamingTokens((prev) => {
+            const next = { ...prev };
+            delete next[targetSessionId];
+            return next;
+          });
 
           if (currentSessionIdRef.current === targetSessionId) {
             setLastMetrics(metrics);
           }
+
+          const cleanHistoryTokens = estimateHistoryTokens(
+            [
+              ...historyMessages,
+              userMessage,
+              {
+                id: assistantMsgId,
+                role: 'assistant',
+                content: accumulatedContent,
+              },
+            ],
+            settings.systemPrompt
+          );
 
           syncChannel?.postMessage({
             type: 'STREAM_DONE',
@@ -648,7 +708,7 @@ export const App: React.FC = () => {
             reasoningContent: accumulatedReasoning,
             content: accumulatedContent,
             thinkingDuration: thinkingDuration,
-            metrics,
+            metrics: { ...metrics, contextUsed: cleanHistoryTokens },
             source: 'MAIN',
           });
 
@@ -657,7 +717,7 @@ export const App: React.FC = () => {
               if (s.id !== targetSessionId) return s;
               return {
                 ...s,
-                contextUsed: metrics.contextUsed,
+                contextUsed: cleanHistoryTokens,
                 messages: s.messages.map((m) => {
                   if (m.id !== assistantMsgId) return m;
                   return {
@@ -677,6 +737,11 @@ export const App: React.FC = () => {
           abortControllersRef.current.delete(targetSessionId);
           activeStreamsRef.current.delete(targetSessionId);
           setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetSessionId));
+          setLiveStreamingTokens((prev) => {
+            const next = { ...prev };
+            delete next[targetSessionId];
+            return next;
+          });
 
           syncChannel?.postMessage({
             type: 'STREAM_DONE',
@@ -819,6 +884,11 @@ export const App: React.FC = () => {
     }
     activeStreamsRef.current.delete(targetId);
     setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetId));
+    setLiveStreamingTokens((prev) => {
+      const next = { ...prev };
+      delete next[targetId];
+      return next;
+    });
 
     syncChannel?.postMessage({
       type: 'STREAM_ABORT',
