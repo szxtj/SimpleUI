@@ -232,7 +232,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           {isGenerating ? (
             <button
               type="button"
-              onClick={onStop}
+              onClick={() => onStop()}
               className="w-8 h-8 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center transition-transform active:scale-95 shadow-md"
               title={t('stop')}
             >

@@ -226,11 +226,23 @@ export class TurboFieldfareAPI {
       return;
     }
 
+    const abortHandler = () => {
+      reader.cancel().catch(() => {});
+    };
+    if (signal) {
+      if (signal.aborted) {
+        abortHandler();
+      } else {
+        signal.addEventListener('abort', abortHandler, { once: true });
+      }
+    }
+
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
 
     try {
       while (true) {
+        if (signal?.aborted) break;
         const { done, value } = await reader.read();
         if (done) break;
 
@@ -289,13 +301,16 @@ export class TurboFieldfareAPI {
         }
       }
     } catch (streamErr) {
-      if ((streamErr as Error).name === 'AbortError') {
+      if ((streamErr as Error).name === 'AbortError' || signal?.aborted) {
         // User stopped generation, finalize with current timings
       } else {
         callbacks.onError?.(streamErr as Error);
         return;
       }
     } finally {
+      if (signal) {
+        signal.removeEventListener('abort', abortHandler);
+      }
       try {
         await reader.cancel();
       } catch {

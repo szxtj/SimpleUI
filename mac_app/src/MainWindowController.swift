@@ -81,6 +81,7 @@ class TitleBarDragView: NSView {
 class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     private var webView: WKWebView!
     private var dragView: TitleBarDragView!
+    var onShrinkToSpotlight: ((String?) -> Void)?
 
     init() {
         let width: CGFloat = 1180
@@ -119,6 +120,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         let userContent = WKUserContentController()
         userContent.add(self, name: "setModalOpen")
         userContent.add(self, name: "setSidebarOpen")
+        userContent.add(self, name: "shrinkToSpotlight")
         config.userContentController = userContent
 
         webView = WKWebView(frame: win.contentView?.bounds ?? .zero, configuration: config)
@@ -171,6 +173,11 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             dragView?.isHidden = isOpen
         } else if message.name == "setSidebarOpen", let isOpen = message.body as? Bool {
             dragView?.isSidebarOpen = isOpen
+        } else if message.name == "shrinkToSpotlight" {
+            let dict = message.body as? [String: Any]
+            let sessionId = dict?["sessionId"] as? String
+            window?.orderOut(nil)
+            onShrinkToSpotlight?(sessionId)
         }
     }
 

@@ -224,6 +224,13 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         webView.evaluateJavaScript("window.onSpotlightShown && window.onSpotlightShown()") { _, _ in }
     }
 
+    func showWithSession(sessionId: String?) {
+        show()
+        if let sid = sessionId {
+            webView.evaluateJavaScript("window.loadSessionInSpotlight && window.loadSessionInSpotlight('\(sid)')") { _, _ in }
+        }
+    }
+
     func hide() {
         window?.orderOut(nil)
     }

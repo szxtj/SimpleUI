@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -11,7 +11,61 @@ interface MarkdownRendererProps {
   className?: string;
 }
 
+/**
+ * Preprocess markdown content to solve CommonMark bold (**) parsing failures
+ * with CJK punctuation, trailing colons, and internal spaces without altering code blocks or math.
+ */
+function preprocessMarkdownBold(content: string): string {
+  if (!content) return '';
+
+  const tokens: string[] = [];
+  const placeholder = (idx: number) => `__PROTECTED_BLOCK_${idx}__`;
+
+  // Protect code blocks, inline code, and LaTeX math ($$ and $)
+  let protectedContent = content.replace(
+    /(```[\s\S]*?```|`[^`\n]+`|\$\$[\s\S]*?\$\$|\$[^\$\n]+\$)/g,
+    (match) => {
+      tokens.push(match);
+      return placeholder(tokens.length - 1);
+    }
+  );
+
+  // 1. Trim inner spaces inside **...**: ** text ** -> **text**
+  protectedContent = protectedContent.replace(/\*\*([ \t]+)(.+?)\*\*/g, '**$2**');
+  protectedContent = protectedContent.replace(/\*\*(.+?)([ \t]+)\*\*/g, '**$1**');
+
+  // 2. Bracket pairs inside **: **【xxx】** -> 【**xxx**】, etc.
+  const bracketPairs: [string, string][] = [
+    ['【', '】'],
+    ['（', '）'],
+    ['(', ')'],
+    ['[', ']'],
+    ['“', '”'],
+    ['「', '」'],
+    ['《', '》'],
+    ['『', '』'],
+  ];
+  for (const [open, close] of bracketPairs) {
+    const escOpen = open.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escClose = close.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`\\*\\*${escOpen}([^\\*\\n]+?)${escClose}\\*\\*`, 'g');
+    protectedContent = protectedContent.replace(re, `${open}**$1**${close}`);
+  }
+
+  // 3. Trailing punctuation inside ** followed immediately by non-space/non-punctuation (CommonMark 6.2 right-flanking issue)
+  // e.g. **注意：**不要关闭 -> **注意**：不要关闭
+  protectedContent = protectedContent.replace(
+    /\*\*([^\*\n]+?)([：:，,。\.！!？\?；;、~～]+)\*\*([^\s：:，,。\.！!？\?；;、\*\n])/g,
+    '**$1**$2$3'
+  );
+
+  // Restore protected blocks
+  return protectedContent.replace(/__PROTECTED_BLOCK_(\d+)__/g, (_, idx) => tokens[parseInt(idx, 10)]);
+}
+
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, className }) => {
+  const normalizedContent = useMemo(() => preprocessMarkdownBold(content), [content]);
+
   return (
     <div className={`markdown-body ${className || 'text-[#e0e1e4] leading-relaxed'}`}>
       <ReactMarkdown
@@ -37,7 +91,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
           },
         }}
       >
-        {content}
+        {normalizedContent}
       </ReactMarkdown>
     </div>
   );

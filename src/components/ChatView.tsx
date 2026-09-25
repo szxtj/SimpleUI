@@ -10,8 +10,8 @@ import {
   BookOpen,
   ChevronDown,
   Check,
-  Settings,
   PanelLeftOpen,
+  Minimize2,
 } from 'lucide-react';
 
 interface ChatViewProps {
@@ -32,7 +32,7 @@ interface ChatViewProps {
   onSelectModel: (model: string) => void;
   visionReady: boolean;
   lastMetrics?: TurnMetrics;
-  onOpenSettings: () => void;
+  onOpenSettings?: () => void;
   isSidebarOpen: boolean;
   onToggleSidebar: () => void;
   enableWikiSearch?: boolean;
@@ -41,6 +41,7 @@ interface ChatViewProps {
   onOpenWiki?: (title: string) => void;
   onRetry?: (messageId: string) => void;
   onDelete?: (messageId: string) => void;
+  onShrinkToSpotlight?: () => void;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -60,7 +61,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
   availableModels,
   onSelectModel,
   visionReady,
-  onOpenSettings,
   isSidebarOpen,
   onToggleSidebar,
   enableWikiSearch,
@@ -69,6 +69,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onOpenWiki,
   onRetry,
   onDelete,
+  onShrinkToSpotlight,
 }) => {
   const { t } = useI18n();
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -76,22 +77,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const prevFirstMsgIdRef = useRef(messages[0]?.id);
   const [showModelMenu, setShowModelMenu] = useState(false);
 
-  // Auto-scroll to bottom only on new turns, session change, or while actively thinking/generating
+  // Auto-scroll to bottom only when a new message turn is added or session changes
+  // Do NOT force focus on the line being generated so content flows naturally
   useEffect(() => {
     const isNewMessage = messages.length > prevMessagesLengthRef.current;
     const isDifferentSession = messages[0]?.id !== prevFirstMsgIdRef.current;
     prevMessagesLengthRef.current = messages.length;
     prevFirstMsgIdRef.current = messages[0]?.id;
 
-    const lastMsg = messages[messages.length - 1];
-    const isActivelyThinking = lastMsg?.role === 'assistant' && lastMsg?.isThinking === true;
-
     if (isDifferentSession || isNewMessage) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    } else if (isActivelyThinking || isGenerating) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
     }
-  }, [messages, isGenerating]);
+  }, [messages]);
 
   const quickPrompts = [
     {
@@ -176,15 +173,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
         {/* Center Draggable Space */}
         <div className="flex-1 h-full" />
 
-        {/* Right Tools: Settings */}
+        {/* Right Tools: Shrink to Spotlight */}
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={onOpenSettings}
-            className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
-            title={t('settings')}
+            onClick={onShrinkToSpotlight}
+            className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors cursor-pointer"
+            title={t('shrinkToSpotlight')}
           >
-            <Settings className="w-4 h-4" />
+            <Minimize2 className="w-4 h-4" />
           </button>
         </div>
       </div>

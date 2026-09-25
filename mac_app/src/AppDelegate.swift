@@ -20,6 +20,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.mainWindowController.showAndFocus()
         }
 
+        mainWindowController.onShrinkToSpotlight = { [weak self] sessionId in
+            self?.spotlightController.showWithSession(sessionId: sessionId)
+        }
+
         // Start Proxy if needed and show Main Window
         ProcessManager.shared.startProxyIfNeeded { [weak self] success in
             DispatchQueue.main.async {

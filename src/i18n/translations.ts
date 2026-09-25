@@ -140,6 +140,7 @@ export const translations = {
     quickChat: '快捷问答',
     closeEsc: '关闭 (Esc)',
     openInMainWindow: '在主窗口中打开 (⌘O)',
+    shrinkToSpotlight: '缩小为快捷悬浮窗',
     serviceNotReady: '服务未就绪',
 
     // Knowledge Base (ZIM)
@@ -308,6 +309,7 @@ export const translations = {
     quickChat: 'Quick Chat',
     closeEsc: 'Close (Esc)',
     openInMainWindow: 'Open in Main Window (⌘O)',
+    shrinkToSpotlight: 'Shrink to Spotlight',
     serviceNotReady: 'Service not ready',
 
     // Knowledge Base (ZIM)

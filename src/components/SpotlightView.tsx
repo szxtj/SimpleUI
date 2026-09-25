@@ -192,10 +192,7 @@ export const SpotlightView: React.FC = () => {
     prevMessagesLengthRef.current = messages.length;
     prevFirstMsgIdRef.current = messages[0]?.id;
 
-    const lastMsg = messages[messages.length - 1];
-    const isActivelyThinking = lastMsg?.role === 'assistant' && lastMsg?.isThinking === true;
-
-    if (isDifferentSession || isNewMessage || isActivelyThinking) {
+    if (isDifferentSession || isNewMessage) {
       scrollEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages]);
@@ -217,6 +214,31 @@ export const SpotlightView: React.FC = () => {
     checkWiki();
   }, []);
 
+  const loadSessionById = (sessionId: string) => {
+    const all = loadSessions();
+    const target = all.find((s) => s.id === sessionId);
+    if (target) {
+      activeSessionIdRef.current = sessionId;
+      setMessages(target.messages || []);
+      setUsedTokens(target.contextUsed || 0);
+      setEnableThinking(target.enableThinking ?? false);
+      setEnableWikiSearch(target.enableWikiSearch ?? false);
+      notifyResize((target.messages && target.messages.length > 0) || false);
+      recordActivity();
+    }
+  };
+
+  useEffect(() => {
+    // @ts-expect-error global hook for Swift showWithSession evaluation
+    window.loadSessionInSpotlight = (sessionId: string) => {
+      loadSessionById(sessionId);
+    };
+    return () => {
+      // @ts-expect-error global hook
+      delete window.loadSessionInSpotlight;
+    };
+  }, []);
+
   // Real-time synchronization of settings & streaming across windows via syncChannel
   useEffect(() => {
     if (!syncChannel) return;
@@ -227,12 +249,15 @@ export const SpotlightView: React.FC = () => {
 
       if (data.type === 'SETTINGS_CHANGED') {
         setSettings(loadSettings());
+      } else if (data.type === 'LOAD_SESSION_IN_SPOTLIGHT') {
+        if (data.sessionId) {
+          loadSessionById(data.sessionId);
+        }
       } else if (data.type === 'STREAM_CHUNK') {
         if (data.source !== 'SPOTLIGHT') {
           recordActivity();
           const { sessionId, messageId, reasoningContent, content, isThinking, thinkingDuration } = data;
-          if (!activeSessionIdRef.current || activeSessionIdRef.current === sessionId) {
-            activeSessionIdRef.current = sessionId;
+          if (activeSessionIdRef.current === sessionId) {
             setIsGenerating(true);
 
             setMessages((prev) => {
@@ -282,7 +307,7 @@ export const SpotlightView: React.FC = () => {
           }
         }
       } else if (data.type === 'STREAM_ABORT') {
-        if (data.sessionId === activeSessionIdRef.current) {
+        if (!data.sessionId || data.sessionId === activeSessionIdRef.current) {
           if (abortControllerRef.current) {
             abortControllerRef.current.abort();
             abortControllerRef.current = null;
@@ -303,13 +328,16 @@ export const SpotlightView: React.FC = () => {
           });
         }
       } else if (data.type === 'SESSIONS_CHANGED') {
-        if (!isGeneratingRef.current && activeSessionIdRef.current && data.sessionId === activeSessionIdRef.current) {
+        if (!isGeneratingRef.current && activeSessionIdRef.current && (!data.sessionId || data.sessionId === activeSessionIdRef.current)) {
           const all = loadSessions();
           const target = all.find((s) => s.id === activeSessionIdRef.current);
-          if (target && target.messages) {
-            setMessages(target.messages);
+          if (target) {
+            setMessages(target.messages || []);
             setEnableThinking(target.enableThinking ?? false);
             setEnableWikiSearch(target.enableWikiSearch ?? false);
+            if (!target.messages || target.messages.length === 0) {
+              notifyResize(false);
+            }
           }
         }
       }
@@ -752,12 +780,15 @@ export const SpotlightView: React.FC = () => {
             messages: nextMessages,
             updatedAt: Date.now(),
           };
-          saveSessions(all);
+          saveSessions(all, currentSessionId, 'SPOTLIGHT');
           notifySessionUpdate(currentSessionId, 'SPOTLIGHT');
         }
       } catch (e) {
         console.error('Failed to sync deleted turn in spotlight:', e);
       }
+    }
+    if (nextMessages.length === 0) {
+      notifyResize(false);
     }
     recordActivity();
   };
@@ -823,7 +854,7 @@ export const SpotlightView: React.FC = () => {
             enableWikiSearch,
           });
         }
-        saveSessions(allSessions);
+        saveSessions(allSessions, currentId, 'SPOTLIGHT');
         saveCurrentSessionId(currentId);
         notifySessionUpdate(currentId, 'SPOTLIGHT');
       } catch (e) {
@@ -842,8 +873,17 @@ export const SpotlightView: React.FC = () => {
       window.webkit.messageHandlers.openMainFromSpotlight.postMessage({});
     }
 
-    // Reset Spotlight to fresh state and default position
-    handleNewChat();
+    // Reset Spotlight UI WITHOUT aborting generation!
+    // If actively generating in the background, DO NOT abort!
+    // The background stream will keep running and sending STREAM_CHUNK to Main window!
+    activeSessionIdRef.current = null;
+    setMessages([]);
+    setInput('');
+    setImages([]);
+    setEnableThinking(false);
+    setEnableWikiSearch(false);
+    notifyResize(false);
+    recordActivity();
   };
 
   const handleCopyText = async (id: string, text: string) => {

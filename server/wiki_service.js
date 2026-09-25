@@ -305,37 +305,12 @@ export async function verifyFactWithLaya(query, fact) {
 }
 
 // ==========================================
-// Phase 1: 4-Tier Aggressive Wikipedia HTML Cleaner
+// Phase 1: Structured Wikipedia DOM Decomposition
 // ==========================================
 
-export function cleanWikipediaHtml(rawHtml) {
-  if (!rawHtml || typeof rawHtml !== 'string') return '';
-  let html = rawHtml;
-
-  // Level 1: Smart tail cutoff at notes / references / external links / see also
-  const cutoffRegex = /<h2[^>]*>(?:(?!<\/h2>).)*?(?:註釋|注释|參考[資资]料|参考[資资]料|參考[文獻献]|参考[文獻献]|外部[連結链接]|參見|参见|延伸[閱讀阅读])/i;
-  const match = html.match(cutoffRegex);
-  if (match && match.index > 0) {
-    html = html.slice(0, match.index);
-  }
-
-  // Level 2: Strip inline citations, reference lists, scripts, and styles
-  html = html
-    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gis, '')
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gis, '')
-    .replace(/<sup[^>]*class="[^"]*reference[^"]*"[^>]*>.*?<\/sup>/gis, '')
-    .replace(/<ol[^>]*class="[^"]*references[^"]*"[^>]*>.*?<\/ol>/gis, '');
-
-  // Level 3: Strip sidebars, navboxes, infoboxes, hatnotes, thumbnails, catlinks
-  html = html
-    .replace(/<table[^>]*class="[^"]*(?:sidebar|vertical-navbox|navbox|infobox)[^"]*"[^>]*>.*?<\/table>/gis, '')
-    .replace(/<div[^>]*class="[^"]*(?:sidebar|navbox|hatnote)[^"]*"[^>]*>.*?<\/div>/gis, '')
-    .replace(/<div[^>]*id="catlinks"[^>]*>.*?<\/div>/gis, '')
-    .replace(/<figure\b[^<]*(?:(?!<\/figure>)<[^<]*)*<\/figure>/gis, '')
-    .replace(/<div[^>]*class="[^"]*thumb[^"]*"[^>]*>.*?<\/div>/gis, '');
-
-  // Level 4: Entity decoding & whitespace normalization
-  let text = html
+function stripHtmlAndUnescape(html) {
+  if (!html) return '';
+  return html
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
@@ -346,8 +321,240 @@ export function cleanWikipediaHtml(rawHtml) {
     .replace(/[ \t]+/g, ' ')
     .replace(/\n\s*\n+/g, '\n\n')
     .trim();
+}
 
-  return text;
+export function parseWikipediaDOM(rawHtml) {
+  if (!rawHtml || typeof rawHtml !== 'string') {
+    return { infobox: [], section0: [], sections: [] };
+  }
+
+  // 1. Smart tail cutoff at notes / references / external links / see also
+  const cutoffRegex = /<h2[^>]*>(?:(?!<\/h2>).)*?(?:註釋|注释|參考[資资]料|参考[資资]料|參考[文獻献]|参考[文獻献]|外部[連結链接]|參見|参见|延伸[閱讀阅读])/i;
+  const cutoffMatch = rawHtml.match(cutoffRegex);
+  let html = cutoffMatch && cutoffMatch.index > 0 ? rawHtml.slice(0, cutoffMatch.index) : rawHtml;
+
+  // 2. Strip scripts, styles, references, edit links, navboxes, thumbnails
+  html = html
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gis, '')
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gis, '')
+    .replace(/<sup[^>]*class="[^"]*reference[^"]*"[^>]*>.*?<\/sup>/gis, '')
+    .replace(/<ol[^>]*class="[^"]*references[^"]*"[^>]*>.*?<\/ol>/gis, '')
+    .replace(/<span[^>]*class="[^"]*mw-editsection[^"]*"[^>]*>.*?<\/span>/gis, '')
+    .replace(/<div[^>]*class="[^"]*(?:navbox|vertical-navbox|sidebar|hatnote)[^"]*"[^>]*>.*?<\/div>/gis, '')
+    .replace(/<table[^>]*class="[^"]*(?:navbox|vertical-navbox|sidebar)[^"]*"[^>]*>.*?<\/table>/gis, '')
+    .replace(/<figure\b[^<]*(?:(?!<\/figure>)<[^<]*)*<\/figure>/gis, '')
+    .replace(/<div[^>]*class="[^"]*thumb[^"]*"[^>]*>.*?<\/div>/gis, '');
+
+  // 3. Extract full Infobox key-values (no 10-line hard cap)
+  const infobox = [];
+  const infoboxMatch = html.match(/<table[^>]*class="[^"]*infobox[^"]*"[^>]*>(.*?)<\/table>/is);
+  if (infoboxMatch) {
+    const rows = [...infoboxMatch[1].matchAll(/<tr[^>]*>.*?<th[^>]*>(.*?)<\/th>.*?<td[^>]*>(.*?)<\/td>.*?<\/tr>/gis)];
+    for (const row of rows) {
+      const k = stripHtmlAndUnescape(row[1]);
+      const v = stripHtmlAndUnescape(row[2]);
+      if (k && v && k.length < 30 && v.length < 150) {
+        infobox.push({ key: k, value: v });
+      }
+    }
+    html = html.replace(infoboxMatch[0], '');
+  }
+
+  // 4. Split Section 0 (Lead) and Section Tree
+  let section0Html = '';
+  let bodyHtml = '';
+
+  const firstHeadingMatch = html.match(/<(?:h2|div\s+id="toc"|table\s+id="toc")[^>]*>/i);
+  if (firstHeadingMatch && firstHeadingMatch.index > 0) {
+    section0Html = html.slice(0, firstHeadingMatch.index);
+    bodyHtml = html.slice(firstHeadingMatch.index);
+  } else {
+    section0Html = html;
+  }
+
+  const extractParagraphs = (snippet) => {
+    const pMatches = [...snippet.matchAll(/<p\b[^>]*>(.*?)<\/p>/gis)];
+    const paras = [];
+    for (const m of pMatches) {
+      const clean = stripHtmlAndUnescape(m[1]);
+      if (clean && clean.length >= 20) {
+        paras.push(clean);
+      }
+    }
+    return paras;
+  };
+
+  const section0 = extractParagraphs(section0Html);
+
+  // Extract sections
+  const sections = [];
+  if (bodyHtml) {
+    const h2Parts = bodyHtml.split(/<h2[^>]*>/i);
+    for (let i = 1; i < h2Parts.length; i++) {
+      const part = h2Parts[i];
+      const endHeading = part.indexOf('</h2>');
+      if (endHeading !== -1) {
+        const title = stripHtmlAndUnescape(part.slice(0, endHeading));
+        const content = part.slice(endHeading + 5);
+        const paras = extractParagraphs(content);
+        if (title && paras.length > 0) {
+          sections.push({ title, paragraphs: paras });
+        }
+      }
+    }
+  }
+
+  return { infobox, section0, sections };
+}
+
+export function cleanWikipediaHtml(rawHtml) {
+  if (!rawHtml || typeof rawHtml !== 'string') return '';
+  const parsed = parseWikipediaDOM(rawHtml);
+  const parts = [];
+  if (parsed.infobox.length > 0) {
+    parts.push(parsed.infobox.map((item) => `${item.key}: ${item.value}`).join(' | '));
+  }
+  if (parsed.section0.length > 0) {
+    parts.push(parsed.section0.join('\n\n'));
+  }
+  for (const s of parsed.sections) {
+    parts.push(`[${s.title}]\n${s.paragraphs.join('\n\n')}`);
+  }
+  return parts.join('\n\n');
+}
+
+// Qwen 3.5 2B Table of Contents Semantic Router for Extra-Long Articles (> 3500 chars)
+export async function routeArticleSectionsWithSLM(query, headings, infoboxKeys) {
+  if (!query || (!headings.length && !infoboxKeys.length)) {
+    return { sections: [], keys: [] };
+  }
+
+  const prompt = `[任务] 根据用户的问题，从百科条目的大纲目录和基本档案中，挑选出最可能直接包含答案的1~2个小节标题和1~3个属性名称。
+用户问题：${query}
+章节大纲：${JSON.stringify(headings.slice(0, 25))}
+属性列表：${JSON.stringify(infoboxKeys.slice(0, 30))}
+
+只输出纯JSON，不要任何多余文字：{"sections": ["小节名称"], "keys": ["属性名称"]}`;
+
+  try {
+    const res = await fetch(`${QWEN_API_URL}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(3000),
+      body: JSON.stringify({
+        model: 'qwen3.5-2b-optiq',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.0,
+        max_tokens: 50,
+      }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const content = json.choices?.[0]?.message?.content || '';
+      const cleaned = content.replace(/```json/gi, '').replace(/```/g, '').trim();
+      const parsed = JSON.parse(cleaned);
+      return {
+        sections: Array.isArray(parsed.sections) ? parsed.sections : [],
+        keys: Array.isArray(parsed.keys) ? parsed.keys : [],
+      };
+    }
+  } catch (e) {
+    // ignore
+  }
+  return { sections: [], keys: [] };
+}
+
+// Assemble zero-truncation, high-fidelity article context
+export async function assembleArticleContext(rawHtml, userQuery) {
+  const dom = parseWikipediaDOM(rawHtml);
+
+  // Step 2: Global 2-stage normalization to Mainland Simplified Chinese
+  const normInfobox = dom.infobox.map((item) => ({
+    key: toSimplifiedChinese(item.key),
+    value: toSimplifiedChinese(item.value),
+  }));
+
+  const normSection0 = dom.section0.map((p) => toSimplifiedChinese(p));
+  const normSections = dom.sections.map((s) => ({
+    title: toSimplifiedChinese(s.title),
+    paragraphs: s.paragraphs.map((p) => toSimplifiedChinese(p)),
+  }));
+
+  const totalLength =
+    normSection0.reduce((acc, p) => acc + p.length, 0) +
+    normSections.reduce((acc, s) => acc + s.paragraphs.reduce((p1, p2) => p1 + p2.length, 0), 0);
+
+  // Branch A: Standard & Short Articles (<= 3500 chars, ~75% of Wikipedia)
+  if (totalLength <= 3500) {
+    const parts = [];
+
+    if (normInfobox.length > 0) {
+      const kvs = normInfobox.map((item) => `${item.key}: ${item.value}`);
+      parts.push(`[基本档案]\n${kvs.join(' | ')}`);
+    }
+
+    if (normSection0.length > 0) {
+      parts.push(`[核心导言]\n${normSection0.join('\n\n')}`);
+    }
+
+    for (const s of normSections) {
+      parts.push(`[${s.title}]\n${s.paragraphs.join('\n\n')}`);
+    }
+
+    return {
+      mode: 'panoramic',
+      totalLength,
+      context: parts.join('\n\n'),
+    };
+  }
+
+  // Branch B: Extra-Long Articles (> 3500 chars, e.g. 周杰伦)
+  const headings = normSections.map((s) => s.title);
+  const infoboxKeys = normInfobox.map((item) => item.key);
+
+  const route = await routeArticleSectionsWithSLM(userQuery, headings, infoboxKeys);
+
+  const parts = [];
+
+  // 1. Infobox: Filter by selected keys, or take first 8 if none matched
+  const selectedKeysSet = new Set(route.keys.map((k) => k.trim()));
+  let chosenInfobox = normInfobox.filter((item) => selectedKeysSet.has(item.key));
+  if (chosenInfobox.length === 0) {
+    chosenInfobox = normInfobox.slice(0, 8);
+  }
+  if (chosenInfobox.length > 0) {
+    const kvs = chosenInfobox.map((item) => `${item.key}: ${item.value}`);
+    parts.push(`[基本档案]\n${kvs.join(' | ')}`);
+  }
+
+  // 2. Section 0: Always keep complete first lead paragraph as anchor
+  if (normSection0.length > 0) {
+    parts.push(`[核心导言]\n${normSection0[0]}`);
+  }
+
+  // 3. Target Sections: Load complete paragraphs of selected sections
+  const selectedSectionsSet = new Set(route.sections.map((s) => s.trim().toLowerCase()));
+  let loadedSections = normSections.filter(
+    (s) =>
+      selectedSectionsSet.has(s.title.trim().toLowerCase()) ||
+      route.sections.some((target) => s.title.includes(target) || target.includes(s.title))
+  );
+
+  // Fallback: If SLM didn't match sections, take the first 2 sections
+  if (loadedSections.length === 0) {
+    loadedSections = normSections.slice(0, 2);
+  }
+
+  for (const s of loadedSections) {
+    parts.push(`[${s.title}]\n${s.paragraphs.join('\n\n')}`);
+  }
+
+  return {
+    mode: 'routed',
+    totalLength,
+    route,
+    context: parts.join('\n\n'),
+  };
 }
 
 // ==========================================
@@ -357,21 +564,21 @@ export function cleanWikipediaHtml(rawHtml) {
 export async function extractFactWithQwen(query, articleTitle, cleanedText) {
   if (!query || !cleanedText) return null;
   const simplifiedQuery = toSimplifiedChinese(query);
-  const textSample = cleanedText.slice(0, 950); // Concise context (~600 tokens, ~1.8s inference)
-  const prompt = `[任务] 阅读以下百科条目正文及基本档案，直接提炼出正面回答问题【${simplifiedQuery}】的核心客观事实。
+  const textSample = cleanedText;
+  const prompt = `[任务] 你是一个严谨的事实核查抽取器。请阅读百科条目正文，判断正文中是否明确包含了能够正面回答用户问题【${simplifiedQuery}】的核心客观事实。
 [规则]
-1. 必须正面回答问题中的核心疑问（如定义、内涵、原理、人物、时间等），严禁提取不相干的背景或历史琐事。
-2. 必须输出包含主语的完整事实陈述句（例如“苹果公司的现任首席执行官是提姆·库克”），严禁客套解释。
-3. 若正文未包含能回答该问题的信息，必须且仅输出单词：NONE。
+1. 必须严格正面回答问题【${simplifiedQuery}】所询问的具体事实（如创始人、时间、定义等）。
+2. 若正文未包含该问题的确切答案，【必须且仅输出】单词：NONE，严禁提取与该问题无关的条目生平或介绍！
+3. 若正文确切包含答案，输出一句包含主谓宾的完整客观事实陈述。
 
 条目：《${articleTitle}》
 正文内容：
 ${textSample}
 
-事实陈述：`;
+事实陈述（若未回答该问题必须仅输出NONE）：`;
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 6500);
+  const timer = setTimeout(() => controller.abort(), 7500);
 
   try {
     const res = await fetch(`${QWEN_API_URL}/v1/chat/completions`, {
@@ -1044,38 +1251,17 @@ class WikiService {
         }
       }
 
-      // Extract high-value factual key-values from Wikipedia infobox table
-      const infoboxMatch = html.match(/<table[^>]*class="[^"]*infobox[^"]*"[^>]*>(.*?)<\/table>/is);
-      let infoboxSummary = '';
-      if (infoboxMatch) {
-        const rows = [...infoboxMatch[1].matchAll(/<tr[^>]*>.*?<th[^>]*>(.*?)<\/th>.*?<td[^>]*>(.*?)<\/td>.*?<\/tr>/gis)];
-        const kvs = [];
-        for (const row of rows) {
-          const k = row[1].replace(/<[^>]+>/g, '').trim();
-          const v = row[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-          if (k && v && k.length < 20 && v.length < 100) {
-            kvs.push(`${k}: ${v}`);
-          }
-        }
-        if (kvs.length > 0) {
-          infoboxSummary = '[基本档案] ' + kvs.slice(0, 10).join(' | ');
-        }
-      }
-
-      // 4-Tier Deep Cleaning: Cut off references/notes/see-also, strip sidebars, navboxes, tags
-      const cleanedText = cleanWikipediaHtml(html);
-      if (!cleanedText || cleanedText.length < 20) return null;
-
-      // Combine structured key facts with the cleaned lead text
-      const rawFullContext = (infoboxSummary ? infoboxSummary + '\n\n' : '') + cleanedText.slice(0, 800);
-
-      // Normalize to clean Simplified Chinese (0ms) so Qwen 3.5 2B operates in pure Simplified token space
-      const fullContext = toSimplifiedChinese(rawFullContext);
+      const queryStr = Array.isArray(userQuery) ? userQuery.join(' ') : (userQuery || title);
       const simplifiedTitle = toSimplifiedChinese(canonicalTitle);
 
+      // Assemble structured, zero-truncation context (panoramic or routed)
+      const assembled = await assembleArticleContext(html, queryStr);
+      if (!assembled || !assembled.context || assembled.context.length < 20) {
+        return null;
+      }
+
       // Neural Machine Reading Comprehension via Qwen 3.5 2B
-      const queryStr = Array.isArray(userQuery) ? userQuery.join(' ') : (userQuery || title);
-      const fact = await extractFactWithQwen(queryStr, simplifiedTitle, fullContext);
+      const fact = await extractFactWithQwen(queryStr, simplifiedTitle, assembled.context);
       if (!fact) return null;
 
       const simplifiedFact = toSimplifiedChinese(fact);

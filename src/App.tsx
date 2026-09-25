@@ -777,35 +777,39 @@ export const App: React.FC = () => {
       handleStop(targetSession.id);
     }
 
-    setSessions((prev) =>
-      prev.map((s) => {
-        const asstIdx = s.messages.findIndex((m) => m.id === assistantMessageId);
-        if (asstIdx === -1) return s;
+    const updatedSessions = sessions.map((s) => {
+      const asstIdx = s.messages.findIndex((m) => m.id === assistantMessageId);
+      if (asstIdx === -1) return s;
 
-        let userIdx = -1;
-        for (let i = asstIdx - 1; i >= 0; i--) {
-          if (s.messages[i].role === 'user') {
-            userIdx = i;
-            break;
-          }
+      let userIdx = -1;
+      for (let i = asstIdx - 1; i >= 0; i--) {
+        if (s.messages[i].role === 'user') {
+          userIdx = i;
+          break;
         }
+      }
 
-        const idsToDelete = new Set<string>([assistantMessageId]);
-        if (userIdx !== -1) {
-          idsToDelete.add(s.messages[userIdx].id);
-        }
+      const idsToDelete = new Set<string>([assistantMessageId]);
+      if (userIdx !== -1) {
+        idsToDelete.add(s.messages[userIdx].id);
+      }
 
-        return {
-          ...s,
-          messages: s.messages.filter((m) => !idsToDelete.has(m.id)),
-          updatedAt: Date.now(),
-        };
-      })
-    );
+      return {
+        ...s,
+        messages: s.messages.filter((m) => !idsToDelete.has(m.id)),
+        updatedAt: Date.now(),
+      };
+    });
+
+    setSessions(updatedSessions);
+    saveSessions(updatedSessions, targetSession?.id, 'MAIN');
   };
 
   const handleStop = (sessionIdToStop?: string) => {
-    const targetId = sessionIdToStop || currentSessionId;
+    const targetId =
+      typeof sessionIdToStop === 'string' && sessionIdToStop
+        ? sessionIdToStop
+        : currentSessionId;
     if (!targetId) return;
 
     const controller = abortControllersRef.current.get(targetId);
@@ -821,6 +825,31 @@ export const App: React.FC = () => {
       sessionId: targetId,
       source: 'MAIN',
     });
+  };
+
+  const handleShrinkToSpotlight = () => {
+    // 1. Ensure current session state is saved in storage
+    if (sessions.length > 0) {
+      saveSessions(sessions, currentSessionId || undefined, 'MAIN');
+    }
+    if (currentSessionId) {
+      saveCurrentSessionId(currentSessionId);
+    }
+
+    // 2. Notify Spotlight via syncChannel to load this session
+    syncChannel?.postMessage({
+      type: 'LOAD_SESSION_IN_SPOTLIGHT',
+      sessionId: currentSessionId,
+    });
+
+    // 3. Ask native macOS container to show Spotlight with this session and hide Main Window
+    // @ts-expect-error WebKit bridge
+    if (window.webkit?.messageHandlers?.shrinkToSpotlight) {
+      // @ts-expect-error WebKit bridge
+      window.webkit.messageHandlers.shrinkToSpotlight.postMessage({
+        sessionId: currentSessionId,
+      });
+    }
   };
 
   return (
@@ -885,6 +914,7 @@ export const App: React.FC = () => {
           onOpenWiki={(title) => setActiveWikiArticle(title)}
           onRetry={handleRetry}
           onDelete={handleDeleteTurn}
+          onShrinkToSpotlight={handleShrinkToSpotlight}
         />
 
         {/* Wikipedia Offline Article Reader Drawer */}

@@ -190,10 +190,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div
                 key={session.id}
                 onClick={() => onSelectSession(session.id)}
-                className={`group relative flex items-center justify-between px-3 py-2.5 rounded-xl text-xs cursor-pointer transition-all duration-150 ${
+                className={`group relative flex items-center justify-between px-3 py-2.5 rounded-xl text-xs cursor-pointer select-none outline-none transition-colors duration-150 border ${
                   isSelected
-                    ? 'bg-white dark:bg-[#292a30] text-[#1f2328] dark:text-[#f1f3f7] font-medium shadow-sm border border-black/5 dark:border-transparent'
-                    : 'text-zinc-600 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-zinc-200 dark:hover:bg-[#212227]'
+                    ? 'bg-white dark:bg-[#292a30] text-[#1f2328] dark:text-[#f1f3f7] font-medium shadow-sm dark:shadow-none border-black/5 dark:border-white/5'
+                    : 'border-transparent text-zinc-600 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-zinc-200 dark:hover:bg-[#212227]'
                 }`}
               >
                 <div className="truncate mr-2 flex-1 min-w-0">

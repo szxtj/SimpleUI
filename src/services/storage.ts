@@ -134,11 +134,11 @@ export function loadSessions(): ChatSession[] {
   }
 }
 
-export function saveSessions(sessions: ChatSession[]): void {
+export function saveSessions(sessions: ChatSession[], updatedSessionId?: string, source: string = 'UNKNOWN'): void {
   try {
     const safeSessions = sessions.length > 0 ? sessions : [createNewSession()];
     localStorage.setItem(SESSIONS_KEY, JSON.stringify(safeSessions));
-    notifySessionUpdate();
+    notifySessionUpdate(updatedSessionId, source);
   } catch (e) {
     console.error('Failed to save sessions:', e);
   }
