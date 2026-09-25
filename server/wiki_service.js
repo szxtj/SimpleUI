@@ -28,33 +28,59 @@ if (!fs.existsSync(userConfigDir)) {
 const CONFIG_FILE = path.join(userConfigDir, 'wiki_config.json');
 const DEV_CONFIG_FILE = path.resolve(__dirname, 'wiki_config.json');
 
-const ccConverters = [
-  OpenCC.Converter({ from: 'cn', to: 't' }),
-  OpenCC.Converter({ from: 'cn', to: 'tw' }),
-  OpenCC.Converter({ from: 'cn', to: 'twp' }),
-  OpenCC.Converter({ from: 'cn', to: 'hk' }),
-  OpenCC.Converter({ from: 't', to: 'cn' }),
-  OpenCC.Converter({ from: 'tw', to: 'cn' }),
-  OpenCC.Converter({ from: 'twp', to: 'cn' }),
-  OpenCC.Converter({ from: 'hk', to: 'cn' }),
-];
+// Forward converters from Mainland Simplified to Traditional / Regional
+const cvtCnToT = OpenCC.Converter({ from: 'cn', to: 't' });
+const cvtCnToTw = OpenCC.Converter({ from: 'cn', to: 'tw' });
+const cvtCnToTwp = OpenCC.Converter({ from: 'cn', to: 'twp' });
+const cvtCnToHk = OpenCC.Converter({ from: 'cn', to: 'hk' });
 
+// Backward converters to Mainland Simplified
+const cvtTwpToCn = OpenCC.Converter({ from: 'twp', to: 'cn' });
+const cvtHkToCn = OpenCC.Converter({ from: 'hk', to: 'cn' });
+
+/**
+ * Normalizes any Chinese text (Traditional, HK, TW phrases, or TW phrases written in simplified characters)
+ * to standard Mainland Simplified Chinese.
+ * Step 1: cn -> t aligns simplified-written TW/HK phrases (e.g. "记忆体", "软体") to OpenCC's traditional dictionary index ("記憶體", "軟體").
+ * Step 2: twp -> cn and hk -> cn convert regional idioms and traditional characters to Mainland Simplified ("内存", "软件").
+ */
+export function toSimplifiedChinese(text) {
+  if (!text || typeof text !== 'string') return text || '';
+  try {
+    const t = cvtCnToT(text);
+    const tw = cvtTwpToCn(t);
+    return cvtHkToCn(tw);
+  } catch (e) {
+    return text;
+  }
+}
+
+/**
+ * Generates the minimal, high-precision search variant set for Kiwix offline Wikipedia lookup.
+ * Since entities planned by Qwen 3.5 2B or user queries are already normalized to Mainland Simplified Chinese,
+ * this matrix outputs:
+ * 1. The original keyword itself (e.g. '激光', '鼠标', '周杰伦')
+ * 2. Traditional character standard (cn -> t, e.g. '激光', '鼠標', '周杰倫')
+ * 3. Taiwan Traditional characters (cn -> tw)
+ * 4. Taiwan Traditional regional phrase (cn -> twp, e.g. '雷射', '滑鼠')
+ * 5. Hong Kong Traditional (cn -> hk)
+ */
 export function getAllVariants(text) {
   if (!text || typeof text !== 'string') return [];
   const trimmed = text.trim();
   if (!trimmed) return [];
-  const set = new Set([trimmed]);
-  for (const cvt of ccConverters) {
-    try {
-      const res = cvt(trimmed);
-      if (res && res.trim()) {
-        set.add(res.trim());
-      }
-    } catch (e) {
-      // ignore
-    }
+
+  const mainland = toSimplifiedChinese(trimmed);
+  const set = new Set([trimmed, mainland]);
+  try {
+    set.add(cvtCnToT(mainland));
+    set.add(cvtCnToTw(mainland));
+    set.add(cvtCnToTwp(mainland));
+    set.add(cvtCnToHk(mainland));
+  } catch (e) {
+    // ignore
   }
-  return Array.from(set);
+  return Array.from(set).filter(Boolean);
 }
 
 // End of OpenCC variants helper
@@ -124,21 +150,22 @@ export function getCachedContext(query) {
   const key = query.trim().toLowerCase();
   const entry = queryPlanCache.get(key);
   if (!entry) return null;
-  if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
+  const ttl = entry.ttl || CACHE_TTL_MS;
+  if (Date.now() - entry.timestamp > ttl) {
     queryPlanCache.delete(key);
     return null;
   }
   return entry.data;
 }
 
-export function setCachedContext(query, data) {
+export function setCachedContext(query, data, ttlMs = CACHE_TTL_MS) {
   if (!query || typeof query !== 'string') return;
   const key = query.trim().toLowerCase();
   if (queryPlanCache.size >= CACHE_MAX_SIZE) {
     const oldestKey = queryPlanCache.keys().next().value;
     queryPlanCache.delete(oldestKey);
   }
-  queryPlanCache.set(key, { data, timestamp: Date.now() });
+  queryPlanCache.set(key, { data, timestamp: Date.now(), ttl: ttlMs });
 }
 
 // Safe JSON parser with auto-repair for slightly truncated LLM outputs
@@ -230,10 +257,10 @@ export async function judgeNeedsWikiWithLaya(query) {
     {
       intent: {
         type: 'choice',
-        instructions: 'Classify the user input intent.',
+        instructions: 'Classify user input into chitchat/code versus factual question.',
         criteria: {
-          chitchat_or_code: 'Casual greetings (e.g. 你好, 在吗, hello, hi), emotional sharing, seeking comfort or companionship, small talk, chitchat, jokes, conversational questions, or writing code/programming',
-          knowledge_lookup: 'Factual questions asking for objective information about real world entities, people, companies, history, facts, science, or definitions',
+          chitchat_or_code: 'Greetings, small talk, chit-chat, feelings, opinions, or code generation.',
+          knowledge_lookup: 'Questions about who, what, when, where, why, entities, people, companies, or facts.',
         },
       },
     },
@@ -250,15 +277,18 @@ export async function judgeNeedsWikiWithLaya(query) {
 export async function verifyFactWithLaya(query, fact) {
   if (!query || !fact) return false;
 
+  const simplifiedQuery = toSimplifiedChinese(query);
+  const simplifiedFact = toSimplifiedChinese(fact);
+
   const result = await callLayaSystemOne(
-    `Question: ${query}\nCandidate answer: ${fact}`,
+    `Query: ${simplifiedQuery}\nDocument: ${simplifiedFact}`,
     {
       fact_eval: {
         type: 'choice',
-        instructions: 'Evaluate whether the candidate answer directly answers the question.',
+        instructions: 'Does the document answer or provide relevant information for the query?',
         criteria: {
-          relevant: 'The candidate answer provides direct, accurate, and relevant factual information that answers the question.',
-          irrelevant: 'The candidate answer is completely unrelated, off-topic, or answers a different question.',
+          relevant: 'The document is relevant, answers the query, or provides facts about the topic.',
+          irrelevant: 'The document is irrelevant, answers a different question, or is unrelated.',
         },
       },
     },
@@ -269,7 +299,7 @@ export async function verifyFactWithLaya(query, fact) {
   if (answer && answer.choice) {
     const isRelevant = answer.choice === 'relevant';
     const prob = answer.probabilities?.relevant ?? (isRelevant ? 0.9 : 0.1);
-    return isRelevant && prob >= 0.45;
+    return prob >= 0.35;
   }
   return false;
 }
@@ -326,21 +356,22 @@ export function cleanWikipediaHtml(rawHtml) {
 
 export async function extractFactWithQwen(query, articleTitle, cleanedText) {
   if (!query || !cleanedText) return null;
-  const textSample = cleanedText.slice(0, 1800); // Fast context window (~1100 tokens, 1.2s inference)
-  const prompt = `[任务] 阅读以下百科条目正文，直接提炼出能正面回答问题【${query}】的1~2句核心客观事实与具体数据。
+  const simplifiedQuery = toSimplifiedChinese(query);
+  const textSample = cleanedText.slice(0, 950); // Concise context (~600 tokens, ~1.8s inference)
+  const prompt = `[任务] 阅读以下百科条目正文及基本档案，直接提炼出正面回答问题【${simplifiedQuery}】的核心客观事实。
 [规则]
-1. 只输出提炼出的纯事实原句或确凿数据，严禁任何客套解释、前缀、引导语或推测。
-2. 严禁输出任何与问题无关的简介描述、生平概述或泛泛背景。
-3. 若正文中未包含能正面回答该问题的明确信息，必须且仅输出单词：NONE。
+1. 必须正面回答问题中的核心疑问（如定义、内涵、原理、人物、时间等），严禁提取不相干的背景或历史琐事。
+2. 必须输出包含主语的完整事实陈述句（例如“苹果公司的现任首席执行官是提姆·库克”），严禁客套解释。
+3. 若正文未包含能回答该问题的信息，必须且仅输出单词：NONE。
 
 条目：《${articleTitle}》
 正文内容：
 ${textSample}
 
-事实提炼：`;
+事实陈述：`;
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5500);
+  const timer = setTimeout(() => controller.abort(), 6500);
 
   try {
     const res = await fetch(`${QWEN_API_URL}/v1/chat/completions`, {
@@ -351,7 +382,7 @@ ${textSample}
         model: 'qwen3.5-2b-optiq',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.0,
-        max_tokens: 150,
+        max_tokens: 80,
       }),
     });
     clearTimeout(timer);
@@ -371,7 +402,7 @@ ${textSample}
     // Clean any residual quotation marks or prefixes
     const cleanedFact = out
       .replace(/^["'“”]+|["'“”]+$/g, '')
-      .replace(/^(?:事实提炼[：:]|答[：:]|提炼事实[：:])\s*/i, '')
+      .replace(/^(?:事实陈述[：:]|事实提炼[：:]|答[：:]|提炼事实[：:])\s*/i, '')
       .trim();
 
     if (cleanedFact.length < 4) return null;
@@ -390,6 +421,8 @@ export const PLANNER_SYSTEM_PROMPT = `[任务] 分析用户的知识问答，推
 答：{"target_articles": ["Jay", "周杰伦"]}
 问：特斯拉现在的CEO是谁？
 答：{"target_articles": ["特斯拉", "埃隆·马斯克"]}
+问：日本的首都在哪里？
+答：{"target_articles": ["日本", "日本首都"]}
 问：光速是多少？
 答：{"target_articles": ["光速"]}
 问：李白是哪朝人？
@@ -404,7 +437,7 @@ export async function planQueryWithSLM(query) {
 
   const prompt = `${PLANNER_SYSTEM_PROMPT}${trimmed}\n只输出纯JSON，不要任何多余文字：`;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 2500); // 2.5s timeout
+  const timeoutId = setTimeout(() => controller.abort(), 4500); // 4.5s timeout
 
   try {
     const res = await fetch(`${QWEN_API_URL}/v1/chat/completions`, {
@@ -444,6 +477,74 @@ export async function planQueryWithSLM(query) {
   }
 
   return null;
+}
+
+// Neural Candidate Re-ranking via Qwen 3.5 2B
+export async function rerankCandidatesWithSLM(query, matches) {
+  if (!matches || matches.length <= 1) return matches;
+
+  const candidateTitles = matches.slice(0, 5).map((m) => m.title);
+
+  const prompt = `[任务] 根据用户的问题，从候选百科条目中选出最相关、最适合用于回答问题的1~2个核心条目名称。
+用户问题：${query}
+候选条目：${JSON.stringify(candidateTitles)}
+
+只输出纯JSON数组，按优先级从高到低排列，例如 ["条目A", "条目B"]：`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3500); // 3.5s timeout
+
+  try {
+    const res = await fetch(`${QWEN_API_URL}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: 'qwen3.5-2b-optiq',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.0,
+        max_tokens: 40,
+      }),
+    });
+    clearTimeout(timer);
+    if (!res.ok) return matches;
+    const json = await res.json();
+    const text = json.choices?.[0]?.message?.content || '';
+    const parsed = safeParseJson(text);
+
+    if (Array.isArray(parsed)) {
+      const flatSelected = parsed
+        .flat(Infinity)
+        .map((t) => (typeof t === 'string' ? t.replace(/[《》]/g, '').trim() : ''))
+        .filter(Boolean);
+
+      if (flatSelected.length > 0) {
+        const titleToItem = new Map(matches.map((m) => [m.title, m]));
+        const reordered = [];
+        const seen = new Set();
+
+        for (const title of flatSelected) {
+          const item = titleToItem.get(title);
+          if (item && !seen.has(item.title)) {
+            seen.add(item.title);
+            reordered.push(item);
+          }
+        }
+
+        // Append remaining matches in original order
+        for (const m of matches) {
+          if (!seen.has(m.title)) {
+            seen.add(m.title);
+            reordered.push(m);
+          }
+        }
+        return reordered;
+      }
+    }
+  } catch (err) {
+    clearTimeout(timer);
+  }
+  return matches;
 }
 
 class WikiService {
@@ -577,13 +678,12 @@ class WikiService {
 
       this.currentZimPath = zimPath;
 
-      // If running and path matches, verify health
-      if (this.kiwixProcess && this.isOnline) {
-        const healthy = await this.checkHealth();
-        if (healthy) {
-          this.isStarting = false;
-          return true;
-        }
+      // If already healthy on port 31236, reuse without port collision
+      const healthy = await this.checkHealth();
+      if (healthy) {
+        this.isOnline = true;
+        this.isStarting = false;
+        return true;
       }
 
       // Kill previous process if restarting with new file
@@ -690,6 +790,39 @@ class WikiService {
 
     const candidateMap = new Map();
 
+    // 0. Direct Canonical Probe: Check if exact variants exist directly or are 302 redirects (1ms HEAD request)
+    const probePromises = variants.slice(0, 4).map(async (v) => {
+      try {
+        const probeUrl = `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(v)}`;
+        const res = await fetch(probeUrl, { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(1200) });
+        if (res.status === 200) {
+          return {
+            title: v,
+            path: v,
+            url: probeUrl,
+            source: 'exact_probe',
+            rank: 0,
+          };
+        }
+        if (res.status === 302 || res.status === 301) {
+          const loc = res.headers.get('location') || '';
+          const targetTitle = decodeURIComponent(loc.split('/').pop() || '');
+          if (targetTitle) {
+            return {
+              title: targetTitle,
+              path: targetTitle,
+              url: `http://127.0.0.1:${KIWIX_PORT}${loc}`,
+              source: 'exact_probe',
+              rank: 0,
+            };
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+      return null;
+    });
+
     // 1. Full-text pattern search (captures articles whose content or title matches the query)
     const searchPromises = variants.slice(0, 2).map(async (v) => {
       try {
@@ -716,10 +849,10 @@ class WikiService {
       return [];
     });
 
-    // 2. Kiwix suggest endpoint (captures exact and prefix titles)
+    // 2. Kiwix suggest endpoint (captures exact and prefix titles, count=30 to bypass ascii sort bias)
     const suggestPromises = variants.slice(0, 3).map(async (v) => {
       try {
-        const suggestUrl = `http://127.0.0.1:${KIWIX_PORT}/suggest?content=${encodeURIComponent(content)}&term=${encodeURIComponent(v)}`;
+        const suggestUrl = `http://127.0.0.1:${KIWIX_PORT}/suggest?content=${encodeURIComponent(content)}&term=${encodeURIComponent(v)}&count=30`;
         const res = await fetch(suggestUrl, { signal: AbortSignal.timeout(1500) });
         if (res.ok) {
           const json = await res.json();
@@ -745,12 +878,19 @@ class WikiService {
       return [];
     });
 
-    const [patternResultLists, suggestResultLists] = await Promise.all([
+    const [probeResults, patternResultLists, suggestResultLists] = await Promise.all([
+      Promise.all(probePromises),
       Promise.all(searchPromises),
       Promise.all(suggestPromises),
     ]);
 
-    for (const list of [...patternResultLists, ...suggestResultLists]) {
+    for (const item of probeResults) {
+      if (item && !candidateMap.has(item.title) && !candidateMap.has(item.path)) {
+        candidateMap.set(item.title, item);
+      }
+    }
+
+    for (const list of [...suggestResultLists, ...patternResultLists]) {
       for (const item of list) {
         if (!candidateMap.has(item.title) && !candidateMap.has(item.path)) {
           candidateMap.set(item.title, item);
@@ -763,28 +903,58 @@ class WikiService {
 
     // Relevance scoring
     const scoreItem = (item) => {
+      if (item.source === 'exact_probe') return 300;
       let score = 0;
       const title = item.title;
       if (/^(?:Category|分类|分類|Portal|Help|帮助|幫助|File|文件|Image|Wikipedia):/i.test(title)) {
         return -100;
       }
+
+      const cleanTitle = title.trim();
       for (const v of variants) {
-        if (title === v) {
-          score = Math.max(score, 100);
-        } else if (title.startsWith(v) || v.startsWith(title)) {
-          score = Math.max(score, 85);
-        } else if (title.endsWith(v) || v.endsWith(title)) {
-          score = Math.max(score, 75);
-        } else if (title.includes(v) || v.includes(title)) {
-          score = Math.max(score, 60);
+        const cleanV = v.trim();
+        // 1. Exact match (Absolute top priority)
+        if (cleanTitle === cleanV) {
+          score = Math.max(score, 200);
+        }
+        // 2. Exact match case-insensitive
+        else if (cleanTitle.toLowerCase() === cleanV.toLowerCase()) {
+          score = Math.max(score, 180);
+        }
+        // 3. Parent entity: search term starts with article title (e.g. searching "日本首都", title is "日本")
+        else if (cleanV.startsWith(cleanTitle) && cleanTitle.length >= 2) {
+          score = Math.max(score, 140);
+        }
+        // 4. Sub-article / Formal name: article title starts with search term (e.g. searching "日本", title is "日本国" or "日本首都")
+        else if (cleanTitle.startsWith(cleanV)) {
+          score = Math.max(score, 110);
+        }
+        // 5. Query contains title
+        else if (cleanV.includes(cleanTitle) && cleanTitle.length >= 2) {
+          score = Math.max(score, 80);
+        }
+        // 6. Title contains query
+        else if (cleanTitle.includes(cleanV)) {
+          // If title merely ends with the term (e.g. "Amazon日本", "微软日本"), give low weight
+          if (cleanTitle.endsWith(cleanV)) {
+            score = Math.max(score, 35);
+          } else {
+            score = Math.max(score, 50);
+          }
         }
       }
-      if (item.source === 'pattern' && item.rank === 0) {
-        score = Math.max(score, 92);
-      } else if (item.source === 'pattern' && item.rank === 1) {
-        score = Math.max(score, 88);
-      } else if (item.source === 'suggest' && item.rank === 0) {
-        score = Math.max(score, 90);
+
+      // Title length penalty: shorter, more concise canonical titles rank higher
+      const shortestDiff = Math.min(...variants.map((v) => Math.max(0, title.length - v.length)));
+      score -= Math.min(25, shortestDiff * 2);
+
+      // Source bonus: suggest (title prefix/exact index) is vastly superior to full-text pattern search
+      if (item.source === 'suggest') {
+        if (item.rank === 0) score += 30;
+        else if (item.rank === 1) score += 20;
+        else if (item.rank === 2) score += 10;
+      } else if (item.source === 'pattern') {
+        if (item.rank === 0) score += 5;
       }
       return score;
     };
@@ -813,6 +983,22 @@ class WikiService {
       const res = await fetch(articleUrl, { signal: AbortSignal.timeout(2500) });
       if (!res.ok) return null;
       const html = await res.text();
+
+      // Resolve true canonical URL and canonical title (following Kiwix HTTP 302 redirects)
+      const finalUrl = res.url || articleUrl;
+      let canonicalTitle = title;
+      try {
+        const urlObj = new URL(finalUrl);
+        const rawLast = urlObj.pathname.split('/').pop();
+        if (rawLast) canonicalTitle = decodeURIComponent(rawLast);
+      } catch (e) {
+        // ignore
+      }
+
+      const titleTagMatch = html.match(/<title>([^<_\-]+?)(?:\s*[-–—|]\s*.*?)?<\/title>/i);
+      if (titleTagMatch && titleTagMatch[1]) {
+        canonicalTitle = titleTagMatch[1].trim();
+      }
 
       // Disambiguation page handler (strict Wikipedia category check, e.g. 特斯拉 -> 特斯拉公司)
       const isDisambig =
@@ -881,17 +1067,23 @@ class WikiService {
       if (!cleanedText || cleanedText.length < 20) return null;
 
       // Combine structured key facts with the cleaned lead text
-      const fullContext = (infoboxSummary ? infoboxSummary + '\n\n' : '') + cleanedText.slice(0, 1400);
+      const rawFullContext = (infoboxSummary ? infoboxSummary + '\n\n' : '') + cleanedText.slice(0, 800);
+
+      // Normalize to clean Simplified Chinese (0ms) so Qwen 3.5 2B operates in pure Simplified token space
+      const fullContext = toSimplifiedChinese(rawFullContext);
+      const simplifiedTitle = toSimplifiedChinese(canonicalTitle);
 
       // Neural Machine Reading Comprehension via Qwen 3.5 2B
       const queryStr = Array.isArray(userQuery) ? userQuery.join(' ') : (userQuery || title);
-      const fact = await extractFactWithQwen(queryStr, title, fullContext);
+      const fact = await extractFactWithQwen(queryStr, simplifiedTitle, fullContext);
       if (!fact) return null;
 
+      const simplifiedFact = toSimplifiedChinese(fact);
+
       return {
-        title,
-        summary: fact,
-        url: articleUrl,
+        title: simplifiedTitle,
+        summary: simplifiedFact,
+        url: finalUrl,
       };
     } catch (e) {
       console.error('[WikiService] _fetchSummaryForTitle error:', e);
@@ -941,8 +1133,11 @@ class WikiService {
 
     const startTime = Date.now();
 
+    // 0ms 归一化：将用户提问规范为大陆标准简体（自动将繁体字形与“记忆体/软体/滑鼠/晶片”等港台特有用法对齐为“内存/软件/鼠标/芯片”）
+    const normalizedQuery = toSimplifiedChinese(trimmed);
+
     // 2. LAYA System 1 Fast Decision Gate (15ms)
-    const needsWikiLaya = await judgeNeedsWikiWithLaya(trimmed);
+    const needsWikiLaya = await judgeNeedsWikiWithLaya(normalizedQuery);
     if (needsWikiLaya === false) {
       const negativeResult = {
         needsWiki: false,
@@ -954,24 +1149,22 @@ class WikiService {
           latencyMs: Date.now() - startTime,
         },
       };
-      setCachedContext(trimmed, negativeResult);
+      setCachedContext(trimmed, negativeResult, 15000);
       return negativeResult;
     }
 
     // 3. High-Precision Entity Planning via Qwen 3.5 2B (~600ms)
-    let plan = await planQueryWithSLM(trimmed);
+    // 直接传入完整的自然语言提问（小模型天然具备语义理解能力，不进行任何人工正则前缀或标点破坏）
+    let plan = await planQueryWithSLM(normalizedQuery);
     let targetArticles = [];
     let plannerName = 'qwen3.5-2b';
 
     if (plan && plan.target_articles && plan.target_articles.length > 0) {
       targetArticles = plan.target_articles.slice(0, 2);
     } else {
-      // Fallback: search the natural query directly without slicing
-      const cleanNaturalQuery = trimmed.replace(/[？?！!。，,、：“”"''（）()\s]+$/, '');
-      if (cleanNaturalQuery.length >= 2) {
-        targetArticles = [cleanNaturalQuery];
-      }
-      plannerName = 'direct-query-fallback';
+      // 容灾兜底（仅在 SLM 网络异常或超时时生效）：直接以规范化后的原始提问进行检索，坚决不进行破坏语义的人工正则剥离
+      targetArticles = [normalizedQuery];
+      plannerName = 'raw-fallback';
       plan = { needs_wiki: true, target_articles: targetArticles, planner: plannerName };
     }
 
@@ -986,43 +1179,50 @@ class WikiService {
           latencyMs: Date.now() - startTime,
         },
       };
-      setCachedContext(trimmed, negativeResult);
+      setCachedContext(trimmed, negativeResult, 15000);
       return negativeResult;
     }
 
     const fetchPromises = targetArticles.map(async (entity) => {
-      const matches = await this.search(entity);
+      let matches = await this.search(entity);
       if (!matches || matches.length === 0) return null;
 
-      let summaryData = null;
+      // Neural candidate re-ranking via Qwen 3.5 2B
+      matches = await rerankCandidatesWithSLM(trimmed, matches);
+
+      let validCandidate = null;
       for (const m of matches.slice(0, 3)) {
-        summaryData = await this._fetchSummaryForTitle(m.title, trimmed);
-        if (summaryData && summaryData.summary) break;
+        const summaryData = await this._fetchSummaryForTitle(m.title, trimmed);
+        if (summaryData && summaryData.summary) {
+          // Qwen 3.5 2B verified factual statement
+          validCandidate = {
+            title: summaryData.title,
+            url: summaryData.url,
+            summary: summaryData.summary,
+          };
+          break;
+        }
       }
-      if (!summaryData || !summaryData.summary) return null;
-
-      // LAYA Verification Gate: Validate relevance of the extracted fact
-      const isValid = await verifyFactWithLaya(trimmed, summaryData.summary);
-      if (!isValid) {
-        return null;
-      }
-
-      return {
-        title: summaryData.title,
-        url: summaryData.url,
-        summary: summaryData.summary,
-      };
+      return validCandidate;
     });
 
     const results = await Promise.allSettled(fetchPromises);
     const validCitations = [];
     const seenTitles = new Set();
+    const seenUrls = new Set();
+    const seenSummaries = new Set();
 
     for (const r of results) {
       if (r.status === 'fulfilled' && r.value) {
-        if (!seenTitles.has(r.value.title)) {
-          seenTitles.add(r.value.title);
-          validCitations.push(r.value);
+        const item = r.value;
+        const normTitle = item.title.trim().toLowerCase();
+        const normUrl = item.url.trim().toLowerCase();
+        const normSummary = item.summary.trim().slice(0, 35);
+        if (!seenTitles.has(normTitle) && !seenUrls.has(normUrl) && !seenSummaries.has(normSummary)) {
+          seenTitles.add(normTitle);
+          seenUrls.add(normUrl);
+          seenSummaries.add(normSummary);
+          validCitations.push(item);
         }
       }
     }
@@ -1040,7 +1240,7 @@ class WikiService {
           plan,
         },
       };
-      setCachedContext(trimmed, emptyResult);
+      setCachedContext(trimmed, emptyResult, 15000);
       return emptyResult;
     }
 

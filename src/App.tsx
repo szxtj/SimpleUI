@@ -84,7 +84,8 @@ export const App: React.FC = () => {
   });
   const [input, setInput] = useState('');
   const [images, setImages] = useState<string[]>([]);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [generatingSessionIds, setGeneratingSessionIds] = useState<string[]>([]);
+  const isGenerating = currentSessionId ? generatingSessionIds.includes(currentSessionId) : false;
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [healthInfo, setHealthInfo] = useState<ServerHealthInfo>({
@@ -105,19 +106,21 @@ export const App: React.FC = () => {
   });
   const [activeWikiArticle, setActiveWikiArticle] = useState<string | null>(null);
 
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const activeStreamsRef = useRef<Map<string, {
+    messageId: string;
+    reasoningContent: string;
+    content: string;
+    isThinking: boolean;
+    thinkingDuration: number;
+  }>>(new Map());
   const isSyncingRef = useRef(false);
-  const isGeneratingRef = useRef(false);
+  const generatingSessionIdsRef = useRef<string[]>([]);
   const currentSessionIdRef = useRef<string | null>(currentSessionId);
-  const currentAssistantMsgIdRef = useRef<string | null>(null);
-  const currentReasoningRef = useRef('');
-  const currentContentRef = useRef('');
-  const currentIsThinkingRef = useRef(false);
-  const currentThinkingDurationRef = useRef(0);
 
   useEffect(() => {
-    isGeneratingRef.current = isGenerating;
-  }, [isGenerating]);
+    generatingSessionIdsRef.current = generatingSessionIds;
+  }, [generatingSessionIds]);
 
   useEffect(() => {
     currentSessionIdRef.current = currentSessionId;
@@ -140,7 +143,7 @@ export const App: React.FC = () => {
 
   // Real-time synchronization helper
   const reloadFromStorage = () => {
-    if (isGeneratingRef.current) {
+    if (generatingSessionIdsRef.current.length > 0) {
       // Main window is actively generating! Do not overwrite in-memory generating session!
       return;
     }
@@ -182,6 +185,7 @@ export const App: React.FC = () => {
         } else if (data.type === 'STREAM_CHUNK') {
           if (data.source !== 'MAIN') {
             const { sessionId, messageId, reasoningContent, content, isThinking, thinkingDuration } = data;
+            setGeneratingSessionIds((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
             setSessions((prev) => {
               const sessionIdx = prev.findIndex((s) => s.id === sessionId);
               if (sessionIdx >= 0) {
@@ -217,13 +221,11 @@ export const App: React.FC = () => {
                 return all.length > 0 ? all : prev;
               }
             });
-            if (currentSessionIdRef.current === sessionId) {
-              setIsGenerating(true);
-            }
           }
         } else if (data.type === 'STREAM_DONE') {
           if (data.source !== 'MAIN') {
             const { sessionId, messageId, reasoningContent, content, thinkingDuration, metrics } = data;
+            setGeneratingSessionIds((prev) => prev.filter((id) => id !== sessionId));
             setSessions((prev) =>
               prev.map((s) =>
                 s.id === sessionId
@@ -246,30 +248,39 @@ export const App: React.FC = () => {
                   : s
               )
             );
-            if (currentSessionIdRef.current === sessionId) {
-              setIsGenerating(false);
-              if (metrics) setLastMetrics(metrics);
+            if (currentSessionIdRef.current === sessionId && metrics) {
+              setLastMetrics(metrics);
             }
           }
         } else if (data.type === 'STREAM_ABORT') {
-          if (abortControllerRef.current) {
-            abortControllerRef.current.abort();
-            abortControllerRef.current = null;
+          const targetId = data.sessionId;
+          if (targetId) {
+            const controller = abortControllersRef.current.get(targetId);
+            if (controller) {
+              controller.abort();
+              abortControllersRef.current.delete(targetId);
+            }
+            activeStreamsRef.current.delete(targetId);
+            setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetId));
+          } else {
+            abortControllersRef.current.forEach((controller) => controller.abort());
+            abortControllersRef.current.clear();
+            activeStreamsRef.current.clear();
+            setGeneratingSessionIds([]);
           }
-          setIsGenerating(false);
         } else if (data.type === 'STREAM_QUERY') {
-          if (isGeneratingRef.current && abortControllerRef.current && currentSessionIdRef.current) {
+          activeStreamsRef.current.forEach((stream, sessId) => {
             syncChannel?.postMessage({
               type: 'STREAM_CHUNK',
-              sessionId: currentSessionIdRef.current,
-              messageId: currentAssistantMsgIdRef.current,
-              reasoningContent: currentReasoningRef.current,
-              content: currentContentRef.current,
-              isThinking: currentIsThinkingRef.current,
-              thinkingDuration: currentThinkingDurationRef.current,
+              sessionId: sessId,
+              messageId: stream.messageId,
+              reasoningContent: stream.reasoningContent,
+              content: stream.content,
+              isThinking: stream.isThinking,
+              thinkingDuration: stream.thinkingDuration,
               source: 'MAIN',
             });
-          }
+          });
         }
       };
     }
@@ -369,11 +380,10 @@ export const App: React.FC = () => {
 
   // Session management handlers
   const handleNewSession = () => {
-    if (isGenerating && abortControllerRef.current) {
-      handleStop();
-    }
-    // If current session is already empty, just stay on it instead of creating duplicate blank sessions
-    if (currentSession && (!currentSession.messages || currentSession.messages.length === 0)) {
+    // If an empty session already exists, navigate to it instead of creating duplicate blank sessions
+    const existingEmpty = sessions.find((s) => !s.messages || s.messages.length === 0);
+    if (existingEmpty) {
+      setCurrentSessionId(existingEmpty.id);
       setLastMetrics(undefined);
       setInput('');
       setImages([]);
@@ -388,8 +398,9 @@ export const App: React.FC = () => {
   };
 
   const handleDeleteSession = (id: string) => {
-    if (isGenerating && currentSessionId === id && abortControllerRef.current) {
-      handleStop();
+    // Forbid deleting a session that is actively generating
+    if (generatingSessionIds.includes(id)) {
+      return;
     }
     setSessions((prev) => {
       const target = prev.find((s) => s.id === id);
@@ -400,7 +411,7 @@ export const App: React.FC = () => {
 
       const filtered = prev.filter((s) => s.id !== id);
       if (filtered.length === 0) {
-        const fresh = createNewSession();
+        const fresh = createNewSession(activeLang === 'en' ? 'New Chat' : '新对话');
         setCurrentSessionId(fresh.id);
         saveCurrentSessionId(fresh.id);
         return [fresh];
@@ -415,6 +426,9 @@ export const App: React.FC = () => {
   };
 
   const handleRenameSession = (id: string, newTitle: string) => {
+    if (generatingSessionIds.includes(id)) {
+      return;
+    }
     setSessions((prev) =>
       prev.map((s) => (s.id === id ? { ...s, title: newTitle, updatedAt: Date.now() } : s))
     );
@@ -434,6 +448,10 @@ export const App: React.FC = () => {
   ) => {
     const targetSession = sessions.find((s) => s.id === targetSessionId);
     if (!targetSession) return;
+
+    const abortController = new AbortController();
+    abortControllersRef.current.set(targetSessionId, abortController);
+    setGeneratingSessionIds((prev) => (prev.includes(targetSessionId) ? prev : [...prev, targetSessionId]));
 
     // Optional Offline Wiki RAG Retrieval (session-level toggle, defaults to false)
     let promptToSend = textToSend;
@@ -455,6 +473,12 @@ export const App: React.FC = () => {
       } catch (err) {
         console.warn('Knowledge Base retrieval error:', err);
       }
+    }
+
+    if (abortController.signal.aborted) {
+      abortControllersRef.current.delete(targetSessionId);
+      setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetSessionId));
+      return;
     }
 
     const userMessage: ChatMessage = {
@@ -498,16 +522,19 @@ export const App: React.FC = () => {
       })
     );
 
-    setIsGenerating(true);
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
-    currentAssistantMsgIdRef.current = assistantMsgId;
-    currentReasoningRef.current = '';
-    currentContentRef.current = '';
-    currentIsThinkingRef.current = sessionEnableThinking;
-    currentThinkingDurationRef.current = 0;
-
+    let accumulatedReasoning = '';
+    let accumulatedContent = '';
+    let isThinking = sessionEnableThinking;
+    let thinkingDuration = 0;
     const thinkingStartTime = performance.now();
+
+    activeStreamsRef.current.set(targetSessionId, {
+      messageId: assistantMsgId,
+      reasoningContent: '',
+      content: '',
+      isThinking,
+      thinkingDuration: 0,
+    });
 
     const sessionSettings = {
       ...settings,
@@ -524,16 +551,24 @@ export const App: React.FC = () => {
         },
         onThought: (delta) => {
           const duration = (performance.now() - thinkingStartTime) / 1000;
-          currentReasoningRef.current += delta;
-          currentIsThinkingRef.current = true;
-          currentThinkingDurationRef.current = duration;
+          accumulatedReasoning += delta;
+          isThinking = true;
+          thinkingDuration = duration;
+
+          activeStreamsRef.current.set(targetSessionId, {
+            messageId: assistantMsgId,
+            reasoningContent: accumulatedReasoning,
+            content: accumulatedContent,
+            isThinking: true,
+            thinkingDuration: duration,
+          });
 
           syncChannel?.postMessage({
             type: 'STREAM_CHUNK',
             sessionId: targetSessionId,
             messageId: assistantMsgId,
-            reasoningContent: currentReasoningRef.current,
-            content: currentContentRef.current,
+            reasoningContent: accumulatedReasoning,
+            content: accumulatedContent,
             isThinking: true,
             thinkingDuration: duration,
             source: 'MAIN',
@@ -548,7 +583,7 @@ export const App: React.FC = () => {
                   if (m.id !== assistantMsgId) return m;
                   return {
                     ...m,
-                    reasoningContent: currentReasoningRef.current,
+                    reasoningContent: accumulatedReasoning,
                     isThinking: true,
                     thinkingDuration: duration,
                   };
@@ -558,17 +593,25 @@ export const App: React.FC = () => {
           );
         },
         onContent: (delta) => {
-          currentContentRef.current += delta;
-          currentIsThinkingRef.current = false;
+          accumulatedContent += delta;
+          isThinking = false;
+
+          activeStreamsRef.current.set(targetSessionId, {
+            messageId: assistantMsgId,
+            reasoningContent: accumulatedReasoning,
+            content: accumulatedContent,
+            isThinking: false,
+            thinkingDuration: thinkingDuration,
+          });
 
           syncChannel?.postMessage({
             type: 'STREAM_CHUNK',
             sessionId: targetSessionId,
             messageId: assistantMsgId,
-            reasoningContent: currentReasoningRef.current,
-            content: currentContentRef.current,
+            reasoningContent: accumulatedReasoning,
+            content: accumulatedContent,
             isThinking: false,
-            thinkingDuration: currentThinkingDurationRef.current,
+            thinkingDuration: thinkingDuration,
             source: 'MAIN',
           });
 
@@ -581,7 +624,7 @@ export const App: React.FC = () => {
                   if (m.id !== assistantMsgId) return m;
                   return {
                     ...m,
-                    content: currentContentRef.current,
+                    content: accumulatedContent,
                     isThinking: false,
                   };
                 }),
@@ -590,17 +633,21 @@ export const App: React.FC = () => {
           );
         },
         onDone: (metrics) => {
-          setIsGenerating(false);
-          abortControllerRef.current = null;
-          setLastMetrics(metrics);
+          abortControllersRef.current.delete(targetSessionId);
+          activeStreamsRef.current.delete(targetSessionId);
+          setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetSessionId));
+
+          if (currentSessionIdRef.current === targetSessionId) {
+            setLastMetrics(metrics);
+          }
 
           syncChannel?.postMessage({
             type: 'STREAM_DONE',
             sessionId: targetSessionId,
             messageId: assistantMsgId,
-            reasoningContent: currentReasoningRef.current,
-            content: currentContentRef.current,
-            thinkingDuration: currentThinkingDurationRef.current,
+            reasoningContent: accumulatedReasoning,
+            content: accumulatedContent,
+            thinkingDuration: thinkingDuration,
             metrics,
             source: 'MAIN',
           });
@@ -615,7 +662,10 @@ export const App: React.FC = () => {
                   if (m.id !== assistantMsgId) return m;
                   return {
                     ...m,
+                    reasoningContent: accumulatedReasoning,
+                    content: accumulatedContent,
                     isThinking: false,
+                    thinkingDuration: thinkingDuration,
                     metrics,
                   };
                 }),
@@ -624,16 +674,17 @@ export const App: React.FC = () => {
           );
         },
         onError: (err) => {
-          setIsGenerating(false);
-          abortControllerRef.current = null;
+          abortControllersRef.current.delete(targetSessionId);
+          activeStreamsRef.current.delete(targetSessionId);
+          setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetSessionId));
 
           syncChannel?.postMessage({
             type: 'STREAM_DONE',
             sessionId: targetSessionId,
             messageId: assistantMsgId,
-            reasoningContent: currentReasoningRef.current,
-            content: currentContentRef.current,
-            thinkingDuration: currentThinkingDurationRef.current,
+            reasoningContent: accumulatedReasoning,
+            content: accumulatedContent,
+            thinkingDuration: thinkingDuration,
             source: 'MAIN',
           });
 
@@ -663,18 +714,19 @@ export const App: React.FC = () => {
   const handleSend = async (overridePrompt?: string) => {
     const textToSend = (overridePrompt ?? input).trim();
     if (!textToSend && images.length === 0) return;
-    if (isGenerating) return;
 
     let targetSessionId = currentSessionId;
     let targetSession = sessions.find((s) => s.id === targetSessionId);
 
     if (!targetSession) {
-      const fresh = createNewSession();
+      const fresh = createNewSession(activeLang === 'en' ? 'New Chat' : '新对话');
       targetSessionId = fresh.id;
       targetSession = fresh;
       setSessions((prev) => [fresh, ...prev]);
       setCurrentSessionId(fresh.id);
     }
+
+    if (generatingSessionIds.includes(targetSession.id)) return;
 
     const currentImages = [...images];
     setInput('');
@@ -686,14 +738,14 @@ export const App: React.FC = () => {
 
   // Retry generating an assistant response
   const handleRetry = async (assistantMessageId: string) => {
-    if (isGenerating) {
-      handleStop();
-    }
-
     const targetSession =
       sessions.find((s) => s.id === currentSessionId) ||
       sessions.find((s) => s.messages.some((m) => m.id === assistantMessageId));
     if (!targetSession) return;
+
+    if (generatingSessionIds.includes(targetSession.id)) {
+      handleStop(targetSession.id);
+    }
 
     const asstIdx = targetSession.messages.findIndex((m) => m.id === assistantMessageId);
     if (asstIdx === -1) return;
@@ -720,8 +772,9 @@ export const App: React.FC = () => {
 
   // Delete a turn (both question and assistant response)
   const handleDeleteTurn = (assistantMessageId: string) => {
-    if (isGenerating && currentAssistantMsgIdRef.current === assistantMessageId) {
-      handleStop();
+    const targetSession = sessions.find((s) => s.messages.some((m) => m.id === assistantMessageId));
+    if (targetSession && generatingSessionIds.includes(targetSession.id)) {
+      handleStop(targetSession.id);
     }
 
     setSessions((prev) =>
@@ -751,15 +804,21 @@ export const App: React.FC = () => {
     );
   };
 
-  const handleStop = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
+  const handleStop = (sessionIdToStop?: string) => {
+    const targetId = sessionIdToStop || currentSessionId;
+    if (!targetId) return;
+
+    const controller = abortControllersRef.current.get(targetId);
+    if (controller) {
+      controller.abort();
+      abortControllersRef.current.delete(targetId);
     }
-    setIsGenerating(false);
+    activeStreamsRef.current.delete(targetId);
+    setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetId));
+
     syncChannel?.postMessage({
       type: 'STREAM_ABORT',
-      sessionId: currentSessionId,
+      sessionId: targetId,
       source: 'MAIN',
     });
   };
@@ -771,10 +830,8 @@ export const App: React.FC = () => {
         <Sidebar
           sessions={sessions}
           currentSessionId={currentSessionId}
+          generatingSessionIds={generatingSessionIds}
           onSelectSession={(id) => {
-            if (isGenerating && abortControllerRef.current) {
-              handleStop();
-            }
             setCurrentSessionId(id);
           }}
           onNewSession={handleNewSession}

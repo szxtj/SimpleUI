@@ -51,6 +51,7 @@ export const translations = {
     thinkingOffTooltip: '极速回复模式（点击切换为思考）',
     send: '发送消息 (Enter)',
     stop: '停止生成',
+    generating: '正在生成...',
 
     // MessageItem & Markdown
     copy: '复制',
@@ -218,6 +219,7 @@ export const translations = {
     thinkingOffTooltip: 'Fast mode enabled (click to switch to thinking mode)',
     send: 'Send message (Enter)',
     stop: 'Stop generating',
+    generating: 'Generating...',
 
     // MessageItem & Markdown
     copy: 'Copy',

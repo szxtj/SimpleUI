@@ -76,7 +76,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const prevFirstMsgIdRef = useRef(messages[0]?.id);
   const [showModelMenu, setShowModelMenu] = useState(false);
 
-  // Auto-scroll to bottom only on new turns or while actively thinking
+  // Auto-scroll to bottom only on new turns, session change, or while actively thinking/generating
   useEffect(() => {
     const isNewMessage = messages.length > prevMessagesLengthRef.current;
     const isDifferentSession = messages[0]?.id !== prevFirstMsgIdRef.current;
@@ -86,10 +86,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
     const lastMsg = messages[messages.length - 1];
     const isActivelyThinking = lastMsg?.role === 'assistant' && lastMsg?.isThinking === true;
 
-    if (isDifferentSession || isNewMessage || isActivelyThinking) {
+    if (isDifferentSession || isNewMessage) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    } else if (isActivelyThinking || isGenerating) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
     }
-  }, [messages]);
+  }, [messages, isGenerating]);
 
   const quickPrompts = [
     {

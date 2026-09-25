@@ -11,11 +11,13 @@ import {
   Search,
   MessageSquarePlus,
   PanelLeftClose,
+  Loader2,
 } from 'lucide-react';
 
 interface SidebarProps {
   sessions: ChatSession[];
   currentSessionId: string | null;
+  generatingSessionIds?: string[];
   onSelectSession: (id: string) => void;
   onNewSession: () => void;
   onDeleteSession: (id: string) => void;
@@ -30,6 +32,7 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({
   sessions,
   currentSessionId,
+  generatingSessionIds = [],
   onSelectSession,
   onNewSession,
   onDeleteSession,
@@ -48,6 +51,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const startRename = (session: ChatSession, e: React.MouseEvent) => {
     e.stopPropagation();
+    if (generatingSessionIds.includes(session.id)) return;
     setEditingId(session.id);
     setEditingTitle(session.title);
   };
@@ -167,7 +171,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
         ) : (
           filteredSessions.map((session) => {
             const isSelected = session.id === currentSessionId;
-            const isEditing = session.id === editingId;
+            const isGeneratingSession = generatingSessionIds.includes(session.id);
+            const isEditing = session.id === editingId && !isGeneratingSession;
             const isLastBlankSession =
               sessions.length <= 1 && (!session.messages || session.messages.length === 0);
 
@@ -219,49 +224,59 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   )}
                 </div>
 
-                {/* Edit & Delete Actions (hover only) */}
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  {isEditing ? (
-                    <>
-                      <button
-                        onClick={(e) => confirmRename(session.id, e)}
-                        className="p-1 hover:text-emerald-500 dark:hover:text-emerald-400"
-                        title={t('confirm')}
-                      >
-                        <Check className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={cancelRename}
-                        className="p-1 hover:text-red-500 dark:hover:text-red-400"
-                        title={t('cancel')}
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        onClick={(e) => startRename(session, e)}
-                        className="p-1 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white transition-colors"
-                        title={t('rename')}
-                      >
-                        <Edit2 className="w-3.5 h-3.5" />
-                      </button>
-                      {!isLastBlankSession && (
+                {/* Right Action: Spinning loader while generating; Edit & Delete Actions (hover only) when idle */}
+                {isGeneratingSession ? (
+                  <div
+                    className="flex items-center justify-center p-1 text-blue-500 dark:text-blue-400 flex-shrink-0"
+                    title={t('generating') || 'Generating...'}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                    {isEditing ? (
+                      <>
                         <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onDeleteSession(session.id);
-                          }}
-                          className="p-1 text-zinc-500 hover:text-red-500 dark:text-zinc-400 dark:hover:text-red-400 transition-colors"
-                          title={t('deleteChat')}
+                          onClick={(e) => confirmRename(session.id, e)}
+                          className="p-1 hover:text-emerald-500 dark:hover:text-emerald-400"
+                          title={t('confirm')}
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          <Check className="w-3.5 h-3.5" />
                         </button>
-                      )}
-                    </>
-                  )}
-                </div>
+                        <button
+                          onClick={cancelRename}
+                          className="p-1 hover:text-red-500 dark:hover:text-red-400"
+                          title={t('cancel')}
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          onClick={(e) => startRename(session, e)}
+                          className="p-1 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white transition-colors"
+                          title={t('rename')}
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        {!isLastBlankSession && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDeleteSession(session.id);
+                            }}
+                            className="p-1 text-zinc-500 hover:text-red-500 dark:text-zinc-400 dark:hover:text-red-400 transition-colors"
+                            title={t('deleteChat')}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })

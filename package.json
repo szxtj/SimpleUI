@@ -8,7 +8,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "start": "node server/proxy.js"
+    "start": "node server/proxy.js",
+    "build:app": "./build_mac_app.sh",
+    "build:install": "./build_mac_app.sh install"
   },
   "dependencies": {
     "clsx": "^2.1.1",
