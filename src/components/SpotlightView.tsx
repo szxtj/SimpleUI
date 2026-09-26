@@ -56,6 +56,7 @@ export const SpotlightView: React.FC = () => {
     online: false,
   });
   const [wikiStatus, setWikiStatus] = useState<WikiStatusInfo>({
+    enabled: true,
     connected: false,
     port: 31236,
     zimPath: null,
@@ -76,6 +77,7 @@ export const SpotlightView: React.FC = () => {
   const displayTokens = (isGenerating && liveStreamingTokens !== null) ? liveStreamingTokens : persistentHistoryTokens;
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [activeWikiArticle, setActiveWikiArticle] = useState<string | null>(null);
+  const [activeWikiContext, setActiveWikiContext] = useState<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
   const isGeneratingRef = useRef(false);
   const messagesRef = useRef<ChatMessage[]>(messages);
@@ -520,17 +522,23 @@ export const SpotlightView: React.FC = () => {
     // 2. Offline Wiki RAG Retrieval if enabled (supports both Simplified and Traditional Chinese)
     let promptToSend = textToSend;
     let foundCitations: WikiCitation[] = [];
+    let contextOverflow = false;
 
-    if (enableWikiSearch && wikiStatus.connected && textToSend) {
+    if (wikiStatus.enabled && enableWikiSearch && wikiStatus.connected && textToSend) {
       try {
-        const rag = await WikiAPI.getRagContext(textToSend);
-        if (rag.needsWiki && rag.citations && rag.citations.length > 0) {
+        const usableTokens = Math.max(2000, settings.maxContext - Math.floor(settings.maxContext / 2));
+        const budgetChars = Math.max(4000, Math.floor(usableTokens * 1.5));
+        const rag = await WikiAPI.getRagContext(textToSend, budgetChars);
+        if (rag.contextOverflow) {
+          // 上下文已满，一篇原文都装不下：不调用模型，直接提示用户新开对话
+          contextOverflow = true;
+        } else if (rag.needsWiki && rag.citations && rag.citations.length > 0) {
           foundCitations = rag.citations;
-          const userQuestionHeader = lang === 'en' ? '[User Question]' : '[用户问题]';
-          const instructionHeader = lang === 'en'
-            ? '[Please answer the user\'s question accurately and objectively using the knowledge base references above, providing relevant facts and data directly]'
-            : '[请结合上述知识库参考资料准确客观地回答用户问题，直接给出相关数据与事实]';
-          promptToSend = `${rag.promptContext}\n\n${userQuestionHeader}\n${textToSend}\n\n${instructionHeader}`;
+          const isEn = lang === 'en';
+          const groundingGuidelines = isEn
+            ? `[Encyclopedia Context]\nBelow are one or more encyclopedia articles (Infobox, lead section and relevant body sections) retrieved from an offline knowledge base for the user's question.\n\n${rag.promptContext}\n\n[How to answer]\n1. [Relevance filtering]: Locate the parts of the context that actually answer the question and ignore the rest.\n2. [Fact grounding]: Treat the facts, dates, people and numbers found there as your factual anchor. Combine them with your own knowledge when they are partial.\n3. [Reproduce when asked]: If the user asks you to enumerate or list something, reproduce the corresponding list from the context faithfully — do not shorten or omit items.\n4. [Cite]: Mention which encyclopedia article(s) you used.\n\n${isEn ? '[User Question]' : '[用户问题]'}\n${textToSend}`
+            : `[百科原文参考]\n以下是从离线知识库中检索到的与用户问题相关的百科条目内容（含基本档案、引言与相关小节）。\n\n${rag.promptContext}\n\n[回答指引]\n1. 【自行筛选】：自行定位原文中真正与问题相关的部分，忽略其余。\n2. 【事实锚定】：将其中出现的事实、时间、人物与数据作为真实性基石；若信息不完整，可结合你自身的知识补充展开。\n3. 【按需照抄】：若用户要求列举类内容，请忠实照抄原文中的对应列表，不要擅自删减或概括。\n4. 【注明出处】：回答中请说明引用了哪篇百科条目。\n\n[用户问题]\n${textToSend}`;
+          promptToSend = groundingGuidelines;
         }
       } catch (err) {
         console.warn('Knowledge Base retrieval error in spotlight:', err);
@@ -603,6 +611,24 @@ export const SpotlightView: React.FC = () => {
 
     const promptTokensEstimate = estimateHistoryTokens(messagesWithPrompt, settings.systemPrompt);
     setLiveStreamingTokens(promptTokensEstimate);
+
+    // 上下文已满：知识库原文一篇都装不下。不调用模型，直接提示用户新开对话。
+    if (contextOverflow) {
+      const hint =
+        settings.language === 'en'
+          ? '⚠️ The context window is full, so the knowledge base article could not be loaded. Please start a new conversation and try again.'
+          : '⚠️ 当前对话的上下文窗口已满，知识库原文无法装载。请新建一个对话后再试。';
+      accumulatedContent = hint;
+      setMessages((prev) =>
+        prev.map((m) => (m.id === asstMessageId ? { ...m, content: hint, isThinking: false } : m))
+      );
+      persistSession(true);
+      setLiveStreamingTokens(null);
+      setIsGenerating(false);
+      abortControllerRef.current = null;
+      recordActivity();
+      return;
+    }
 
     await TurboFieldfareAPI.streamChat(
       messagesWithPrompt,
@@ -1065,8 +1091,8 @@ export const SpotlightView: React.FC = () => {
                   )}
                 </button>
 
-                {/* Offline Wiki Knowledge Toggle Button */}
-                <button
+                {/* Offline Wiki Knowledge Toggle Button — 服务总开关关闭时完全不渲染 */}
+                {wikiStatus.enabled && (<button
                   type="button"
                   onClick={() => wikiStatus.connected && toggleWiki(!enableWikiSearch)}
                   disabled={!wikiStatus.connected}
@@ -1087,7 +1113,7 @@ export const SpotlightView: React.FC = () => {
                 >
                   <BookOpen className={`w-3.5 h-3.5 ${enableWikiSearch && wikiStatus.connected ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
                   <span>{t('offlineWiki')}</span>
-                </button>
+                </button>)}
               </div>
 
               {/* Right: Send Button + Context Ring to its right */}
@@ -1242,9 +1268,10 @@ export const SpotlightView: React.FC = () => {
                           e.preventDefault();
                           e.stopPropagation();
                           setActiveWikiArticle(c.title);
+                          setActiveWikiContext(c.context ?? null);
                         }}
                         className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-emerald-500/10 hover:bg-emerald-500/20 active:bg-emerald-500/30 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 hover:border-emerald-500/35 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer select-none"
-                        title={c.summary || c.title}
+                        title={c.title}
                       >
                         <span className="font-medium truncate max-w-[200px] pointer-events-none select-none">{c.title}</span>
                         <ExternalLink className="w-3 h-3 opacity-60 pointer-events-none flex-shrink-0" />
@@ -1367,8 +1394,8 @@ export const SpotlightView: React.FC = () => {
                   )}
                 </button>
 
-                {/* Offline Wiki Knowledge Toggle Button */}
-                <button
+                {/* Offline Wiki Knowledge Toggle Button — 服务总开关关闭时完全不渲染 */}
+                {wikiStatus.enabled && (<button
                   type="button"
                   onClick={() => wikiStatus.connected && toggleWiki(!enableWikiSearch)}
                   disabled={!wikiStatus.connected}
@@ -1389,7 +1416,7 @@ export const SpotlightView: React.FC = () => {
                 >
                   <BookOpen className={`w-3.5 h-3.5 ${enableWikiSearch && wikiStatus.connected ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
                   <span>{t('offlineWiki')}</span>
-                </button>
+                </button>)}
               </div>
 
               {/* Right: Send Button + Context Ring */}
@@ -1430,7 +1457,11 @@ export const SpotlightView: React.FC = () => {
       <WikiDrawer
         isOpen={!!activeWikiArticle}
         title={activeWikiArticle}
-        onClose={() => setActiveWikiArticle(null)}
+        context={activeWikiContext}
+        onClose={() => {
+          setActiveWikiArticle(null);
+          setActiveWikiContext(null);
+        }}
         theme={settings.theme}
       />
     </div>

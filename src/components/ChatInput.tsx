@@ -22,6 +22,7 @@ interface ChatInputProps {
   enableWikiSearch?: boolean;
   setEnableWikiSearch?: (val: boolean) => void;
   wikiConnected?: boolean;
+  wikiEnabled?: boolean;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = ({
@@ -41,6 +42,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   enableWikiSearch = true,
   setEnableWikiSearch,
   wikiConnected = false,
+  wikiEnabled = true,
 }) => {
   const { t } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -160,9 +162,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       </div>
 
       {/* Bottom Control Toolbar */}
-      <div className="flex items-center justify-between px-2.5 sm:px-3.5 pb-2.5 pt-1 select-none gap-2">
+      <div className="flex items-center justify-between px-2.5 cq-md:px-3.5 pb-2.5 pt-1 select-none gap-2">
         {/* Left: ONLY Attachment button + Quick/Thinking Dual-mode switch + Offline Wiki */}
-        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-shrink">
+        <div className="flex items-center gap-1.5 cq-md:gap-2 min-w-0 flex-shrink">
           {/* Add Attachment Button */}
           <button
             type="button"
@@ -181,7 +183,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           <button
             type="button"
             onClick={() => setEnableThinking(!enableThinking)}
-            className={`flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-full text-xs font-medium transition-all active:scale-95 border flex-shrink-0 ${
+            className={`flex items-center gap-1.5 px-2 cq-md:px-3 py-1.5 rounded-full text-xs font-medium transition-all active:scale-95 border flex-shrink-0 ${
               enableThinking
                 ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 dark:bg-blue-950/70 dark:text-blue-300 dark:border-blue-500/40 dark:hover:bg-blue-900/80 shadow-sm'
                 : 'bg-black/5 text-zinc-600 border-black/5 hover:bg-black/10 hover:text-black dark:bg-white/5 dark:text-zinc-300 dark:border-white/5 dark:hover:bg-white/10 dark:hover:text-white'
@@ -191,22 +193,22 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             {enableThinking ? (
               <>
                 <Brain className="w-3.5 h-3.5 text-blue-500 dark:text-blue-400" />
-                <span className="hidden sm:inline">{t('thinkingOn')}</span>
+                <span className="hidden cq-md:inline">{t('thinkingOn')}</span>
               </>
             ) : (
               <>
                 <Zap className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" />
-                <span className="hidden sm:inline">{t('thinkingOff')}</span>
+                <span className="hidden cq-md:inline">{t('thinkingOff')}</span>
               </>
             )}
           </button>
 
-          {/* Offline Wiki Knowledge Toggle Button */}
-          <button
+          {/* Offline Wiki Knowledge Toggle Button — 服务总开关关闭时完全不渲染 */}
+          {wikiEnabled && (<button
             type="button"
             onClick={() => wikiConnected && setEnableWikiSearch?.(!enableWikiSearch)}
             disabled={!wikiConnected}
-            className={`flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-full text-xs font-medium transition-all active:scale-95 border flex-shrink-0 ${
+            className={`flex items-center gap-1.5 px-2 cq-md:px-3 py-1.5 rounded-full text-xs font-medium transition-all active:scale-95 border flex-shrink-0 ${
               !wikiConnected
                 ? 'opacity-40 cursor-not-allowed bg-black/5 text-zinc-400 dark:bg-white/5 dark:text-zinc-500 border-transparent'
                 : enableWikiSearch
@@ -222,12 +224,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             }
           >
             <BookOpen className={`w-3.5 h-3.5 ${enableWikiSearch && wikiConnected ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
-            <span className="hidden sm:inline">{t('offlineWiki')}</span>
-          </button>
+            <span className="hidden cq-md:inline">{t('offlineWiki')}</span>
+          </button>)}
         </div>
 
         {/* Right: Send Button + Context Ring on its RIGHT */}
-        <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+        <div className="flex items-center gap-1.5 cq-md:gap-2 flex-shrink-0">
           {/* Send / Stop Button */}
           {isGenerating ? (
             <button

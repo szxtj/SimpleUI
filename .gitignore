@@ -34,8 +34,11 @@ pnpm-debug.log*
 # IDE / Editor
 .vscode/
 .idea/
+.workbuddy
 *.swp
 *.swo
 
 # Local runtime configs
 server/wiki_config.json
+
+

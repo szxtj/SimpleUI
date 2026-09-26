@@ -8,6 +8,18 @@
   color-scheme: light;
 }
 
+/**
+ * The chat column is an inline-size query container.
+ *
+ * Its inner chrome (paddings, toolbar labels, bubble sizing) must adapt to the
+ * chat column's own width — window width minus any open sidebar — instead of
+ * the viewport width. All `cq-md:` / `cq-lg:` variants used inside the chat
+ * area resolve against this element (see tailwind.config.js).
+ */
+.chat-container {
+  container-type: inline-size;
+}
+
 html.dark {
   color-scheme: dark;
 }

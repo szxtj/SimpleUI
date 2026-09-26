@@ -17,7 +17,8 @@ export interface TurnMetrics {
 export interface WikiCitation {
   title: string;
   url: string;
-  summary?: string;
+  /** 抽取归一后的纯文字正文，用于抽屉上方展示 */
+  context?: string;
 }
 
 export interface ChatMessage {
@@ -75,7 +76,8 @@ export interface ServerHealthInfo {
 }
 
 export interface WikiStatusInfo {
-  connected: boolean;
+  enabled: boolean;   // 知识库服务总开关（关闭时整个服务停服）
+  connected: boolean; // 服务已启用且 ZIM 就绪
   port: number;
   zimPath: string | null;
   contentId: string | null;

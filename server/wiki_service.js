@@ -9,8 +9,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const KIWIX_PORT = 31236;
-export const LAYA_API_URL = process.env.LAYA_API_URL || 'http://127.0.0.1:1236';
-export const QWEN_API_URL = process.env.QWEN_API_URL || 'http://127.0.0.1:1234';
+
+// 主力模型（TurboFieldfare）。承担实体规划、长文目录路由与最终答案生成。
+// 注意：TTF 不支持多路并发，禁止在并行分支里调用。
+export const MAIN_API_URL = process.env.MAIN_API_URL || 'http://127.0.0.1:1235';
+export const MAIN_MODEL = process.env.MAIN_MODEL || 'gemma-4-26b-a4b-it';
 
 const userConfigDir = path.join(
   process.env.HOME || '',
@@ -85,6 +88,11 @@ export function getAllVariants(text) {
 
 // End of OpenCC variants helper
 
+// 维基命名空间前缀：分类/模板/帮助/文件/门户等"非文章页"。
+// 这些页面会命中关键字但不是条目，检索时一律丢弃，只保留文章页。
+const NON_ARTICLE_NAMESPACE_RE =
+  /^(?:Special|特殊|Talk|討論|讨论|User|用戶|用户|Wikipedia|維基百科|维基百科|Project|File|Image|檔案|文件|档案|MediaWiki|Template|模板|Help|幫助|帮助|Category|分類|分类|Portal|主題|主题|Draft|草稿|Module|模組|模块|Book|Course|Thread|Summary|Page|Index|Topic|TimedText|朗讀|朗读)\s*[:：]/i;
+
 function loadStoredZimPath() {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
@@ -101,13 +109,31 @@ function loadStoredZimPath() {
   return null;
 }
 
-function saveStoredZimPath(zimPath) {
+// 读取持久化的知识库服务配置：ZIM 路径 + 服务总开关
+function loadStoredConfig() {
   try {
-    fs.writeFileSync(
-      CONFIG_FILE,
-      JSON.stringify({ zimPath: zimPath.trim() }, null, 2),
-      'utf-8'
-    );
+    let data = null;
+    if (fs.existsSync(CONFIG_FILE)) {
+      data = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+    } else if (fs.existsSync(DEV_CONFIG_FILE)) {
+      data = JSON.parse(fs.readFileSync(DEV_CONFIG_FILE, 'utf-8'));
+    }
+    if (data) {
+      return {
+        zimPath: (data.zimPath || '').trim() || null,
+        enabled: data.enabled !== undefined ? data.enabled !== false : true,
+      };
+    }
+  } catch (e) {
+    // ignore
+  }
+  return { zimPath: null, enabled: true };
+}
+
+function saveStoredConfig(zimPath, enabled) {
+  const payload = { zimPath: (zimPath || '').trim(), enabled: enabled !== false };
+  try {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(payload, null, 2), 'utf-8');
   } catch (e) {
     console.error('[WikiService] Failed to save wiki_config.json:', e);
   }
@@ -115,57 +141,13 @@ function saveStoredZimPath(zimPath) {
     if (DEV_CONFIG_FILE !== CONFIG_FILE && fs.existsSync(DEV_CONFIG_FILE)) {
       fs.writeFileSync(
         DEV_CONFIG_FILE,
-        JSON.stringify({ zimPath: zimPath.trim() }, null, 2),
+        JSON.stringify(payload, null, 2),
         'utf-8'
       );
     }
   } catch (e) {
     // ignore
   }
-}
-
-// Expand query or tokens to all Simplified and Traditional Chinese variants
-export function getExpandedTokens(queryOrTokens) {
-  if (!queryOrTokens) return [];
-  const activeTokensSet = new Set();
-  const baseTokens = Array.isArray(queryOrTokens) ? queryOrTokens : [queryOrTokens];
-  for (const bt of baseTokens) {
-    if (!bt || typeof bt !== 'string') continue;
-    const trimmed = bt.trim();
-    if (!trimmed) continue;
-    for (const v of getAllVariants(trimmed)) {
-      activeTokensSet.add(v);
-    }
-  }
-  return Array.from(activeTokensSet);
-}
-
-// In-Memory Query & Context Cache (LRU style, max 200 items, TTL 10 mins)
-const queryPlanCache = new Map();
-const CACHE_MAX_SIZE = 200;
-const CACHE_TTL_MS = 10 * 60 * 1000;
-
-export function getCachedContext(query) {
-  if (!query || typeof query !== 'string') return null;
-  const key = query.trim().toLowerCase();
-  const entry = queryPlanCache.get(key);
-  if (!entry) return null;
-  const ttl = entry.ttl || CACHE_TTL_MS;
-  if (Date.now() - entry.timestamp > ttl) {
-    queryPlanCache.delete(key);
-    return null;
-  }
-  return entry.data;
-}
-
-export function setCachedContext(query, data, ttlMs = CACHE_TTL_MS) {
-  if (!query || typeof query !== 'string') return;
-  const key = query.trim().toLowerCase();
-  if (queryPlanCache.size >= CACHE_MAX_SIZE) {
-    const oldestKey = queryPlanCache.keys().next().value;
-    queryPlanCache.delete(oldestKey);
-  }
-  queryPlanCache.set(key, { data, timestamp: Date.now(), ttl: ttlMs });
 }
 
 // Safe JSON parser with auto-repair for slightly truncated LLM outputs
@@ -194,117 +176,6 @@ function safeParseJson(text) {
 }
 
 // ==========================================
-// Phase 2: LAYA Model System 1 Fast Decision Client
-// ==========================================
-
-export async function callLayaSystemOne(state, questions, timeoutMs = 1500) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    // 1. Primary: Native Laya-Serve / Jev POST /v1/systemone endpoint
-    const res = await fetch(`${LAYA_API_URL}/v1/systemone`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({ state, questions }),
-    });
-    clearTimeout(timer);
-    if (res.ok) {
-      return await res.json();
-    }
-  } catch (err) {
-    clearTimeout(timer);
-    // 2. Secondary: Compatible OpenAI endpoint on port 1236 if run with proxy wrapper
-    try {
-      const qKey = Object.keys(questions)[0] || 'decision';
-      const prompt = `State: ${state}\nQuestion: ${qKey}\nAnswer with strictly YES or NO:`;
-      const res2 = await fetch(`${LAYA_API_URL}/v1/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(timeoutMs),
-        body: JSON.stringify({
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.0,
-          max_tokens: 10,
-        }),
-      });
-      if (res2.ok) {
-        const json2 = await res2.json();
-        const text = json2.choices?.[0]?.message?.content?.toLowerCase() || '';
-        const isYes = text.includes('yes') || text.includes('true') || text.includes('是');
-        return {
-          [qKey]: {
-            choice: isYes ? 'yes' : 'no',
-            probability: isYes ? 0.95 : 0.05,
-          },
-        };
-      }
-    } catch (e2) {
-      // ignore
-    }
-  }
-  return null;
-}
-
-export async function judgeNeedsWikiWithLaya(query) {
-  if (!query || typeof query !== 'string') return false;
-  const trimmed = query.trim();
-  if (!trimmed) return false;
-
-  const result = await callLayaSystemOne(
-    trimmed,
-    {
-      intent: {
-        type: 'choice',
-        instructions: 'Classify user input into chitchat/code versus factual question.',
-        criteria: {
-          chitchat_or_code: 'Greetings, small talk, chit-chat, feelings, opinions, or code generation.',
-          knowledge_lookup: 'Questions about who, what, when, where, why, entities, people, companies, or facts.',
-        },
-      },
-    },
-    1500
-  );
-
-  const answer = result?.answers?.intent || result?.intent;
-  if (answer && answer.choice) {
-    return answer.choice === 'knowledge_lookup';
-  }
-  return null; // Unreachable or not configured
-}
-
-export async function verifyFactWithLaya(query, fact) {
-  if (!query || !fact) return false;
-
-  const simplifiedQuery = toSimplifiedChinese(query);
-  const simplifiedFact = toSimplifiedChinese(fact);
-
-  const result = await callLayaSystemOne(
-    `Query: ${simplifiedQuery}\nDocument: ${simplifiedFact}`,
-    {
-      fact_eval: {
-        type: 'choice',
-        instructions: 'Does the document answer or provide relevant information for the query?',
-        criteria: {
-          relevant: 'The document is relevant, answers the query, or provides facts about the topic.',
-          irrelevant: 'The document is irrelevant, answers a different question, or is unrelated.',
-        },
-      },
-    },
-    1500
-  );
-
-  const answer = result?.answers?.fact_eval || result?.fact_eval;
-  if (answer && answer.choice) {
-    const isRelevant = answer.choice === 'relevant';
-    const prob = answer.probabilities?.relevant ?? (isRelevant ? 0.9 : 0.1);
-    return prob >= 0.35;
-  }
-  return false;
-}
-
-// ==========================================
 // Phase 1: Structured Wikipedia DOM Decomposition
 // ==========================================
 
@@ -323,41 +194,134 @@ function stripHtmlAndUnescape(html) {
     .trim();
 }
 
+// 按 class 配对删除整个元素块（处理嵌套）。
+// 维基的导航框/维护横幅是「div.navbox > table.navbox-inner > 嵌套表格」的多层结构，
+// 非贪婪正则会停在第一个闭合标签处提前断开，把内部的 <li>/<td> 漏进正文，必须配对扫描。
+function removeElementsByClass(html, tag, classRe) {
+  const openRe = new RegExp(`<${tag}\\b[^>]*\\bclass="[^"]*"[^>]*>`, 'gi');
+  const closeRe = new RegExp(`</?${tag}\\b[^>]*>`, 'gi');
+  let result = html;
+  let from = 0;
+  for (let guard = 0; guard < 3000; guard++) {
+    openRe.lastIndex = from;
+    const m = openRe.exec(result);
+    if (!m) break;
+    const classAttr = /class="([^"]*)"/i.exec(m[0]);
+    if (!classAttr || !classRe.test(classAttr[1])) {
+      from = m.index + m[0].length;
+      continue;
+    }
+    closeRe.lastIndex = m.index + m[0].length;
+    let depth = 1;
+    let end = -1;
+    let t;
+    while ((t = closeRe.exec(result)) !== null) {
+      if (t[0].slice(0, 2) === '</') depth--;
+      else depth++;
+      if (depth === 0) {
+        end = t.index + t[0].length;
+        break;
+      }
+    }
+    if (end === -1) break;
+    result = result.slice(0, m.index) + result.slice(end);
+    from = m.index;
+  }
+  return result;
+}
+
 export function parseWikipediaDOM(rawHtml) {
   if (!rawHtml || typeof rawHtml !== 'string') {
     return { infobox: [], section0: [], sections: [] };
   }
 
   // 1. Smart tail cutoff at notes / references / external links / see also
-  const cutoffRegex = /<h2[^>]*>(?:(?!<\/h2>).)*?(?:註釋|注释|參考[資资]料|参考[資资]料|參考[文獻献]|参考[文獻献]|外部[連結链接]|參見|参见|延伸[閱讀阅读])/i;
-  const cutoffMatch = rawHtml.match(cutoffRegex);
-  let html = cutoffMatch && cutoffMatch.index > 0 ? rawHtml.slice(0, cutoffMatch.index) : rawHtml;
+  //    兼容 h2 与 h3 两级标题（部分条目的「外部链接」「参考文献」是 h3 级）
+  const headingRe = /<h([23])\b[^>]*>([\s\S]*?)<\/h\1>/gi;
+  let cutIndex = -1;
+  let hm;
+  while ((hm = headingRe.exec(rawHtml)) !== null) {
+    const headingText = stripHtmlAndUnescape(hm[2]);
+    if (
+      /註釋|注释|參考[資资]料|参考[資资]料|參考[文獻献]|参考[文獻献]|腳註|脚注|出處|出处|文獻|文献|外部[連結链接]|參見|参见|延伸[閱讀阅读]|注[釋释]/.test(
+        headingText
+      )
+    ) {
+      cutIndex = hm.index;
+      break;
+    }
+  }
+  let html = cutIndex > 0 ? rawHtml.slice(0, cutIndex) : rawHtml;
 
   // 2. Strip scripts, styles, references, edit links, navboxes, thumbnails
+  //    以及一切"页面上看不见"的内容：MediaWiki 排序键(sortkey) 与 display:none 元素。
+  //    这些内容浏览器不渲染，但纯文本抽取会把诸如 "7008299792458000000♠" 的排序键带进事实里。
+  //    再加：维基维护横幅(ambox/metadata/mbox-small)、参考资料包裹层(reflist)、
+  //    「[来源请求]」类标记(noprint/Template-Fact/Unreferenced)。
   html = html
     .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gis, '')
     .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gis, '')
+    .replace(/<span[^>]*class="[^"]*sortkey[^"]*"[^>]*>.*?<\/span>/gis, '')
+    .replace(/<span[^>]*style="[^"]*display\s*:\s*none[^"]*"[^>]*>.*?<\/span>/gis, '')
+    .replace(/<div[^>]*style="[^"]*display\s*:\s*none[^"]*"[^>]*>.*?<\/div>/gis, '')
     .replace(/<sup[^>]*class="[^"]*reference[^"]*"[^>]*>.*?<\/sup>/gis, '')
+    .replace(
+      /<sup[^>]*class="[^"]*(?:noprint|Template-Fact|Unreferenced)[^"]*"[^>]*>.*?<\/sup>/gis,
+      ''
+    )
     .replace(/<ol[^>]*class="[^"]*references[^"]*"[^>]*>.*?<\/ol>/gis, '')
     .replace(/<span[^>]*class="[^"]*mw-editsection[^"]*"[^>]*>.*?<\/span>/gis, '')
-    .replace(/<div[^>]*class="[^"]*(?:navbox|vertical-navbox|sidebar|hatnote)[^"]*"[^>]*>.*?<\/div>/gis, '')
-    .replace(/<table[^>]*class="[^"]*(?:navbox|vertical-navbox|sidebar)[^"]*"[^>]*>.*?<\/table>/gis, '')
     .replace(/<figure\b[^<]*(?:(?!<\/figure>)<[^<]*)*<\/figure>/gis, '')
     .replace(/<div[^>]*class="[^"]*thumb[^"]*"[^>]*>.*?<\/div>/gis, '');
 
-  // 3. Extract full Infobox key-values (no 10-line hard cap)
+  // 配对删除多层嵌套的非内容块：导航框/侧边栏/维护横幅/参考资料包裹层/页面指示器
+  html = removeElementsByClass(
+    html,
+    'table',
+    /navbox|vertical-navbox|sidebar|ambox|metadata|mbox-small/i
+  );
+  html = removeElementsByClass(
+    html,
+    'div',
+    /navbox|vertical-navbox|sidebar|hatnote|mw-indicator|reflist|references|mw-references-wrap/i
+  );
+
+  // 3. Extract full Infobox key-values (无长度上限：抓到即留)
+  //    Infobox 常嵌套子表格，必须用 <table>/</table> 配对扫描整体截出，
+  //    否则非贪婪匹配会在第一个 </table> 处提前断开，把奖项表/参战方表错位漏进正文。
   const infobox = [];
-  const infoboxMatch = html.match(/<table[^>]*class="[^"]*infobox[^"]*"[^>]*>(.*?)<\/table>/is);
-  if (infoboxMatch) {
-    const rows = [...infoboxMatch[1].matchAll(/<tr[^>]*>.*?<th[^>]*>(.*?)<\/th>.*?<td[^>]*>(.*?)<\/td>.*?<\/tr>/gis)];
-    for (const row of rows) {
-      const k = stripHtmlAndUnescape(row[1]);
-      const v = stripHtmlAndUnescape(row[2]);
-      if (k && v && k.length < 30 && v.length < 150) {
-        infobox.push({ key: k, value: v });
+  const infoboxStartMatch = html.match(/<table[^>]*class="[^"]*infobox[^"]*"[^>]*>/i);
+  if (infoboxStartMatch) {
+    const start = infoboxStartMatch.index;
+    const tagRe = /<\/?table\b[^>]*>/gi;
+    tagRe.lastIndex = start;
+    let depth = 0;
+    let end = -1;
+    let tm;
+    while ((tm = tagRe.exec(html)) !== null) {
+      if (tm[0].slice(0, 2) === '</') depth--;
+      else depth++;
+      if (depth === 0) {
+        end = tm.index + tm[0].length;
+        break;
       }
     }
-    html = html.replace(infoboxMatch[0], '');
+    if (end !== -1) {
+      const infoboxHtml = html.slice(start, end);
+      const rows = [
+        ...infoboxHtml.matchAll(
+          /<tr[^>]*>[\s\S]*?<th[^>]*>([\s\S]*?)<\/th>[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>[\s\S]*?<\/tr>/gis
+        ),
+      ];
+      for (const row of rows) {
+        const k = stripHtmlAndUnescape(row[1]);
+        const v = stripHtmlAndUnescape(row[2]);
+        if (k && v) {
+          infobox.push({ key: k, value: v });
+        }
+      }
+      html = html.slice(0, start) + html.slice(end);
+    }
   }
 
   // 4. Split Section 0 (Lead) and Section Tree
@@ -372,19 +336,65 @@ export function parseWikipediaDOM(rawHtml) {
     section0Html = html;
   }
 
-  const extractParagraphs = (snippet) => {
-    const pMatches = [...snippet.matchAll(/<p\b[^>]*>(.*?)<\/p>/gis)];
-    const paras = [];
-    for (const m of pMatches) {
-      const clean = stripHtmlAndUnescape(m[1]);
-      if (clean && clean.length >= 20) {
-        paras.push(clean);
-      }
+  // ---- 正文块抽取：按出现顺序抓 <p> / <ul>/<ol> 列表 / <table> 表格 ----
+  // 列表转成「· 条目」行；表格转成「| 单元格 | 单元格 |」的管道表，对大模型友好。
+  const BLOCK_RE =
+    /(<p\b[^>]*>[\s\S]*?<\/p>)|(<ul\b[^>]*>[\s\S]*?<\/ul>)|(<ol\b[^>]*>[\s\S]*?<\/ol>)|(<table\b[^>]*>[\s\S]*?<\/table>)/gi;
+
+  const cleanInline = (s) =>
+    stripHtmlAndUnescape(String(s).replace(/<br\s*\/?>/gi, '；'))
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const listToText = (listHtml) => {
+    const liRe = /<li\b[^>]*>([\s\S]*?)<\/li>/gi;
+    const items = [];
+    let lm;
+    while ((lm = liRe.exec(listHtml)) !== null) {
+      const t = cleanInline(lm[1]);
+      if (t) items.push('· ' + t);
     }
-    return paras;
+    return items.join('\n');
   };
 
-  const section0 = extractParagraphs(section0Html);
+  const tableToText = (tableHtml) => {
+    const rows = [];
+    const trRe = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
+    let tm;
+    while ((tm = trRe.exec(tableHtml)) !== null) {
+      const cellRe = /<t([hd])\b[^>]*>([\s\S]*?)<\/t\1>/gi;
+      const cells = [];
+      let cm;
+      while ((cm = cellRe.exec(tm[1])) !== null) {
+        cells.push(cleanInline(cm[2]));
+      }
+      if (cells.some((c) => c.length > 0)) rows.push(cells);
+    }
+    if (rows.length === 0) return '';
+    return rows.map((cells) => '| ' + cells.join(' | ') + ' |').join('\n');
+  };
+
+  const extractBlocks = (snippet) => {
+    const out = [];
+    let bm;
+    BLOCK_RE.lastIndex = 0;
+    while ((bm = BLOCK_RE.exec(snippet)) !== null) {
+      const block = bm[0];
+      let text = '';
+      if (bm[1]) {
+        text = stripHtmlAndUnescape(block.replace(/<br\s*\/?>/gi, '；'));
+      } else if (bm[2] || bm[3]) {
+        text = listToText(block);
+      } else if (bm[4]) {
+        text = tableToText(block);
+      }
+      text = (text || '').trim();
+      if (text) out.push(text);
+    }
+    return out;
+  };
+
+  const section0 = extractBlocks(section0Html);
 
   // Extract sections
   const sections = [];
@@ -396,7 +406,7 @@ export function parseWikipediaDOM(rawHtml) {
       if (endHeading !== -1) {
         const title = stripHtmlAndUnescape(part.slice(0, endHeading));
         const content = part.slice(endHeading + 5);
-        const paras = extractParagraphs(content);
+        const paras = extractBlocks(content);
         if (title && paras.length > 0) {
           sections.push({ title, paragraphs: paras });
         }
@@ -407,59 +417,39 @@ export function parseWikipediaDOM(rawHtml) {
   return { infobox, section0, sections };
 }
 
-export function cleanWikipediaHtml(rawHtml) {
-  if (!rawHtml || typeof rawHtml !== 'string') return '';
-  const parsed = parseWikipediaDOM(rawHtml);
-  const parts = [];
-  if (parsed.infobox.length > 0) {
-    parts.push(parsed.infobox.map((item) => `${item.key}: ${item.value}`).join(' | '));
-  }
-  if (parsed.section0.length > 0) {
-    parts.push(parsed.section0.join('\n\n'));
-  }
-  for (const s of parsed.sections) {
-    parts.push(`[${s.title}]\n${s.paragraphs.join('\n\n')}`);
-  }
-  return parts.join('\n\n');
-}
-
-// Qwen 3.5 2B Table of Contents Semantic Router for Extra-Long Articles (> 3500 chars)
+// 主力模型目录语义路由：超长条目（> 3500 字）从大纲目录与 Infobox 键名中
+// 挑选最可能包含答案的小节与属性。规则放 system，数据放 user。
 export async function routeArticleSectionsWithSLM(query, headings, infoboxKeys) {
   if (!query || (!headings.length && !infoboxKeys.length)) {
     return { sections: [], keys: [] };
   }
 
-  const prompt = `[任务] 根据用户的问题，从百科条目的大纲目录和基本档案中，挑选出最可能直接包含答案的1~2个小节标题和1~3个属性名称。
-用户问题：${query}
+  const systemPrompt = `[任务] 从百科条目的章节大纲与 Infobox 属性列表中，挑选最可能直接包含用户问题答案的小节与属性。
+[输出] 只输出一个 JSON 对象：{"sections": ["小节名称"], "keys": ["属性名称"]}，不要输出任何其他文字。
+[规则]
+1. sections 选 1~2 个最相关小节；keys 选 1~3 个最相关属性。
+2. 名称必须与给定列表逐字一致，不要改写、翻译或补充。
+3. 若都无法确定，输出空数组。`;
+
+  const userPrompt = `用户问题：${query}
 章节大纲：${JSON.stringify(headings.slice(0, 25))}
 属性列表：${JSON.stringify(infoboxKeys.slice(0, 30))}
 
-只输出纯JSON，不要任何多余文字：{"sections": ["小节名称"], "keys": ["属性名称"]}`;
+输出：`;
 
-  try {
-    const res = await fetch(`${QWEN_API_URL}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: AbortSignal.timeout(3000),
-      body: JSON.stringify({
-        model: 'qwen3.5-2b-optiq',
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.0,
-        max_tokens: 50,
-      }),
-    });
-    if (res.ok) {
-      const json = await res.json();
-      const content = json.choices?.[0]?.message?.content || '';
-      const cleaned = content.replace(/```json/gi, '').replace(/```/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-      return {
-        sections: Array.isArray(parsed.sections) ? parsed.sections : [],
-        keys: Array.isArray(parsed.keys) ? parsed.keys : [],
-      };
-    }
-  } catch (e) {
-    // ignore
+  const out = await callMainModel(userPrompt, {
+    systemPrompt,
+    maxTokens: 80,
+    timeoutMs: 30000,
+  });
+  if (!out) return { sections: [], keys: [] };
+
+  const parsed = safeParseJson(out);
+  if (parsed) {
+    return {
+      sections: Array.isArray(parsed.sections) ? parsed.sections : [],
+      keys: Array.isArray(parsed.keys) ? parsed.keys : [],
+    };
   }
   return { sections: [], keys: [] };
 }
@@ -527,9 +517,9 @@ export async function assembleArticleContext(rawHtml, userQuery) {
     parts.push(`[基本档案]\n${kvs.join(' | ')}`);
   }
 
-  // 2. Section 0: Always keep complete first lead paragraph as anchor
+  // 2. Section 0: 保留完整引言（不再只取第一段）
   if (normSection0.length > 0) {
-    parts.push(`[核心导言]\n${normSection0[0]}`);
+    parts.push(`[核心导言]\n${normSection0.join('\n\n')}`);
   }
 
   // 3. Target Sections: Load complete paragraphs of selected sections
@@ -557,201 +547,143 @@ export async function assembleArticleContext(rawHtml, userQuery) {
   };
 }
 
-// ==========================================
-// Phase 3: Qwen 3.5 2B Neural Machine Reading Comprehension
-// ==========================================
+// 说明：原「MRC 事实抽取」环节（Qwen 3.5 2B 改写一句事实）已整体移除。
+// 现在直接把抓取并归一后的原文交给主力模型，由它自行定位相关信息并生成答案——
+// 没有改写就没有编造，且问「列出所有作品」这类问题时原文列表可以直接照抄。
 
-export async function extractFactWithQwen(query, articleTitle, cleanedText) {
-  if (!query || !cleanedText) return null;
-  const simplifiedQuery = toSimplifiedChinese(query);
-  const textSample = cleanedText;
-  const prompt = `[任务] 你是一个严谨的事实核查抽取器。请阅读百科条目正文，判断正文中是否明确包含了能够正面回答用户问题【${simplifiedQuery}】的核心客观事实。
-[规则]
-1. 必须严格正面回答问题【${simplifiedQuery}】所询问的具体事实（如创始人、时间、定义等）。
-2. 若正文未包含该问题的确切答案，【必须且仅输出】单词：NONE，严禁提取与该问题无关的条目生平或介绍！
-3. 若正文确切包含答案，输出一句包含主谓宾的完整客观事实陈述。
-
-条目：《${articleTitle}》
-正文内容：
-${textSample}
-
-事实陈述（若未回答该问题必须仅输出NONE）：`;
-
+/**
+ * 调用主力模型（TurboFieldfare，端口 1235）。
+ *
+ * 严格遵循项目既有调用约定（见 src/services/api.ts）：
+ * - TurboFieldfareServer 的 OpenAIModels **严格拒绝未识别字段**，payload 只能用白名单内的键
+ * - 深度思考由 `chat_template_kwargs` 与 `reasoning_effort` **成对**控制，
+ *   关闭时必须同时给 enable_thinking:false 与 reasoning_effort:'none'
+ * - 主力模型**不支持多路并发**，调用方必须串行
+ */
+export async function callMainModel(
+  prompt,
+  { systemPrompt = null, maxTokens = 64, timeoutMs = 30000, temperature = 0, seed = null } = {}
+) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 7500);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  // Gemma 4 原生支持 system role，规则放 system、问题放 user 比全塞 user 更稳。
+  // temperature 用 0：实测与官方建议的 1.0 在 12 个全新问题上质量一致，
+  // 但 1.0 存在规划结果在 ["Jay"]/["周杰伦"] 间跳变的方差，0 可消除。
+  const messages = [];
+  if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+  messages.push({ role: 'user', content: prompt });
 
   try {
-    const res = await fetch(`${QWEN_API_URL}/v1/chat/completions`, {
+    const res = await fetch(`${MAIN_API_URL}/v1/chat/completions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
       signal: controller.signal,
       body: JSON.stringify({
-        model: 'qwen3.5-2b-optiq',
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.0,
-        max_tokens: 80,
+        model: MAIN_MODEL,
+        messages,
+        stream: true,
+        stream_options: { include_usage: true },
+        temperature,
+        top_p: 0.95,
+        top_k: 64,
+        repetition_penalty: 1.0,
+        max_tokens: maxTokens,
+        ...(seed !== null ? { seed } : {}),
+        chat_template_kwargs: { enable_thinking: false },
+        reasoning_effort: 'none',
       }),
     });
     clearTimeout(timer);
     if (!res.ok) return null;
-    const json = await res.json();
-    const out = (json.choices?.[0]?.message?.content || '').trim();
-    if (
-      !out ||
-      out.toUpperCase() === 'NONE' ||
-      out.toUpperCase().startsWith('NONE') ||
-      out.includes('未提及') ||
-      out.includes('没有提及') ||
-      out.includes('未包含')
-    ) {
-      return null;
-    }
-    // Clean any residual quotation marks or prefixes
-    const cleanedFact = out
-      .replace(/^["'“”]+|["'“”]+$/g, '')
-      .replace(/^(?:事实陈述[：:]|事实提炼[：:]|答[：:]|提炼事实[：:])\s*/i, '')
-      .trim();
 
-    if (cleanedFact.length < 4) return null;
-    return cleanedFact.slice(0, 300);
+    // 逐 SSE 片段拼接 content（与前端 streamChat 解析方式一致）
+    const reader = res.body?.getReader();
+    if (!reader) return null;
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let out = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t || t.startsWith(':') || !t.startsWith('data:')) continue;
+        const d = t.slice(5).trim();
+        if (d === '[DONE]') continue;
+        try {
+          const j = JSON.parse(d);
+          const delta = j.choices?.[0]?.delta;
+          if (delta?.content) out += delta.content;
+        } catch (e) {
+          // ignore malformed chunk
+        }
+      }
+    }
+    return out.trim() || null;
   } catch (err) {
     clearTimeout(timer);
     return null;
   }
 }
 
-export const PLANNER_SYSTEM_PROMPT = `[任务] 分析用户的知识问答，推断或提取其在百科全书中检索的核心规范实体词、事件名或专有名词（1~2个）。
-[示例]
-问：中国第一颗原子弹爆炸是在什么时候？
-答：{"target_articles": ["中国第一颗原子弹", "596工程"]}
-问：周杰伦的第一张专辑叫什么？
-答：{"target_articles": ["Jay", "周杰伦"]}
+
+// 规划规则放 system（Gemma 4 原生支持 system role，指令遵循更稳），示例与提问放 user。
+// 示例只保留 3 条「演示规则」性质的：消歧 / 事件名映射 / 不凑数。
+export const MAIN_PLANNER_SYSTEM = `[任务] 从用户的提问中，提取需要在中文百科全书里检索的条目名称。
+[输出] 只输出一个 JSON 对象：{"target_articles": ["条目名"]}，不要输出任何其他文字。
+[规则]
+1. 默认只给 1 个条目。只有当提问确实同时涉及两个彼此独立、且都必须分别查证的实体时，才给 2 个。严禁为了凑数而推测提问中并未出现的实体。
+2. 条目名必须是百科中真实存在的规范名称：人物用全名，机构/作品/事件用通行名，存在歧义时加限定词。
+3. 不要保留疑问词、代词或解释性文字。`;
+
+export const MAIN_PLANNER_USER = (query) => `[示例]
 问：特斯拉现在的CEO是谁？
-答：{"target_articles": ["特斯拉", "埃隆·马斯克"]}
-问：日本的首都在哪里？
-答：{"target_articles": ["日本", "日本首都"]}
-问：光速是多少？
-答：{"target_articles": ["光速"]}
-问：李白是哪朝人？
-答：{"target_articles": ["李白"]}
+答：{"target_articles": ["特斯拉公司", "埃隆·马斯克"]}
+问：中国第一颗原子弹爆炸是在什么时候？
+答：{"target_articles": ["596工程"]}
+问：哥德巴赫猜想是谁提出的？主要是讲的什么内容？
+答：{"target_articles": ["哥德巴赫猜想"]}
 
-问：`;
+问：${query}
+答：`;
 
-export async function planQueryWithSLM(query) {
+export async function planQueryWithMainModel(query) {
   if (!query || typeof query !== 'string') return null;
   const trimmed = query.trim();
   if (!trimmed) return null;
 
-  const prompt = `${PLANNER_SYSTEM_PROMPT}${trimmed}\n只输出纯JSON，不要任何多余文字：`;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 4500); // 4.5s timeout
+  const out = await callMainModel(MAIN_PLANNER_USER(trimmed), {
+    systemPrompt: MAIN_PLANNER_SYSTEM,
+    maxTokens: 64,
+    timeoutMs: 30000,
+  });
+  if (!out) return null;
 
-  try {
-    const res = await fetch(`${QWEN_API_URL}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: 'qwen3.5-2b-optiq',
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.1,
-        max_tokens: 60,
-      }),
-    });
-
-    clearTimeout(timeoutId);
-    if (!res.ok) return null;
-
-    const json = await res.json();
-    const text = json.choices?.[0]?.message?.content || '';
-    const parsed = safeParseJson(text);
-
-    if (parsed && Array.isArray(parsed.target_articles)) {
-      const articles = parsed.target_articles
-        .map((a) => String(a).replace(/[《》]/g, '').trim())
-        .filter(Boolean)
-        .slice(0, 2);
-      if (articles.length > 0) {
-        return {
-          needs_wiki: true,
-          target_articles: articles,
-          planner: 'qwen3.5-2b',
-        };
-      }
+  const parsed = safeParseJson(out);
+  if (parsed && Array.isArray(parsed.target_articles)) {
+    const articles = parsed.target_articles
+      .map((a) => String(a).replace(/[《》]/g, '').trim())
+      .filter(Boolean)
+      .slice(0, 2);
+    if (articles.length > 0) {
+      return {
+        needs_wiki: true,
+        target_articles: articles,
+        planner: 'main-model',
+      };
     }
-  } catch (err) {
-    clearTimeout(timeoutId);
   }
-
   return null;
 }
 
-// Neural Candidate Re-ranking via Qwen 3.5 2B
-export async function rerankCandidatesWithSLM(query, matches) {
-  if (!matches || matches.length <= 1) return matches;
-
-  const candidateTitles = matches.slice(0, 5).map((m) => m.title);
-
-  const prompt = `[任务] 根据用户的问题，从候选百科条目中选出最相关、最适合用于回答问题的1~2个核心条目名称。
-用户问题：${query}
-候选条目：${JSON.stringify(candidateTitles)}
-
-只输出纯JSON数组，按优先级从高到低排列，例如 ["条目A", "条目B"]：`;
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 3500); // 3.5s timeout
-
-  try {
-    const res = await fetch(`${QWEN_API_URL}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: 'qwen3.5-2b-optiq',
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.0,
-        max_tokens: 40,
-      }),
-    });
-    clearTimeout(timer);
-    if (!res.ok) return matches;
-    const json = await res.json();
-    const text = json.choices?.[0]?.message?.content || '';
-    const parsed = safeParseJson(text);
-
-    if (Array.isArray(parsed)) {
-      const flatSelected = parsed
-        .flat(Infinity)
-        .map((t) => (typeof t === 'string' ? t.replace(/[《》]/g, '').trim() : ''))
-        .filter(Boolean);
-
-      if (flatSelected.length > 0) {
-        const titleToItem = new Map(matches.map((m) => [m.title, m]));
-        const reordered = [];
-        const seen = new Set();
-
-        for (const title of flatSelected) {
-          const item = titleToItem.get(title);
-          if (item && !seen.has(item.title)) {
-            seen.add(item.title);
-            reordered.push(item);
-          }
-        }
-
-        // Append remaining matches in original order
-        for (const m of matches) {
-          if (!seen.has(m.title)) {
-            seen.add(m.title);
-            reordered.push(m);
-          }
-        }
-        return reordered;
-      }
-    }
-  } catch (err) {
-    clearTimeout(timer);
-  }
-  return matches;
+// 实体规划入口：由主力模型承担（不做小模型回退——1234 服务已从链路中移除）。
+// 规划失败时返回 null，由 getRagContext 使用归一后的原始提问直接检索。
+export async function planQuery(query) {
+  return planQueryWithMainModel(query);
 }
 
 class WikiService {
@@ -765,6 +697,9 @@ class WikiService {
     this.isOnline = false;
     this.isStarting = false;
     this.scanInterval = null;
+    // 知识库服务总开关：关闭时完全停服（不拉起 kiwix、不自动重连）
+    const stored = loadStoredConfig();
+    this.enabled = stored.enabled;
   }
 
   // Find ZIM file strictly by verifying path existence (no SSD specific detection)
@@ -871,6 +806,11 @@ class WikiService {
 
   // Start or restart kiwix-serve daemon
   async startService(customPath) {
+    // 总开关关闭：确保没有任何 kiwix 进程在跑
+    if (!this.enabled) {
+      await this.stopService();
+      return false;
+    }
     if (this.isStarting) return false;
     this.isStarting = true;
 
@@ -878,7 +818,7 @@ class WikiService {
       const zimPath = this.findZimFile(customPath);
       if (!zimPath) {
         this.isOnline = false;
-        this.currentZimPath = customPath || loadStoredZimPath() || null;
+        this.currentZimPath = customPath || loadStoredConfig().zimPath || null;
         this.isStarting = false;
         return false;
       }
@@ -956,11 +896,54 @@ class WikiService {
     }
   }
 
+  // 彻底停服：杀掉 kiwix-serve 进程并清空在线状态
+  async stopService() {
+    if (this.kiwixProcess) {
+      try {
+        this.kiwixProcess.kill('SIGTERM');
+      } catch (e) {
+        // ignore
+      }
+      await new Promise((r) => setTimeout(r, 300));
+      if (this.kiwixProcess && !this.kiwixProcess.killed) {
+        try {
+          this.kiwixProcess.kill('SIGKILL');
+        } catch (e) {
+          // ignore
+        }
+      }
+      this.kiwixProcess = null;
+    }
+    this.isOnline = false;
+    this.isStarting = false;
+    return true;
+  }
+
+  // 切换知识库服务总开关
+  async setEnabled(enabled) {
+    this.enabled = enabled !== false;
+    saveStoredConfig(this.currentZimPath, this.enabled);
+    if (this.enabled) {
+      await this.startService(this.currentZimPath || undefined);
+    } else {
+      await this.stopService();
+    }
+    return this.enabled;
+  }
+
   // Periodic health check & external disk disconnect/reconnect watcher
   initWatcher() {
     this.startService();
     if (this.scanInterval) clearInterval(this.scanInterval);
     this.scanInterval = setInterval(async () => {
+      // 0. 总开关关闭时不托管服务，并确保没有残留进程
+      if (!this.enabled) {
+        if (this.kiwixProcess || this.isOnline) {
+          await this.stopService();
+        }
+        return;
+      }
+
       // 1. 如果配置了 ZIM 路径，先检测文件是否在磁盘上依然存在 (支持硬盘弹出平滑断开)
       if (this.currentZimPath && !fs.existsSync(this.currentZimPath)) {
         if (this.isOnline || this.kiwixProcess) {
@@ -988,17 +971,17 @@ class WikiService {
     }, 5000);
   }
 
-  // Search articles with unified suggest + pattern search
+  // 标题检索：全部字形变体 → Kiwix 精确探针 + 标题联想
+  // 只保留「完全命中」或「完全包含关键字」的条目名，再经深度重定向解析后按规范路径去重
   async search(rawTerm) {
     if (!rawTerm || !rawTerm.trim() || !this.isOnline) return [];
     const term = rawTerm.trim();
     const content = this.contentId || 'wikipedia_zh_all_maxi';
     const variants = getAllVariants(term);
-
-    const candidateMap = new Map();
+    if (variants.length === 0) return [];
 
     // 0. Direct Canonical Probe: Check if exact variants exist directly or are 302 redirects (1ms HEAD request)
-    const probePromises = variants.slice(0, 4).map(async (v) => {
+    const probePromises = variants.map(async (v) => {
       try {
         const probeUrl = `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(v)}`;
         const res = await fetch(probeUrl, { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(1200) });
@@ -1030,34 +1013,8 @@ class WikiService {
       return null;
     });
 
-    // 1. Full-text pattern search (captures articles whose content or title matches the query)
-    const searchPromises = variants.slice(0, 2).map(async (v) => {
-      try {
-        const searchUrl = `http://127.0.0.1:${KIWIX_PORT}/search?content=${encodeURIComponent(content)}&pattern=${encodeURIComponent(v)}`;
-        const res = await fetch(searchUrl, { signal: AbortSignal.timeout(2000) });
-        if (res.ok) {
-          const html = await res.text();
-          const matches = [...html.matchAll(/<a href="\/content\/[^/]+\/([^"]+)">\s*([^<]+)\s*<\/a>/g)];
-          return matches.slice(0, 6).map((m, idx) => {
-            const rawPath = decodeURIComponent(m[1].trim());
-            const title = decodeURIComponent(m[2].trim());
-            return {
-              title,
-              path: rawPath,
-              url: `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(rawPath)}`,
-              source: 'pattern',
-              rank: idx,
-            };
-          });
-        }
-      } catch (e) {
-        // ignore
-      }
-      return [];
-    });
-
-    // 2. Kiwix suggest endpoint (captures exact and prefix titles, count=30 to bypass ascii sort bias)
-    const suggestPromises = variants.slice(0, 3).map(async (v) => {
+    // 1. Kiwix suggest endpoint (captures exact and prefix titles, count=30 to bypass ascii sort bias)
+    const suggestPromises = variants.map(async (v) => {
       try {
         const suggestUrl = `http://127.0.0.1:${KIWIX_PORT}/suggest?content=${encodeURIComponent(content)}&term=${encodeURIComponent(v)}&count=30`;
         const res = await fetch(suggestUrl, { signal: AbortSignal.timeout(1500) });
@@ -1085,92 +1042,131 @@ class WikiService {
       return [];
     });
 
-    const [probeResults, patternResultLists, suggestResultLists] = await Promise.all([
+    const [probeResults, suggestResultLists] = await Promise.all([
       Promise.all(probePromises),
-      Promise.all(searchPromises),
       Promise.all(suggestPromises),
     ]);
 
+    const kept = [];
+
+    // 精确探针命中（200 存在 / 302 重定向）本身就是「完全命中关键字」，无条件保留
+    // （但仍排除命名空间前缀的非文章页）
     for (const item of probeResults) {
-      if (item && !candidateMap.has(item.title) && !candidateMap.has(item.path)) {
-        candidateMap.set(item.title, item);
-      }
+      if (item && !NON_ARTICLE_NAMESPACE_RE.test(item.title.trim())) kept.push({ ...item, exact: true });
     }
 
-    for (const list of [...suggestResultLists, ...patternResultLists]) {
+    // 标题联想结果：只保留条目名「完全等于」或「完全包含」任一关键字变体的文章页，其余丢弃
+    // 标题与变体逐字相等者同样视为「完全命中」
+    for (const list of suggestResultLists) {
       for (const item of list) {
-        if (!candidateMap.has(item.title) && !candidateMap.has(item.path)) {
-          candidateMap.set(item.title, item);
+        const t = item.title.trim();
+        if (NON_ARTICLE_NAMESPACE_RE.test(t)) continue;
+        const exact = variants.some((v) => v && t === v);
+        if (exact || variants.some((v) => v && t.includes(v))) {
+          kept.push({ ...item, exact });
         }
       }
     }
 
-    const allResults = Array.from(candidateMap.values());
-    if (allResults.length === 0) return [];
+    if (kept.length === 0) return [];
 
-    // Relevance scoring
-    const scoreItem = (item) => {
-      if (item.source === 'exact_probe') return 300;
-      let score = 0;
-      const title = item.title;
-      if (/^(?:Category|分类|分類|Portal|Help|帮助|幫助|File|文件|Image|Wikipedia):/i.test(title)) {
-        return -100;
-      }
+    // 深度重定向解析：别名 → 规范条目，再按规范路径去重（同一文章的多个别名只留一篇）
+    const resolved = await Promise.all(kept.map((item) => this._resolveCanonical(item)));
 
-      const cleanTitle = title.trim();
-      for (const v of variants) {
-        const cleanV = v.trim();
-        // 1. Exact match (Absolute top priority)
-        if (cleanTitle === cleanV) {
-          score = Math.max(score, 200);
-        }
-        // 2. Exact match case-insensitive
-        else if (cleanTitle.toLowerCase() === cleanV.toLowerCase()) {
-          score = Math.max(score, 180);
-        }
-        // 3. Parent entity: search term starts with article title (e.g. searching "日本首都", title is "日本")
-        else if (cleanV.startsWith(cleanTitle) && cleanTitle.length >= 2) {
-          score = Math.max(score, 140);
-        }
-        // 4. Sub-article / Formal name: article title starts with search term (e.g. searching "日本", title is "日本国" or "日本首都")
-        else if (cleanTitle.startsWith(cleanV)) {
-          score = Math.max(score, 110);
-        }
-        // 5. Query contains title
-        else if (cleanV.includes(cleanTitle) && cleanTitle.length >= 2) {
-          score = Math.max(score, 80);
-        }
-        // 6. Title contains query
-        else if (cleanTitle.includes(cleanV)) {
-          // If title merely ends with the term (e.g. "Amazon日本", "微软日本"), give low weight
-          if (cleanTitle.endsWith(cleanV)) {
-            score = Math.max(score, 35);
-          } else {
-            score = Math.max(score, 50);
-          }
-        }
-      }
-
-      // Title length penalty: shorter, more concise canonical titles rank higher
-      const shortestDiff = Math.min(...variants.map((v) => Math.max(0, title.length - v.length)));
-      score -= Math.min(25, shortestDiff * 2);
-
-      // Source bonus: suggest (title prefix/exact index) is vastly superior to full-text pattern search
-      if (item.source === 'suggest') {
-        if (item.rank === 0) score += 30;
-        else if (item.rank === 1) score += 20;
-        else if (item.rank === 2) score += 10;
-      } else if (item.source === 'pattern') {
-        if (item.rank === 0) score += 5;
-      }
-      return score;
-    };
-
-    allResults.sort((a, b) => scoreItem(b) - scoreItem(a));
-    return allResults.filter((item) => scoreItem(item) > 0).slice(0, 6);
+    const byCanonical = new Map();
+    for (const item of resolved) {
+      if (item && !byCanonical.has(item.path)) byCanonical.set(item.path, item);
+    }
+    // 全量返回（不再截断 6 条）：完全命中在前、包含命中在后，供面板列表完整展示
+    return Array.from(byCanonical.values());
   }
 
-  // Extract structured infobox facts + lead paragraphs + query-relevant sections
+  // 解析 Kiwix 条目的规范路径：HEAD /content/{title}，跟随 302 取得真实目标
+  async _resolveCanonical(item) {
+    const content = this.contentId || 'wikipedia_zh_all_maxi';
+    const raw = item.path || item.title;
+    const url = `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(raw)}`;
+    try {
+      const res = await fetch(url, {
+        method: 'HEAD',
+        redirect: 'manual',
+        signal: AbortSignal.timeout(2000),
+      });
+      if (res.status === 200) {
+        return { ...item, path: raw, url };
+      }
+      if (res.status === 301 || res.status === 302) {
+        const loc = res.headers.get('location') || '';
+        const canonicalPath = decodeURIComponent(loc.split('/').pop() || '');
+        if (canonicalPath) {
+          return {
+            ...item,
+            title: canonicalPath,
+            path: canonicalPath,
+            url: `http://127.0.0.1:${KIWIX_PORT}${loc}`,
+          };
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+    // 解析失败时保留原名，不丢候选
+    return { ...item, path: raw, url };
+  }
+
+  /**
+   * 完整条目文本：Infobox + 完整引言 + 全部小节（无视 3500 分支与路由），
+   * 供面板原生渲染。与 RAG 注入文本相互独立。
+   */
+  async getFullArticleText(title) {
+    if (!title || !this.isOnline) return null;
+    const content = this.contentId || 'wikipedia_zh_all_maxi';
+    const articleUrl = `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(title)}`;
+    try {
+      const res = await fetch(articleUrl, { signal: AbortSignal.timeout(10000) });
+      if (!res.ok) return null;
+      const html = await res.text();
+      const finalUrl = res.url || articleUrl;
+      let canonicalTitle = title;
+      try {
+        const urlObj = new URL(finalUrl);
+        const rawLast = urlObj.pathname.split('/').pop();
+        if (rawLast) canonicalTitle = decodeURIComponent(rawLast);
+      } catch (e) {
+        // ignore
+      }
+
+      const dom = parseWikipediaDOM(html);
+      const infobox = dom.infobox.map((i) => ({
+        key: toSimplifiedChinese(i.key),
+        value: toSimplifiedChinese(i.value),
+      }));
+      const lead = dom.section0.map((p) => toSimplifiedChinese(p));
+      const sections = dom.sections.map((s) => ({
+        title: toSimplifiedChinese(s.title),
+        paragraphs: s.paragraphs.map((p) => toSimplifiedChinese(p)),
+      }));
+
+      const parts = [];
+      if (infobox.length > 0) {
+        parts.push(`[基本档案]\n${infobox.map((i) => `${i.key}: ${i.value}`).join(' | ')}`);
+      }
+      if (lead.length > 0) {
+        parts.push(`[核心导言]\n${lead.join('\n\n')}`);
+      }
+      for (const s of sections) {
+        parts.push(`[${s.title}]\n${s.paragraphs.join('\n\n')}`);
+      }
+      const context = parts.join('\n\n');
+      if (!context) return null;
+
+      return { title: toSimplifiedChinese(canonicalTitle), url: finalUrl, context };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** 按标题抓取条目（含字形变体尝试），返回 { title, url, context } */
   async getSummary(title, userQuery = '') {
     if (!title) return null;
     const variants = getAllVariants(title);
@@ -1256,19 +1252,14 @@ class WikiService {
 
       // Assemble structured, zero-truncation context (panoramic or routed)
       const assembled = await assembleArticleContext(html, queryStr);
-      if (!assembled || !assembled.context || assembled.context.length < 20) {
+      if (!assembled || !assembled.context) {
         return null;
       }
 
-      // Neural Machine Reading Comprehension via Qwen 3.5 2B
-      const fact = await extractFactWithQwen(queryStr, simplifiedTitle, assembled.context);
-      if (!fact) return null;
-
-      const simplifiedFact = toSimplifiedChinese(fact);
-
+      // 不再由小模型改写事实：直接返回归一后的原文，交给主力模型自行定位与综合
       return {
         title: simplifiedTitle,
-        summary: simplifiedFact,
+        context: assembled.context,
         url: finalUrl,
       };
     } catch (e) {
@@ -1278,7 +1269,7 @@ class WikiService {
   }
 
   // Atomic High-Performance RAG Pipeline
-  async getRagContext(query) {
+  async getRagContext(query, budgetChars = 0) {
     if (!query || typeof query !== 'string' || !query.trim()) {
       return { needsWiki: false, citations: [], promptContext: '', metadata: { latencyMs: 0 } };
     }
@@ -1295,167 +1286,159 @@ class WikiService {
 
     const trimmed = query.trim();
 
-    // 1. In-memory LRU cache check
-    const cached = getCachedContext(trimmed);
-    if (cached) {
-      return {
-        ...cached,
-        metadata: { ...cached.metadata, fromCache: true },
-      };
-    }
-
-    // Fast Bypass: Trivial greetings and small talk (0ms)
-    const GREETING_REGEX = /^(?:你好|您好|早安|早上好|晚上好|嗨|hello|hi|hey|在吗|在嗎|哈哈|谢谢|謝謝|多谢|多謝|再见|再見|拜拜|bye|你是谁|你叫什么|你能做什么)[\s，,！!？?在吗啊呀吧]*$/i;
-    if (GREETING_REGEX.test(trimmed)) {
-      const negativeResult = {
-        needsWiki: false,
-        citations: [],
-        promptContext: '',
-        metadata: { fromCache: false, planner: 'greeting-fast-bypass', latencyMs: 0 },
-      };
-      setCachedContext(trimmed, negativeResult);
-      return negativeResult;
-    }
+    // 说明：内存 LRU 缓存已移除——同一提问重复率低，缓存收益有限，反而会掩盖调试期的问题。
+    // 说明：打招呼正则旁路与 LAYA 意图门禁均已移除。
+    // 实测 LAYA 门禁会把约 1/3 的知识类提问误判为闲聊而整条链路拦截（漏引代价 >> 闲聊多花的延迟）。
+    // 现在所有提问都进入检索，闲聊类最终检索不到相关条目，自然不注入任何内容。
 
     const startTime = Date.now();
 
     // 0ms 归一化：将用户提问规范为大陆标准简体（自动将繁体字形与“记忆体/软体/滑鼠/晶片”等港台特有用法对齐为“内存/软件/鼠标/芯片”）
     const normalizedQuery = toSimplifiedChinese(trimmed);
 
-    // 2. LAYA System 1 Fast Decision Gate (15ms)
-    const needsWikiLaya = await judgeNeedsWikiWithLaya(normalizedQuery);
-    if (needsWikiLaya === false) {
-      const negativeResult = {
-        needsWiki: false,
-        citations: [],
-        promptContext: '',
-        metadata: {
-          fromCache: false,
-          planner: 'laya-system1-gated',
-          latencyMs: Date.now() - startTime,
-        },
-      };
-      setCachedContext(trimmed, negativeResult, 15000);
-      return negativeResult;
-    }
+    // 1. 实体规划（主力模型；不做任何小模型回退——规划失败时直接用归一后的原始提问检索）
+    const plan = await planQuery(normalizedQuery);
+    const plannerName = plan?.planner || 'raw-fallback';
+    const targetArticles =
+      plan && Array.isArray(plan.target_articles) && plan.target_articles.length > 0
+        ? plan.target_articles.slice(0, 2)
+        : [normalizedQuery];
 
-    // 3. High-Precision Entity Planning via Qwen 3.5 2B (~600ms)
-    // 直接传入完整的自然语言提问（小模型天然具备语义理解能力，不进行任何人工正则前缀或标点破坏）
-    let plan = await planQueryWithSLM(normalizedQuery);
-    let targetArticles = [];
-    let plannerName = 'qwen3.5-2b';
-
-    if (plan && plan.target_articles && plan.target_articles.length > 0) {
-      targetArticles = plan.target_articles.slice(0, 2);
-    } else {
-      // 容灾兜底（仅在 SLM 网络异常或超时时生效）：直接以规范化后的原始提问进行检索，坚决不进行破坏语义的人工正则剥离
-      targetArticles = [normalizedQuery];
-      plannerName = 'raw-fallback';
-      plan = { needs_wiki: true, target_articles: targetArticles, planner: plannerName };
-    }
-
-    if (targetArticles.length === 0) {
-      const negativeResult = {
-        needsWiki: false,
-        citations: [],
-        promptContext: '',
-        metadata: {
-          fromCache: false,
-          planner: plannerName,
-          latencyMs: Date.now() - startTime,
-        },
-      };
-      setCachedContext(trimmed, negativeResult, 15000);
-      return negativeResult;
-    }
-
-    const fetchPromises = targetArticles.map(async (entity) => {
-      let matches = await this.search(entity);
-      if (!matches || matches.length === 0) return null;
-
-      // Neural candidate re-ranking via Qwen 3.5 2B
-      matches = await rerankCandidatesWithSLM(trimmed, matches);
-
-      let validCandidate = null;
-      for (const m of matches.slice(0, 3)) {
-        const summaryData = await this._fetchSummaryForTitle(m.title, trimmed);
-        if (summaryData && summaryData.summary) {
-          // Qwen 3.5 2B verified factual statement
-          validCandidate = {
-            title: summaryData.title,
-            url: summaryData.url,
-            summary: summaryData.summary,
-          };
-          break;
-        }
-      }
-      return validCandidate;
-    });
-
-    const results = await Promise.allSettled(fetchPromises);
     const validCitations = [];
     const seenTitles = new Set();
     const seenUrls = new Set();
-    const seenSummaries = new Set();
 
-    for (const r of results) {
-      if (r.status === 'fulfilled' && r.value) {
-        const item = r.value;
-        const normTitle = item.title.trim().toLowerCase();
-        const normUrl = item.url.trim().toLowerCase();
-        const normSummary = item.summary.trim().slice(0, 35);
-        if (!seenTitles.has(normTitle) && !seenUrls.has(normUrl) && !seenSummaries.has(normSummary)) {
+    // 严格串行：本环节内会调用主力模型做长文目录路由，而主力模型不支持多路并发
+    for (const entity of targetArticles) {
+      const matches = await this.search(entity);
+      if (!matches || matches.length === 0) continue;
+
+      // 候选已在 search() 内按规范路径去重；这里做跨关键字去重
+      const exactHits = matches.filter((m) => m.exact);
+      const containmentHits = matches
+        .filter((m) => !m.exact)
+        // 「包含关键字」时，标题里多出来的字/符号越少越靠前（标题长度升序）
+        .sort((a, b) => a.title.length - b.title.length);
+
+      // 完全命中：只取一篇（按顺序尝试，取第一篇成功抓到正文的）
+      let loadedForEntity = 0;
+      for (const m of exactHits) {
+        const articleData = await this._fetchSummaryForTitle(m.title, trimmed);
+        if (!articleData || !articleData.context) continue;
+
+        const normTitle = articleData.title.trim().toLowerCase();
+        const normUrl = articleData.url.trim().toLowerCase();
+        if (seenTitles.has(normTitle) || seenUrls.has(normUrl)) break;
+
+        seenTitles.add(normTitle);
+        seenUrls.add(normUrl);
+        validCitations.push({
+          title: articleData.title,
+          url: articleData.url,
+          context: articleData.context,
+        });
+        loadedForEntity++;
+        break;
+      }
+
+      // 该关键字没有任何「完全命中」（或完全命中全部抓取失败）时，
+      // 才使用「包含关键字」的条目：按标题长度升序最多取两篇
+      if (loadedForEntity === 0) {
+        for (const m of containmentHits.slice(0, 2)) {
+          const articleData = await this._fetchSummaryForTitle(m.title, trimmed);
+          if (!articleData || !articleData.context) continue;
+
+          const normTitle = articleData.title.trim().toLowerCase();
+          const normUrl = articleData.url.trim().toLowerCase();
+          if (seenTitles.has(normTitle) || seenUrls.has(normUrl)) continue;
+
           seenTitles.add(normTitle);
           seenUrls.add(normUrl);
-          seenSummaries.add(normSummary);
-          validCitations.push(item);
+          validCitations.push({
+            title: articleData.title,
+            url: articleData.url,
+            context: articleData.context,
+          });
+          loadedForEntity++;
+          if (loadedForEntity >= 2) break;
         }
       }
     }
 
-    // If 0 citations found or verified, do not inject any noise
+    // 检索不到相关条目 → 静默回退，不注入任何噪音
     if (validCitations.length === 0) {
-      const emptyResult = {
+      return {
         needsWiki: false,
         citations: [],
         promptContext: '',
         metadata: {
-          fromCache: false,
           planner: plannerName,
           latencyMs: Date.now() - startTime,
           plan,
         },
       };
-      setCachedContext(trimmed, emptyResult, 15000);
-      return emptyResult;
     }
 
-    // 5. Assemble high-density, pure-signal Grounding Facts (< 300 chars)
-    const contextSections = validCitations.map((c) => {
-      return `【${c.title}】: ${c.summary}`;
-    });
+    // 2. 组装注入内容：条目名 + 归一后原文（不改写、不截断）
+    //    budgetChars 为可选的装载预算（由前端按剩余上下文计算）：
+    //    超出时按检索优先级整篇丢弃，绝不从中间截断。
+    //    若一篇都装不下（上下文已满），向前端返回 contextOverflow 信号，提示用户新开对话。
+    const contextSections = [];
+    let used = 0;
+    let loadedCount = 0;
+    let contextOverflow = false;
+
+    if (budgetChars > 0) {
+      for (const c of validCitations) {
+        const block = `【${c.title}】\n${c.context}`;
+        if (used + block.length > budgetChars) {
+          if (loadedCount === 0) contextOverflow = true;
+          continue;
+        }
+        used += block.length;
+        loadedCount++;
+        contextSections.push(block);
+      }
+    } else {
+      for (const c of validCitations) {
+        contextSections.push(`【${c.title}】\n${c.context}`);
+        loadedCount++;
+      }
+    }
+
+    // 上下文已满：一篇都装不下，交由前端提示用户新开对话
+    if (contextOverflow) {
+      return {
+        needsWiki: false,
+        citations: [],
+        promptContext: '',
+        contextOverflow: true,
+        metadata: {
+          planner: plannerName,
+          latencyMs: Date.now() - startTime,
+          plan,
+          articleCount: 0,
+        },
+      };
+    }
 
     const fullPromptContext = contextSections.join('\n\n');
 
-    const finalResult = {
+    return {
       needsWiki: true,
       citations: validCitations.map((c) => ({
         title: c.title,
         url: c.url,
-        summary: c.summary,
+        context: c.context,
       })),
       promptContext: fullPromptContext,
       metadata: {
-        fromCache: false,
         planner: plannerName,
         latencyMs: Date.now() - startTime,
         plan,
-        articleCount: validCitations.length,
+        articleCount: loadedCount,
       },
     };
-
-    setCachedContext(trimmed, finalResult);
-    return finalResult;
   }
 
   // Handle incoming HTTP requests on /api/wiki/*
@@ -1480,6 +1463,7 @@ class WikiService {
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(
           JSON.stringify({
+            enabled: this.enabled,
             connected: this.isOnline,
             port: KIWIX_PORT,
             zimPath: this.currentZimPath,
@@ -1499,6 +1483,25 @@ class WikiService {
         req.on('end', async () => {
           try {
             const data = JSON.parse(body || '{}');
+
+            // 仅切换服务总开关（不影响 ZIM 路径）
+            if (data.enabled !== undefined && !(data.zimPath || '').trim()) {
+              await this.setEnabled(data.enabled !== false);
+              res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+              res.end(
+                JSON.stringify({
+                  success: true,
+                  enabled: this.enabled,
+                  connected: this.isOnline,
+                  zimPath: this.currentZimPath,
+                  articleCount: this.articleCount,
+                  contentId: this.contentId,
+                  bookTitle: this.bookTitle,
+                })
+              );
+              return;
+            }
+
             const newPath = (data.zimPath || '').trim();
 
             if (!newPath) {
@@ -1522,8 +1525,8 @@ class WikiService {
               return;
             }
 
-            // Save to persistent config
-            saveStoredZimPath(newPath);
+            // Save to persistent config（保留当前启用状态）
+            saveStoredConfig(newPath, this.enabled);
 
             // Restart service with new path
             await this.startService(newPath);
@@ -1532,6 +1535,7 @@ class WikiService {
             res.end(
               JSON.stringify({
                 success: true,
+                enabled: this.enabled,
                 connected: this.isOnline,
                 zimPath: this.currentZimPath,
                 articleCount: this.articleCount,
@@ -1556,18 +1560,22 @@ class WikiService {
         return;
       }
 
-      // Summary
+      // Summary（供搜索导航：按标题抓取条目并返回归一原文）
       if (pathname === '/api/wiki/summary') {
         const title = urlObj.searchParams.get('title') || '';
         const query = urlObj.searchParams.get('query') || '';
         const data = await this.getSummary(title, query);
-        if (data) {
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify(data));
-        } else {
-          res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ error: 'Article summary not found' }));
-        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(data));
+        return;
+      }
+
+      // Full Article（完整条目文本：Infobox + 完整引言 + 全部小节，供面板原生渲染）
+      if (pathname === '/api/wiki/article') {
+        const title = urlObj.searchParams.get('title') || '';
+        const data = await this.getFullArticleText(title);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(data));
         return;
       }
 
@@ -1578,7 +1586,8 @@ class WikiService {
         req.on('end', async () => {
           try {
             const data = JSON.parse(body || '{}');
-            const result = await this.getRagContext(data.query || '');
+            const budget = Number(data.budgetChars) > 0 ? Number(data.budgetChars) : 0;
+            const result = await this.getRagContext(data.query || '', budget);
             res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify(result));
           } catch (e) {

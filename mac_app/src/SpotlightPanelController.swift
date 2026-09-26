@@ -349,6 +349,21 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         }
     }
 
+    // MARK: - WKUIDelegate (External Links)
+    // Same as the main window: `target="_blank"` is dropped unless implemented here.
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        if let url = navigationAction.request.url, let scheme = url.scheme?.lowercased(),
+           scheme == "http" || scheme == "https" {
+            NSWorkspace.shared.open(url)
+        }
+        return nil
+    }
+
     // MARK: - WKUIDelegate (File Upload Panel)
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
         let openPanel = NSOpenPanel()

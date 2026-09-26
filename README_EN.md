@@ -35,7 +35,7 @@ Compared to heavyweight solutions like Open WebUI, SimpleUI eliminates all unnec
 
 The two core technical highlights:
 
-1. **End-to-end Offline Wiki RAG Pipeline**: Zero-truncation, dual-gatekeeper, fully-neural local knowledge retrieval running entirely on Apple Silicon — no cloud calls.
+1. **End-to-end Offline Wiki RAG Pipeline**: Zero-truncation, **generation-free retrieval** (raw article text injected directly, no small-model fact rewriting), with a single model handling all semantic decisions — running entirely on Apple Silicon, no cloud calls.
 2. **Two-Phase Dynamic Context Tracking**: Precisely distinguishes peak context usage during generation from clean persistent baseline after completion, reflected in real time on screen.
 
 ---
@@ -50,20 +50,23 @@ Node.js Proxy Server (port 31235)
      │
      ├──► Wiki RAG Service (wiki_service.js)
      │         │
-     │         ├──► LAYA System 1 (port 1236 · Apple Silicon MLX)
-     │         ├──► Qwen 3.5 2B SLM (port 1234 · LM Studio)
-     │         └──► Kiwix Offline Wiki (port 31236 · ZIM file)
+     │         ├──► Kiwix Offline Wiki (port 31236 · ZIM file)
+     │         └──► Primary Model (port 1235) ← entity planning / long-article section routing
      │
-     └──► Primary Inference Model (port 1235/1236 · TTF / Ollama / vLLM etc.)
+     └──► Primary Inference Model (port 1235 · TTF / Ollama / vLLM etc.) ← final answer generation
 ```
 
 | Service | Port | Role |
 | :--- | :--- | :--- |
-| Node.js Proxy (`proxy.js`) | `31235` | SSE passthrough, static hosting, dynamic routing |
-| Kiwix Offline Encyclopedia | `31236` | ZIM file serving, full-text search, article HTTP |
-| Qwen 3.5 2B SLM | `1234` | Entity planning, intent routing, fact extraction, candidate re-ranking |
-| LAYA System 1 | `1236` | Fast intent classification (~15ms) |
-| Primary Inference Model | `1235` | Final answer generation (TTF / standard OpenAI interface) |
+| Node.js Proxy (`proxy.js`) | `31235` | SSE passthrough, static hosting, dynamic routing, knowledge-base API |
+| Kiwix Offline Encyclopedia | `31236` | ZIM file serving, title suggestions, article HTTP |
+| Primary Inference Model | `1235` | Entity planning, long-article section routing, final answer generation |
+
+> Two auxiliary services from the earlier architecture have been removed:
+> **LAYA System 1** (port 1236) intent gate — misclassified roughly 1/3 of knowledge questions as chitchat, blocking the entire pipeline;
+> **Qwen 3.5 2B** (port 1234) small model — previously handled entity planning, candidate re-ranking, and fact rewriting (MRC),
+> now replaced by primary-model planning, a deterministic article-selection rule, and direct raw-text injection.
+> The pipeline now depends on only two services: Kiwix and the primary model.
 
 ### Cross-Window Synchronization
 
@@ -82,69 +85,58 @@ The Main Window and Spotlight floating panel sync bi-directionally in real time 
 
 ## Offline Wiki RAG Pipeline
 
-SimpleUI builds an **end-to-end, zero-truncation, fully-neural** offline local knowledge retrieval-augmented generation system, running entirely on Apple Silicon — no cloud dependencies.
+SimpleUI builds an **end-to-end, zero-truncation, generation-free** offline local knowledge retrieval-augmented generation system, running entirely on Apple Silicon — no cloud dependencies.
+
+Core idea: **no model in the retrieval chain ever "generates" a search key or "rewrites" article text**. Article names are not invented by a model (the raw query is searched directly), and what gets injected is not a model-written summary (the normalized raw article text is injected directly) — no rewriting, no fabrication.
 
 ### Complete Pipeline
 
 ```mermaid
 flowchart TD
     Q["User Input Query"] --> NORM["0ms Global Normalization: toSimplifiedChinese\n(Traditional→Simplified, HK/TW vocab→Mainland standard)"]
-    NORM --> CACHE{"In-memory LRU cache hit?\n(max 200 entries, TTL 10min)"}
-    CACHE -->|"Hit"| HIT["Return cached result directly"]
-    CACHE -->|"Miss"| GREET{"Hardcoded greeting\nfast bypass?"}
-    GREET -->|"Yes"| BYPASS0["0ms bypass"]
-    GREET -->|"No"| G1{"[Gate] LAYA System 1\nIntent Classification (~15ms)"}
-    G1 -->|"Chitchat / Coding / Emotional"| BYPASS1["needsWiki: false\nPass directly to primary LLM"]
-    G1 -->|"Factual knowledge Q&A"| PLAN["Qwen 3.5 2B Neural Entity Planner\nExtract 1~2 canonical article names (~600ms)"]
+    NORM --> PLAN["Primary-model entity planning\nExtract 1~2 canonical article names\n(system role · no thinking · temperature 0)\nOn failure: search the normalized raw query directly"]
 
     PLAN --> VARIANTS["OpenCC Variant Matrix Expansion\nSimplified → Standard Traditional / TW / TW-phrases / HK\n(getAllVariants)"]
-    VARIANTS --> SEARCH["Kiwix 3-Track Parallel Search\n① Exact Probe (HEAD 302 redirect)\n② Suggest Prefix (count=30)\n③ Full-text Pattern Search (~85ms)"]
-    SEARCH --> SCORE["Algorithmic Candidate Scoring\nExact hit→200 / Substring→50~140\nLength penalty + source bonus\n(scoreItem)"]
-    SCORE --> RERANK["Qwen 3.5 2B Candidate Re-ranking\nSelect top 1~2 most relevant from Top-5"]
-    RERANK --> DOM["Kiwix HTTP Full HTML Fetch\nSmart tail cutoff (before notes/references)\nparseWikipediaDOM:\n  - Full Infobox key-value extraction\n  - Lead paragraph (section0)\n  - h2 section tree"]
-    DOM --> NORM2["Second global normalization: toSimplifiedChinese\n(All Infobox keys, values, body paragraphs)"]
-    NORM2 --> BRANCH{"Article total length > 3500 chars?"}
-    BRANCH -->|"≤ 3500 (~75% of articles)"| PANO["Panoramic mode\nFull output: Infobox + Lead + All sections"]
-    BRANCH -->|"> 3500 (long articles, e.g. Jay Chou)"| ROUTE["Qwen 3.5 2B Section Router\nSelect 1~2 most relevant sections\nfrom heading outline + Infobox keys"]
-    PANO --> MRC["Qwen 3.5 2B Machine Reading Comprehension\nextractFactWithQwen\nOutput: 1 complete subject-verb-object factual sentence\n(max 300 chars; irrelevant → output NONE)"]
-    ROUTE --> MRC
-    MRC -->|"Output NONE / no definitive answer"| SILENT["Silent Fallback\n0 citation chips, 0 prompt injection"]
-    MRC -->|"Valid factual statement extracted"| INJECT["Inject ephemeral Grounding Prompt\n[Background Facts] 【Title】: factual statement\n+ Render citation chip UI"]
+    VARIANTS --> SEARCH["Kiwix two-track parallel search (all variants)\n① Exact Probe HEAD /content (200/302)\n② Title Suggest /suggest (count=30)"]
+    SEARCH --> FILTER["Title filtering + deep redirect deduplication\nKeep only article pages that exactly match or contain a keyword\nNamespace pages (Category/Portal/Template…) always dropped"]
+    FILTER --> SELECT["Per-keyword article selection (deterministic, no model)\nExact match → take exactly one\nNo exact match → containment matches, up to two by title length ascending\n(cross-keyword dedup · strictly serial)"]
+    SELECT --> DOM["Kiwix HTTP Full HTML Fetch\nparseWikipediaDOM:\n  - Paired deep removal of navboxes/banners/references\n  - Infobox extracted as a whole via tag pairing (no length cap)\n  - Full lead + body paragraphs + lists(·) + tables(|)"]
+    DOM --> NORM2["Second global normalization: toSimplifiedChinese\n(Infobox keys/values, lead, section titles, paragraphs)"]
+    NORM2 --> BRANCH{"Cleaned text length > 3500 chars?"}
+    BRANCH -->|"≤ 3500"| PANO["Panoramic mode\nInfobox + full lead + all sections"]
+    BRANCH -->|"> 3500"| ROUTE["Primary-model section router\nSelect 1~2 most relevant sections + 1~3 infobox keys\n(full lead always kept, nothing truncated)"]
+    PANO --> CTX["Normalized raw context\n(no rewriting · no summarizing · no mechanical truncation)"]
+    ROUTE --> CTX
+    CTX --> BUDGET["Load within remaining-context budget\nOver-budget articles dropped whole\nIf none fit → prompt user to start a new conversation"]
+    BUDGET --> INJECT["Inject Grounding Prompt\n【Title】 + raw text (Infobox/lead/lists/tables)\n+ citation chips (title only, click to view original)"]
+    BUDGET -->|"0 citations"| SILENT["Silent fallback\nnothing injected"]
 
-    BYPASS0 --> LLM["Primary LLM generates final answer"]
-    BYPASS1 --> LLM
+    INJECT --> LLM["Primary LLM generates the final answer\nLocates relevant info itself; lists may be reproduced verbatim"]
     SILENT --> LLM
-    INJECT --> LLM
-    HIT --> LLM
 ```
 
 ### Step-by-Step Technical Notes
 
-#### Step 0: Global Normalization (Algorithm)
+#### Step 0: Global Normalization (OpenCC)
 
 `toSimplifiedChinese(text)` uses **opencc-js** in a two-stage cascade:
 1. `cn → t`: Aligns Mainland Simplified transcriptions of HK/TW vocabulary (e.g. "记忆体", "软体") into the Traditional dictionary index ("記憶體", "軟體")
 2. `twp → cn` + `hk → cn`: Converts regional Traditional forms and idioms back to Mainland Simplified ("内存", "软件")
 
-Applied to user input, Infobox key-values, and body paragraphs for full end-to-end vocabulary alignment.
+Applied to the user query, Infobox keys/values, section titles, and body paragraphs for full end-to-end vocabulary alignment. All Chinese script/variant conversion is **handled exclusively by OpenCC** — no hand-written mapping tables.
 
-#### Step 1: LAYA Intent Classification Gate (LAYA System 1 · Discriminative Model)
+#### Step 1: Primary-Model Entity Planning
 
-- **Model**: JHU mmBERT-base (multilingual ModernBERT, 256,000 vocab), running on local Apple Silicon MLX
-- **Latency**: ~15 ms (native Metal GPU acceleration)
-- **Decision**: `choice` binary classification: `chitchat_or_code` (bypass) vs `knowledge_lookup` (enter RAG)
-- **Purpose**: Filters chitchat, code generation, and emotional interaction at the pipeline front with zero compute waste
+- **Model**: the primary inference model (default Gemma 4 26B-A4B, port 1235)
+- **Call convention**: rules in `system`, examples + question in `user` (Gemma 4 natively supports the system role); thinking disabled; `temperature=0` (measured identical quality to the officially recommended 1.0 across 12 fresh questions, but 1.0 causes plan variance)
+- **Task**: extract 1~2 canonical encyclopedia entry names from the full natural language query, output pure JSON `{"target_articles": [...]}`
+- **Anti-hallucination**: the prompt explicitly requires "default to exactly 1; give 2 only when the question genuinely involves two independent entities; never invent entities"
+- **No fallback**: no small-model bailout; on planning failure the normalized raw query is searched directly
+- **Performance**: primary-model prefill ≈ 30ms/token, ~9s per planning call; prompt length is the only effective lever (no effective prefix caching)
 
-#### Step 2: Qwen 3.5 2B Neural Entity Planner (Small Model)
+#### Step 2: OpenCC Variant Matrix Expansion
 
-- **Model**: Qwen 3.5 2B (INT4 quantized), running on LM Studio (port 1234)
-- **Latency**: ~600 ms
-- **Task**: Understands the full natural language query semantically and extracts canonical encyclopedia entry names (1~2), outputs pure JSON `{"target_articles": [...]}`
-- **Design**: Entirely semantic — no regex stripping or hardcoded slicing; graceful degradation falls back to the normalized raw query
-
-#### Step 3: OpenCC Variant Matrix Expansion (Algorithm)
-
-`getAllVariants(term)` expands each planned entity into up to 5 variants:
+`getAllVariants(term)` expands each planned entity into all script variants:
 
 | Variant | Example ("鼠标" / mouse) | Example ("周杰伦" / Jay Chou) |
 | :--- | :--- | :--- |
@@ -154,68 +146,105 @@ Applied to user input, Infobox key-values, and body paragraphs for full end-to-e
 | Taiwan Traditional + phrases `cn→twp` | 滑鼠 | 周杰倫 |
 | Hong Kong Traditional `cn→hk` | 滑鼠 | 周杰倫 |
 
-All variants enter a deduplicated Set for subsequent retrieval, ensuring hits regardless of which script form the ZIM index uses.
+**All variants** enter a deduplicated Set for subsequent retrieval (the old version only used the first 2~4, causing missed hits), ensuring hits regardless of which script form the ZIM index uses.
 
-#### Step 4: Kiwix 3-Track Parallel Search (Algorithm)
+#### Step 3: Kiwix Title Search + Filtering + Deep Redirect Deduplication
 
-Three concurrent tracks with deduplicated merged results:
+Only the **title track** is used (no full-text search):
 
 | Track | Endpoint | Purpose |
 | :--- | :--- | :--- |
-| **Exact Probe** | `HEAD /content/{id}/{variant}` | Detects exact article existence or 302 redirects |
-| **Suggest Prefix** | `/suggest?term=...&count=30` | Title prefix index, covers exact and extended titles |
-| **Pattern Full-text** | `/search?pattern=...` | Full-text match, ~85ms, covers descriptive queries (e.g. "China's first atomic bomb" → *Project 596*) |
+| **Exact Probe** | `HEAD /content/{id}/{variant}` | Detects exact article existence or 302 redirects (kept on hit) |
+| **Title Suggest** | `/suggest?content=...&term=...&count=30` | Title index, covers exact and extended titles |
 
-**Candidate scoring** (algorithmic, `scoreItem`):
-- Exact probe hit: +300
-- Exact title match: +200 / case-insensitive: +180
-- Query is hypernym of title ("日本首都" ⊃ "日本"): +140
-- Title starts with query (complete prefix): +110
-- Query contains title / title contains query: +50~80
-- Title ends with query ("Amazon日本"): +35
-- Length penalty, source bonus (suggest rank 0: +30, rank 1: +20)
+Then three convergence steps:
+1. **Title filtering**: keep only article pages whose title **exactly equals** or **fully contains** a keyword variant; `Category:`, `Portal:`, `Template:` and other namespace pages are always dropped
+2. **Deep redirects**: each candidate gets a `HEAD` (`redirect:manual`) to resolve Kiwix's canonical path — preventing multiple aliases of the same article (e.g. 「康托」→「格奥尔格·康托尔」) from being counted as separate articles
+3. **Deduplicate by canonical path**, keeping at most 6
 
-#### Step 5: Qwen 3.5 2B Candidate Re-ranking (Small Model)
+#### Step 4: Per-Keyword Article Selection (Deterministic Rule, No Model)
 
-From the Top-5 candidates, presents the full user query + candidate titles to Qwen 3.5 2B, which outputs the most relevant 1~2 titles as a JSON array, establishing the final fetch order.
+Each keyword independently selects articles, with a fully deterministic rule:
 
-#### Step 6: Full HTML Fetch & DOM Parsing (Algorithm)
+| Situation | Behavior |
+| :--- | :--- |
+| An "exact match" article exists | **Take exactly one** (try in order, take the first whose body is successfully fetched) |
+| No exact match | Containment matches sorted by **title length ascending** (fewest extra characters first), **up to two** |
+| Not even a containment match | This keyword contributes nothing; other keywords are unaffected |
+
+- Deduplication already happened during search (by canonical path); only cross-keyword deduplication happens here
+- Exact match = exact-probe hit, or a title identical to a keyword variant
+- Two keywords → at most two articles; all processed strictly serially (the primary model does not support concurrency)
+
+#### Step 5: Full HTML Fetch & DOM Parsing
 
 `parseWikipediaDOM(html)` pipeline:
-1. **Tail cutoff**: Truncates from "Notes"/"References"/"External Links" sections onward
-2. **Noise removal**: Strips `<style>`, `<script>`, `<sup class="reference">`, navboxes, figure/thumbnails
-3. **Full Infobox extraction**: Extracts all `<th>/<td>` row pairs; key < 30 chars, value < 150 chars — **no row count cap**
-4. **Structure split**: First `<h2>` boundary separates Lead (section0) from sections
-5. **Paragraph extraction**: All `<p>` elements with cleaned text length ≥ 20 chars
 
-> **Zero-truncation principle**: Paragraphs are never character-truncated. Filtering is handled semantically by the SLM downstream.
+1. **Tail cutoff**: Truncates from "Notes"/"References"/"External Links"/"See also"/"Further reading" sections onward (handles both h2 and h3 headings)
+2. **Paired deep removal** (`removeElementsByClass`): navboxes, sidebars, maintenance banners (ambox), reference wrappers — multi-layer nested structures must be removed by matching `<tag>`/`</tag>` pairs; non-greedy regex stops at the first closing tag and leaks inner `<li>`/`<td>` into the body text
+3. **Invisible content removal**: MediaWiki sort keys (`sortkey`, e.g. `7008299792458000000♠`), `display:none` elements, `[citation needed]`-style markers — browsers never render these, but plain-text extraction picks them up
+4. **Infobox extracted as a whole via tag pairing**: Infoboxes commonly nest sub-tables; likewise matched by `<table>`/`</table>` pairs, all `<th>/<td>` rows collected with **no length cap**
+5. **Structure split**: First `<h2>` boundary separates the full Lead (section0) from sections
+6. **In-order content block extraction**: `<p>` paragraphs, `<ul>/<ol>` lists (converted to "· item" lines), `<table>` tables (converted to "| cell | cell |" pipe tables) — original order preserved, **no length filtering**
 
-#### Step 7: Second Global Normalization (Algorithm)
+> **Zero-truncation principle**: Content is never character-truncated. Cleaning only targets "elements browsers don't render" and "non-article pages"; article text is always kept.
 
-All Infobox keys, values, Lead paragraphs, and section paragraphs are passed through `toSimplifiedChinese` again, eliminating vocabulary bias from ZIM files stored in Traditional Chinese.
+#### Step 6: Second Global Normalization
 
-#### Step 8: Long-Article Routing (Algorithm + Small Model Branch)
+All Infobox keys, values, section titles, lead paragraphs, and body paragraphs are passed through `toSimplifiedChinese` again, eliminating script and vocabulary bias from ZIM files stored in Traditional Chinese. Measured: the Traditional article 《周杰倫》 produces zero Traditional-script residue.
 
-- **Standard articles (≤ 3500 chars, ~75%)**: `panoramic` mode — full Infobox + Lead + all sections passed to SLM
-- **Extra-long articles (> 3500 chars, e.g. "Jay Chou", "China")**: `routed` mode — Qwen 3.5 2B selects 1~2 most relevant sections from the heading outline + Infobox keys (max 50 tokens), then only those paragraphs are sent to SLM
+#### Step 7: Long-Article Routing
 
-#### Step 9: Qwen 3.5 2B Machine Reading Comprehension (Small Model)
+- **Standard articles (≤ 3500 chars, ~75%)**: `panoramic` mode — full Infobox + full lead + all sections
+- **Extra-long articles (> 3500 chars)**: `routed` mode — the **primary model** selects 1~2 most relevant sections and 1~3 infobox keys from the heading outline; the **complete paragraphs** of those sections are included in full, and the **full lead is always kept** — nothing truncated
 
-`extractFactWithQwen(query, articleTitle, context)` targeted fact extraction:
-- Instruction: if body text contains the exact answer to the question, output one complete subject-verb-object sentence (≤ 300 chars); otherwise **output only `NONE`**
-- Strictly forbidden from extracting unrelated biographical background
-- Output `NONE` / function returns `null` → article discarded, silent fallback triggered
-- Valid factual statement extracted → builds `[Background Facts]` ephemeral Grounding Prompt, injected into this request only (**never stored in persistent history**)
+#### Step 8: Direct Raw-Text Injection (No MRC)
 
-**The Qwen MRC `NONE` output mechanism is the final filter layer of the entire pipeline** — there is no separate downstream gatekeeper step.
+The earlier architecture had a "Machine Reading Comprehension" step here: a small model read the article and compressed it into one factual sentence. In practice it **fabricated** (producing "Goldbach's conjecture was proposed by Georg Cantor" from the Cantor-set article). That step has been removed entirely.
+
+Now the normalized raw text produced by `assembleArticleContext` is **injected directly** into the primary model, which locates the relevant information itself and combines it with its own knowledge:
+- No rewriting means no fabrication
+- Enumeration questions ("list all works") can reproduce the original lists verbatim
+- Clicking a citation chip shows this plain text above the original wiki page in the drawer — **verifiable**
+
+#### Step 9: Context-Budget Loading
+
+The frontend estimates available tokens as `maxContext - maxTokens` (Chinese ≈ 1 token/char, ×1.5 to chars) and passes `budgetChars` to the backend. Articles are loaded in retrieval-priority order; **over-budget articles are dropped whole, never truncated mid-text**. This is an adaptive resource constraint — the larger the configured context, the larger the budget and the less often it triggers. If not even one article fits (conversation grown too long), the backend returns a `contextOverflow` signal and the frontend prompts the user to start a new conversation.
+
+#### Injection Prompt
+
+```
+[Encyclopedia Context]
+Below are one or more encyclopedia articles (Infobox, lead section and relevant
+body sections) retrieved from an offline knowledge base for the user's question.
+
+【Article Title】
+<raw text>
+
+[How to answer]
+1. [Relevance filtering]: Locate the parts of the context that actually answer
+   the question and ignore the rest.
+2. [Fact grounding]: Treat the facts, dates, people and numbers found there as
+   your factual anchor. Combine them with your own knowledge when partial.
+3. [Reproduce when asked]: If the user asks you to enumerate or list something,
+   reproduce the corresponding list from the context faithfully.
+4. [Cite]: Mention which encyclopedia article(s) you used.
+
+[User Question]
+<original question>
+```
+
+The Grounding Prompt is an ephemeral wrapper, **never written to persistent conversation history**.
 
 ### Core Design Principles
 
-1. **Zero-truncation**: All article text is passed intact; filtering is semantic, not character-based
-2. **Zero-contamination**: Grounding Prompt is ephemeral — never written to persistent conversation history
-3. **Zero-regex entity extraction**: Entity planning is entirely semantic; no keyword stripping or hardcoded heuristics
-4. **Neural gating**: LAYA System 1 (~15ms) intercepts irrelevant requests up front; Qwen MRC acts as the final fact filter via `NONE` output
-5. **Silent fallback**: Any failed step silently exits; the primary LLM falls back to general knowledge without noise injection
+1. **Generation-free retrieval**: Neither search keys nor injected content is model-generated — the raw query is searched directly and raw text is injected directly. No rewriting means no fabrication.
+2. **Zero-truncation**: Article text is passed intact; the only trade-off is "load a whole article or drop it whole" (context budget), never mid-text truncation.
+3. **Zero-contamination**: The Grounding Prompt is ephemeral — never written to persistent conversation history.
+4. **Zero mechanical rules**: No keyword regex stripping, no hardcoded greeting bypass, no regex-based fact-relevance filtering; all Chinese script conversion is delegated to OpenCC.
+5. **Abstention first**: Any step that yields nothing silently exits; the primary LLM falls back to general knowledge without noise injection. A missed citation costs far less than a wrong one.
+6. **Paired scanning**: All structural HTML removal (navboxes, Infobox, references) uses matched-tag depth scanning — non-greedy regex is never used on nested structures.
+7. **Single model, strictly serial**: Only the primary model makes semantic decisions (planning/routing/generation), and it is called strictly serially — it does not support concurrent requests; there is no in-memory result cache.
 
 ---
 
@@ -318,10 +347,11 @@ SimpleUI/
 │   ├── proxy.js              # Node.js proxy server (port 31235)
 │   │                         #   SSE passthrough, static hosting, dynamic port routing
 │   ├── wiki_service.js       # Offline RAG pipeline core
-│   │                         #   LAYA dual gatekeepers, Qwen 3.5 2B, Kiwix 3-track search
-│   │                         #   parseWikipediaDOM, assembleArticleContext
+│   │                         #   Primary-model planning & section routing, Kiwix title search
+│   │                         #   with redirect deduplication, parseWikipediaDOM (paired
+│   │                         #   deep cleaning / lists / tables), assembleArticleContext
 │   │                         #   toSimplifiedChinese, getAllVariants (OpenCC)
-│   └── laya_mlx_server.py    # LAYA System 1 MLX-accelerated service (port 1236)
+│   └── laya_mlx_server.py    # LAYA System 1 service (removed from the pipeline, file kept for reference)
 │
 ├── mac_app/                  # macOS native dual-window wrapper (Swift + WebKit)
 │   ├── src/                  # AppDelegate, HotKey, WindowControllers

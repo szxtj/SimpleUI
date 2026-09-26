@@ -308,8 +308,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           </div>
 
-          {/* 2. Knowledge Base Service Status */}
-          <div
+          {/* 2. Knowledge Base Service Status — 服务总开关关闭时整行不渲染 */}
+          {wikiStatus?.enabled && (<div
             className="flex items-center gap-2 min-w-0 cursor-default"
             title={`${t('kbService')}: ${
               wikiStatus?.connected
@@ -340,7 +340,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   : t('statusOffline')}
               </span>
             </div>
-          </div>
+          </div>)}
         </div>
 
         {/* Settings button */}

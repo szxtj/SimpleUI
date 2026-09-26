@@ -23,7 +23,7 @@ import {
 } from './services/storage';
 import { TurboFieldfareAPI, WikiAPI } from './services/api';
 import { SpotlightView } from './components/SpotlightView';
-import { WikiDrawer } from './components/WikiDrawer';
+import { WikiSidebar } from './components/WikiSidebar';
 import { I18nProvider, resolveLanguage } from './i18n';
 import { useTheme } from './hooks/useTheme';
 import { estimateHistoryTokens } from './utils/token';
@@ -98,6 +98,7 @@ export const App: React.FC = () => {
   const [availableModels, setAvailableModels] = useState<string[]>([settings.modelId]);
   const [lastMetrics, setLastMetrics] = useState<TurnMetrics | undefined>(undefined);
   const [wikiStatus, setWikiStatus] = useState<WikiStatusInfo>({
+    enabled: true,
     connected: false,
     port: 31236,
     zimPath: null,
@@ -107,6 +108,8 @@ export const App: React.FC = () => {
     mediaCount: 0,
   });
   const [activeWikiArticle, setActiveWikiArticle] = useState<string | null>(null);
+  const [activeWikiContext, setActiveWikiContext] = useState<string | null>(null);
+  const [isWikiPanelOpen, setIsWikiPanelOpen] = useState(false);
 
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const activeStreamsRef = useRef<Map<string, {
@@ -391,6 +394,12 @@ export const App: React.FC = () => {
     window.webkit?.messageHandlers?.setSidebarOpen?.postMessage?.(isSidebarOpen);
   }, [isSidebarOpen]);
 
+  // Notify native macOS wrapper about wiki panel state (window min-size accounting)
+  useEffect(() => {
+    // @ts-expect-error WebKit bridge
+    window.webkit?.messageHandlers?.setWikiPanelOpen?.postMessage?.(isWikiPanelOpen);
+  }, [isWikiPanelOpen]);
+
   // Current session helper
   const currentSession = sessions.find((s) => s.id === currentSessionId);
   const messages = currentSession?.messages || [];
@@ -482,18 +491,26 @@ export const App: React.FC = () => {
     // Optional Offline Wiki RAG Retrieval (session-level toggle, defaults to false)
     let promptToSend = textToSend;
     let foundCitations: WikiCitation[] = [];
+    let contextOverflow = false;
     const sessionEnableWiki = targetSession.enableWikiSearch ?? false;
     const sessionEnableThinking = targetSession.enableThinking ?? false;
 
-    if (sessionEnableWiki && wikiStatus.connected && textToSend) {
+    if (wikiStatus.enabled && sessionEnableWiki && wikiStatus.connected && textToSend) {
       try {
-        const rag = await WikiAPI.getRagContext(textToSend);
-        if (rag.needsWiki && rag.citations && rag.citations.length > 0) {
+        // 上下文装载预算：按剩余可用上下文估算（中文字符≈1 token），
+        // 由后端按检索优先级整篇取舍，绝不从中间截断。
+        const usableTokens = Math.max(2000, settings.maxContext - settings.maxTokens);
+        const budgetChars = Math.max(4000, Math.floor(usableTokens * 1.5));
+        const rag = await WikiAPI.getRagContext(textToSend, budgetChars);
+        if (rag.contextOverflow) {
+          // 上下文已满，一篇原文都装不下：不注入也不生成，提示用户新开对话
+          contextOverflow = true;
+        } else if (rag.needsWiki && rag.citations && rag.citations.length > 0) {
           foundCitations = rag.citations;
           const isEn = activeLang === 'en';
           const groundingGuidelines = isEn
-            ? `[Background Reference Facts]\n${rag.promptContext}\n\n[Instruction & Guidelines]\nPlease answer the user's question based on the following principles:\n1. [Fact Grounding]: Use the objective facts, dates, and numbers provided in the [Background Reference Facts] as your factual anchor.\n2. [Deep Reasoning & Synthesis]: The facts serve as your baseline; please fully unleash your analytical reasoning, logical synthesis, and broad world knowledge to provide an in-depth, structured, and insightful response.\n3. [Natural & Expressive]: Keep the tone natural, clear, and articulate. Do not mechanically copy the source verbatim.\n\n[User Question]\n${textToSend}`
-            : `[背景事实参考]\n${rag.promptContext}\n\n[回答指引与准则]\n请按以下原则回答用户问题：\n1. 【事实锚定】：优先将上述[背景事实参考]中提及的客观事实、时间、人物与数据作为真实性基石。\n2. 【深度推导与发散】：参考事实仅作为基础支撑，请充分发挥你的深度逻辑分析、综合归纳与通用常识储备。若事实仅为局部信息，鼓励主动进行深层推论、背景对比与全面展开。\n3. 【自然生动】：保持自然清晰、有深度的表达风格，严禁机械式照抄或受限于参考资料的行文。\n\n[用户问题]\n${textToSend}`;
+            ? `[Encyclopedia Context]\nBelow are one or more encyclopedia articles (Infobox, lead section and relevant body sections) retrieved from an offline knowledge base for the user's question.\n\n${rag.promptContext}\n\n[How to answer]\n1. [Relevance filtering]: The context may contain material that is not related to the question (e.g. infobox fields, section headings, list entries). Locate the parts that actually answer the question and ignore the rest.\n2. [Fact grounding]: Treat the facts, dates, people and numbers found there as your factual anchor. Combine them with your own knowledge when they are partial.\n3. [Reproduce when asked]: If the user asks you to enumerate or list something (e.g. all works, all awards), reproduce the corresponding list from the context faithfully — do not shorten or omit items.\n4. [Cite]: Mention which encyclopedia article(s) you used.\n\n[User Question]\n${textToSend}`
+            : `[百科原文参考]\n以下是从离线知识库中检索到的与用户问题相关的百科条目内容（含基本档案、引言与相关小节）。\n\n${rag.promptContext}\n\n[回答指引]\n1. 【自行筛选】：上述原文中可能包含与问题无关的内容（例如档案中用不到的属性、其他小节、列表中的无关条目）。请自行定位其中真正与问题相关的部分，忽略其余。\n2. 【事实锚定】：将其中出现的事实、时间、人物与数据作为真实性基石；若信息不完整，可结合你自身的知识补充展开。\n3. 【按需照抄】：若用户要求列举类内容（例如"列出所有作品/所有奖项"），请忠实照抄原文中的对应列表，不要擅自删减或概括。\n4. 【注明出处】：回答中请说明引用了哪篇百科条目。\n\n[用户问题]\n${textToSend}`;
           promptToSend = groundingGuidelines;
         }
       } catch (err) {
@@ -553,6 +570,35 @@ export const App: React.FC = () => {
     let isThinking = sessionEnableThinking;
     let thinkingDuration = 0;
     const thinkingStartTime = performance.now();
+
+    // 上下文已满：知识库原文一篇都装不下。不调用模型，直接提示用户新开对话。
+    if (contextOverflow) {
+      const hint =
+        activeLang === 'en'
+          ? '⚠️ The context window is full, so the knowledge base article could not be loaded. Please start a new conversation and try again.'
+          : '⚠️ 当前对话的上下文窗口已满，知识库原文无法装载。请新建一个对话后再试。';
+      setSessions((prev) =>
+        prev.map((s) => {
+          if (s.id !== targetSessionId) return s;
+          return {
+            ...s,
+            messages: s.messages.map((m) => {
+              if (m.id !== assistantMsgId) return m;
+              return { ...m, content: hint, isThinking: false };
+            }),
+          };
+        })
+      );
+      abortControllersRef.current.delete(targetSessionId);
+      setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetSessionId));
+      activeStreamsRef.current.delete(targetSessionId);
+      setLiveStreamingTokens((prev) => {
+        const next = { ...prev };
+        delete next[targetSessionId];
+        return next;
+      });
+      return;
+    }
 
     activeStreamsRef.current.set(targetSessionId, {
       messageId: assistantMsgId,
@@ -981,18 +1027,29 @@ export const App: React.FC = () => {
             );
           }}
           wikiConnected={wikiStatus.connected}
-          onOpenWiki={(title) => setActiveWikiArticle(title)}
+          wikiEnabled={wikiStatus.enabled}
+          wikiPanelOpen={isWikiPanelOpen}
+          onToggleWikiPanel={() => setIsWikiPanelOpen((v) => !v)}
+          onOpenWiki={(title, context) => {
+            setActiveWikiArticle(title);
+            setActiveWikiContext(context ?? null);
+            setIsWikiPanelOpen(true);
+          }}
           onRetry={handleRetry}
           onDelete={handleDeleteTurn}
           onShrinkToSpotlight={handleShrinkToSpotlight}
         />
 
-        {/* Wikipedia Offline Article Reader Drawer */}
-        <WikiDrawer
-          isOpen={!!activeWikiArticle}
+        {/* Wikipedia Offline Article Reader — right docked sidebar */}
+        <WikiSidebar
+          isOpen={isWikiPanelOpen}
           title={activeWikiArticle}
-          onClose={() => setActiveWikiArticle(null)}
-          theme={settings.theme}
+          context={activeWikiContext}
+          onClose={() => {
+            setIsWikiPanelOpen(false);
+            setActiveWikiArticle(null);
+            setActiveWikiContext(null);
+          }}
         />
 
         {/* Settings Modal */}

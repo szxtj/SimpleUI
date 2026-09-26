@@ -7,7 +7,7 @@ import { Check, Copy, AlertCircle, BookOpen, ExternalLink, RotateCcw, Trash2 } f
 
 interface MessageItemProps {
   message: ChatMessage;
-  onOpenWiki?: (title: string) => void;
+  onOpenWiki?: (title: string, context?: string) => void;
   onRetry?: (messageId: string) => void;
   onDelete?: (messageId: string) => void;
 }
@@ -31,8 +31,8 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, o
     <div className={`py-3 w-full flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       {isUser ? (
         /* User Message: Rounded pill bubble on the right with icon-only copy button below */
-        <div className="flex flex-col items-end max-w-[90%] sm:max-w-[85%] lg:max-w-[75%] group">
-          <div className="rounded-[20px] px-3.5 sm:px-4 py-2 sm:py-2.5 bg-[#e9ebf0] text-[#1f2328] dark:bg-[#2d3037] dark:text-[#f1f3f7] border border-black/5 dark:border-white/5 shadow-sm">
+        <div className="flex flex-col items-end max-w-[90%] cq-md:max-w-[85%] cq-lg:max-w-[75%] group">
+          <div className="rounded-[20px] px-3.5 cq-md:px-4 py-2 cq-md:py-2.5 bg-[#e9ebf0] text-[#1f2328] dark:bg-[#2d3037] dark:text-[#f1f3f7] border border-black/5 dark:border-white/5 shadow-sm">
             {/* User image attachments */}
             {message.images && message.images.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-2">
@@ -41,12 +41,12 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, o
                     key={i}
                     src={imgUrl}
                     alt={`upload-${i}`}
-                    className="max-w-[200px] sm:max-w-[240px] max-h-[200px] sm:max-h-[240px] rounded-xl object-cover border border-black/10 dark:border-white/10 shadow-sm"
+                    className="max-w-[200px] cq-md:max-w-[240px] max-h-[200px] cq-md:max-h-[240px] rounded-xl object-cover border border-black/10 dark:border-white/10 shadow-sm"
                   />
                 ))}
               </div>
             )}
-            <div className="whitespace-pre-wrap break-words text-[14.5px] sm:text-[15px] leading-relaxed">
+            <div className="whitespace-pre-wrap break-words text-[14.5px] cq-md:text-[15px] leading-relaxed">
               {message.content}
             </div>
           </div>
@@ -109,10 +109,10 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, o
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    onOpenWiki?.(c.title);
+                    onOpenWiki?.(c.title, c.context);
                   }}
                   className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-emerald-500/10 hover:bg-emerald-500/20 active:bg-emerald-500/30 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 hover:border-emerald-500/35 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer select-none"
-                  title={c.summary || c.title}
+                  title={c.title}
                 >
                   <span className="font-medium truncate max-w-[200px] pointer-events-none select-none">{c.title}</span>
                   <ExternalLink className="w-3 h-3 opacity-60 pointer-events-none flex-shrink-0" />

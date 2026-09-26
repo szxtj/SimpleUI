@@ -40,6 +40,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     (settings?.stopStrings || []).join(', ')
   );
   const [wikiStatus, setWikiStatus] = useState<WikiStatusInfo | null>(null);
+  const [isTogglingService, setIsTogglingService] = useState(false);
   const [customZimPath, setCustomZimPath] = useState('');
   const [isApplyingPath, setIsApplyingPath] = useState(false);
   const [pathMessage, setPathMessage] = useState<{ text: string; isError: boolean } | null>(null);
@@ -62,6 +63,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       });
     }
   }, [isOpen, settings]);
+
+  // 知识库服务总开关：关闭即停服（后端杀掉 kiwix 进程），开启即按 ZIM 路径拉起
+  const handleToggleWikiService = async (next: boolean) => {
+    setIsTogglingService(true);
+    try {
+      const res = await WikiAPI.setEnabled(next);
+      setWikiStatus(res);
+    } catch (e) {
+      // ignore
+    } finally {
+      setIsTogglingService(false);
+    }
+  };
 
   const handleApplyZimPath = async () => {
     if (!customZimPath.trim()) return;
@@ -283,19 +297,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <label className="flex items-center justify-between cursor-pointer pt-2 border-t border-black/5 dark:border-white/5">
               <div>
                 <div className="font-medium text-zinc-700 dark:text-zinc-200">
-                  {t('wikiDefaultToggle')}
+                  {t('wikiServiceToggle')}
                 </div>
                 <div className="text-[10px] text-zinc-500 dark:text-zinc-400">
-                  {t('wikiDefaultToggleDesc')}
+                  {t('wikiServiceToggleDesc')}
                 </div>
               </div>
               <input
                 type="checkbox"
-                checked={formData.enableWikiSearch ?? true}
-                onChange={(e) =>
-                  setFormData({ ...formData, enableWikiSearch: e.target.checked })
-                }
-                className="w-4 h-4 rounded text-blue-600 accent-blue-600 cursor-pointer"
+                checked={wikiStatus?.enabled ?? true}
+                disabled={isTogglingService}
+                onChange={(e) => handleToggleWikiService(e.target.checked)}
+                className="w-4 h-4 rounded text-blue-600 accent-blue-600 cursor-pointer disabled:opacity-50"
               />
             </label>
           </div>

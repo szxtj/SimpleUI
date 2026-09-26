@@ -5,6 +5,8 @@ export interface RagContextResponse {
   needsWiki: boolean;
   citations: WikiCitation[];
   promptContext: string;
+  /** 上下文已满，知识库原文一篇都装不下——前端应提示用户新开对话 */
+  contextOverflow?: boolean;
   metadata?: {
     fromCache?: boolean;
     planner?: string;
@@ -378,6 +380,7 @@ export class WikiAPI {
       // ignore
     }
     return {
+      enabled: true,
       connected: false,
       port: 31236,
       zimPath: null,
@@ -388,7 +391,34 @@ export class WikiAPI {
     };
   }
 
-  static async search(query: string): Promise<Array<{ title: string; path: string; url: string }>> {
+  // 切换知识库服务总开关（后端为唯一事实来源，并负责拉起/杀掉 kiwix 进程）
+  static async setEnabled(enabled: boolean): Promise<WikiStatusInfo> {
+    try {
+      const res = await fetch('/api/wiki/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return {
+          enabled: data.enabled !== false,
+          connected: !!data.connected,
+          port: 31236,
+          zimPath: data.zimPath ?? null,
+          contentId: data.contentId ?? null,
+          bookTitle: data.bookTitle || 'Knowledge Base',
+          articleCount: data.articleCount ?? 0,
+          mediaCount: data.mediaCount ?? 0,
+        };
+      }
+    } catch (e) {
+      console.error('Wiki setEnabled failed:', e);
+    }
+    return await this.getStatus();
+  }
+
+  static async search(query: string): Promise<Array<{ title: string; path: string; url: string; exact?: boolean }>> {
     try {
       const res = await fetch(`/api/wiki/search?q=${encodeURIComponent(query)}`);
       if (res.ok) {
@@ -401,10 +431,24 @@ export class WikiAPI {
     return [];
   }
 
+  /** 完整条目文本（Infobox + 完整引言 + 全部小节，供面板原生渲染） */
+  static async getFullArticle(
+    title: string
+  ): Promise<{ title: string; url: string; context: string } | null> {
+    try {
+      const res = await fetch(`/api/wiki/article?title=${encodeURIComponent(title)}`);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch (e) {
+      console.error('Wiki getFullArticle failed:', e);
+      return null;
+    }
+  }
+
   static async getSummary(
     title: string,
     userQuery?: string
-  ): Promise<{ title: string; summary: string; url: string } | null> {
+  ): Promise<{ title: string; url: string; context: string } | null> {
     try {
       let url = `/api/wiki/summary?title=${encodeURIComponent(title)}`;
       if (userQuery) {
@@ -436,12 +480,12 @@ export class WikiAPI {
     return await this.getStatus();
   }
 
-  static async getRagContext(query: string): Promise<RagContextResponse> {
+  static async getRagContext(query: string, budgetChars?: number): Promise<RagContextResponse> {
     try {
       const res = await fetch('/api/wiki/rag-context', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({ query, budgetChars }),
       });
       if (res.ok) {
         return await res.json();

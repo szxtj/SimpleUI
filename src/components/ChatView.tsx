@@ -11,6 +11,7 @@ import {
   ChevronDown,
   Check,
   PanelLeftOpen,
+  PanelRightOpen,
   Minimize2,
 } from 'lucide-react';
 
@@ -38,7 +39,10 @@ interface ChatViewProps {
   enableWikiSearch?: boolean;
   setEnableWikiSearch?: (val: boolean) => void;
   wikiConnected?: boolean;
-  onOpenWiki?: (title: string) => void;
+  wikiEnabled?: boolean;
+  wikiPanelOpen?: boolean;
+  onToggleWikiPanel?: () => void;
+  onOpenWiki?: (title: string, context?: string) => void;
   onRetry?: (messageId: string) => void;
   onDelete?: (messageId: string) => void;
   onShrinkToSpotlight?: () => void;
@@ -66,6 +70,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
   enableWikiSearch,
   setEnableWikiSearch,
   wikiConnected,
+  wikiEnabled,
+  wikiPanelOpen,
+  onToggleWikiPanel,
   onOpenWiki,
   onRetry,
   onDelete,
@@ -112,15 +119,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
   ];
 
   return (
-    <div className="flex-1 min-w-0 flex flex-col h-full overflow-hidden bg-[#f8f9fb] dark:bg-[#18191c]">
+    <div className="chat-container flex-1 min-w-0 flex flex-col h-full overflow-hidden bg-[#f8f9fb] dark:bg-[#18191c]">
       {/* Top 52px Header Bar */}
       <div
         className={`h-[52px] border-b border-black/5 dark:border-white/5 bg-[#f8f9fb]/80 dark:bg-[#18191c]/80 backdrop-blur flex items-center justify-between flex-shrink-0 select-none transition-all duration-200 ${
-          !isSidebarOpen ? 'pl-[78px] pr-4 sm:pr-6' : 'px-4 sm:px-6'
+          !isSidebarOpen ? 'pl-[78px] pr-4 cq-md:pr-6' : 'px-4 cq-md:px-6'
         }`}
       >
         {/* Left: Open Sidebar Button (when collapsed) + Model Selector */}
-        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+        <div className="flex items-center gap-1.5 cq-md:gap-2 min-w-0">
           {!isSidebarOpen && (
             <button
               type="button"
@@ -137,9 +144,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <button
               type="button"
               onClick={() => setShowModelMenu(!showModelMenu)}
-              className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-sm font-semibold text-[#1f2328] dark:text-[#f1f3f7] hover:bg-black/5 dark:hover:bg-white/5 transition-colors max-w-full"
+              className="flex items-center gap-1.5 px-2.5 cq-md:px-3 py-1.5 rounded-xl text-sm font-semibold text-[#1f2328] dark:text-[#f1f3f7] hover:bg-black/5 dark:hover:bg-white/5 transition-colors max-w-full"
             >
-              <span className="truncate max-w-[130px] sm:max-w-[220px]" title={modelId || 'gemma-4-26b-a4b-it'}>
+              <span className="truncate max-w-[130px] cq-lg:max-w-[220px]" title={modelId || 'gemma-4-26b-a4b-it'}>
                 {modelId || 'gemma-4-26b-a4b-it'}
               </span>
               <ChevronDown className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" />
@@ -175,8 +182,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
         {/* Center Draggable Space */}
         <div className="flex-1 h-full min-w-4" />
 
-        {/* Right Tools: Shrink to Spotlight */}
-        <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+        {/* Right Tools: Knowledge Panel Toggle (hidden while open — panel has its own close) + Shrink to Spotlight */}
+        <div className="flex items-center gap-1.5 cq-md:gap-2 flex-shrink-0">
+          {!wikiPanelOpen && (
+            <button
+              type="button"
+              onClick={onToggleWikiPanel}
+              className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors cursor-pointer flex-shrink-0"
+              title={t('expandWikiPanel')}
+            >
+              <PanelRightOpen className="w-4 h-4" />
+            </button>
+          )}
           <button
             type="button"
             onClick={onShrinkToSpotlight}
@@ -189,38 +206,38 @@ export const ChatView: React.FC<ChatViewProps> = ({
       </div>
 
       {/* Messages Stream Scroll Area */}
-      <div className="flex-1 overflow-y-auto px-3 sm:px-6 md:px-8 py-3 sm:py-6">
+      <div className="flex-1 overflow-y-auto px-3 cq-md:px-6 cq-lg:px-8 py-3 cq-md:py-6">
         <div className="max-w-4xl mx-auto min-h-full flex flex-col justify-start">
           {messages.length === 0 ? (
-            <div className="my-auto py-4 sm:py-8 md:py-10 flex flex-col items-center text-center w-full max-w-lg mx-auto">
-              <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/20 mb-3 sm:mb-4 flex-shrink-0">
-                <Sparkles className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
+            <div className="my-auto py-4 cq-md:py-8 cq-lg:py-10 flex flex-col items-center text-center w-full max-w-lg mx-auto">
+              <div className="w-10 h-10 cq-md:w-12 cq-md:h-12 rounded-xl cq-md:rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/20 mb-3 cq-md:mb-4 flex-shrink-0">
+                <Sparkles className="w-5 h-5 cq-md:w-6 cq-md:h-6 text-white" />
               </div>
-              <h1 className="text-lg sm:text-xl font-semibold text-[#1f2328] dark:text-[#f3f5f8] mb-1.5 sm:mb-2 tracking-tight">
+              <h1 className="text-lg cq-md:text-xl font-semibold text-[#1f2328] dark:text-[#f3f5f8] mb-1.5 cq-md:mb-2 tracking-tight">
                 {t('greetingTitle')}
               </h1>
-              <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-4 sm:mb-6 max-w-md px-2">
+              <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-4 cq-md:mb-6 max-w-md px-2">
                 {t('greetingSubtitle')}
               </p>
 
               {/* Quick suggestion cards */}
-              <div className="w-full grid grid-cols-1 gap-2 sm:gap-2.5 text-left">
+              <div className="w-full grid grid-cols-1 gap-2 cq-md:gap-2.5 text-left">
                 {quickPrompts.map((p, idx) => (
                   <button
                     key={idx}
                     onClick={() => {
                       setInput(p.prompt);
                     }}
-                    className="flex items-start gap-2.5 sm:gap-3 p-2.5 sm:p-3.5 rounded-xl sm:rounded-2xl border border-black/5 dark:border-white/5 bg-white dark:bg-[#202126]/60 hover:bg-[#f3f4f7] dark:hover:bg-[#25272e] hover:border-black/10 dark:hover:border-white/10 shadow-sm transition-all text-left group"
+                    className="flex items-start gap-2.5 cq-md:gap-3 p-2.5 cq-md:p-3.5 rounded-xl cq-md:rounded-2xl border border-black/5 dark:border-white/5 bg-white dark:bg-[#202126]/60 hover:bg-[#f3f4f7] dark:hover:bg-[#25272e] hover:border-black/10 dark:hover:border-white/10 shadow-sm transition-all text-left group"
                   >
-                    <div className="mt-0.5 p-1 sm:p-1.5 rounded-xl bg-black/5 dark:bg-white/5 group-hover:scale-105 transition-transform flex-shrink-0">
+                    <div className="mt-0.5 p-1 cq-md:p-1.5 rounded-xl bg-black/5 dark:bg-white/5 group-hover:scale-105 transition-transform flex-shrink-0">
                       {p.icon}
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="text-xs font-medium text-zinc-800 group-hover:text-zinc-950 dark:text-zinc-200 dark:group-hover:text-white truncate">
                         {p.title}
                       </div>
-                      <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5 line-clamp-1 sm:line-clamp-2">
+                      <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5 line-clamp-1 cq-md:line-clamp-2">
                         {p.desc}
                       </div>
                     </div>
@@ -246,7 +263,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       </div>
 
       {/* Input Area (Bottom capsule + Disclaimer) */}
-      <div className="w-full px-3 sm:px-6 md:px-8 pb-3 sm:pb-4 pt-1 bg-gradient-to-t from-[#f8f9fb] via-[#f8f9fb]/95 to-transparent dark:from-[#18191c] dark:via-[#18191c]/95 dark:to-transparent">
+      <div className="w-full px-3 cq-md:px-6 cq-lg:px-8 pb-3 cq-md:pb-4 pt-1 bg-gradient-to-t from-[#f8f9fb] via-[#f8f9fb]/95 to-transparent dark:from-[#18191c] dark:via-[#18191c]/95 dark:to-transparent">
         <div className="max-w-4xl mx-auto flex flex-col items-center">
           {/* Chat Input Capsule */}
           <ChatInput
@@ -266,6 +283,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             enableWikiSearch={enableWikiSearch}
             setEnableWikiSearch={setEnableWikiSearch}
             wikiConnected={wikiConnected}
+            wikiEnabled={wikiEnabled}
           />
 
           {/* Qianwen Style Disclaimer below input box */}

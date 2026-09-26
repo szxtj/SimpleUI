@@ -72,6 +72,22 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
         remarkPlugins={[remarkMath, remarkGfm]}
         rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
         components={{
+          // Assistant answers routinely contain links. Without target="_blank" the
+          // WebView would navigate away from the app UI (and there is no back
+          // button) — external links are routed to the macOS default browser by
+          // the native WKUIDelegate (see MainWindowController).
+          a({ href, children, ...props }) {
+            const external = /^https?:\/\//i.test(href || '');
+            return (
+              <a
+                href={href}
+                {...(external ? { target: '_blank', rel: 'noreferrer' } : {})}
+                {...props}
+              >
+                {children}
+              </a>
+            );
+          },
           code({ className, children, ...props }) {
             const match = /language-(\w+)/.exec(className || '');
             const language = match ? match[1] : '';

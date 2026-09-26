@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 class TitleBarDragView: NSView {
     var isSidebarOpen: Bool = true
+    var isWikiPanelOpen: Bool = false
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         // point passed to hitTest is in superview's coordinate system!
@@ -13,67 +14,65 @@ class TitleBarDragView: NSView {
         let x = localPoint.x
         let totalWidth = bounds.width
 
+        // Mirror the web layout constants (App.tsx / WikiSidebar.tsx / Sidebar.tsx)
+        let sidebarWidth: CGFloat = 260.0
+        let wikiPanelWidth: CGFloat = 440.0
+
+        let panelWidth: CGFloat = isWikiPanelOpen ? wikiPanelWidth : 0.0
+        let chatRight: CGFloat = totalWidth - panelWidth
+
         // 1. Native macOS Traffic Lights (x: 0 ... 78):
         // Always pass through so close/minimize/zoom buttons work!
         if x < 78.0 {
             return nil
         }
 
-        if isSidebarOpen {
-            let sidebarWidth: CGFloat = 260.0
+        // 2. Wiki Knowledge Panel header (x: chatRight ... totalWidth):
+        // Only the header's own action buttons (collapse / open external) are
+        // interactive — they occupy the panel's right-most ~80px. Everywhere else
+        // on the panel header drags the window, just like the other two top bars.
+        if isWikiPanelOpen && x >= chatRight {
+            return x >= (totalWidth - 80.0) ? nil : self
+        }
 
-            // 2. Sidebar Top Area (78 ... 260):
-            // Collapse button on far-right of sidebar: x: (sidebarWidth - 45) ... sidebarWidth
+        // 3. Sessions Sidebar header (x: 0 ... sidebarWidth)
+        if isSidebarOpen {
+            // Collapse button on the far-right of the sidebar: x: (260 - 45) ... 260
             if x >= (sidebarWidth - 45.0) && x <= sidebarWidth {
                 return nil // Click Collapse Sidebar button!
             }
-
             // Between 78 and (sidebarWidth - 45): EMPTY TOP OF SIDEBAR!
             if x < sidebarWidth {
                 return self // Drag window!
             }
-
-            // 3. Chat View Top Area (260 ... totalWidth):
-            // Model Selector button: x: 260 ... (sidebarWidth + 210), capped to never overlap right tools
-            let maxModelSelectorX = min(sidebarWidth + 210.0, totalWidth - 65.0)
-            if x >= sidebarWidth && x <= maxModelSelectorX {
-                return nil // Click Model Selector!
-            }
-
-            // Shrink / Action button on far-right: x: (totalWidth - 60) ... totalWidth
-            if x >= (totalWidth - 60.0) {
-                return nil // Click Shrink to Spotlight!
-            }
-
-            // Empty title bar in Chat View: drag window!
-            if x > maxModelSelectorX && x < (totalWidth - 60.0) {
-                return self
-            }
-            return nil
         } else {
             // Sidebar is COLLAPSED (width = 0):
             // Open Sidebar button: x: 78 ... 122
             if x >= 78.0 && x <= 122.0 {
                 return nil // Click Open Sidebar!
             }
+        }
 
-            // Model Selector button: x: 122 ... capped to never overlap right tools
-            let maxModelSelectorX = min(332.0, totalWidth - 65.0)
-            if x > 122.0 && x <= maxModelSelectorX {
-                return nil // Click Model Selector!
-            }
-
-            // Shrink / Action button on far-right: x: (totalWidth - 60) ... totalWidth
-            if x >= (totalWidth - 60.0) {
-                return nil // Click Shrink to Spotlight!
-            }
-
-            // Empty title bar in Chat View: drag window!
-            if x > maxModelSelectorX && x < (totalWidth - 60.0) {
-                return self
-            }
+        // 4. Chat View header (x: sidebarWidth/122 ... chatRight)
+        // 4a. Right tools (Shrink-to-Spotlight always rendered, Knowledge Panel
+        //     toggle while the panel is closed) sit in the column's right ~100px.
+        //     NOTE: these are positioned relative to the *chat column*, which ends
+        //     at chatRight — using totalWidth here made the Shrink button
+        //     unclickable whenever the knowledge panel was open.
+        if x >= (chatRight - 100.0) {
             return nil
         }
+
+        // 4b. Model Selector button: starts at the column's left edge (or right
+        //     after the Open-Sidebar button when the sidebar is collapsed).
+        let modelLeft: CGFloat = isSidebarOpen ? sidebarWidth : 122.0
+        let modelRight = min(modelLeft + 210.0, chatRight - 100.0)
+        if x >= modelLeft && x <= modelRight {
+            return nil // Click Model Selector!
+        }
+
+        // 4c. Empty title bar in the Chat View: drag window!
+        return self
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -128,6 +127,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         let userContent = WKUserContentController()
         userContent.add(self, name: "setModalOpen")
         userContent.add(self, name: "setSidebarOpen")
+        userContent.add(self, name: "setWikiPanelOpen")
         userContent.add(self, name: "shrinkToSpotlight")
         config.userContentController = userContent
 
@@ -158,11 +158,13 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
     func updateWindowMinSize(isSidebarOpen: Bool) {
         guard let win = window else { return }
         // When sidebar is closed, user can shrink the window down to chat-only width (~450px)
-        let minWidth: CGFloat = isSidebarOpen ? 700.0 : 450.0
+        // Wiki panel (440px) adds to the minimum so sidebars keep constant width
+        let wikiWidth: CGFloat = (dragView?.isWikiPanelOpen == true) ? 440.0 : 0.0
+        let minWidth: CGFloat = (isSidebarOpen ? 700.0 : 450.0) + wikiWidth
         let minHeight: CGFloat = 400.0
         win.minSize = NSSize(width: minWidth, height: minHeight)
 
-        if isSidebarOpen && win.frame.width < minWidth {
+        if win.frame.width < minWidth {
             var newFrame = win.frame
             newFrame.size.width = minWidth
             win.setFrame(newFrame, display: true, animate: true)
@@ -213,6 +215,9 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         } else if message.name == "setSidebarOpen", let isOpen = message.body as? Bool {
             dragView?.isSidebarOpen = isOpen
             updateWindowMinSize(isSidebarOpen: isOpen)
+        } else if message.name == "setWikiPanelOpen", let isOpen = message.body as? Bool {
+            dragView?.isWikiPanelOpen = isOpen
+            updateWindowMinSize(isSidebarOpen: dragView?.isSidebarOpen ?? true)
         } else if message.name == "shrinkToSpotlight" {
             let dict = message.body as? [String: Any]
             let sessionId = dict?["sessionId"] as? String
@@ -225,6 +230,23 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         sender.orderOut(nil)
         return false
+    }
+
+    // MARK: - WKUIDelegate (External Links)
+    // WKWebView silently ignores `target="_blank"` navigations unless this delegate
+    // method is implemented — that is why the wiki panel's "open original article"
+    // button did nothing. Route such links to the macOS default browser.
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        if let url = navigationAction.request.url, let scheme = url.scheme?.lowercased(),
+           scheme == "http" || scheme == "https" {
+            NSWorkspace.shared.open(url)
+        }
+        return nil
     }
 
     // MARK: - WKUIDelegate (File Upload Panel)
