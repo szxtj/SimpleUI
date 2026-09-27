@@ -200,7 +200,7 @@ export const App: React.FC = () => {
           }
         } else if (data.type === 'STREAM_CHUNK') {
           if (data.source !== 'MAIN') {
-            const { sessionId, messageId, reasoningContent, content, isThinking, thinkingDuration } = data;
+            const { sessionId, messageId, reasoningContent, content, isThinking, thinkingDuration, stage, pending, citations } = data;
             setGeneratingSessionIds((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
             setSessions((prev) => {
               const sessionIdx = prev.findIndex((s) => s.id === sessionId);
@@ -217,6 +217,12 @@ export const App: React.FC = () => {
                           content,
                           isThinking,
                           thinkingDuration,
+                          // 浮窗的阶段机同步：rag/prefill 转换与 pending 清理由广播驱动，
+                          // 主窗口据此显示同一套阶段指示器与"停止"按钮
+                          ...(stage !== undefined ? { stage } : {}),
+                          ...(pending !== undefined ? { pending } : {}),
+                          // 引用胶囊随载荷同步（浮窗 RAG 完成即已知）
+                          ...(citations !== undefined ? { citations } : {}),
                         }
                       : m
                   );
@@ -259,6 +265,8 @@ export const App: React.FC = () => {
                         isThinking: false,
                         thinkingDuration,
                         metrics,
+                        // 生成结束：prefill 指示器必须撤下（兜底）
+                        pending: false,
                       }
                     : m
                 );

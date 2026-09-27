@@ -76,7 +76,17 @@ class TitleBarDragView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        // Drag window cleanly without double-click zooming to fullscreen
+        // 双击顶部栏 → 在「非全屏的最大尺寸」与原尺寸之间切换（macOS 应用常见行为）。
+        // performZoom(_:):zoom 态填充可视工作区但**不进入** macOS 全屏；再次双击恢复原尺寸。
+        if event.clickCount >= 2 {
+            window?.performZoom(nil)
+            return
+        }
+        // 缩放态（双击最大化后）拖拽：先恢复原尺寸再拖——与原生 macOS 应用一致
+        // （performDrag 只移动窗口，不会自动解除 zoom 态）。
+        if let win = window, win.isZoomed {
+            win.performZoom(nil)
+        }
         window?.performDrag(with: event)
     }
 

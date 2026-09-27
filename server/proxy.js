@@ -28,6 +28,9 @@ const MIME_TYPES = {
 };
 
 function proxyRequest(req, res, targetUrl) {
+  // 推理请求的转发时刻：SSE 首块（携带 id）可能到 prefill 结束才出现，
+  // 归属兜底需要知道"我们刚刚发出过推理请求"（见 ttf_log.js prefillStatus）
+  if (req.url.includes('/v1/chat/completions')) noteChatForward();
   const urlObj = new URL(targetUrl);
   const options = {
     hostname: urlObj.hostname,
@@ -50,6 +53,21 @@ function proxyRequest(req, res, targetUrl) {
   const transport = urlObj.protocol === 'https:' ? https : http;
   const proxyReq = transport.request(options, (proxyRes) => {
     upstreamRes = proxyRes;
+    // 记录本代理转发的推理请求 id（SSE 首块的 id 字段）——供 /api/ttf/prefill 做归属判定：
+    // TTF 日志是全局的，其他客户端的任务不能显示在本 APP 的阶段指示器里
+    const respCt = String(proxyRes.headers['content-type'] || '');
+    if (respCt.includes('text/event-stream')) {
+      proxyRes.once('data', (chunk) => {
+        try {
+          const line = String(chunk).split('\n').find((l) => l.startsWith('data:'));
+          if (!line) return;
+          const j = JSON.parse(line.slice(5).trim());
+          if (j && typeof j.id === 'string') noteForwardedRequest(j.id);
+        } catch {
+          // 非 JSON 行忽略
+        }
+      });
+    }
     // Add CORS headers for good measure
     res.writeHead(proxyRes.statusCode, {
       ...proxyRes.headers,
@@ -122,7 +140,7 @@ function serveStatic(req, res) {
 }
 
 import { wikiService, KIWIX_PORT } from './wiki_service.js';
-import { ttfLogService } from './ttf_log.js';
+import { ttfLogService, noteForwardedRequest, noteChatForward } from './ttf_log.js';
 
 const server = http.createServer((req, res) => {
   // Handle CORS preflight

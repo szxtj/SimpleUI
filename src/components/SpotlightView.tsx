@@ -484,6 +484,35 @@ export const SpotlightView: React.FC = () => {
       activeSessionIdRef.current = currentSessionId;
     }
 
+    // 向主窗口广播回合阶段（stage='rag' → 'prefill'）：主窗口据此把发送按钮切成"停止"、
+    // 并在其镜像的回合上显示同一套阶段指示器（否则浮窗生成期间主窗口毫无感知）。
+    // ⚠️ 必须在 currentSessionId 确定之后广播——早于它会把旧/空会话 ID 发给主窗口，
+    // 污染其 generatingSessionIds 并触发错误的会话重载（实测导致主窗口视图错乱）。
+    // ⚠️ citations 由参数传入：foundCitations 在 RAG 块之后才声明（let），
+    //    此处直接引用会触发 TDZ（实测压缩后报「Cannot access '$' before initialization」，
+    //    广播抛异常 → executeSend 同步段中断 → 整轮静默死亡：无阶段显示 + 假停止按钮）。
+    const broadcastStage = (stage: 'rag' | 'prefill', pending: boolean, citations?: WikiCitation[]) => {
+      syncChannel?.postMessage({
+        type: 'STREAM_CHUNK',
+        sessionId: currentSessionId,
+        messageId: asstMessageId,
+        reasoningContent: '',
+        content: '',
+        isThinking: false,
+        thinkingDuration: 0,
+        stage,
+        pending,
+        ...(citations && citations.length > 0 ? { citations } : {}),
+        source: 'SPOTLIGHT',
+      });
+    };
+    try {
+      broadcastStage('rag', true);
+    } catch (e) {
+      // 广播失败不中止本轮：主窗口的阶段同步会缺席，但生成流程继续
+      console.error('[Spotlight] stage broadcast failed:', e);
+    }
+
     const title = (historyMessages[0]?.content || userMessage.content).slice(0, 24) || t('quickChat');
     try {
       const allSessions = loadSessions();
@@ -553,9 +582,18 @@ export const SpotlightView: React.FC = () => {
     }
 
     // RAG 解析完成 → 进入 prefill 阶段（与主窗口同一阶段机）
+    // 引用胶囊此刻已知，一并挂上（与主窗口一致，避免"胶囊延迟到生成结束才出现"）
+    broadcastStage('prefill', true, foundCitations);
     setMessages((prev) =>
       prev.map((m) =>
-        m.id === asstMessageId ? { ...m, stage: 'prefill', prefillStartedAt: Date.now() } : m
+        m.id === asstMessageId
+          ? {
+              ...m,
+              stage: 'prefill',
+              prefillStartedAt: Date.now(),
+              citations: foundCitations.length > 0 ? foundCitations : undefined,
+            }
+          : m
       )
     );
 
@@ -578,7 +616,11 @@ export const SpotlightView: React.FC = () => {
         const all = loadSessions();
         const idx = all.findIndex((s) => s.id === currentId);
         if (idx >= 0) {
+          // 保留既有的 pending/stage/prefillStartedAt：重建对象若丢弃这些字段，
+          // 主窗口镜像的回合会丢失阶段指示器（同步经 notifySessionUpdate → 主窗口重载）
+          const prevAsst = all[idx].messages.find((m) => m.id === asstMessageId);
           const asstMsg: ChatMessage = {
+            ...(prevAsst ?? {}),
             id: asstMessageId,
             role: 'assistant',
             content: accumulatedContent,
@@ -644,6 +686,8 @@ export const SpotlightView: React.FC = () => {
                     reasoningContent: accumulatedThought,
                     isThinking: true,
                     thinkingDuration: finalThinkingDuration,
+                    // 首个 token 已到：prefill 指示器必须撤下（兜底，防 onFirstToken 竞态遗漏）
+                    pending: false,
                   }
                 : m
             )
@@ -657,6 +701,10 @@ export const SpotlightView: React.FC = () => {
             content: accumulatedContent,
             isThinking: true,
             thinkingDuration: finalThinkingDuration,
+            // pending:false 随载荷同步：主窗口镜像的 prefill 指示器同步撤下
+            pending: false,
+            // 引用胶囊随载荷同步：主窗口镜像与磁盘存档不至于丢失引用
+            citations: foundCitations.length > 0 ? foundCitations : undefined,
             source: 'SPOTLIGHT',
           });
         },
@@ -672,6 +720,8 @@ export const SpotlightView: React.FC = () => {
                     content: accumulatedContent,
                     isThinking: false,
                     thinkingDuration: finalThinkingDuration,
+                    // 兜底：内容流式开始 = prefill 必然已结束
+                    pending: false,
                   }
                 : m
             )
@@ -685,6 +735,8 @@ export const SpotlightView: React.FC = () => {
             content: accumulatedContent,
             isThinking: false,
             thinkingDuration: finalThinkingDuration,
+            pending: false,
+            citations: foundCitations.length > 0 ? foundCitations : undefined,
             source: 'SPOTLIGHT',
           });
         },
@@ -1285,7 +1337,9 @@ export const SpotlightView: React.FC = () => {
                 {/* Action Toolbar under message: Action buttons (Copy, Retry, Delete) - NO TEXT + Metrics
                     条件不用 content：思考/prefill 阶段中断时 content 为空，但回合已结束，
                     操作按钮与指标同样应该显示。生成中（isGenerating）则不显示。 */}
-                {!isGenerating && !msg.isThinking && !msg.pending && (
+                {/* 页脚按消息判断（与主窗口一致）：生成中历史回合的页脚不受影响，
+                    仅当前回合在 prefill/思考期隐藏；修复"生成中所有页脚消失" */}
+                {!msg.isThinking && !msg.pending && (
                   <div className="mt-2 flex items-center gap-3 select-none">
                     <div className="flex items-center gap-0.5 text-zinc-500 dark:text-zinc-400">
                       {/* 复制 */}

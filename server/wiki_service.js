@@ -885,8 +885,9 @@ export const MAIN_PLANNER_SYSTEM = `[任务] 从用户的提问中，提取需�
 [输出] 只输出一个 JSON 对象：{"target_articles": ["条目名"]}，不要输出任何其他文字。
 [规则]
 1. 默认只给 1 个条目。只有当提问确实同时涉及两个彼此独立、且都必须分别查证的实体时，才给 2 个。严禁为了凑数而推测提问中并未出现的实体。
-2. 条目名必须是百科中真实存在的规范名称：人物用全名，机构/作品/事件用通行名，存在歧义时加限定词。
-3. 不要保留疑问词、代词或解释性文字。`;
+2. 条目名必须是中文百科中真实存在的规范名称：人物用最通行的中文全名译名，外国人名的名与姓之间用间隔号「·」（如「艾伦·图灵」），不要用连字符、空格或外文原名；机构/作品/事件用通行名，存在歧义时加限定词。
+3. 不要保留疑问词、代词或解释性文字。
+4. 问「X 是谁 / X 是什么」时，只输出 X 本身对应的那一个条目；不要输出与 X 相关的其他事物（纪念物、地名、奖项、列表类条目等）。`;
 
 export const MAIN_PLANNER_USER = (query) => `[示例]
 问：特斯拉现在的CEO是谁？
@@ -895,6 +896,8 @@ export const MAIN_PLANNER_USER = (query) => `[示例]
 答：{"target_articles": ["596工程"]}
 问：哥德巴赫猜想是谁提出的？主要是讲的什么内容？
 答：{"target_articles": ["哥德巴赫猜想"]}
+问：哥白尼是谁？
+答：{"target_articles": ["尼古拉·哥白尼"]}
 
 问：${query}
 答：`;
@@ -1592,6 +1595,28 @@ class WikiService {
    */
   async getFullArticleText(title) {
     if (!title || !this.isOnline) return null;
+    // 引用标题是「简体 + 空格」的**显示形式**（toSimplifiedChinese(canonicalTitle)），
+    // 而 ZIM 的存储路径常是「繁体 + 下划线」形式——按显示标题直查会 404
+    // （实测：拉格朗日定理 (群论) → 404，拉格朗日定理_(群論) → 200）。
+    // 逐个尝试字形/分隔变体，修复「引用点开无匹配维基页面」。
+    const candidates = [title];
+    const push = (t) => {
+      if (t && !candidates.includes(t)) candidates.push(t);
+    };
+    // 字形变体用 getAllVariants 的完整矩阵（t/tw/twp/hk）：单一 t 目标会产出
+    // 异体字（实测「群论」→「羣論」），而 ZIM 存储的是标准「群論」✗
+    for (const v of getAllVariants(title)) push(v);
+    // 路径分隔变体：ZIM 存储路径的空格常写作下划线（拉格朗日定理_(群論)）
+    for (const t of [...candidates]) push(t.replace(/ /g, '_'));
+    for (const t of candidates) {
+      const full = await this._getFullArticleTextOnce(t);
+      if (full) return full;
+    }
+    return null;
+  }
+
+  async _getFullArticleTextOnce(title) {
+    if (!title || !this.isOnline) return null;
     const content = this.contentId || 'wikipedia_zh_all_maxi';
     const articleUrl = `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(title)}`;
     try {
@@ -1715,7 +1740,19 @@ class WikiService {
     if (variants.length === 0) return { articles: [], trace: 'no-variant' };
 
     // ---- ① / ② 精确命中 ----
-    const exactCands = await this._resolveCandidates(await this._probeExact(variants), variants);
+    let exactCands = await this._resolveCandidates(await this._probeExact(variants), variants);
+    // 规划名与 ZIM 规范标题不一致的兜底：外国人名「名·姓」的**姓段**常单独成条目或重定向
+    // （实测：规划输出「约瑟夫·路易·拉格朗日」在 ZIM 探针 404，而「拉格朗日」302 →「约瑟夫·拉格朗日」）。
+    // 在进入包含/全文兜底之前先试姓段，避免精确命中被低相关的全文结果顶掉。
+    if (exactCands.length === 0 && keyword.includes('·')) {
+      const surname = keyword.split('·').pop().trim();
+      if (surname && surname !== keyword) {
+        exactCands = await this._resolveCandidates(
+          await this._probeExact(getAllVariants(surname)),
+          variants
+        );
+      }
+    }
     for (const cand of exactCands) {
       throwIfAborted(signal);
       const page = await this._getPage(cand.title);
@@ -1796,6 +1833,8 @@ class WikiService {
     const normalizedQuery = toSimplifiedChinese(trimmed);
 
     // 1. 实体规划（主力模型；不做任何小模型回退——规划失败时直接用归一后的原始提问检索）
+    //    提示词要求人物用间隔号全名译名、问「X是谁」只输出 X 本身的条目
+    //    （实测「拉格朗日是谁?」稳定输出「约瑟夫·路易·拉格朗日」，不再幻觉连字符音译或相关条目）。
     const plan = await planQuery(normalizedQuery, signal);
     const plannerName = plan?.planner || 'raw-fallback';
     const targetArticles =
