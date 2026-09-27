@@ -164,7 +164,11 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, o
               {/* Next to action buttons: Gray Prefill & tok/s Metrics */}
               {message.metrics && (
                 <span className="text-xs font-mono text-zinc-500 dark:text-zinc-400">
-                  Prefill {message.metrics.ttftMs}ms · {message.metrics.tokensPerSecond} tok/s
+                  {`Prefill ${(message.metrics.ttftMs / 1000).toFixed(1)}s${
+                    message.metrics.promptTokens > 0
+                      ? ` (${(message.metrics.promptTokens / (message.metrics.ttftMs / 1000)).toFixed(1)} tok/s)`
+                      : ''
+                  } · Decode ${message.metrics.tokensPerSecond} tok/s`}
                 </span>
               )}
             </div>

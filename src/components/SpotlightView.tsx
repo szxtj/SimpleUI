@@ -1277,7 +1277,11 @@ export const SpotlightView: React.FC = () => {
                     {/* Gray Prefill & tok/s metrics */}
                     {msg.metrics && (
                       <span className="text-xs font-mono text-zinc-500 dark:text-zinc-400">
-                        Prefill {msg.metrics.ttftMs}ms · {msg.metrics.tokensPerSecond} tok/s
+                        {`Prefill ${(msg.metrics.ttftMs / 1000).toFixed(1)}s${
+                          msg.metrics.promptTokens > 0
+                            ? ` (${(msg.metrics.promptTokens / (msg.metrics.ttftMs / 1000)).toFixed(1)} tok/s)`
+                            : ''
+                        } · Decode ${msg.metrics.tokensPerSecond} tok/s`}
                       </span>
                     )}
                   </div>
