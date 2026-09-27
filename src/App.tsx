@@ -9,7 +9,6 @@ import {
   ServerHealthInfo,
   TurnMetrics,
   WikiStatusInfo,
-  WikiCitation,
 } from './types/chat';
 import {
   loadSessions,
@@ -19,14 +18,21 @@ import {
   loadSettings,
   saveSettings,
   createNewSession,
+  notifySessionUpdate,
   syncChannel,
 } from './services/storage';
 import { TurboFieldfareAPI, WikiAPI } from './services/api';
+import {
+  buildPromptWithWiki,
+  buildTurnMessages,
+  buildWireMessages,
+  buildSessionSettings,
+} from './services/chatTurn';
 import { SpotlightView } from './components/SpotlightView';
 import { WikiSidebar } from './components/WikiSidebar';
 import { I18nProvider, resolveLanguage } from './i18n';
 import { useTheme } from './hooks/useTheme';
-import { estimateHistoryTokens } from './utils/token';
+import { estimateHistoryTokens, applyTokenCalibration } from './utils/token';
 
 export const App: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings>(loadSettings());
@@ -407,7 +413,8 @@ export const App: React.FC = () => {
   // Persistent conversation history baseline tokens (excluding temporary RAG prompts & reasoning tokens)
   const persistentHistoryTokens = useMemo(() => {
     if (!messages || messages.length === 0) return 0;
-    return estimateHistoryTokens(messages, settings.systemPrompt);
+    // 展示层施加校准系数（系数由上一轮真实 usage.prompt_tokens 反推）
+    return applyTokenCalibration(estimateHistoryTokens(messages, settings.systemPrompt));
   }, [messages, settings.systemPrompt]);
 
   const currentLiveTokens = currentSessionId ? liveStreamingTokens[currentSessionId] : undefined;
@@ -488,35 +495,19 @@ export const App: React.FC = () => {
     abortControllersRef.current.set(targetSessionId, abortController);
     setGeneratingSessionIds((prev) => (prev.includes(targetSessionId) ? prev : [...prev, targetSessionId]));
 
-    // Optional Offline Wiki RAG Retrieval (session-level toggle, defaults to false)
-    let promptToSend = textToSend;
-    let foundCitations: WikiCitation[] = [];
-    let contextOverflow = false;
+    // 会话级开关（默认关闭）
     const sessionEnableWiki = targetSession.enableWikiSearch ?? false;
     const sessionEnableThinking = targetSession.enableThinking ?? false;
 
-    if (wikiStatus.enabled && sessionEnableWiki && wikiStatus.connected && textToSend) {
-      try {
-        // 上下文装载预算：按剩余可用上下文估算（中文字符≈1 token），
-        // 由后端按检索优先级整篇取舍，绝不从中间截断。
-        const usableTokens = Math.max(2000, settings.maxContext - settings.maxTokens);
-        const budgetChars = Math.max(4000, Math.floor(usableTokens * 1.5));
-        const rag = await WikiAPI.getRagContext(textToSend, budgetChars);
-        if (rag.contextOverflow) {
-          // 上下文已满，一篇原文都装不下：不注入也不生成，提示用户新开对话
-          contextOverflow = true;
-        } else if (rag.needsWiki && rag.citations && rag.citations.length > 0) {
-          foundCitations = rag.citations;
-          const isEn = activeLang === 'en';
-          const groundingGuidelines = isEn
-            ? `[Encyclopedia Context]\nBelow are one or more encyclopedia articles (Infobox, lead section and relevant body sections) retrieved from an offline knowledge base for the user's question.\n\n${rag.promptContext}\n\n[How to answer]\n1. [Relevance filtering]: The context may contain material that is not related to the question (e.g. infobox fields, section headings, list entries). Locate the parts that actually answer the question and ignore the rest.\n2. [Fact grounding]: Treat the facts, dates, people and numbers found there as your factual anchor. Combine them with your own knowledge when they are partial.\n3. [Reproduce when asked]: If the user asks you to enumerate or list something (e.g. all works, all awards), reproduce the corresponding list from the context faithfully — do not shorten or omit items.\n4. [Cite]: Mention which encyclopedia article(s) you used.\n\n[User Question]\n${textToSend}`
-            : `[百科原文参考]\n以下是从离线知识库中检索到的与用户问题相关的百科条目内容（含基本档案、引言与相关小节）。\n\n${rag.promptContext}\n\n[回答指引]\n1. 【自行筛选】：上述原文中可能包含与问题无关的内容（例如档案中用不到的属性、其他小节、列表中的无关条目）。请自行定位其中真正与问题相关的部分，忽略其余。\n2. 【事实锚定】：将其中出现的事实、时间、人物与数据作为真实性基石；若信息不完整，可结合你自身的知识补充展开。\n3. 【按需照抄】：若用户要求列举类内容（例如"列出所有作品/所有奖项"），请忠实照抄原文中的对应列表，不要擅自删减或概括。\n4. 【注明出处】：回答中请说明引用了哪篇百科条目。\n\n[用户问题]\n${textToSend}`;
-          promptToSend = groundingGuidelines;
-        }
-      } catch (err) {
-        console.warn('Knowledge Base retrieval error:', err);
-      }
-    }
+    // 离线维基 RAG：检索 + Grounding Prompt 包装。
+    // 与 Spotlight 浮窗共用 services/chatTurn 的同一实现（提示词逐字一致），且不再有上下文预算。
+    const { promptToSend, citations: foundCitations } = await buildPromptWithWiki({
+      textToSend,
+      lang: activeLang,
+      wikiMasterEnabled: wikiStatus.enabled,
+      sessionEnableWiki,
+      wikiConnected: wikiStatus.connected,
+    });
 
     if (abortController.signal.aborted) {
       abortControllersRef.current.delete(targetSessionId);
@@ -524,24 +515,17 @@ export const App: React.FC = () => {
       return;
     }
 
-    const userMessage: ChatMessage = {
-      id: 'msg-user-' + Date.now(),
-      role: 'user',
-      content: textToSend,
-      images: currentImages.length > 0 ? currentImages : undefined,
-      timestamp: Date.now(),
-    };
-
-    const assistantMsgId = 'msg-asst-' + (Date.now() + 1);
+    const { userMessage, assistantMessage: baseAssistantMessage } = buildTurnMessages({
+      historyMessages,
+      textToSend,
+      images: currentImages,
+      enableThinking: sessionEnableThinking,
+    });
     const assistantMessage: ChatMessage = {
-      id: assistantMsgId,
-      role: 'assistant',
-      content: '',
-      reasoningContent: '',
-      isThinking: sessionEnableThinking,
-      timestamp: Date.now(),
+      ...baseAssistantMessage,
       citations: foundCitations.length > 0 ? foundCitations : undefined,
     };
+    const assistantMsgId = assistantMessage.id;
 
     // Update session title on first message
     const isFirstUserMessage = historyMessages.length === 0;
@@ -571,35 +555,6 @@ export const App: React.FC = () => {
     let thinkingDuration = 0;
     const thinkingStartTime = performance.now();
 
-    // 上下文已满：知识库原文一篇都装不下。不调用模型，直接提示用户新开对话。
-    if (contextOverflow) {
-      const hint =
-        activeLang === 'en'
-          ? '⚠️ The context window is full, so the knowledge base article could not be loaded. Please start a new conversation and try again.'
-          : '⚠️ 当前对话的上下文窗口已满，知识库原文无法装载。请新建一个对话后再试。';
-      setSessions((prev) =>
-        prev.map((s) => {
-          if (s.id !== targetSessionId) return s;
-          return {
-            ...s,
-            messages: s.messages.map((m) => {
-              if (m.id !== assistantMsgId) return m;
-              return { ...m, content: hint, isThinking: false };
-            }),
-          };
-        })
-      );
-      abortControllersRef.current.delete(targetSessionId);
-      setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetSessionId));
-      activeStreamsRef.current.delete(targetSessionId);
-      setLiveStreamingTokens((prev) => {
-        const next = { ...prev };
-        delete next[targetSessionId];
-        return next;
-      });
-      return;
-    }
-
     activeStreamsRef.current.set(targetSessionId, {
       messageId: assistantMsgId,
       reasoningContent: '',
@@ -608,20 +563,16 @@ export const App: React.FC = () => {
       thinkingDuration: 0,
     });
 
-    const sessionSettings = {
-      ...settings,
-      enableThinking: sessionEnableThinking,
-      enableWikiSearch: sessionEnableWiki,
-    };
+    const sessionSettings = buildSessionSettings(settings, sessionEnableThinking, sessionEnableWiki);
+    const wireMessages = buildWireMessages(historyMessages, userMessage, promptToSend);
 
-    const promptTokensEstimate = estimateHistoryTokens(
-      [...historyMessages, { ...userMessage, content: promptToSend }],
-      settings.systemPrompt
+    const promptTokensEstimate = applyTokenCalibration(
+      estimateHistoryTokens(wireMessages, settings.systemPrompt)
     );
     setLiveStreamingTokens((prev) => ({ ...prev, [targetSessionId]: promptTokensEstimate }));
 
     await TurboFieldfareAPI.streamChat(
-      [...historyMessages, { ...userMessage, content: promptToSend }],
+      wireMessages,
       sessionSettings,
       {
         onTokenProgress: (liveTokens) => {
@@ -1007,6 +958,8 @@ export const App: React.FC = () => {
             setSessions((prev) =>
               prev.map((s) => (s.id === currentSessionId ? { ...s, enableThinking: val, updatedAt: Date.now() } : s))
             );
+            // 立即广播，保证 Spotlight 浮窗同步到同一会话的同名开关
+            notifySessionUpdate(currentSessionId, 'MAIN');
           }}
           modelId={settings.modelId}
           availableModels={availableModels}
@@ -1025,6 +978,8 @@ export const App: React.FC = () => {
             setSessions((prev) =>
               prev.map((s) => (s.id === currentSessionId ? { ...s, enableWikiSearch: val, updatedAt: Date.now() } : s))
             );
+            // 立即广播，保证 Spotlight 浮窗同步到同一会话的同名开关
+            notifySessionUpdate(currentSessionId, 'MAIN');
           }}
           wikiConnected={wikiStatus.connected}
           wikiEnabled={wikiStatus.enabled}

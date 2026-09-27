@@ -35,7 +35,7 @@ Compared to heavyweight solutions like Open WebUI, SimpleUI eliminates all unnec
 
 The two core technical highlights:
 
-1. **End-to-end Offline Wiki RAG Pipeline**: Zero-truncation, **generation-free retrieval** (raw article text injected directly, no small-model fact rewriting), with a single model handling all semantic decisions — running entirely on Apple Silicon, no cloud calls.
+1. **End-to-end Offline Wiki RAG Pipeline**: Zero-truncation, **direct raw-text injection** (article names planned by the primary model; injected body text is never rewritten by any model), with a single model handling all semantic decisions — running entirely on Apple Silicon, no cloud calls.
 2. **Two-Phase Dynamic Context Tracking**: Precisely distinguishes peak context usage during generation from clean persistent baseline after completion, reflected in real time on screen.
 
 ---
@@ -80,14 +80,16 @@ The Main Window and Spotlight floating panel sync bi-directionally in real time 
 | `STREAM_ABORT` | User stops generation | sessionId |
 | `SESSIONS_CHANGED` | Sessions added/renamed/deleted | - |
 | `SETTINGS_CHANGED` | Settings updated | New config |
+| `STREAM_QUERY` | Spotlight opens/focuses; main window replays the in-flight stream | Replayed chunks |
+| `LOAD_SESSION_IN_SPOTLIGHT` | Main window "shrink to panel" | sessionId |
 
 ---
 
 ## Offline Wiki RAG Pipeline
 
-SimpleUI builds an **end-to-end, zero-truncation, generation-free** offline local knowledge retrieval-augmented generation system, running entirely on Apple Silicon — no cloud dependencies.
+SimpleUI builds an **end-to-end, zero-truncation, direct raw-text injection** offline local knowledge retrieval-augmented generation system, running entirely on Apple Silicon — no cloud dependencies.
 
-Core idea: **no model in the retrieval chain ever "generates" a search key or "rewrites" article text**. Article names are not invented by a model (the raw query is searched directly), and what gets injected is not a model-written summary (the normalized raw article text is injected directly) — no rewriting, no fabrication.
+Core idea: **injected body text is never rewritten by any model**. Article names are planned from the query by the primary model (1~2 canonical names; on planning failure the normalized raw query is searched directly). What gets injected is not a model-written summary but the fetched, normalized raw text — no rewriting, no fabrication.
 
 ### Complete Pipeline
 
@@ -97,19 +99,18 @@ flowchart TD
     NORM --> PLAN["Primary-model entity planning\nExtract 1~2 canonical article names\n(system role · no thinking · temperature 0)\nOn failure: search the normalized raw query directly"]
 
     PLAN --> VARIANTS["OpenCC Variant Matrix Expansion\nSimplified → Standard Traditional / TW / TW-phrases / HK\n(getAllVariants)"]
-    VARIANTS --> SEARCH["Kiwix two-track parallel search (all variants)\n① Exact Probe HEAD /content (200/302)\n② Title Suggest /suggest (count=30)"]
-    SEARCH --> FILTER["Title filtering + deep redirect deduplication\nKeep only article pages that exactly match or contain a keyword\nNamespace pages (Category/Portal/Template…) always dropped"]
-    FILTER --> SELECT["Per-keyword article selection (deterministic, no model)\nExact match → take exactly one\nNo exact match → containment matches, up to two by title length ascending\n(cross-keyword dedup · strictly serial)"]
-    SELECT --> DOM["Kiwix HTTP Full HTML Fetch\nparseWikipediaDOM:\n  - Paired deep removal of navboxes/banners/references\n  - Infobox extracted as a whole via tag pairing (no length cap)\n  - Full lead + body paragraphs + lists(·) + tables(|)"]
+    VARIANTS --> RECALL["Multi-channel recall (parallel · each candidate carries source + reliability)\nA Exact probe HEAD 200/302\nB Title suggest /suggest count=30\nC Disambiguation page sense list\nD Full-text search (only when A/B/C yield nothing)"]
+    RECALL --> FILTER["Namespace-prefix filtering (data table)\nCategory/Portal/Template/Module… always dropped\nThen deduplicate by canonical path (aliases collapse to one)"]
+    FILTER --> SELECT["Per-keyword resolution (strictly serial)\n① Exact hit, not a disambiguation page → take 1\n② Exact hit is a disambiguation page → primary model picks a sense, take 1\n③ None matched → containment hits, top ≤2 by generic relevance\n④ No A/B/C candidate → full-text search, top ≤2 by relevance"]
+    SELECT --> DOM["Kiwix HTTP Full HTML Fetch\nparseWikipediaDOM (DOM tree parsing):\n  - Structural pruning of navboxes/banners/references\n  - Infobox read row-by-row (no th-before-td requirement)\n  - Full lead + paragraphs + lists(·) + tables(|) + definition lists"]
     DOM --> NORM2["Second global normalization: toSimplifiedChinese\n(Infobox keys/values, lead, section titles, paragraphs)"]
     NORM2 --> BRANCH{"Cleaned text length > 3500 chars?"}
     BRANCH -->|"≤ 3500"| PANO["Panoramic mode\nInfobox + full lead + all sections"]
     BRANCH -->|"> 3500"| ROUTE["Primary-model section router\nSelect 1~2 most relevant sections + 1~3 infobox keys\n(full lead always kept, nothing truncated)"]
     PANO --> CTX["Normalized raw context\n(no rewriting · no summarizing · no mechanical truncation)"]
     ROUTE --> CTX
-    CTX --> BUDGET["Load within remaining-context budget\nOver-budget articles dropped whole\nIf none fit → prompt user to start a new conversation"]
-    BUDGET --> INJECT["Inject Grounding Prompt\n【Title】 + raw text (Infobox/lead/lists/tables)\n+ citation chips (title only, click to view original)"]
-    BUDGET -->|"0 citations"| SILENT["Silent fallback\nnothing injected"]
+    CTX --> INJECT["Inject Grounding Prompt\n【Title】 + raw text (Infobox/lead/lists/tables)\n+ citation chips (title only, click to view original)"]
+    CTX -->|"0 citations"| SILENT["Silent fallback\nnothing injected"]
 
     INJECT --> LLM["Primary LLM generates the final answer\nLocates relevant info itself; lists may be reproduced verbatim"]
     SILENT --> LLM
@@ -138,54 +139,82 @@ Applied to the user query, Infobox keys/values, section titles, and body paragra
 
 `getAllVariants(term)` expands each planned entity into all script variants:
 
-| Variant | Example ("鼠标" / mouse) | Example ("周杰伦" / Jay Chou) |
-| :--- | :--- | :--- |
-| Mainland Simplified (original) | 鼠标 | 周杰伦 |
-| Standard Traditional `cn→t` | 鼠標 | 周杰倫 |
-| Taiwan Traditional `cn→tw` | 滑鼠標 | 周杰倫 |
-| Taiwan Traditional + phrases `cn→twp` | 滑鼠 | 周杰倫 |
-| Hong Kong Traditional `cn→hk` | 滑鼠 | 周杰倫 |
+| Conversion branch | Example ("鼠标" / mouse) | Example ("激光" / laser) | Example ("周杰伦" / Jay Chou) |
+| :--- | :--- | :--- | :--- |
+| Mainland Simplified (original) | 鼠标 | 激光 | 周杰伦 |
+| Standard Traditional `cn→t` | 鼠標 | 激光 | 周杰倫 |
+| Taiwan Traditional `cn→tw` | 鼠標 | 激光 | 周杰倫 |
+| Taiwan Traditional + phrases `cn→twp` | 滑鼠 | 雷射 | 周杰倫 |
+| Hong Kong Traditional `cn→hk` | 鼠標 | 激光 | 周杰倫 |
 
-**All variants** enter a deduplicated Set for subsequent retrieval (the old version only used the first 2~4, causing missed hits), ensuring hits regardless of which script form the ZIM index uses.
+**All variants** (including the original term and its normalized form) enter a deduplicated `Set` for subsequent retrieval (the old version only used the first 2~4, causing missed hits), ensuring hits regardless of which script form the ZIM index uses.
 
-#### Step 3: Kiwix Title Search + Filtering + Deep Redirect Deduplication
+> Note the `Set` deduplicates: for most terms `cn→t` / `cn→tw` / `cn→hk` produce the same glyphs (e.g. all three yield "鼠標" for 鼠标),
+> so a single keyword usually yields only **2~3 distinct variants** (measured: `鼠标 → [鼠标, 鼠標, 滑鼠]`, `激光 → [激光, 雷射]`).
+> The table lists the conversion branches for reference; not every term produces 5 distinct variants.
 
-Only the **title track** is used (no full-text search):
+#### Step 3: Multi-Channel Recall + Namespace Filtering + Normalization
 
-| Track | Endpoint | Purpose |
-| :--- | :--- | :--- |
-| **Exact Probe** | `HEAD /content/{id}/{variant}` | Detects exact article existence or 302 redirects (kept on hit) |
-| **Title Suggest** | `/suggest?content=...&term=...&count=30` | Title index, covers exact and extended titles |
+**Multi-channel recall** (executed in parallel; every candidate carries a source tag and a reliability):
+
+| Channel | Endpoint | Purpose | Reliability |
+| :--- | :--- | :--- | :--- |
+| **A Exact probe** | `HEAD /content/{id}/{variant}` | The keyword *is* the article title (200 exists / 301-302 follows the redirect) | High |
+| **B Title suggest** | `/suggest?...&count=30` | Titles that **contain** the keyword | Medium |
+| **C Sense catalogue** | The link list of a disambiguation page | Polysemy; also covers candidates whose title lacks the keyword | High |
+| **D Full-text search** | `/search?pattern=...` | Articles whose *body* mentions the keyword (aliases, non-standalone topics) | Low |
+
+> Channel D is enabled **only when A/B/C yield no usable candidate**, so noise does not become the norm.
 
 Then three convergence steps:
-1. **Title filtering**: keep only article pages whose title **exactly equals** or **fully contains** a keyword variant; `Category:`, `Portal:`, `Template:` and other namespace pages are always dropped
+1. **Namespace filtering**: `Category:`, `Portal:`, `Template:`, `Module:`, `Draft:` and other namespace pages are always dropped (the prefix table is **data**, covering both Chinese and English — not a regex)
 2. **Deep redirects**: each candidate gets a `HEAD` (`redirect:manual`) to resolve Kiwix's canonical path — preventing multiple aliases of the same article (e.g. 「康托」→「格奥尔格·康托尔」) from being counted as separate articles
-3. **Deduplicate by canonical path**, keeping at most 6
+3. **Relevance pre-sort + cap**: candidates are ranked by generic relevance and **only the top 12 are resolved** (no per-candidate HEAD fan-out), then deduplicated by canonical path
 
-#### Step 4: Per-Keyword Article Selection (Deterministic Rule, No Model)
+#### Step 4: Per-Keyword Resolution (Independent per Keyword, Serial)
 
-Each keyword independently selects articles, with a fully deterministic rule:
+Each keyword is resolved **independently**, in this fixed priority:
 
-| Situation | Behavior |
-| :--- | :--- |
-| An "exact match" article exists | **Take exactly one** (try in order, take the first whose body is successfully fetched) |
-| No exact match | Containment matches sorted by **title length ascending** (fewest extra characters first), **up to two** |
-| Not even a containment match | This keyword contributes nothing; other keywords are unaffected |
+| Priority | Condition | Behavior |
+| :--- | :--- | :--- |
+| ① | Exact hit and **not** a disambiguation page | Take that **1** article; keyword done |
+| ② | Exact hit **is** a disambiguation page | The **primary model** reads the sense list and picks one; **a pick counts as an exact hit** → take that 1 article; keyword done |
+| ③ | Model answers "none matched" | Fall back to titles **containing** the keyword, top **≤2** by generic relevance |
+| ④ | No usable A/B/C candidate | Only then enable **full-text search**, top **≤2** by generic relevance |
 
-- Deduplication already happened during search (by canonical path); only cross-keyword deduplication happens here
-- Exact match = exact-probe hit, or a title identical to a keyword variant
-- Two keywords → at most two articles; all processed strictly serially (the primary model does not support concurrency)
+- **Disambiguation detection** works in three tiers by reliability: ① the page's **own categories** (MediaWiki `wgCategories` metadata) hitting a disambiguation category → treated as a disambiguation page; ② category metadata present but no hit → treated as a normal article, no guessing; ③ only when the metadata is absent does it degrade to structural markers (`#disambigbox`, or `disambig` / `mw-disambig` classes on **non-`<a>` elements** — `<a class="mw-disambig">` merely *links to* a disambiguation page) and structural traits (no Infobox + no `<h2>` + very little prose + many link list items). Measured: the category rule gives 0 false positives across 35 normal articles and 100% recall on real disambiguation pages
+- **Sense selection is fully delegated to the primary model** (the prompt requires "the name must match the candidate list verbatim; output `null` if none is relevant") — the old hardcoded entity-type scoring has been deleted
+- **Generic relevance** (pure arithmetic, zero word lists): `coverage (longest matching variant ÷ title length) + prefix-match bonus + channel-reliability bonus − over-long-title penalty`
+- The two keywords are independent and yield at most 2 articles each; all processed **strictly serially** (the primary model does not support concurrency)
 
 #### Step 5: Full HTML Fetch & DOM Parsing
 
-`parseWikipediaDOM(html)` pipeline:
+`parseWikipediaDOM(html)` builds a **DOM tree** (via `node-html-parser`) and extracts by **node type** — it no longer "coaxes" HTML with regexes:
 
-1. **Tail cutoff**: Truncates from "Notes"/"References"/"External Links"/"See also"/"Further reading" sections onward (handles both h2 and h3 headings)
-2. **Paired deep removal** (`removeElementsByClass`): navboxes, sidebars, maintenance banners (ambox), reference wrappers — multi-layer nested structures must be removed by matching `<tag>`/`</tag>` pairs; non-greedy regex stops at the first closing tag and leaks inner `<li>`/`<td>` into the body text
-3. **Invisible content removal**: MediaWiki sort keys (`sortkey`, e.g. `7008299792458000000♠`), `display:none` elements, `[citation needed]`-style markers — browsers never render these, but plain-text extraction picks them up
-4. **Infobox extracted as a whole via tag pairing**: Infoboxes commonly nest sub-tables; likewise matched by `<table>`/`</table>` pairs, all `<th>/<td>` rows collected with **no length cap**
-5. **Structure split**: First `<h2>` boundary separates the full Lead (section0) from sections
-6. **In-order content block extraction**: `<p>` paragraphs, `<ul>/<ol>` lists (converted to "· item" lines), `<table>` tables (converted to "| cell | cell |" pipe tables) — original order preserved, **no length filtering**
+1. **Structural pruning**: whole subtrees are removed by tag (`script` / `style` / `link` …), by MediaWiki standard classes (`navbox` / `ambox` / `reflist` / `mw-editsection` / `sortkey` / `magnify` / `mw-hidden-catlinks` …) and by **inline `display:none`** (`figure` / `thumb` / `gallery` are *not* dropped — they carry captions, see item 5). The inline-style rule matters: MathML accessibility copies of formulas and hidden categories live there. **Formulas themselves are kept verbatim**: in an offline wiki a formula exists only as "image + LaTeX source" (`img.alt` / `math.alttext` / `<annotation>` are the same text; `img.title` is empty), so its LaTeX is injected (`\pi`, `{1 \over 2}R`, `f:[0,1]\rightarrow \mathbb {C}` — directly readable by an LLM), with only MathJax's `\displaystyle` / `\textstyle` style commands removed and **the braces kept** (dropping the braces too turns `{1 \over 2}R` into the ambiguous `1 \over 2R`)
+2. **Tail cutoff**: at the first "boilerplate" section heading (Notes / References / External links / See also…, a multilingual data table) everything onward is dropped
+3. **Infobox extracted as a whole**: iterates `<tr>`, **does not require** `<th>` before `<td>`, and handles nested sub-tables; multiple values in a row are joined with `|`, and value-only continuation rows attach to the most recent key
+4. **Structure split**: every `<h2>` in document order starts a new section; `<h3>` / `<h4>` content belongs to its enclosing section
+5. **In-order content block extraction**: `<p>` paragraphs, `<ul>/<ol>` lists (`·` lines), `<table>` tables (`| cell | cell |` pipe tables), `<dl>` definition lists (`key: value`), `<blockquote>` / `<pre>` quotes. **No length filtering**. Two extra fidelity rules: ① **superscripts / subscripts** are marked with `^` / `_` so exponents and indices survive (otherwise `3.00×10⁸` flattens to `3.00×108`, which reads like one hundred and eight, and `H₂O` to `H2O`); ② the extraction embeds **structured markers** (next section) so the panel can render rich text.
+
+#### Step 5.1: Structured markers and panel rendering
+
+The side panel must be *readable*, while what reaches the model must stay **plain text** — one extraction feeds both, split by markers:
+
+| Marker | Payload | Injection side | Panel side |
+| :--- | :--- | :--- | :--- |
+| `tex` | LaTeX | the LaTeX itself (unchanged) | **KaTeX formula** (inline, including inside table cells) |
+| `tbl` | JSON (header row count + cells, with `colspan`/`rowspan`) | pipe-table text (unchanged) | a **real `<table>`**: `<th>` header, merged cells, horizontal scroll |
+| `img` | src + caption | `[图略] caption` | the **real image + caption** (src resolved same-origin) |
+| `sh` | level + title | empty string (the old code also omitted subheading text) | a **subheading** (h3/h4, previously lost entirely) |
+
+Design notes:
+
+- Markers are wrapped in **Unicode private-use characters** (U+E000 start / U+E001 end), which never occur in wiki text, so they cannot collide with the content.
+- **Nested escaping**: an inner marker's terminator is escaped to U+E002 before being embedded in an outer payload, and restored on parse. Without this, "a formula inside a table cell" or "a formula inside a subheading" (e.g. 《圆周率》's "计算 π 的意义") truncates the outer marker.
+- **Zero change on the injection side**: markers are resolved *before* the character count, so the 3500-char branch, the pipe-table format, the `[图略]` wording and the omitted subheading text stay **byte-identical to before** (guarded by a baseline regression).
+- Disambiguation sense descriptions are also resolved first, so markers never leak into the prompt.
+- Formulas render with `katex` (already a dependency, styles imported globally); macros KaTeX does not support fall back to showing the LaTeX instead of an error.
 
 > **Zero-truncation principle**: Content is never character-truncated. Cleaning only targets "elements browsers don't render" and "non-article pages"; article text is always kept.
 
@@ -197,6 +226,8 @@ All Infobox keys, values, section titles, lead paragraphs, and body paragraphs a
 
 - **Standard articles (≤ 3500 chars, ~75%)**: `panoramic` mode — full Infobox + full lead + all sections
 - **Extra-long articles (> 3500 chars)**: `routed` mode — the **primary model** selects 1~2 most relevant sections and 1~3 infobox keys from the heading outline; the **complete paragraphs** of those sections are included in full, and the **full lead is always kept** — nothing truncated
+- **Fallbacks**: if the model selects no section → the first 2 sections; if it selects no key → the first 8 infobox keys
+- **Threshold scope**: the 3500-char count is over the normalized "lead + all sections" text, **excluding the Infobox**
 
 #### Step 8: Direct Raw-Text Injection (No MRC)
 
@@ -205,11 +236,13 @@ The earlier architecture had a "Machine Reading Comprehension" step here: a smal
 Now the normalized raw text produced by `assembleArticleContext` is **injected directly** into the primary model, which locates the relevant information itself and combines it with its own knowledge:
 - No rewriting means no fabrication
 - Enumeration questions ("list all works") can reproduce the original lists verbatim
-- Clicking a citation chip shows this plain text above the original wiki page in the drawer — **verifiable**
+- Clicking a citation chip shows this exact injected plain text **above the full article text** in the knowledge panel — **verifiable** (the panel renders the extracted text natively; the original wiki page is reachable via the panel's "Open in browser" button)
 
-#### Step 9: Context-Budget Loading
+#### On Context Capacity (the former "context-budget loading" has been removed)
 
-The frontend estimates available tokens as `maxContext - maxTokens` (Chinese ≈ 1 token/char, ×1.5 to chars) and passes `budgetChars` to the backend. Articles are loaded in retrieval-priority order; **over-budget articles are dropped whole, never truncated mid-text**. This is an adaptive resource constraint — the larger the configured context, the larger the budget and the less often it triggers. If not even one article fits (conversation grown too long), the backend returns a `contextOverflow` signal and the frontend prompts the user to start a new conversation.
+An earlier version guarded injection with a "context budget": the frontend estimated `budgetChars` as `maxContext - maxTokens` and passed it to the backend, which dropped whole articles over budget and returned `contextOverflow` when none fit. In practice that budget was derived purely from settings and **never looked at how much the conversation had already consumed**, so it was a constant that effectively never triggered — a false safeguard.
+
+It has now been **removed end-to-end** (both `budgetChars` / `usableTokens` and `contextOverflow` are gone). Whatever is retrieved is injected in full, with no truncation or selection step before injection; size your context window accordingly.
 
 #### Injection Prompt
 
@@ -222,12 +255,14 @@ body sections) retrieved from an offline knowledge base for the user's question.
 <raw text>
 
 [How to answer]
-1. [Relevance filtering]: Locate the parts of the context that actually answer
-   the question and ignore the rest.
+1. [Relevance filtering]: The context may contain material that is not related to
+   the question (e.g. infobox fields, section headings, list entries). Locate the
+   parts that actually answer the question and ignore the rest.
 2. [Fact grounding]: Treat the facts, dates, people and numbers found there as
-   your factual anchor. Combine them with your own knowledge when partial.
-3. [Reproduce when asked]: If the user asks you to enumerate or list something,
-   reproduce the corresponding list from the context faithfully.
+   your factual anchor. Combine them with your own knowledge when they are partial.
+3. [Reproduce when asked]: If the user asks you to enumerate or list something
+   (e.g. all works, all awards), reproduce the corresponding list from the context
+   faithfully — do not shorten or omit items.
 4. [Cite]: Mention which encyclopedia article(s) you used.
 
 [User Question]
@@ -236,15 +271,29 @@ body sections) retrieved from an offline knowledge base for the user's question.
 
 The Grounding Prompt is an ephemeral wrapper, **never written to persistent conversation history**.
 
+> Note: this Grounding Prompt is provided by a single shared module, `src/services/chatTurn.ts` — the **main window and the Spotlight panel use the same implementation, verbatim**. Retrieval gating, wire-message construction and session-scoped parameter assembly (thinking / knowledge-base toggles) are all consolidated there, so neither window keeps its own copy.
+
 ### Core Design Principles
 
-1. **Generation-free retrieval**: Neither search keys nor injected content is model-generated — the raw query is searched directly and raw text is injected directly. No rewriting means no fabrication.
-2. **Zero-truncation**: Article text is passed intact; the only trade-off is "load a whole article or drop it whole" (context budget), never mid-text truncation.
+1. **No-rewrite injection**: Injected content comes entirely from the fetched, normalized raw text and is never summarized or rewritten by a model; article names are planned by the primary model (no full-text search; the raw query is the fallback), replacing the old small-model MRC step. No rewriting means no fabrication.
+2. **Zero-truncation**: Article text is passed intact — no character truncation, and no "drop it whole" budget trade-off either: whatever is retrieved is injected in full.
 3. **Zero-contamination**: The Grounding Prompt is ephemeral — never written to persistent conversation history.
-4. **Zero mechanical rules**: No keyword regex stripping, no hardcoded greeting bypass, no regex-based fact-relevance filtering; all Chinese script conversion is delegated to OpenCC.
+4. **Zero mechanical rules**: No keyword regex stripping, no hardcoded greeting bypass, no regex-based fact-relevance filtering; Chinese script conversion is delegated to OpenCC and disambiguation sense selection is delegated to the primary model — the old hardcoded entity-type scoring has been deleted.
 5. **Abstention first**: Any step that yields nothing silently exits; the primary LLM falls back to general knowledge without noise injection. A missed citation costs far less than a wrong one.
-6. **Paired scanning**: All structural HTML removal (navboxes, Infobox, references) uses matched-tag depth scanning — non-greedy regex is never used on nested structures.
-7. **Single model, strictly serial**: Only the primary model makes semantic decisions (planning/routing/generation), and it is called strictly serially — it does not support concurrent requests; there is no in-memory result cache.
+6. **DOM tree parsing**: HTML is always parsed into a tree and extracted/pruned by **node type**, never coaxed with regexes; structural decisions rely on HTML tags and MediaWiki standard class names, which are language-independent.
+7. **Single model, strictly serial**: Only the primary model makes semantic decisions (planning / sense selection / section routing / generation), and it is called strictly serially — it does not support concurrent requests; there is no in-memory result cache.
+
+### Knowledge Base Service Switch
+
+The "Enable knowledge base service" option in Settings is a **service-level master switch** (persisted in `wiki_config.json`):
+
+| Master switch | ZIM ready | Chat 📚 button | Sidebar service row |
+| :--- | :--- | :--- | :--- |
+| Off | any | not rendered | row disappears (service process killed) |
+| On | yes | shown · clickable | ready (with article count) |
+| On | no | shown · disabled | offline |
+
+The session-level 📚 toggle defaults to OFF (knowledge-base retrieval is still early-stage experimentation) and must be enabled manually. Both the session-level 🧠 thinking toggle and the 📚 knowledge-base toggle are saved per session and synced bidirectionally in real time between the main window and the Spotlight panel via `BroadcastChannel` — the two windows always share the same Q&A parameters.
 
 ---
 
@@ -265,21 +314,45 @@ After generation (Phase 2 — Recede):
 
 **Why two phases are necessary:**
 
-During generation, context includes: persistent history + RAG Grounding Prompt (~1,500 tokens) + reasoning model `reasoningContent` (up to ~3,000 tokens). After generation, the next turn's `wireMessages` only sends `msg.content` — no `reasoningContent`, no RAG prompt. The actual token count drops significantly.
+During generation, context includes: persistent history + RAG Grounding Prompt (size depends on the retrieved articles; there is no budget cap any more) + reasoning model `reasoningContent`. After generation, the next turn's `wireMessages` only sends `msg.content` — no `reasoningContent`, no RAG prompt. The actual token count drops significantly.
+
+**During generation, the number is a real measurement wherever possible (TTF-only enhancement):**
+
+| Source | Provides | Available |
+| :--- | :--- | :--- |
+| Server log `prepared prompt=N` | the **real prompt token count** | **before generation starts** (measured: ~180 ms after the request is sent) |
+| SSE event count | the in-flight increment | per token (measured on TTF: events ÷ tokens = 1.00 / 0.99) |
+| `usage` (final chunk) | prompt / completion / `cached_tokens` / `reasoning_tokens` | at completion |
+
+Mechanism: the Node proxy exposes a read-only endpoint `GET /api/ttf/request?id=<chatcmpl-…>` that parses the TTF log by request id (default `~/Library/Logs/turbo-fieldfare.log`, overridable via `TTF_LOG_FILE`). The frontend queries it as soon as the first SSE chunk reveals the id, and **replaces the ring's estimated baseline with the real value**.
+
+> Fallback: when the log is unavailable (non-TTF engines such as Ollama / vLLM / llama.cpp, or a cleared log) it silently reverts to the estimator — it never errors.
 
 The old approach stored `metrics.totalTokens` (~5,000) into `session.contextUsed`, leaving the ring stuck at peak even when the next turn would only use ~300 tokens. The fix: `onDone` calls `estimateHistoryTokens` to compute clean persistent history tokens and stores that as `contextUsed`. The ring naturally recedes after each generation.
 
 ### Token Estimator (`src/utils/token.ts`)
 
-```typescript
-// CJK characters: ~0.75 tokens/char (tuned for Qwen/Gemma tokenizers)
-// Non-CJK characters: ~1 token / 3.8 chars
-// Per-message chat template overhead: +4 tokens
-// Image (vision): +576 tokens/image (standard vision budget)
-// System prompt included in baseline
+The estimator is a **heuristic**; benchmarked against the real tokenizer, its error varies widely with content type:
 
+| Content | real ÷ estimate |
+| :--- | :--- |
+| Pure Chinese | 1.27 (under-estimates 27%) |
+| Traditional Chinese | 1.35 (under-estimates 35%) |
+| Digit-heavy | 2.65 (under-estimates 165%) |
+| Pure English | 0.76 (over-estimates 32%) |
+| Long English words | 0.39 (over-estimates 156%) |
+
+It therefore now serves **only as the fallback when no real value is available** (non-TTF engines, or the log is not yet readable).
+
+**Session-level calibration**: after every turn, the ratio of the *real* `usage.prompt_tokens` to the *raw* estimate for the very same messages is stored and applied **at the display layer only** (`applyTokenCalibration`), so it adapts automatically to any tokenizer or model. Measured across the four toggle combinations (thinking × knowledge base), the post-generation display error versus the next turn's real prompt improves from the raw −17% ~ −25% to **within ±15%**.
+
+```typescript
+// CJK characters: ~0.75 tokens/char; non-CJK: ~1 token / 3.8 chars
+// Per-message chat template overhead: +4 tokens; image: +576 tokens/image
 estimateTextTokens(text: string): number
 estimateHistoryTokens(messages: Array<Partial<ChatMessage>>, systemPrompt?: string): number
+setTokenCalibration(realTokens, rawEstimatedTokens): void  // called per turn from api.ts
+applyTokenCalibration(tokens: number): number              // used by the display layer
 ```
 
 `estimateHistoryTokens` **only counts**: user `content`, assistant `content` (final answer), image attachments.  
@@ -346,10 +419,13 @@ SimpleUI/
 ├── server/
 │   ├── proxy.js              # Node.js proxy server (port 31235)
 │   │                         #   SSE passthrough, static hosting, dynamic port routing
+│   ├── ttf_log.js            # Read-only TTF log probe (real prompt tokens before generation)
 │   ├── wiki_service.js       # Offline RAG pipeline core
-│   │                         #   Primary-model planning & section routing, Kiwix title search
-│   │                         #   with redirect deduplication, parseWikipediaDOM (paired
-│   │                         #   deep cleaning / lists / tables), assembleArticleContext
+│   │                         #   Primary-model planning / sense selection / section routing
+│   │                         #   Multi-channel recall (exact probe · suggest · senses · full-text)
+│   │                         #   + namespace filtering + redirect deduplication
+│   │                         #   parseWikipediaDOM (DOM tree: structural pruning + paragraphs/
+│   │                         #   lists/tables/definition lists), assembleArticleContext
 │   │                         #   toSimplifiedChinese, getAllVariants (OpenCC)
 │   └── laya_mlx_server.py    # LAYA System 1 service (removed from the pipeline, file kept for reference)
 │
@@ -361,6 +437,7 @@ SimpleUI/
     ├── App.tsx               # Top-level state machine, session management, liveStreamingTokens
     ├── services/
     │   ├── api.ts            # Inference engine communication, SSE parsing, onTokenProgress
+    │   ├── chatTurn.ts       # Single implementation of one chat turn (grounding prompt / gating / messages)
     │   └── storage.ts        # localStorage persistence, BroadcastChannel
     ├── utils/
     │   └── token.ts          # Offline token estimator (CJK + non-CJK + images)
@@ -370,6 +447,10 @@ SimpleUI/
         ├── SpotlightView.tsx # Spotlight panel complete state machine
         ├── ChatView.tsx      # Main conversation view
         ├── MessageItem.tsx   # Single message (thinking accordion, Markdown, KaTeX)
+        ├── WikiPanel.tsx     # The single knowledge-panel implementation: injected text + rich full
+        │                     #   article (formulas/tables/images/subheadings) + search.
+        │                     #   WikiSidebar (main window, docked) and WikiDrawer (Spotlight, overlay)
+        │                     #   are thin shells over it, so both windows render byte-identically
         └── SettingsModal.tsx # Parameter config, inference port, language settings
 ```
 

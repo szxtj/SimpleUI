@@ -7,7 +7,8 @@ export interface TurnMetrics {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
-  cachedTokens?: number;
+  cachedTokens?: number;       // KV 前缀复用的 token 数（TTF: usage.prompt_tokens_details.cached_tokens）
+  reasoningTokens?: number;    // 思考通道消耗的 token 数（TTF 精确值）
   contextUsed: number;         // Cumulative tokens used in session
   maxContext: number;          // Max context (e.g. 16384 or 32768)
   contextRemaining: number;    // Remaining tokens

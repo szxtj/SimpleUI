@@ -19,6 +19,18 @@ export function buildWikiExternalUrl(title?: string | null): string {
   return `${WIKI_BASE_URL}${encodeURIComponent(title)}`;
 }
 
+/**
+ * 把条目内的相对资源路径（如 `./_assets_/<hash>/x.png`）解析为同源可访问 URL。
+ * 走 Node 代理的 `/content/` 转发（与页面同源，避免额外的 CORS/端口问题）。
+ */
+export function resolveWikiAsset(src?: string | null): string {
+  const raw = (src || '').trim();
+  if (!raw) return '';
+  if (/^(?:https?:)?\/\//i.test(raw) || raw.startsWith('data:')) return raw;
+  const rel = raw.replace(/^\.\//, '').replace(/^\/+/, '');
+  return `/content/${WIKI_CONTENT_ID}/${rel}`;
+}
+
 /** 跟随主题的 isDark（system 模式下监听系统切换，避免 matchMedia 取值滞留） */
 export function useResolvedIsDark(theme?: 'light' | 'dark' | 'system'): boolean {
   const [systemDark, setSystemDark] = useState(

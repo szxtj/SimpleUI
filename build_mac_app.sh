@@ -53,10 +53,42 @@ fi
 cp -R dist "$RESOURCES_DIR/dist"
 cp -R server "$RESOURCES_DIR/server"
 cp package.json "$RESOURCES_DIR/package.json"
-if [ -d "node_modules/opencc-js" ]; then
-    mkdir -p "$RESOURCES_DIR/node_modules"
-    cp -R "node_modules/opencc-js" "$RESOURCES_DIR/node_modules/"
-fi
+# 服务端运行时依赖：从 server/*.js 的 import 自动推导（连同传递依赖），
+# 不再硬编码包名——否则一旦给服务端加依赖就会漏打，APP 启动即崩、界面全白。
+SERVER_DEPS=$(node -e '
+const fs=require("fs"), path=require("path");
+const specs=new Set();
+for (const f of fs.readdirSync("server").filter(f=>f.endsWith(".js"))) {
+  const src=fs.readFileSync(path.join("server",f),"utf8");
+  for (const m of src.matchAll(/(?:^|\n)\s*import\s+[^;\n]*?from\s*["\x27]([^"\x27]+)["\x27]/g)) {
+    const s=m[1];
+    if (s.startsWith(".")||s.startsWith("/")||s.startsWith("node:")) continue;
+    specs.add(s.startsWith("@") ? s.split("/").slice(0,2).join("/") : s.split("/")[0]);
+  }
+}
+const closure=new Set();
+const walk=(name)=>{
+  if (closure.has(name)) return;
+  const p=path.join("node_modules",name,"package.json");
+  if (!fs.existsSync(p)) return; // Node 内置模块在这里自然被排除
+  closure.add(name);
+  let meta={}; try{ meta=JSON.parse(fs.readFileSync(p,"utf8")); }catch(e){ return; }
+  for (const d of Object.keys(meta.dependencies||{})) walk(d);
+};
+for (const s of specs) walk(s);
+console.log([...closure].join(" "));
+')
+mkdir -p "$RESOURCES_DIR/node_modules"
+for dep in $SERVER_DEPS; do
+    if [ -d "node_modules/$dep" ]; then
+        mkdir -p "$(dirname "$RESOURCES_DIR/node_modules/$dep")"
+        cp -R "node_modules/$dep" "$RESOURCES_DIR/node_modules/$dep"
+    else
+        echo "  ⚠ 服务端依赖 $dep 未安装，请先执行 npm install" >&2
+        exit 1
+    fi
+done
+echo "  -> 服务端运行时依赖: $SERVER_DEPS"
 
 # 4. 代码签名 (优先使用本地免费个人开发证书，若无则使用纯本地无签名 Ad-hoc)
 # 策略说明：

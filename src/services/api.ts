@@ -1,12 +1,20 @@
 import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo } from '../types/chat';
-import { estimateHistoryTokens } from '../utils/token';
+import { estimateHistoryTokens, setTokenCalibration } from '../utils/token';
+
+/** 服务端 usage 的实际形状（TTF 会给出 cached / reasoning 明细） */
+interface UsagePayload {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  cached_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+  completion_tokens_details?: { reasoning_tokens?: number };
+}
 
 export interface RagContextResponse {
   needsWiki: boolean;
   citations: WikiCitation[];
   promptContext: string;
-  /** 上下文已满，知识库原文一篇都装不下——前端应提示用户新开对话 */
-  contextOverflow?: boolean;
   metadata?: {
     fromCache?: boolean;
     planner?: string;
@@ -194,7 +202,38 @@ export class TurboFieldfareAPI {
     const startTime = performance.now();
     let firstTokenTime: number | null = null;
     let generatedTokensCount = 0;
-    let finalUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; cached_tokens?: number } | null = null;
+    let finalUsage: UsagePayload | null = null;
+
+    // TTF 专属增强：从服务端日志取**真实** prompt token 数。
+    // 日志里的 `prepared prompt=N` 在生成开始前就已写好（实测发出后约 180ms 可读），
+    // 所以圆环不必从估算值起步。非 TTF 引擎（Ollama / vLLM / llama.cpp）查不到记录 → 静默回退估算值。
+    let realPromptTokens: number | null = null;
+    let probeStarted = false;
+    let streamClosed = false;
+    const probeRealPromptTokens = (id: string) => {
+      if (!id) return;
+      let tries = 0;
+      const tick = async () => {
+        if (streamClosed || realPromptTokens !== null) return;
+        tries++;
+        try {
+          const r = await fetch(`/api/ttf/request?id=${encodeURIComponent(id)}`);
+          if (r.ok) {
+            const j = (await r.json()) as { found?: boolean; promptTokens?: number };
+            if (j && j.found && typeof j.promptTokens === 'number') {
+              realPromptTokens = j.promptTokens;
+              // 立刻用真实值刷新一次，不必等下一个 20-token 里程碑
+              callbacks.onTokenProgress?.(realPromptTokens + generatedTokensCount);
+              return;
+            }
+          }
+        } catch {
+          // 代理不可达 / 非 TTF：静默回退
+        }
+        if (tries < 15) setTimeout(tick, 200);
+      };
+      setTimeout(tick, 120);
+    };
 
     let response: Response;
     try {
@@ -279,7 +318,13 @@ export class TurboFieldfareAPI {
 
               // Capture usage chunk if present
               if (parsed.usage) {
-                finalUsage = parsed.usage;
+                finalUsage = parsed.usage as UsagePayload;
+              }
+
+              // 首个 chunk 携带 chatcmpl id：用它去服务端日志取真实 prompt token 数
+              if (parsed.id && !probeStarted) {
+                probeStarted = true;
+                probeRealPromptTokens(String(parsed.id));
               }
 
               const choice = parsed.choices?.[0];
@@ -292,7 +337,8 @@ export class TurboFieldfareAPI {
               if (!firstTokenTime && (delta.content || delta.reasoning_content)) {
                 firstTokenTime = performance.now();
                 callbacks.onFirstToken?.();
-                callbacks.onTokenProgress?.(initialPromptTokens);
+                // 若已从服务端日志拿到真实 prompt，用真实值；否则才回退估算值
+                callbacks.onTokenProgress?.(realPromptTokens ?? initialPromptTokens);
               }
 
               if (delta.reasoning_content) {
@@ -300,7 +346,7 @@ export class TurboFieldfareAPI {
                 callbacks.onThought?.(delta.reasoning_content);
                 if (generatedTokensCount - lastReportedMilestone >= 20) {
                   lastReportedMilestone = generatedTokensCount;
-                  const livePrompt = finalUsage?.prompt_tokens ?? initialPromptTokens;
+                  const livePrompt = finalUsage?.prompt_tokens ?? realPromptTokens ?? initialPromptTokens;
                   callbacks.onTokenProgress?.(livePrompt + generatedTokensCount);
                 }
               }
@@ -310,7 +356,7 @@ export class TurboFieldfareAPI {
                 callbacks.onContent?.(delta.content);
                 if (generatedTokensCount - lastReportedMilestone >= 20) {
                   lastReportedMilestone = generatedTokensCount;
-                  const livePrompt = finalUsage?.prompt_tokens ?? initialPromptTokens;
+                  const livePrompt = finalUsage?.prompt_tokens ?? realPromptTokens ?? initialPromptTokens;
                   callbacks.onTokenProgress?.(livePrompt + generatedTokensCount);
                 }
               }
@@ -331,12 +377,18 @@ export class TurboFieldfareAPI {
       if (signal) {
         signal.removeEventListener('abort', abortHandler);
       }
+      streamClosed = true; // 停止 TTF 日志轮询
       try {
         await reader.cancel();
       } catch {
         // ignore if already closed or aborted
       }
       reader.releaseLock();
+    }
+
+    // 用「真实 prompt_tokens ÷ 同一批消息的原始估算」校准展示层估算（见 utils/token.ts）
+    if (finalUsage?.prompt_tokens) {
+      setTokenCalibration(finalUsage.prompt_tokens, initialPromptTokens);
     }
 
     const endTime = performance.now();
@@ -357,7 +409,8 @@ export class TurboFieldfareAPI {
       promptTokens,
       completionTokens,
       totalTokens,
-      cachedTokens: finalUsage?.cached_tokens,
+      cachedTokens: finalUsage?.prompt_tokens_details?.cached_tokens ?? finalUsage?.cached_tokens,
+      reasoningTokens: finalUsage?.completion_tokens_details?.reasoning_tokens,
       contextUsed: totalTokens,
       maxContext,
       contextRemaining,
@@ -480,12 +533,12 @@ export class WikiAPI {
     return await this.getStatus();
   }
 
-  static async getRagContext(query: string, budgetChars?: number): Promise<RagContextResponse> {
+  static async getRagContext(query: string): Promise<RagContextResponse> {
     try {
       const res = await fetch('/api/wiki/rag-context', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, budgetChars }),
+        body: JSON.stringify({ query }),
       });
       if (res.ok) {
         return await res.json();

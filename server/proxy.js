@@ -122,6 +122,7 @@ function serveStatic(req, res) {
 }
 
 import { wikiService, KIWIX_PORT } from './wiki_service.js';
+import { ttfLogService } from './ttf_log.js';
 
 const server = http.createServer((req, res) => {
   // Handle CORS preflight
@@ -139,6 +140,12 @@ const server = http.createServer((req, res) => {
   // Handle Wiki Knowledge Base APIs
   if (req.url.startsWith('/api/wiki/')) {
     wikiService.handleApi(req, res);
+    return;
+  }
+
+  // TTF 日志只读探针：供前端在生成过程中取真实的 prompt token 数
+  if (req.url.startsWith('/api/ttf/')) {
+    ttfLogService.handleApi(req, res);
     return;
   }
 

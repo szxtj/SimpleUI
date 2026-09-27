@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import http from 'http';
 import { fileURLToPath } from 'url';
+import { parse as parseHtml } from 'node-html-parser';
 import * as OpenCC from 'opencc-js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -88,10 +89,7 @@ export function getAllVariants(text) {
 
 // End of OpenCC variants helper
 
-// 维基命名空间前缀：分类/模板/帮助/文件/门户等"非文章页"。
-// 这些页面会命中关键字但不是条目，检索时一律丢弃，只保留文章页。
-const NON_ARTICLE_NAMESPACE_RE =
-  /^(?:Special|特殊|Talk|討論|讨论|User|用戶|用户|Wikipedia|維基百科|维基百科|Project|File|Image|檔案|文件|档案|MediaWiki|Template|模板|Help|幫助|帮助|Category|分類|分类|Portal|主題|主题|Draft|草稿|Module|模組|模块|Book|Course|Thread|Summary|Page|Index|Topic|TimedText|朗讀|朗读)\s*[:：]/i;
+// 说明：命名空间前缀过滤已改为「数据表 + 前缀比对」（见下方 NON_ARTICLE_NAMESPACE_PREFIXES）。
 
 function loadStoredZimPath() {
   try {
@@ -176,245 +174,450 @@ function safeParseJson(text) {
 }
 
 // ==========================================
-// Phase 1: Structured Wikipedia DOM Decomposition
+// Phase 1: Structured Wikipedia DOM Decomposition（DOM 解析版）
 // ==========================================
+//
+// 设计：不再用正则去"伺候"HTML，而是解析成 DOM 树后按**节点类型**抽取。这样天然解决
+// 旧正则版的三个固有缺陷：
+//   1) 内容类型覆盖：<p>/<ul>/<ol>/<table>/<dl>/<blockquote>/<pre> 都能抽到，不再漏掉
+//      定义列表与公式（旧版只抽 p/ul/ol/table，会出现「…可以陈述为：」之后公式丢失的断句）；
+//   2) Infobox 行：按 <tr> 遍历，**不要求** <th> 在 <td> 之前，也不怕嵌套子表格；
+//   3) 章节层级：按文档顺序遇到 <h2> 切段，<h3>/<h4> 的内容归属其所在小节。
+//
+// 剪枝只依据 HTML 标签本身与 MediaWiki 的 class 名（结构性、跨语言），不依赖任何
+// 具体语言词表或某个站点的排版细节。
 
-function stripHtmlAndUnescape(html) {
-  if (!html) return '';
-  return html
-    .replace(/<[^>]+>/g, ' ')
+// 注：figure 不在此列——它的 <figcaption> 是正文内容（图注），需要保留
+const DROP_TAGS = new Set(['script', 'style', 'link', 'meta', 'noscript', 'iframe']);
+
+// 结构性「非正文」class 标记（MediaWiki 标准命名，跨语言通用）
+const NON_CONTENT_CLASS_TOKENS = new Set([
+  'navbox', 'vertical-navbox', 'sidebar', 'ambox', 'metadata', 'mbox-small',
+  'hatnote', 'mw-indicator', 'reflist', 'references', 'mw-references-wrap',
+  'thumb', 'mw-editsection', 'sortkey', 'noprint', 'stub', 'catlinks',
+  'printfooter', 'toc', 'mw-jump-link', 'mw-hidden-catlinks', 'navbox-styles',
+  'mw-empty-elt', 'magnify', 'mw-cite-backlink', 'mw-file-description',
+  'navigation-not-searchable', 'shortdescription', 'mw-hidden-catlinks',
+  // 注：thumb / gallery 不在此列——它们承载图注与图集文字，需保留
+]);
+
+// 结构性「非正文」id（同上，属结构标记）
+const NON_CONTENT_IDS = new Set(['toc', 'catlinks', 'printfooter', 'mw-navigation', 'mw-panel']);
+
+// 章节级「样板」标题：数据化清单（不是正则），中英双语，便于继续扩充
+const BOILERPLATE_SECTIONS = [
+  '注释', '註釋', '脚注', '腳註', '参考资料', '參考資料', '参考文献', '參考文獻',
+  '出处', '出處', '文献', '文獻', '外部链接', '外部連結', '外部鏈接',
+  '参见', '參見', '相关条目', '相關條目', '另见', '另見', '延伸阅读', '延伸閱讀',
+  'notes', 'references', 'external links', 'see also', 'further reading',
+  'footnotes', 'sources', 'bibliography',
+];
+
+// 块级正文标签；figure / .thumb / .gallerybox 是"带图注的图片容器"，产出图片标记
+const BLOCK_SELECTOR =
+  'p, ul, ol, table, dl, blockquote, pre, h2, h3, h4, h5, h6, figure, .thumb, .gallerybox';
+
+// 图片标记：[[图|图片src|图注]]。注入上下文时转成 `[图略] 图注`；
+// APP 内的条目页面则据此渲染真图片（src 为相对路径，前端按文章 URL 解析）。
+/** 带图注的图片容器 → 图片标记（无图注的装饰图不产出） */
+function imageMarker(el) {
+  const tag = tagNameOf(el);
+  const cls = classTokens(el);
+  let captionEl = null;
+  if (tag === 'figure') captionEl = el.querySelector('figcaption');
+  else if (cls.has('thumb')) captionEl = el.querySelector('.thumbcaption');
+  else if (cls.has('gallerybox')) captionEl = el.querySelector('.gallerytext');
+  else return null;
+
+  const img = el.querySelector('img');
+  const src = img ? (img.getAttribute('src') || '').trim() : '';
+  const caption = captionEl ? escapeForNesting(textOf(captionEl)) : '';
+  if (!src && !caption) return null;
+  return mark('img', src + '|' + caption);
+}
+
+function emptyDom() {
+  return { infobox: [], section0: [], sections: [] };
+}
+
+function tagNameOf(el) {
+  return String((el && el.tagName) || '').toLowerCase();
+}
+
+function classTokens(el) {
+  const raw = (el && el.getAttribute && el.getAttribute('class')) || '';
+  const set = new Set();
+  for (const t of raw.split(/\s+/)) if (t) set.add(t);
+  return set;
+}
+
+function decodeEntities(s) {
+  return String(s)
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n\s*\n+/g, '\n\n')
-    .trim();
+    .replace(/&#0*39;/g, "'")
+    .replace(/&#(\d+);/g, (_, d) => {
+      const n = Number(d);
+      return Number.isFinite(n) && n > 0 ? String.fromCodePoint(n) : '';
+    });
 }
 
-// 按 class 配对删除整个元素块（处理嵌套）。
-// 维基的导航框/维护横幅是「div.navbox > table.navbox-inner > 嵌套表格」的多层结构，
-// 非贪婪正则会停在第一个闭合标签处提前断开，把内部的 <li>/<td> 漏进正文，必须配对扫描。
-function removeElementsByClass(html, tag, classRe) {
-  const openRe = new RegExp(`<${tag}\\b[^>]*\\bclass="[^"]*"[^>]*>`, 'gi');
-  const closeRe = new RegExp(`</?${tag}\\b[^>]*>`, 'gi');
-  let result = html;
-  let from = 0;
-  for (let guard = 0; guard < 3000; guard++) {
-    openRe.lastIndex = from;
-    const m = openRe.exec(result);
-    if (!m) break;
-    const classAttr = /class="([^"]*)"/i.exec(m[0]);
-    if (!classAttr || !classRe.test(classAttr[1])) {
-      from = m.index + m[0].length;
-      continue;
-    }
-    closeRe.lastIndex = m.index + m[0].length;
-    let depth = 1;
-    let end = -1;
-    let t;
-    while ((t = closeRe.exec(result)) !== null) {
-      if (t[0].slice(0, 2) === '</') depth--;
-      else depth++;
-      if (depth === 0) {
-        end = t.index + t[0].length;
-        break;
-      }
-    }
-    if (end === -1) break;
-    result = result.slice(0, m.index) + result.slice(end);
-    from = m.index;
+// MathJax 的两种"排版样式"外壳：只影响渲染样式，不含任何数学信息
+const MATHJAX_WRAPPER_TOKENS = ['{\\displaystyle ', '{\\textstyle '];
+
+/**
+ * 去掉 MathJax 的排版样式命令 `\displaystyle` / `\textstyle`，**保留其外层花括号**。
+ * 只删样式命令、不动分组括号：`{\textstyle 1 \over 2}R` → `{1 \over 2}R`，
+ * 分组语义不变（若连括号一起删会得到 `1 \over 2R`，反而产生歧义）。
+ */
+function stripMathjaxWrappers(tex) {
+  let s = tex;
+  for (let guard = 0; guard < 50; guard++) {
+    const before = s;
+    for (const token of MATHJAX_WRAPPER_TOKENS) s = s.split(token).join('{');
+    if (s === before) break;
   }
-  return result;
+  return s.trim();
+}
+
+/**
+ * 数学公式的文本形式。
+ * 离线维基里公式只有"图片 + LaTeX 源码"这一种文本表示（img.alt / math.alttext /
+ * <annotation> 三者同源，img.title 为空），因此**保留公式 = 注入其 LaTeX**——
+ * `\pi`、`\sqrt {2}`、`f:[0,1]\rightarrow \mathbb {C}` 这类是 LLM 能直接读懂的形式；
+ * 仅剥掉 MathJax 的排版外壳，数学内容一字不动。
+ */
+function mathTexFromImage(img) {
+  const raw = (img.getAttribute('alt') || '').trim();
+  if (!raw) return '';
+  return stripMathjaxWrappers(raw);
+}
+
+/** 图片的 alt 文本：公式图取其 LaTeX；普通装饰图不带入（旧行为一致） */
+function imageAltText(img) {
+  const cls = classTokens(img);
+  const isMath =
+    cls.has('mwe-math-fallback-image-inline') ||
+    cls.has('mwe-math-fallback-image-display') ||
+    cls.has('tex') ||
+    (img.parentNode && classTokens(img.parentNode).has('mwe-math-element'));
+  if (!isMath) return '';
+  const tex = mathTexFromImage(img);
+  // 注入侧还原后即「空格 + LaTeX + 空格」，与引入标记前完全一致；面板侧则渲染成真公式
+  return tex ? ' ' + mark('tex', tex) + ' ' : '';
+}
+
+/** 单个节点的可见文本；<br> → ；，公式图保留 alt */
+function nodeText(node) {
+  if (!node) return '';
+  let out = '';
+  for (const child of node.childNodes || []) {
+    if (child.nodeType === 3) {
+      out += child.text != null ? child.text : (child.rawText || '');
+    } else if (child.nodeType === 1) {
+      const tn = tagNameOf(child);
+      if (DROP_TAGS.has(tn)) continue;
+      if (tn === 'br') { out += '；'; continue; }
+      // 上/下标：纯文本抽取会把 10⁸ 拉平成 "108"、H₂O 拉平成 "H2O"，
+      // 分别用 ^ 和 _ 标记保留幂次/下标语义
+      if (tn === 'sup') { out += '^' + nodeText(child); continue; }
+      if (tn === 'sub') { out += '_' + nodeText(child); continue; }
+      if (tn === 'img') { out += imageAltText(child); continue; }
+      out += nodeText(child);
+    }
+  }
+  return out;
+}
+
+function collapse(s) {
+  return decodeEntities(String(s)).replace(/\s+/g, ' ').trim();
+}
+
+// ---------------------------------------------------------------------------
+// 结构化标记：面板渲染富文本的载体（公式 / 表格 / 图片 / 子标题）
+//
+// 设计要点：
+//  1. 用 **Unicode 私有区字符**（U+E000 / U+E001）包裹，维基正文绝不会出现这些字符，
+//     因此不存在「正文里的 `[[` 被误当标记」的冲突问题。
+//  2. 标记**只服务于面板展示**；注入给模型的文本会经 convertMarkers() 还原成纯文本，
+//     且还原结果与引入标记之前**逐字节一致**（有基线回归测试守着）。
+//  3. 载荷用 `kind|payload` 形式，payload 内部允许出现 `|`，因为终止符是 U+E001 而非 `|`。
+// ---------------------------------------------------------------------------
+const MD_START = '\uE000';
+const MD_END = '\uE001';
+const MARKER_RE = new RegExp(MD_START + '([a-z0-9]+)\\|([\\s\\S]*?)' + MD_END, 'g');
+
+function mark(kind, payload) {
+  return MD_START + kind + '|' + payload + MD_END;
+}
+
+// 标记可以嵌套（例如表格单元格里放公式）：内层标记的**终止符**若原样出现在外层载荷里，
+// 会把外层标记提前截断（JSON 拦腰断掉、内容泄漏）。嵌套载荷统一把 U+E001 转义为 U+E002，
+// 解析时再还原。维基正文不会出现这两个字符，因此不存在与原文冲突的问题。
+const MD_ESC = '\uE002';
+const escapeForNesting = (s) => String(s).split(MD_END).join(MD_ESC);
+const unescapeNesting = (s) => String(s).split(MD_ESC).join(MD_END);
+
+/** 结构化标记 → 注入给模型的纯文本（此处每一项都必须与"没有标记的时代"完全一致） */
+function markerToInjectionText(kind, payload) {
+  if (kind === 'img') {
+    const i = payload.indexOf('|');
+    // 图注里可能嵌套公式标记 → 先还原转义再递归转换，否则标记会泄漏给模型
+    const caption = convertMarkers(unescapeNesting(i === -1 ? '' : payload.slice(i + 1)));
+    return caption ? `[图略] ${caption}` : '[图略]';
+  }
+  if (kind === 'tex') return payload; // 公式：注入侧照旧给 LaTeX 原文
+  if (kind === 'sh') return '';       // 子标题：注入侧照旧不含标题文字
+  if (kind === 'tbl') {
+    // 还原为管道表文本：空白单元格会被丢弃（与引入标记前的行为一致）。
+    // 单元格文本里可能嵌套公式标记（表格里放公式很常见）→ 同样要递归还原。
+    try {
+      const t = JSON.parse(payload);
+      return (t.r || [])
+        .map((cells) =>
+          cells
+            .map((c) => convertMarkers(unescapeNesting(String(c[0] == null ? '' : c[0]))))
+            .filter((x) => x)
+        )
+        .filter((cells) => cells.length > 0)
+        .map((cells) => '| ' + cells.join(' | ') + ' |')
+        .join('\n');
+    } catch (e) {
+      return '';
+    }
+  }
+  return '';
+}
+
+/** 把一串文本里的所有结构化标记还原为注入用纯文本 */
+function convertMarkers(s) {
+  return String(s).replace(MARKER_RE, (_m, kind, payload) => markerToInjectionText(kind, payload));
+}
+
+function textOf(node) {
+  return collapse(nodeText(node));
+}
+
+function isNonContent(el) {
+  if (NON_CONTENT_IDS.has(el.getAttribute('id') || '')) return true;
+  const cls = classTokens(el);
+  for (const t of cls) if (NON_CONTENT_CLASS_TOKENS.has(t)) return true;
+  return false;
+}
+
+/** 结构性整枝剪枝：脚本/样式/图表 + 导航框/维护横幅/参考资料包裹层/编辑链接等 */
+function pruneNonContent(content) {
+  for (const el of content.querySelectorAll('*')) {
+    const tn = tagNameOf(el);
+    if (DROP_TAGS.has(tn)) { el.remove(); continue; }
+    // 内联 display:none：浏览器不渲染的内容（隐藏分类、MathML 无障碍副本…），
+    // 纯文本抽取会把它们带进正文（例如公式的 {\displaystyle ...} 源码）。
+    const style = el.getAttribute('style') || '';
+    if (/display\s*:\s*none/i.test(style)) { el.remove(); continue; }
+    if (tn === 'sup') {
+      const cls = classTokens(el);
+      if (cls.has('reference') || cls.has('noprint')) { el.remove(); continue; }
+    }
+    if (isNonContent(el)) { el.remove(); continue; }
+  }
+}
+
+/**
+ * Infobox 整体截出（截出后从正文中移除）。
+ * 按 <tr> 遍历，不要求 <th> 在 <td> 之前；同一行多个值以 " | " 连接；
+ * 「仅有值」的续行归属到最近的键名上。
+ */
+function extractInfobox(content) {
+  const out = [];
+  let table = null;
+  for (const t of content.querySelectorAll('table')) {
+    if (classTokens(t).has('infobox')) { table = t; break; }
+  }
+  if (!table) return out;
+
+  let lastKey = '';
+  for (const tr of table.querySelectorAll('tr')) {
+    const ths = tr.querySelectorAll('th');
+    const tds = tr.querySelectorAll('td');
+    const key = ths.length ? textOf(ths[0]) : '';
+    if (key) lastKey = key; // 记住最近的键：供「仅有值」的续行归属
+    const value = tds.map((td) => textOf(td)).filter((v) => v).join(' | ');
+
+    if (key && value) out.push({ key, value });
+    else if (!key && value && lastKey) out.push({ key: lastKey, value });
+  }
+
+  table.remove();
+  return out;
+}
+
+/** 章节标题是否属于「样板尾部」（注释/参考文献/外部链接/参见…），命中即自此截断 */
+function isBoilerplateHeading(title) {
+  const t = String(title).trim().toLowerCase();
+  if (!t) return false;
+  for (const b of BOILERPLATE_SECTIONS) if (t.includes(b)) return true;
+  return false;
+}
+
+/**
+ * 按文档顺序取出「最外层」块级元素。
+ * 只保留没有被其它块级元素包裹的那些，避免嵌套表格/列表被重复抽取。
+ */
+function orderedBlocks(content) {
+  // 图集容器（ul.gallery）本身不作为独立块：改由其 .gallerybox 逐项产出图片标记
+  const all = content
+    .querySelectorAll(BLOCK_SELECTOR)
+    .filter((el) => !classTokens(el).has('gallery'));
+  const set = new Set(all);
+  const out = [];
+  for (const el of all) {
+    let p = el.parentNode;
+    let nested = false;
+    while (p) {
+      if (set.has(p)) { nested = true; break; }
+      p = p.parentNode;
+    }
+    if (!nested) out.push(el);
+  }
+  return out;
+}
+
+function listToText(el) {
+  const items = [];
+  for (const li of el.querySelectorAll('li')) {
+    const t = textOf(li);
+    if (t) items.push('· ' + t);
+  }
+  return items.join('\n');
+}
+
+/**
+ * 表格 → 结构化标记（供面板渲染真表格）。
+ * 保留合并单元格信息（colspan / rowspan）与表头行数——实测 70% 的维基正文表格含合并单元格，
+ * 管道文本根本无法还原；注入侧再由 markerToInjectionText 还原为管道表。
+ * 单元格统一编码为 [文本] 或 [文本, colspan, rowspan]，保留空白单元格以保证列对齐。
+ */
+function tableToMarker(el) {
+  const rows = [];
+  let headerRows = 0;
+  let dataStarted = false;
+
+  for (const tr of el.querySelectorAll('tr')) {
+    const cells = [];
+    let allHeader = true;
+    for (const c of tr.childNodes) {
+      if (c.nodeType !== 1) continue;
+      const tn = tagNameOf(c);
+      if (tn !== 'th' && tn !== 'td') continue;
+      if (tn !== 'th') allHeader = false;
+      const cs = Math.max(1, parseInt(c.getAttribute('colspan') || '1', 10) || 1);
+      const rs = Math.max(1, parseInt(c.getAttribute('rowspan') || '1', 10) || 1);
+      const t = escapeForNesting(textOf(c));
+      cells.push(cs === 1 && rs === 1 ? [t] : [t, cs, rs]);
+    }
+    if (cells.length === 0) continue;
+    if (allHeader && !dataStarted) headerRows++;
+    else dataStarted = true;
+    rows.push(cells);
+  }
+
+  if (rows.length === 0) return '';
+  return mark('tbl', JSON.stringify({ h: headerRows, r: rows }));
+}
+
+function definitionListToText(el) {
+  const lines = [];
+  let pendingKey = '';
+  for (const c of el.childNodes) {
+    if (c.nodeType !== 1) continue;
+    const tn = tagNameOf(c);
+    const t = textOf(c);
+    if (!t) continue;
+    if (tn === 'dt') pendingKey = t;
+    else if (tn === 'dd') { lines.push(pendingKey ? `${pendingKey}：${t}` : t); pendingKey = ''; }
+    else lines.push(t);
+  }
+  return lines.join('\n');
+}
+
+function blockToText(el) {
+  const tn = tagNameOf(el);
+  if (tn === 'ul' || tn === 'ol') return listToText(el);
+  if (tn === 'table') return tableToMarker(el);
+  if (tn === 'dl') return definitionListToText(el);
+  return textOf(el);
 }
 
 export function parseWikipediaDOM(rawHtml) {
-  if (!rawHtml || typeof rawHtml !== 'string') {
-    return { infobox: [], section0: [], sections: [] };
+  if (!rawHtml || typeof rawHtml !== 'string') return emptyDom();
+
+  let root;
+  try {
+    root = parseHtml(rawHtml);
+  } catch (e) {
+    return emptyDom();
   }
 
-  // 1. Smart tail cutoff at notes / references / external links / see also
-  //    兼容 h2 与 h3 两级标题（部分条目的「外部链接」「参考文献」是 h3 级）
-  const headingRe = /<h([23])\b[^>]*>([\s\S]*?)<\/h\1>/gi;
-  let cutIndex = -1;
-  let hm;
-  while ((hm = headingRe.exec(rawHtml)) !== null) {
-    const headingText = stripHtmlAndUnescape(hm[2]);
-    if (
-      /註釋|注释|參考[資资]料|参考[資资]料|參考[文獻献]|参考[文獻献]|腳註|脚注|出處|出处|文獻|文献|外部[連結链接]|參見|参见|延伸[閱讀阅读]|注[釋释]/.test(
-        headingText
-      )
-    ) {
-      cutIndex = hm.index;
-      break;
-    }
-  }
-  let html = cutIndex > 0 ? rawHtml.slice(0, cutIndex) : rawHtml;
+  const content =
+    root.querySelector('.mw-parser-output') ||
+    root.querySelector('#mw-content-text') ||
+    root.querySelector('body') ||
+    root;
+  if (!content) return emptyDom();
 
-  // 2. Strip scripts, styles, references, edit links, navboxes, thumbnails
-  //    以及一切"页面上看不见"的内容：MediaWiki 排序键(sortkey) 与 display:none 元素。
-  //    这些内容浏览器不渲染，但纯文本抽取会把诸如 "7008299792458000000♠" 的排序键带进事实里。
-  //    再加：维基维护横幅(ambox/metadata/mbox-small)、参考资料包裹层(reflist)、
-  //    「[来源请求]」类标记(noprint/Template-Fact/Unreferenced)。
-  html = html
-    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gis, '')
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gis, '')
-    .replace(/<span[^>]*class="[^"]*sortkey[^"]*"[^>]*>.*?<\/span>/gis, '')
-    .replace(/<span[^>]*style="[^"]*display\s*:\s*none[^"]*"[^>]*>.*?<\/span>/gis, '')
-    .replace(/<div[^>]*style="[^"]*display\s*:\s*none[^"]*"[^>]*>.*?<\/div>/gis, '')
-    .replace(/<sup[^>]*class="[^"]*reference[^"]*"[^>]*>.*?<\/sup>/gis, '')
-    .replace(
-      /<sup[^>]*class="[^"]*(?:noprint|Template-Fact|Unreferenced)[^"]*"[^>]*>.*?<\/sup>/gis,
-      ''
-    )
-    .replace(/<ol[^>]*class="[^"]*references[^"]*"[^>]*>.*?<\/ol>/gis, '')
-    .replace(/<span[^>]*class="[^"]*mw-editsection[^"]*"[^>]*>.*?<\/span>/gis, '')
-    .replace(/<figure\b[^<]*(?:(?!<\/figure>)<[^<]*)*<\/figure>/gis, '')
-    .replace(/<div[^>]*class="[^"]*thumb[^"]*"[^>]*>.*?<\/div>/gis, '');
+  pruneNonContent(content);
+  const infobox = extractInfobox(content);
 
-  // 配对删除多层嵌套的非内容块：导航框/侧边栏/维护横幅/参考资料包裹层/页面指示器
-  html = removeElementsByClass(
-    html,
-    'table',
-    /navbox|vertical-navbox|sidebar|ambox|metadata|mbox-small/i
-  );
-  html = removeElementsByClass(
-    html,
-    'div',
-    /navbox|vertical-navbox|sidebar|hatnote|mw-indicator|reflist|references|mw-references-wrap/i
-  );
-
-  // 3. Extract full Infobox key-values (无长度上限：抓到即留)
-  //    Infobox 常嵌套子表格，必须用 <table>/</table> 配对扫描整体截出，
-  //    否则非贪婪匹配会在第一个 </table> 处提前断开，把奖项表/参战方表错位漏进正文。
-  const infobox = [];
-  const infoboxStartMatch = html.match(/<table[^>]*class="[^"]*infobox[^"]*"[^>]*>/i);
-  if (infoboxStartMatch) {
-    const start = infoboxStartMatch.index;
-    const tagRe = /<\/?table\b[^>]*>/gi;
-    tagRe.lastIndex = start;
-    let depth = 0;
-    let end = -1;
-    let tm;
-    while ((tm = tagRe.exec(html)) !== null) {
-      if (tm[0].slice(0, 2) === '</') depth--;
-      else depth++;
-      if (depth === 0) {
-        end = tm.index + tm[0].length;
-        break;
-      }
-    }
-    if (end !== -1) {
-      const infoboxHtml = html.slice(start, end);
-      const rows = [
-        ...infoboxHtml.matchAll(
-          /<tr[^>]*>[\s\S]*?<th[^>]*>([\s\S]*?)<\/th>[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>[\s\S]*?<\/tr>/gis
-        ),
-      ];
-      for (const row of rows) {
-        const k = stripHtmlAndUnescape(row[1]);
-        const v = stripHtmlAndUnescape(row[2]);
-        if (k && v) {
-          infobox.push({ key: k, value: v });
-        }
-      }
-      html = html.slice(0, start) + html.slice(end);
-    }
-  }
-
-  // 4. Split Section 0 (Lead) and Section Tree
-  let section0Html = '';
-  let bodyHtml = '';
-
-  const firstHeadingMatch = html.match(/<(?:h2|div\s+id="toc"|table\s+id="toc")[^>]*>/i);
-  if (firstHeadingMatch && firstHeadingMatch.index > 0) {
-    section0Html = html.slice(0, firstHeadingMatch.index);
-    bodyHtml = html.slice(firstHeadingMatch.index);
-  } else {
-    section0Html = html;
-  }
-
-  // ---- 正文块抽取：按出现顺序抓 <p> / <ul>/<ol> 列表 / <table> 表格 ----
-  // 列表转成「· 条目」行；表格转成「| 单元格 | 单元格 |」的管道表，对大模型友好。
-  const BLOCK_RE =
-    /(<p\b[^>]*>[\s\S]*?<\/p>)|(<ul\b[^>]*>[\s\S]*?<\/ul>)|(<ol\b[^>]*>[\s\S]*?<\/ol>)|(<table\b[^>]*>[\s\S]*?<\/table>)/gi;
-
-  const cleanInline = (s) =>
-    stripHtmlAndUnescape(String(s).replace(/<br\s*\/?>/gi, '；'))
-      .replace(/\s+/g, ' ')
-      .trim();
-
-  const listToText = (listHtml) => {
-    const liRe = /<li\b[^>]*>([\s\S]*?)<\/li>/gi;
-    const items = [];
-    let lm;
-    while ((lm = liRe.exec(listHtml)) !== null) {
-      const t = cleanInline(lm[1]);
-      if (t) items.push('· ' + t);
-    }
-    return items.join('\n');
-  };
-
-  const tableToText = (tableHtml) => {
-    const rows = [];
-    const trRe = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
-    let tm;
-    while ((tm = trRe.exec(tableHtml)) !== null) {
-      const cellRe = /<t([hd])\b[^>]*>([\s\S]*?)<\/t\1>/gi;
-      const cells = [];
-      let cm;
-      while ((cm = cellRe.exec(tm[1])) !== null) {
-        cells.push(cleanInline(cm[2]));
-      }
-      if (cells.some((c) => c.length > 0)) rows.push(cells);
-    }
-    if (rows.length === 0) return '';
-    return rows.map((cells) => '| ' + cells.join(' | ') + ' |').join('\n');
-  };
-
-  const extractBlocks = (snippet) => {
-    const out = [];
-    let bm;
-    BLOCK_RE.lastIndex = 0;
-    while ((bm = BLOCK_RE.exec(snippet)) !== null) {
-      const block = bm[0];
-      let text = '';
-      if (bm[1]) {
-        text = stripHtmlAndUnescape(block.replace(/<br\s*\/?>/gi, '；'));
-      } else if (bm[2] || bm[3]) {
-        text = listToText(block);
-      } else if (bm[4]) {
-        text = tableToText(block);
-      }
-      text = (text || '').trim();
-      if (text) out.push(text);
-    }
-    return out;
-  };
-
-  const section0 = extractBlocks(section0Html);
-
-  // Extract sections
+  const section0 = [];
   const sections = [];
-  if (bodyHtml) {
-    const h2Parts = bodyHtml.split(/<h2[^>]*>/i);
-    for (let i = 1; i < h2Parts.length; i++) {
-      const part = h2Parts[i];
-      const endHeading = part.indexOf('</h2>');
-      if (endHeading !== -1) {
-        const title = stripHtmlAndUnescape(part.slice(0, endHeading));
-        const content = part.slice(endHeading + 5);
-        const paras = extractBlocks(content);
-        if (title && paras.length > 0) {
-          sections.push({ title, paragraphs: paras });
-        }
-      }
+  let current = null;
+
+  // h3/h4 的标题文字：**挂到紧随其后的内容块前面**（而不是自成一个段落）。
+  // 这样注入侧还原后与"没有子标题标记的时代"完全一致；若该小节以子标题结尾，则自然丢弃。
+  let pendingSubheads = '';
+
+  for (const el of orderedBlocks(content)) {
+    const tn = tagNameOf(el);
+
+    if (tn === 'h2') {
+      const title = textOf(el);
+      if (isBoilerplateHeading(title)) break; // 样板尾部：自此截断
+      pendingSubheads = '';
+      current = { title, paragraphs: [] };
+      sections.push(current);
+      continue;
     }
+
+    if (tn === 'h3' || tn === 'h4') {
+      // 子标题文字里也可能嵌公式标记（如「计算 π 的意义」）→ 载荷必须转义，
+      // 否则内层终止符会把 sh 标记提前截断，留下孤立的 U+E001 泄漏到注入文本。
+      pendingSubheads += mark('sh', (tn === 'h3' ? '3' : '4') + '|' + escapeForNesting(textOf(el)));
+      continue;
+    }
+    if (tn === 'h5' || tn === 'h6') continue;
+
+    // 带图注的图片容器 → 图片标记（注入时转 [图略]，APP 内渲染真图）
+    const marker = imageMarker(el);
+    if (marker) {
+      (current ? current.paragraphs : section0).push(pendingSubheads + marker);
+      pendingSubheads = '';
+      continue;
+    }
+
+    const text = (pendingSubheads + blockToText(el)).trim();
+    pendingSubheads = '';
+    if (!text) continue;
+    (current ? current.paragraphs : section0).push(text);
   }
 
-  return { infobox, section0, sections };
+  return {
+    infobox,
+    section0,
+    sections: sections.filter((s) => s.title && s.paragraphs.length > 0),
+  };
 }
 
 // 主力模型目录语义路由：超长条目（> 3500 字）从大纲目录与 Infobox 键名中
@@ -458,16 +661,22 @@ export async function routeArticleSectionsWithSLM(query, headings, infoboxKeys) 
 export async function assembleArticleContext(rawHtml, userQuery) {
   const dom = parseWikipediaDOM(rawHtml);
 
-  // Step 2: Global 2-stage normalization to Mainland Simplified Chinese
+  // Step 2: 全局二次归一 + 结构化标记还原。
+  // 关键：标记必须在**统计字数之前**还原——否则 U+E000/E001 与 JSON 载荷会虚增 totalLength，
+  // 令 3500 字分支判断（panoramic / routed）与改造前不一致，注入内容就会变。
   const normInfobox = dom.infobox.map((item) => ({
-    key: toSimplifiedChinese(item.key),
-    value: toSimplifiedChinese(item.value),
+    key: convertMarkers(toSimplifiedChinese(item.key)),
+    value: convertMarkers(toSimplifiedChinese(item.value)),
   }));
 
-  const normSection0 = dom.section0.map((p) => toSimplifiedChinese(p));
+  const normSection0 = dom.section0
+    .map((p) => convertMarkers(toSimplifiedChinese(p)))
+    .filter((p) => p.trim().length > 0);
   const normSections = dom.sections.map((s) => ({
-    title: toSimplifiedChinese(s.title),
-    paragraphs: s.paragraphs.map((p) => toSimplifiedChinese(p)),
+    title: convertMarkers(toSimplifiedChinese(s.title)),
+    paragraphs: s.paragraphs
+      .map((p) => convertMarkers(toSimplifiedChinese(p)))
+      .filter((p) => p.trim().length > 0),
   }));
 
   const totalLength =
@@ -686,6 +895,180 @@ export async function planQuery(query) {
   return planQueryWithMainModel(query);
 }
 
+// ==========================================
+// 候选筛选与排序（通用：结构性判断 + 纯算术打分，零语言词表）
+// ==========================================
+
+// 命名空间前缀表（**数据**，不是正则）。MediaWiki 命名空间是固定标准概念，
+// 文章页的标题永远不会带冒号前缀——这是筛掉「非文章页」最可靠、且零成本的一层。
+const NON_ARTICLE_NAMESPACE_PREFIXES = new Set([
+  // 中文
+  'special', '特殊', 'talk', '討論', '讨论', 'user', '用戶', '用户',
+  'wikipedia', '維基百科', '维基百科', 'project', 'file', 'image', '檔案', '文件', '档案',
+  'mediawiki', 'template', '模板', 'help', '幫助', '帮助', 'category', '分類', '分类',
+  'portal', '主題', '主题', 'draft', '草稿', 'module', '模組', '模块',
+  'book', 'course', 'thread', 'summary', 'page', 'index', 'topic', 'timedtext', '朗讀', '朗读',
+  // 英文/其他站点常见
+  'gadget', 'gadget definition', 'media', 'wi', 'wikipedia talk', 'file talk', 'template talk',
+]);
+
+const MAX_CANDIDATES = 12;   // 深度解析（HEAD）的候选上限，避免全量扇出
+const SUGGEST_COUNT = 30;    // 标题联想条数
+const FULLTEXT_COUNT = 8;    // 全文检索结果数
+const SENSES_TO_MODEL = 40;  // 送去模型选择的义项上限
+
+/** 标题是否属于「非文章页」（命名空间页） */
+function isNonArticleTitle(title) {
+  const t = String(title || '').trim();
+  if (!t) return true;
+  const colon = t.search(/[:：]/);
+  if (colon <= 0) return false;
+  return NON_ARTICLE_NAMESPACE_PREFIXES.has(t.slice(0, colon).trim().toLowerCase());
+}
+
+/**
+ * 候选相关度（纯算术，零词表）：
+ *   覆盖率（最长匹配变体 ÷ 标题长度）+ 前缀命中加权 + 通道可靠度加权 − 超长标题惩罚
+ */
+function relevanceScore(candidate, variants) {
+  const title = String(candidate.title || '');
+  const len = title.length || 1;
+  let matched = 0;
+  for (const v of variants) {
+    if (!v) continue;
+    if (title === v || title.includes(v)) matched = Math.max(matched, v.length);
+  }
+  const coverage = matched / len;
+  const prefix = variants.some((v) => v && title.startsWith(v)) ? 0.15 : 0;
+  const reliability = typeof candidate.reliability === 'number' ? candidate.reliability : 0.5;
+  const lengthPenalty = Math.min(0.3, Math.max(0, len - 20) / 100);
+  return coverage + prefix + reliability * 0.5 - lengthPenalty;
+}
+
+// 消歧义分类名片段（**数据**，不是判定逻辑）：页面自身的分类命中即视为消歧义页。
+// 中英覆盖，便于继续扩充语言。这来自 MediaWiki 的页面分类元数据（wgCategories），
+// 而非对版式的猜测——比任何结构启发式都可靠。
+const DISAMBIG_CATEGORY_HINTS = ['消歧义', '消歧義', 'disambiguation'];
+
+/**
+ * 读取页面自身的分类（MediaWiki 的 wgCategories 元数据）。
+ * 返回 true / false；元数据不存在时返回 null（表示「无法判断」）。
+ */
+function disambiguationByCategory(html) {
+  const m = html.match(/"wgCategories"\s*:\s*\[([^\]]*)\]/);
+  if (!m) return null;
+  const cats = m[1].toLowerCase();
+  return DISAMBIG_CATEGORY_HINTS.some((h) => cats.includes(h.toLowerCase()));
+}
+
+/**
+ * 消歧义页判定（按可靠性从高到低）：
+ *   ① 页面分类命中消歧义分类（权威元数据，跨语言）      → isDisambig=true, strong=true
+ *   ② 有分类元数据且未命中                            → 明确判定为普通条目，不再猜测
+ *   ③ 结构标记：#disambigbox，或**非 <a> 元素**上的 disambig / mw-disambig 类
+ *      （<a class="mw-disambig"> 只是"指向消歧义页"的链接，不能当页面标记）
+ *   ④ 仅当分类元数据缺失时，才退化为结构特征启发式
+ */
+function detectDisambiguation(html) {
+  if (!html) return { isDisambig: false, strong: false, via: 'empty' };
+
+  // ① / ② 权威元数据优先
+  const byCategory = disambiguationByCategory(html);
+  if (byCategory === true) return { isDisambig: true, strong: true, via: 'category' };
+  if (byCategory === false) return { isDisambig: false, strong: false, via: 'category' };
+
+  try {
+    const root = parseHtml(html);
+    const content = root.querySelector('.mw-parser-output') || root.querySelector('body') || root;
+    if (content.querySelector('#disambigbox')) {
+      return { isDisambig: true, strong: true, via: 'disambigbox' };
+    }
+
+    for (const el of content.querySelectorAll('*')) {
+      if (String(el.tagName || '').toLowerCase() === 'a') continue;
+      const cls = classTokens(el);
+      if (cls.has('disambig') || cls.has('disambigbox') || cls.has('mw-disambig')) {
+        return { isDisambig: true, strong: true, via: 'class' };
+      }
+    }
+
+    const hasInfobox = [...content.querySelectorAll('table')].some((t) =>
+      classTokens(t).has('infobox')
+    );
+    if (hasInfobox) return { isDisambig: false, strong: false, via: 'structural' };
+
+    const h2Count = content.querySelectorAll('h2').length;
+    let prose = 0;
+    for (const p of content.querySelectorAll('p')) prose += textOf(p).length;
+    const linkItems = content.querySelectorAll('li a').length;
+
+    return {
+      isDisambig: h2Count === 0 && prose < 400 && linkItems >= 5,
+      strong: false,
+      via: 'structural',
+    };
+  } catch (e) {
+    return { isDisambig: false, strong: false, via: 'error' };
+  }
+}
+
+/** 抽出消歧义页的义项清单 [{title, description}]（纯结构解析，零硬编码） */
+function extractSenses(html) {
+  const out = [];
+  if (!html) return out;
+  try {
+    const root = parseHtml(html);
+    const content = root.querySelector('.mw-parser-output') || root.querySelector('body') || root;
+    const seen = new Set();
+    for (const a of content.querySelectorAll('a[title]')) {
+      const title = (a.getAttribute('title') || '').trim();
+      if (!title || seen.has(title) || isNonArticleTitle(title)) continue;
+      const href = a.getAttribute('href') || '';
+      if (!href || href.startsWith('#') || /^[a-z]+:/i.test(href)) continue;
+
+      let lineEl = a.parentNode;
+      while (lineEl && String(lineEl.tagName || '').toLowerCase() !== 'li') lineEl = lineEl.parentNode;
+      const source = lineEl || a.parentNode;
+      // 义项描述会进"义项选择"的提示词，必须先把结构化标记还原成纯文本，避免标记泄漏给模型
+      const description = convertMarkers(textOf(source)).slice(0, 200);
+      if (!description) continue;
+
+      seen.add(title);
+      out.push({ title, description });
+      if (out.length >= SENSES_TO_MODEL) break;
+    }
+    return out;
+  } catch (e) {
+    return out;
+  }
+}
+
+// 义项选择的提示词（规则放 system，数据放 user）
+const SENSE_PICK_SYSTEM = `[任务] 用户用某个词提问，该词在百科中有多个不同含义。下面给出该词对应的候选条目。
+[输出] 只输出一个 JSON 对象：{"pick": "条目名称"} 或 {"pick": null}，不要输出任何其他文字。
+[规则]
+1. 从候选中选出**最符合用户问题意图**的那一个；名称必须与候选列表逐字一致，不要改写。
+2. 若没有任何候选与用户问题相关，输出 {"pick": null}。严禁猜测。`;
+
+/** 用主力模型从义项列表中选一个（返回 null 表示都不匹配 → 该关键字弃权） */
+async function pickSenseWithMainModel(question, senses) {
+  if (!senses || senses.length === 0) return null;
+  const lines = senses.map((s) => `- ${s.title}：${s.description}`).join('\n');
+  const userPrompt = `[用户问题]\n${question}\n\n[候选条目]\n${lines}\n\n[输出]`;
+
+  const out = await callMainModel(userPrompt, {
+    systemPrompt: SENSE_PICK_SYSTEM,
+    maxTokens: 64,
+    timeoutMs: 30000,
+  });
+  if (!out) return null;
+
+  const parsed = safeParseJson(out);
+  const pick = parsed && typeof parsed.pick === 'string' ? parsed.pick.trim() : '';
+  if (!pick) return null;
+  const target = senses.find((s) => s.title === pick);
+  return target ? target.title : null;
+}
 class WikiService {
   constructor() {
     this.kiwixProcess = null;
@@ -971,116 +1354,162 @@ class WikiService {
     }, 5000);
   }
 
-  // 标题检索：全部字形变体 → Kiwix 精确探针 + 标题联想
-  // 只保留「完全命中」或「完全包含关键字」的条目名，再经深度重定向解析后按规范路径去重
-  async search(rawTerm) {
-    if (!rawTerm || !rawTerm.trim() || !this.isOnline) return [];
-    const term = rawTerm.trim();
+  // ---------- 召回通道（多通道 + 来源标记 + 可靠度）----------
+  // 通道只负责「产出候选」，不做取舍；取舍由 _resolveForKeyword 按关键字进行。
+
+  /** 通道 A：精确探针（HEAD 200 / 301/302 跟随）——关键词就是条目标题 */
+  async _probeExact(variants) {
     const content = this.contentId || 'wikipedia_zh_all_maxi';
-    const variants = getAllVariants(term);
-    if (variants.length === 0) return [];
-
-    // 0. Direct Canonical Probe: Check if exact variants exist directly or are 302 redirects (1ms HEAD request)
-    const probePromises = variants.map(async (v) => {
-      try {
-        const probeUrl = `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(v)}`;
-        const res = await fetch(probeUrl, { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(1200) });
-        if (res.status === 200) {
-          return {
-            title: v,
-            path: v,
-            url: probeUrl,
-            source: 'exact_probe',
-            rank: 0,
-          };
-        }
-        if (res.status === 302 || res.status === 301) {
-          const loc = res.headers.get('location') || '';
-          const targetTitle = decodeURIComponent(loc.split('/').pop() || '');
-          if (targetTitle) {
-            return {
-              title: targetTitle,
-              path: targetTitle,
-              url: `http://127.0.0.1:${KIWIX_PORT}${loc}`,
-              source: 'exact_probe',
-              rank: 0,
-            };
+    const results = await Promise.all(
+      variants.map(async (v) => {
+        try {
+          const url = `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(v)}`;
+          const res = await fetch(url, {
+            method: 'HEAD',
+            redirect: 'manual',
+            signal: AbortSignal.timeout(1200),
+          });
+          if (res.status === 200) {
+            return { title: v, path: v, url, source: 'exact', reliability: 0.95 };
           }
-        }
-      } catch (e) {
-        // ignore
-      }
-      return null;
-    });
-
-    // 1. Kiwix suggest endpoint (captures exact and prefix titles, count=30 to bypass ascii sort bias)
-    const suggestPromises = variants.map(async (v) => {
-      try {
-        const suggestUrl = `http://127.0.0.1:${KIWIX_PORT}/suggest?content=${encodeURIComponent(content)}&term=${encodeURIComponent(v)}&count=30`;
-        const res = await fetch(suggestUrl, { signal: AbortSignal.timeout(1500) });
-        if (res.ok) {
-          const json = await res.json();
-          if (Array.isArray(json)) {
-            return json
-              .filter((item) => item.kind === 'path' && item.value)
-              .map((item, idx) => {
-                const title = item.value.trim();
-                const p = item.path || title;
-                return {
-                  title,
-                  path: p,
-                  url: `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(p)}`,
-                  source: 'suggest',
-                  rank: idx,
-                };
-              });
+          if (res.status === 301 || res.status === 302) {
+            const loc = res.headers.get('location') || '';
+            const target = decodeURIComponent(loc.split('/').pop() || '');
+            if (target) {
+              return {
+                title: target,
+                path: target,
+                url: `http://127.0.0.1:${KIWIX_PORT}${loc}`,
+                source: 'exact',
+                reliability: 0.95,
+              };
+            }
           }
+        } catch (e) {
+          // ignore
         }
-      } catch (e) {
-        // ignore
-      }
-      return [];
-    });
-
-    const [probeResults, suggestResultLists] = await Promise.all([
-      Promise.all(probePromises),
-      Promise.all(suggestPromises),
-    ]);
-
-    const kept = [];
-
-    // 精确探针命中（200 存在 / 302 重定向）本身就是「完全命中关键字」，无条件保留
-    // （但仍排除命名空间前缀的非文章页）
-    for (const item of probeResults) {
-      if (item && !NON_ARTICLE_NAMESPACE_RE.test(item.title.trim())) kept.push({ ...item, exact: true });
-    }
-
-    // 标题联想结果：只保留条目名「完全等于」或「完全包含」任一关键字变体的文章页，其余丢弃
-    // 标题与变体逐字相等者同样视为「完全命中」
-    for (const list of suggestResultLists) {
-      for (const item of list) {
-        const t = item.title.trim();
-        if (NON_ARTICLE_NAMESPACE_RE.test(t)) continue;
-        const exact = variants.some((v) => v && t === v);
-        if (exact || variants.some((v) => v && t.includes(v))) {
-          kept.push({ ...item, exact });
-        }
-      }
-    }
-
-    if (kept.length === 0) return [];
-
-    // 深度重定向解析：别名 → 规范条目，再按规范路径去重（同一文章的多个别名只留一篇）
-    const resolved = await Promise.all(kept.map((item) => this._resolveCanonical(item)));
-
-    const byCanonical = new Map();
-    for (const item of resolved) {
-      if (item && !byCanonical.has(item.path)) byCanonical.set(item.path, item);
-    }
-    // 全量返回（不再截断 6 条）：完全命中在前、包含命中在后，供面板列表完整展示
-    return Array.from(byCanonical.values());
+        return null;
+      })
+    );
+    return results.filter((x) => x && !isNonArticleTitle(x.title));
   }
 
+  /** 通道 B：标题联想（标题「包含」关键词，含各种字形/用词变体） */
+  async _suggestTitles(variants) {
+    const content = this.contentId || 'wikipedia_zh_all_maxi';
+    const lists = await Promise.all(
+      variants.map(async (v) => {
+        try {
+          const url = `http://127.0.0.1:${KIWIX_PORT}/suggest?content=${encodeURIComponent(
+            content
+          )}&term=${encodeURIComponent(v)}&count=${SUGGEST_COUNT}`;
+          const res = await fetch(url, { signal: AbortSignal.timeout(1500) });
+          if (!res.ok) return [];
+          const json = await res.json();
+          if (!Array.isArray(json)) return [];
+          return json
+            .filter((it) => it.kind === 'path' && it.value)
+            .map((it, idx) => {
+              const title = String(it.value).trim();
+              const p = it.path || title;
+              return {
+                title,
+                path: p,
+                rank: idx,
+                source: 'suggest',
+                reliability: 0.6,
+                url: `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(p)}`,
+              };
+            });
+        } catch (e) {
+          return [];
+        }
+      })
+    );
+    const out = [];
+    for (const list of lists) {
+      for (const item of list) {
+        const t = item.title;
+        if (isNonArticleTitle(t)) continue;
+        if (variants.some((v) => v && t.includes(v))) out.push(item);
+      }
+    }
+    return out;
+  }
+
+  /** 通道 D：Kiwix 全文检索（末位手段：只在 A/B/C 无可用候选时启用） */
+  async _fullTextSearch(term) {
+    const content = this.contentId || 'wikipedia_zh_all_maxi';
+    try {
+      const url = `http://127.0.0.1:${KIWIX_PORT}/search?content=${encodeURIComponent(
+        content
+      )}&pattern=${encodeURIComponent(term)}&books.count=1&pageLength=${FULLTEXT_COUNT}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(2500) });
+      if (!res.ok) return [];
+      const body = await res.text();
+      const out = [];
+      const seen = new Set();
+      for (const m of body.matchAll(/href="\/content\/[^/]+\/([^"#?]+)"/g)) {
+        const title = decodeURIComponent(m[1]);
+        if (!title || seen.has(title) || isNonArticleTitle(title)) continue;
+        seen.add(title);
+        out.push({
+          title,
+          path: title,
+          source: 'fulltext',
+          reliability: 0.35,
+          url: `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(title)}`,
+        });
+        if (out.length >= FULLTEXT_COUNT) break;
+      }
+      return out;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /**
+   * 候选收敛：先按通用相关度粗排，只对前 MAX_CANDIDATES 个做规范路径解析（HEAD），
+   * 再按规范路径去重——同一文章的多个别名只留一篇。
+   */
+  async _resolveCandidates(candidates, variants) {
+    if (!candidates || candidates.length === 0) return [];
+    const ranked = [...candidates].sort(
+      (a, b) => relevanceScore(b, variants) - relevanceScore(a, variants)
+    );
+    const top = ranked.slice(0, MAX_CANDIDATES);
+    // 精确探针的候选路径已是规范路径，无需再发一次 HEAD（避免重复探测）
+    const resolved = await Promise.all(
+      top.map((c) => (c.source === 'exact' ? c : this._resolveCanonical(c)))
+    );
+    const byPath = new Map();
+    for (const item of resolved) {
+      if (item && !byPath.has(item.path)) byPath.set(item.path, item);
+    }
+    return Array.from(byPath.values());
+  }
+
+  // 标题检索（面板用）：A 精确探针 + B 标题联想 → 规范化去重后返回标题列表
+  async search(rawTerm) {
+    if (!rawTerm || !rawTerm.trim() || !this.isOnline) return [];
+    const variants = getAllVariants(rawTerm.trim());
+    if (variants.length === 0) return [];
+
+    const [probe, suggest] = await Promise.all([
+      this._probeExact(variants),
+      this._suggestTitles(variants),
+    ]);
+    const merged = [...probe, ...suggest];
+    if (merged.length === 0) return [];
+
+    const resolved = await this._resolveCandidates(merged, variants);
+    return resolved.map((c) => ({
+      title: c.title,
+      path: c.path,
+      url: c.url,
+      exact: c.source === 'exact' || variants.some((v) => v && c.title === v),
+    }));
+  }
   // 解析 Kiwix 条目的规范路径：HEAD /content/{title}，跟随 302 取得真实目标
   async _resolveCanonical(item) {
     const content = this.contentId || 'wikipedia_zh_all_maxi';
@@ -1177,99 +1606,112 @@ class WikiService {
     return null;
   }
 
-  async _fetchSummaryForTitle(title, userQuery = '') {
-    if (!this.isOnline) return null;
+  /** 抓取一个条目的 HTML 并解析出规范标题（供取正文与消歧义判定共用） */
+  async _getPage(title) {
+    if (!this.isOnline || !title) return null;
     const content = this.contentId || 'wikipedia_zh_all_maxi';
     const articleUrl = `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(title)}`;
-
     try {
       const res = await fetch(articleUrl, { signal: AbortSignal.timeout(2500) });
       if (!res.ok) return null;
       const html = await res.text();
 
-      // Resolve true canonical URL and canonical title (following Kiwix HTTP 302 redirects)
       const finalUrl = res.url || articleUrl;
       let canonicalTitle = title;
       try {
-        const urlObj = new URL(finalUrl);
-        const rawLast = urlObj.pathname.split('/').pop();
+        const rawLast = new URL(finalUrl).pathname.split('/').pop();
         if (rawLast) canonicalTitle = decodeURIComponent(rawLast);
       } catch (e) {
         // ignore
       }
-
       const titleTagMatch = html.match(/<title>([^<_\-]+?)(?:\s*[-–—|]\s*.*?)?<\/title>/i);
-      if (titleTagMatch && titleTagMatch[1]) {
-        canonicalTitle = titleTagMatch[1].trim();
-      }
+      if (titleTagMatch && titleTagMatch[1]) canonicalTitle = titleTagMatch[1].trim();
 
-      // Disambiguation page handler (strict Wikipedia category check, e.g. 特斯拉 -> 特斯拉公司)
-      const isDisambig =
-        /"全部(?:主條目|主条目)?消歧[义義]頁?面"/.test(html) ||
-        html.includes('id="disambigbox"') ||
-        html.includes('class="disambig');
-
-      if (isDisambig) {
-        const queryStr = Array.isArray(userQuery) ? userQuery.join(' ') : (userQuery || '');
-        const activeTokens = getAllVariants(queryStr);
-
-        const linkMatches = [...html.matchAll(/<li>\s*<a[^>]*href="([^"#]+)"[^>]*title="([^"]+)"[^>]*>(.*?)<\/li>/gis)];
-        let bestTarget = null;
-        let bestScore = -1;
-
-        for (const lm of linkMatches) {
-          const candTitle = decodeURIComponent(lm[2]);
-          const lineText = lm[0].replace(/<[^>]+>/g, '');
-          const combined = (candTitle + ' ' + lineText).toLowerCase();
-          let score = 0;
-
-          // Score by active intent tokens with variant matching
-          for (const tk of activeTokens) {
-            for (const v of getAllVariants(tk)) {
-              if (combined.includes(v.toLowerCase())) score += 5;
-            }
-          }
-
-          // Entity type relevance heuristics
-          if (/(?:公司|企业|企業|汽车|汽車|车|車|产品|產品|智能|科技|软件|硬件)/i.test(lineText)) {
-            score += 3;
-          }
-
-          if (score > bestScore && score > 0) {
-            bestScore = score;
-            bestTarget = candTitle;
-          }
-        }
-
-        if (bestTarget && bestTarget !== title) {
-          const resolved = await this._fetchSummaryForTitle(bestTarget, userQuery);
-          if (resolved) return resolved;
-        }
-      }
-
-      const queryStr = Array.isArray(userQuery) ? userQuery.join(' ') : (userQuery || title);
-      const simplifiedTitle = toSimplifiedChinese(canonicalTitle);
-
-      // Assemble structured, zero-truncation context (panoramic or routed)
-      const assembled = await assembleArticleContext(html, queryStr);
-      if (!assembled || !assembled.context) {
-        return null;
-      }
-
-      // 不再由小模型改写事实：直接返回归一后的原文，交给主力模型自行定位与综合
-      return {
-        title: simplifiedTitle,
-        context: assembled.context,
-        url: finalUrl,
-      };
+      return { html, finalUrl, canonicalTitle };
     } catch (e) {
-      console.error('[WikiService] _fetchSummaryForTitle error:', e);
       return null;
     }
   }
 
+  /**
+   * 抓取单个条目的归一原文。
+   * rejectStrongDisambig：命中「强标记」的消歧义页直接判为不可用（包含命中/全文检索轨使用，
+   * 避免把「XX可以指：…」的链接列表当正文注入）。
+   */
+  async _fetchSummaryForTitle(title, userQuery = '', rejectStrongDisambig = false) {
+    const page = await this._getPage(title);
+    if (!page) return null;
+
+    if (rejectStrongDisambig && detectDisambiguation(page.html).strong) return null;
+
+    const queryStr = Array.isArray(userQuery) ? userQuery.join(' ') : userQuery || title;
+    const assembled = await assembleArticleContext(page.html, queryStr);
+    if (!assembled || !assembled.context) return null;
+
+    // 不再由小模型改写事实：直接返回归一后的原文，交给主力模型自行定位与综合
+    return {
+      title: toSimplifiedChinese(page.canonicalTitle),
+      context: assembled.context,
+      url: page.finalUrl,
+    };
+  }
+
+  /**
+   * 按关键字解析条目（每个关键字**独立、串行**）：
+   *   ① 精确命中且非消歧义页 → 取该篇（1 篇，该关键字结束）
+   *   ② 精确命中是消歧义页   → 主力模型读义项列表选 1 个；选中即视为「完全命中」（1 篇，结束）
+   *   ③ 模型回答「都不匹配」 → 落到包含命中（按通用相关度取 ≤2 篇）
+   *   ④ A/B/C 全无可用候选   → 才启用全文检索（按通用相关度取 ≤2 篇）
+   */
+  async _resolveForKeyword(keyword, question) {
+    const variants = getAllVariants(keyword);
+    if (variants.length === 0) return { articles: [], trace: 'no-variant' };
+
+    // ---- ① / ② 精确命中 ----
+    const exactCands = await this._resolveCandidates(await this._probeExact(variants), variants);
+    for (const cand of exactCands) {
+      const page = await this._getPage(cand.title);
+      if (!page) continue;
+
+      const dis = detectDisambiguation(page.html);
+      if (dis.isDisambig) {
+        const senses = extractSenses(page.html);
+        const pick = await pickSenseWithMainModel(question, senses);
+        if (pick) {
+          const article = await this._fetchSummaryForTitle(pick, question);
+          if (article) return { articles: [article], trace: 'disambig-picked' };
+        }
+        if (dis.strong) continue; // 强标记的消歧义页：不注入链接列表，继续看下一个候选
+        // 弱判定且模型未选：按普通条目处理，避免误杀列表类条目
+      }
+
+      const article = await this._fetchSummaryForTitle(cand.title, question);
+      if (article) {
+        return { articles: [article], trace: dis.isDisambig ? 'disambig-none' : 'exact' };
+      }
+    }
+
+    // ---- ③ 包含命中（标题包含关键字）----
+    const containCands = await this._resolveCandidates(await this._suggestTitles(variants), variants);
+    const picked = [];
+    for (const cand of containCands) {
+      if (picked.length >= 2) break;
+      const article = await this._fetchSummaryForTitle(cand.title, question, true);
+      if (article) picked.push(article);
+    }
+    if (picked.length > 0) return { articles: picked, trace: 'containment' };
+
+    // ---- ④ 全文检索（末位手段）----
+    const fullCands = await this._resolveCandidates(await this._fullTextSearch(keyword), variants);
+    for (const cand of fullCands) {
+      if (picked.length >= 2) break;
+      const article = await this._fetchSummaryForTitle(cand.title, question, true);
+      if (article) picked.push(article);
+    }
+    return { articles: picked, trace: picked.length ? 'fulltext' : 'none' };
+  }
   // Atomic High-Performance RAG Pipeline
-  async getRagContext(query, budgetChars = 0) {
+  async getRagContext(query) {
     if (!query || typeof query !== 'string' || !query.trim()) {
       return { needsWiki: false, citations: [], promptContext: '', metadata: { latencyMs: 0 } };
     }
@@ -1307,61 +1749,27 @@ class WikiService {
     const validCitations = [];
     const seenTitles = new Set();
     const seenUrls = new Set();
+    const traces = [];
 
-    // 严格串行：本环节内会调用主力模型做长文目录路由，而主力模型不支持多路并发
+    // 每个关键字**独立、串行**解析（本环节会调用主力模型做义项选择与长文目录路由；
+    // 主力模型不支持多路并发，故严格串行）。具体规则见 _resolveForKeyword。
     for (const entity of targetArticles) {
-      const matches = await this.search(entity);
-      if (!matches || matches.length === 0) continue;
+      const { articles, trace } = await this._resolveForKeyword(entity, trimmed);
+      traces.push(`${entity} → ${trace}`);
+      if (!articles || articles.length === 0) continue;
 
-      // 候选已在 search() 内按规范路径去重；这里做跨关键字去重
-      const exactHits = matches.filter((m) => m.exact);
-      const containmentHits = matches
-        .filter((m) => !m.exact)
-        // 「包含关键字」时，标题里多出来的字/符号越少越靠前（标题长度升序）
-        .sort((a, b) => a.title.length - b.title.length);
-
-      // 完全命中：只取一篇（按顺序尝试，取第一篇成功抓到正文的）
-      let loadedForEntity = 0;
-      for (const m of exactHits) {
-        const articleData = await this._fetchSummaryForTitle(m.title, trimmed);
-        if (!articleData || !articleData.context) continue;
-
-        const normTitle = articleData.title.trim().toLowerCase();
-        const normUrl = articleData.url.trim().toLowerCase();
-        if (seenTitles.has(normTitle) || seenUrls.has(normUrl)) break;
+      for (const article of articles) {
+        const normTitle = article.title.trim().toLowerCase();
+        const normUrl = article.url.trim().toLowerCase();
+        if (seenTitles.has(normTitle) || seenUrls.has(normUrl)) continue;
 
         seenTitles.add(normTitle);
         seenUrls.add(normUrl);
         validCitations.push({
-          title: articleData.title,
-          url: articleData.url,
-          context: articleData.context,
+          title: article.title,
+          url: article.url,
+          context: article.context,
         });
-        loadedForEntity++;
-        break;
-      }
-
-      // 该关键字没有任何「完全命中」（或完全命中全部抓取失败）时，
-      // 才使用「包含关键字」的条目：按标题长度升序最多取两篇
-      if (loadedForEntity === 0) {
-        for (const m of containmentHits.slice(0, 2)) {
-          const articleData = await this._fetchSummaryForTitle(m.title, trimmed);
-          if (!articleData || !articleData.context) continue;
-
-          const normTitle = articleData.title.trim().toLowerCase();
-          const normUrl = articleData.url.trim().toLowerCase();
-          if (seenTitles.has(normTitle) || seenUrls.has(normUrl)) continue;
-
-          seenTitles.add(normTitle);
-          seenUrls.add(normUrl);
-          validCitations.push({
-            title: articleData.title,
-            url: articleData.url,
-            context: articleData.context,
-          });
-          loadedForEntity++;
-          if (loadedForEntity >= 2) break;
-        }
       }
     }
 
@@ -1375,54 +1783,16 @@ class WikiService {
           planner: plannerName,
           latencyMs: Date.now() - startTime,
           plan,
+          retrieval: traces,
         },
       };
     }
 
-    // 2. 组装注入内容：条目名 + 归一后原文（不改写、不截断）
-    //    budgetChars 为可选的装载预算（由前端按剩余上下文计算）：
-    //    超出时按检索优先级整篇丢弃，绝不从中间截断。
-    //    若一篇都装不下（上下文已满），向前端返回 contextOverflow 信号，提示用户新开对话。
-    const contextSections = [];
-    let used = 0;
-    let loadedCount = 0;
-    let contextOverflow = false;
-
-    if (budgetChars > 0) {
-      for (const c of validCitations) {
-        const block = `【${c.title}】\n${c.context}`;
-        if (used + block.length > budgetChars) {
-          if (loadedCount === 0) contextOverflow = true;
-          continue;
-        }
-        used += block.length;
-        loadedCount++;
-        contextSections.push(block);
-      }
-    } else {
-      for (const c of validCitations) {
-        contextSections.push(`【${c.title}】\n${c.context}`);
-        loadedCount++;
-      }
-    }
-
-    // 上下文已满：一篇都装不下，交由前端提示用户新开对话
-    if (contextOverflow) {
-      return {
-        needsWiki: false,
-        citations: [],
-        promptContext: '',
-        contextOverflow: true,
-        metadata: {
-          planner: plannerName,
-          latencyMs: Date.now() - startTime,
-          plan,
-          articleCount: 0,
-        },
-      };
-    }
-
-    const fullPromptContext = contextSections.join('\n\n');
+    // 2. 组装注入内容：条目名 + 归一后原文（不改写、不截断，且**无预算约束**）
+    //    说明：原「上下文预算装载 / contextOverflow」已整体移除。它仅作用于知识库注入，
+    //    且预算值只由前端设置推导、不随对话增长收缩，实际上从不触发，属于虚假保护。
+    //    现在检索到多少就整篇注入多少，由使用者把上下文窗口开到足够大来承载。
+    const contextSections = validCitations.map((c) => `【${c.title}】\n${c.context}`);
 
     return {
       needsWiki: true,
@@ -1431,12 +1801,13 @@ class WikiService {
         url: c.url,
         context: c.context,
       })),
-      promptContext: fullPromptContext,
+      promptContext: contextSections.join('\n\n'),
       metadata: {
         planner: plannerName,
         latencyMs: Date.now() - startTime,
         plan,
-        articleCount: loadedCount,
+        articleCount: contextSections.length,
+        retrieval: traces,
       },
     };
   }
@@ -1586,8 +1957,7 @@ class WikiService {
         req.on('end', async () => {
           try {
             const data = JSON.parse(body || '{}');
-            const budget = Number(data.budgetChars) > 0 ? Number(data.budgetChars) : 0;
-            const result = await this.getRagContext(data.query || '', budget);
+            const result = await this.getRagContext(data.query || '');
             res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify(result));
           } catch (e) {
@@ -1617,5 +1987,8 @@ class WikiService {
     }
   }
 }
+
+// 供测试/自查脚本使用（与 getAllVariants / parseWikipediaDOM 等既有导出保持一致）
+export { isNonArticleTitle, relevanceScore, detectDisambiguation, extractSenses };
 
 export const wikiService = new WikiService();
