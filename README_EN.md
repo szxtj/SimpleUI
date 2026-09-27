@@ -295,6 +295,46 @@ The "Enable knowledge base service" option in Settings is a **service-level mast
 
 The session-level 📚 toggle defaults to OFF (knowledge-base retrieval is still early-stage experimentation) and must be enabled manually. Both the session-level 🧠 thinking toggle and the 📚 knowledge-base toggle are saved per session and synced bidirectionally in real time between the main window and the Spotlight panel via `BroadcastChannel` — the two windows always share the same Q&A parameters.
 
+### Turn Stage Indicator & Abort
+
+With the session-level 📚 enabled, a turn passes through several stages before the first answer token arrives. The UI shows **at most one stage indicator at any moment** (same style as the thinking accordion; the main window and the Spotlight panel share the single `TurnStageIndicator` component), driven by real server-side instrumentation (`GET /api/wiki/rag-stage`):
+
+| UI label | Pipeline step | When | Typical time |
+| :--- | :--- | :--- | :--- |
+| 🌀 Planning search terms | Primary-model entity planning (model call ①) | every turn | 8–11s |
+| 🌀 Locating articles · i/N · entity | Variant expansion + kiwix multi-channel recall + candidate scoring | once per keyword | 1–5s |
+| 🌀 Picking sense · entity | Primary-model sense selection (model call ②) | only when a disambiguation page is hit | 8–10s |
+| 🌀 Fetching article · title | kiwix full-HTML fetch + DOM parsing + normalization | once per selected article | 0.5–2s |
+| 🌀 Planning sections | Primary-model section routing (model call ③) | only when the cleaned article exceeds 3500 chars | 8–10s |
+| ◍ Loading context x% | TTF prefill (ring gauge) | every turn | scales with injection size |
+
+Notes:
+
+- "Assembling context" is millisecond-scale string concatenation — not instrumented, not shown.
+- Planning / sense / routing are **primary-model calls** (strictly serial, unpredictable duration) — spinner only, no percentage; the prefill percentage is estimated as `elapsed × recent measured rate ÷ real prompt tokens` (ring gauge, capped at 99%).
+- The retrieval phase is **excluded** from the prefill estimate's clock (`prefillStartedAt` is stamped separately when RAG completes).
+- The whole pipeline contains **exactly these 3 primary-model calls** — there are no hidden ones.
+
+**Abort**: pressing "Stop" at any stage immediately removes this turn's placeholder message and propagates an `AbortSignal` down
+`rag-context → getRagContext → planQuery / pickSenseWithMainModel / assembleArticleContext(routing…)`
+— an in-flight primary-model call is genuinely cancelled by TTF (`cancelled by client`), the serial model is released right away, and no process or memory is left behind. The same applies to aborts during prefill / thinking / generation; once a turn ends (including interrupted ones), the action buttons and the timing metrics row are shown as usual.
+
+**Key parameters (verified line-by-line against `server/wiki_service.js`)**:
+
+| Parameter | Actual value | Function |
+| :--- | :--- | :--- |
+| Target articles | ≤ 2 (falls back to the normalized raw question) | `getRagContext` |
+| Variant matrix | ≤ 6 glyph forms: original / simplified / cn→t / tw / twp / hk | `getAllVariants` |
+| Channel A exact probe | kiwix `/content` **HEAD** following 301/302, timeout 1.2s, reliability 0.95 | `_probeExact` |
+| Channel B title suggest | `/suggest count=30`, timeout 1.5s, reliability 0.6 | `_suggestTitles` |
+| Channel D full-text | `/search pageLength=8`, timeout 2.5s, reliability 0.35 (last resort) | `_fullTextSearch` |
+| Candidate convergence | relevance-ranked, only the top **12** get a canonical HEAD (2s each), deduped by canonical path | `_resolveCandidates` |
+| Article fetch | GET timeout 2.5s | `_getPage` |
+| 3500 branch | counted over **lead + section paragraphs (Infobox excluded)** | `assembleArticleContext` |
+| Routing fallbacks | no matched sections → first 2 sections; no matched keys → first 8 Infobox keys; the lead is always kept in full | `assembleArticleContext` |
+| Containment / full-text hits | ≤ 2 articles each (`rejectStrongDisambig=true`, strong disambiguation pages skipped) | `_resolveForKeyword` |
+| Model call params | temperature 0 · top_p 0.95 · top_k 64 · max_tokens 64/80 · thinking off · SSE streaming · 30s per-call timeout | `callMainModel` |
+
 ---
 
 ## Context Window Management

@@ -93,6 +93,83 @@ export function lookupRequest(id) {
   return rec;
 }
 
+/**
+ * prefill 阶段状态（供前端在等待首个 token 时显示估算进度）。
+ *
+ * TTF server **不暴露**实时 prefill 进度（`Prefill (N/M)` 只存在于它自己的 macOS App 里，
+ * 见 Sources/TurboFieldfareApp/Core/State/AppPresentationState.swift）。
+ * 但日志里有两条真实信息可以用：
+ *   1. `prepared prompt=N` —— 本次请求的真实 prompt token 总数（生成开始前就写好）
+ *   2. `completed ... pp_tok_s=R` —— 历史请求的实测 prefill 速率
+ * 由此可估算：percent ≈ 已等待秒数 × 速率 ÷ N（封顶 99%，因为真实进度未知）。
+ * 同时返回 `inFlight`：该请求是否尚未结束（前端可据此停止显示）。
+ */
+export function prefillStatus() {
+  const text = readTail();
+  if (text === null) {
+    return { found: false, reason: 'log_unavailable', logFile: TTF_LOG_FILE };
+  }
+
+  const lines = text.split('\n');
+
+  // 1) 最近一条 prepared（从后往前）
+  let preparedIdx = -1;
+  let preparedId = '';
+  let promptTokens = 0;
+  let at = '';
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = lines[i].match(/request (chatcmpl-[0-9a-f]+) prepared prompt=(\d+)/);
+    if (m) {
+      preparedIdx = i;
+      preparedId = m[1];
+      promptTokens = Number(m[2]);
+      const ts = lines[i].match(/^\[([^\]]+)\]/);
+      at = ts ? ts[1] : '';
+      break;
+    }
+  }
+  if (preparedIdx === -1) {
+    return { found: false, reason: 'no_prepared', logFile: TTF_LOG_FILE };
+  }
+
+  // 2) 该请求是否已结束（prepared 之后出现 completed / failed / cancelled）
+  let inFlight = true;
+  for (let i = preparedIdx + 1; i < lines.length; i++) {
+    if (
+      lines[i].includes('request ' + preparedId + ' completed') ||
+      lines[i].includes('request ' + preparedId + ' failed') ||
+      lines[i].includes('request ' + preparedId + ' cancelled')
+    ) {
+      inFlight = false;
+      break;
+    }
+  }
+
+  // 3) 近期实测 prefill 速率（最近 5 个非零 pp_tok_s 的平均；无数据时用保守默认值）
+  const rates = [];
+  for (const l of lines) {
+    const m = l.match(/pp_tok_s=([\d.]+)/);
+    if (m) {
+      const v = Number(m[1]);
+      if (v > 0) rates.push(v);
+    }
+  }
+  const recent = rates.slice(-5);
+  const rate = recent.length
+    ? Math.round((recent.reduce((a, b) => a + b, 0) / recent.length) * 10) / 10
+    : 30;
+
+  return {
+    found: true,
+    id: preparedId,
+    promptTokens,
+    at, // ISO UTC，前端用它过滤掉上一轮残留的 prepared 记录
+    inFlight,
+    rate,
+    logFile: TTF_LOG_FILE,
+  };
+}
+
 export const ttfLogService = {
   /** 处理 /api/ttf/* （只读） */
   handleApi(req, res) {
@@ -113,6 +190,12 @@ export const ttfLogService = {
       const rec = lookupRequest(id);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ logFile: TTF_LOG_FILE, ...rec }));
+      return;
+    }
+
+    if (urlObj.pathname === '/api/ttf/prefill') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ logFile: TTF_LOG_FILE, ...prefillStatus() }));
       return;
     }
 

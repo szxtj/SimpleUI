@@ -3,6 +3,7 @@ import { ChatMessage } from '../types/chat';
 import { useI18n } from '../i18n';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ThinkingAccordion } from './ThinkingAccordion';
+import { TurnStageIndicator } from './TurnStageIndicator';
 import { Check, Copy, AlertCircle, BookOpen, ExternalLink, RotateCcw, Trash2 } from 'lucide-react';
 
 interface MessageItemProps {
@@ -69,6 +70,16 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, o
       ) : (
         /* Assistant Message: Clean full-width flow on the left (Qianwen Style) */
         <div className="w-full text-[#1f2328] dark:text-[#ecedf1]">
+          {/* 回合阶段指示（rag / prefill；与思考条同风格，两窗口共用本组件） */}
+          <TurnStageIndicator
+            stage={message.stage === 'prefill' ? 'prefill' : 'rag'}
+            active={!!message.pending && !message.content && !message.reasoningContent && !message.error}
+            startedAt={
+              message.stage === 'prefill' && message.prefillStartedAt
+                ? message.prefillStartedAt
+                : message.timestamp
+            }
+          />
           {/* Thinking Process Accordion */}
           {(message.reasoningContent || message.isThinking) && (
             <ThinkingAccordion
@@ -120,8 +131,10 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, o
             </div>
           )}
 
-          {/* Assistant Message Footer: Action buttons (Copy, Retry, Delete) - NO TEXT + Metrics */}
-          {message.content && !message.isThinking && (
+          {/* Assistant Message Footer: Action buttons (Copy, Retry, Delete) - NO TEXT + Metrics
+              条件不用 content：思考/prefill 阶段中断时 content 为空，但回合已结束，
+              操作按钮与指标同样应该显示。生成中（isThinking/pending）则不显示。 */}
+          {!message.isThinking && !message.pending && (
             <div className="mt-2.5 flex items-center gap-3 select-none">
               <div className="flex items-center gap-0.5 text-zinc-500 dark:text-zinc-400">
                 {/* 复制 */}
@@ -163,11 +176,11 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, o
               {/* Next to action buttons: Gray Prefill & tok/s Metrics */}
               {message.metrics && (
                 <span className="text-xs font-mono text-zinc-500 dark:text-zinc-400">
-                  {`Prefill ${(message.metrics.ttftMs / 1000).toFixed(1)}s${
+                  {`${t('metricsPrefill')} ${(message.metrics.ttftMs / 1000).toFixed(1)}s${
                     message.metrics.promptTokens > 0
                       ? ` (${(message.metrics.promptTokens / (message.metrics.ttftMs / 1000)).toFixed(1)} tok/s)`
                       : ''
-                  } · Decode ${message.metrics.tokensPerSecond} tok/s`}
+                  } · ${t('metricsDecode')} ${message.metrics.tokensPerSecond} tok/s`}
                 </span>
               )}
             </div>

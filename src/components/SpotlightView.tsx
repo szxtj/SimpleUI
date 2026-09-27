@@ -4,6 +4,7 @@ import {
   AppSettings,
   ServerHealthInfo,
   WikiStatusInfo,
+  WikiCitation,
 } from '../types/chat';
 import {
   loadSettings,
@@ -23,6 +24,7 @@ import {
 } from '../services/chatTurn';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ThinkingAccordion } from './ThinkingAccordion';
+import { TurnStageIndicator } from './TurnStageIndicator';
 import { ImageAttachment } from './ImageAttachment';
 import { ContextRing } from './ContextRing';
 import { WikiDrawer } from './WikiDrawer';
@@ -351,7 +353,8 @@ export const SpotlightView: React.FC = () => {
             messageId: currentAsstMsgIdRef.current,
             reasoningContent: accumulatedThoughtRef.current,
             content: accumulatedContentRef.current,
-            isThinking: !accumulatedContentRef.current && enableThinking,
+            // 只有思考真的开始（已有思考 token）才算"思考中"，prefill 阶段不算
+            isThinking: accumulatedThoughtRef.current.length > 0,
             thinkingDuration: (performance.now() - thinkingStartTimeRef.current) / 1000,
             source: 'SPOTLIGHT',
           });
@@ -515,18 +518,46 @@ export const SpotlightView: React.FC = () => {
     }
 
     // 2. 离线维基 RAG：与主窗口共用 services/chatTurn 的同一实现（提示词逐字一致），且不再有上下文预算。
-    const { promptToSend, citations: foundCitations } = await buildPromptWithWiki({
-      textToSend,
-      lang,
-      wikiMasterEnabled: wikiStatus.enabled,
-      sessionEnableWiki: enableWikiSearch,
-      wikiConnected: wikiStatus.connected,
-    });
-
+    // AbortController 先建：停止按钮在检索阶段同样生效（中止检索与所有相关模型调用）。
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
     thinkingStartTimeRef.current = performance.now();
     const thinkingStartTime = thinkingStartTimeRef.current;
+
+    let promptToSend = textToSend;
+    let foundCitations: WikiCitation[] = [];
+    try {
+      const rag = await buildPromptWithWiki({
+        textToSend,
+        lang,
+        wikiMasterEnabled: wikiStatus.enabled,
+        sessionEnableWiki: enableWikiSearch,
+        wikiConnected: wikiStatus.connected,
+        signal: abortController.signal,
+      });
+      promptToSend = rag.promptToSend;
+      foundCitations = rag.citations;
+    } catch (e) {
+      if ((e as Error).name === 'AbortError' || abortController.signal.aborted) {
+        // 检索期间被叫停：撤下本轮占位消息，无任何后续调用
+        abortControllerRef.current = null;
+        setIsGenerating(false);
+        setLiveStreamingTokens(null);
+        setMessages((prev) =>
+          prev.filter((m) => m.id !== userMessage.id && m.id !== asstMessageId)
+        );
+        recordActivity();
+        return;
+      }
+      throw e;
+    }
+
+    // RAG 解析完成 → 进入 prefill 阶段（与主窗口同一阶段机）
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === asstMessageId ? { ...m, stage: 'prefill', prefillStartedAt: Date.now() } : m
+      )
+    );
 
     let accumulatedThought = '';
     let accumulatedContent = '';
@@ -552,7 +583,7 @@ export const SpotlightView: React.FC = () => {
             role: 'assistant',
             content: accumulatedContent,
             reasoningContent: accumulatedThought,
-            isThinking: isFinal ? false : (!accumulatedContent && enableThinking),
+            isThinking: isFinal ? false : (accumulatedThought.length > 0 && !accumulatedContent),
             thinkingDuration: finalThinkingDuration || (performance.now() - thinkingStartTime) / 1000,
             timestamp: Date.now(),
             metrics,
@@ -594,7 +625,12 @@ export const SpotlightView: React.FC = () => {
             source: 'SPOTLIGHT',
           });
         },
-        onFirstToken: () => {},
+        onFirstToken: () => {
+          // 首个 token 到达：prefill 结束，撤下"载入上下文"指示
+          setMessages((prev) =>
+            prev.map((m) => (m.id === asstMessageId ? { ...m, pending: false } : m))
+          );
+        },
         onThought: (delta) => {
           accumulatedThought += delta;
           accumulatedThoughtRef.current = accumulatedThought;
@@ -1188,6 +1224,14 @@ export const SpotlightView: React.FC = () => {
             // Assistant message
             return (
               <div key={msg.id} className="space-y-2">
+                {/* 回合阶段指示（rag / prefill；与主窗口同一组件） */}
+                <TurnStageIndicator
+                  stage={msg.stage === 'prefill' ? 'prefill' : 'rag'}
+                  active={!!msg.pending && !msg.content && !msg.reasoningContent && !msg.error}
+                  startedAt={
+                    msg.stage === 'prefill' && msg.prefillStartedAt ? msg.prefillStartedAt : msg.timestamp
+                  }
+                />
                 {/* Thinking accordion */}
                 {(msg.reasoningContent || msg.isThinking) && (
                   <ThinkingAccordion
@@ -1238,8 +1282,10 @@ export const SpotlightView: React.FC = () => {
                   </div>
                 )}
 
-                {/* Action Toolbar under message: Action buttons (Copy, Retry, Delete) - NO TEXT + Metrics */}
-                {msg.content && !isGenerating && (
+                {/* Action Toolbar under message: Action buttons (Copy, Retry, Delete) - NO TEXT + Metrics
+                    条件不用 content：思考/prefill 阶段中断时 content 为空，但回合已结束，
+                    操作按钮与指标同样应该显示。生成中（isGenerating）则不显示。 */}
+                {!isGenerating && !msg.isThinking && !msg.pending && (
                   <div className="mt-2 flex items-center gap-3 select-none">
                     <div className="flex items-center gap-0.5 text-zinc-500 dark:text-zinc-400">
                       {/* 复制 */}
@@ -1277,11 +1323,11 @@ export const SpotlightView: React.FC = () => {
                     {/* Gray Prefill & tok/s metrics */}
                     {msg.metrics && (
                       <span className="text-xs font-mono text-zinc-500 dark:text-zinc-400">
-                        {`Prefill ${(msg.metrics.ttftMs / 1000).toFixed(1)}s${
+                        {`${t('metricsPrefill')} ${(msg.metrics.ttftMs / 1000).toFixed(1)}s${
                           msg.metrics.promptTokens > 0
                             ? ` (${(msg.metrics.promptTokens / (msg.metrics.ttftMs / 1000)).toFixed(1)} tok/s)`
                             : ''
-                        } · Decode ${msg.metrics.tokensPerSecond} tok/s`}
+                        } · ${t('metricsDecode')} ${msg.metrics.tokensPerSecond} tok/s`}
                       </span>
                     )}
                   </div>

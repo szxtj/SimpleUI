@@ -533,17 +533,21 @@ export class WikiAPI {
     return await this.getStatus();
   }
 
-  static async getRagContext(query: string): Promise<RagContextResponse> {
+  static async getRagContext(query: string, signal?: AbortSignal): Promise<RagContextResponse> {
     try {
       const res = await fetch('/api/wiki/rag-context', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query }),
+        // 用户点停止 → abort → 服务端经 req 'close' 中止检索与所有相关模型调用
+        signal,
       });
       if (res.ok) {
         return await res.json();
       }
     } catch (e) {
+      // 用户中止必须向上传播（吞成 needsWiki:false 会让流程带着中止信号继续发推理请求）
+      if ((e as Error).name === 'AbortError') throw e;
       console.error('Wiki getRagContext failed:', e);
     }
     return {

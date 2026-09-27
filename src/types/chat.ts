@@ -30,6 +30,9 @@ export interface ChatMessage {
   reasoningContent?: string;    // Streamed reasoning process
   isThinking?: boolean;         // Currently thinking
   thinkingDuration?: number;    // Time spent thinking in seconds
+  pending?: boolean;            // 助手占位消息尚未收到首个 token（prefill 阶段）
+  stage?: 'rag' | 'prefill';    // pending 期间的细分阶段：知识库检索 / 引擎 prefill
+  prefillStartedAt?: number;    // prefill 阶段开始时刻（估算百分比以此为计时起点，而非消息创建时刻）
   metrics?: TurnMetrics;
   timestamp: number;
   error?: string;

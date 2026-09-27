@@ -210,6 +210,8 @@ const BOILERPLATE_SECTIONS = [
   '注释', '註釋', '脚注', '腳註', '参考资料', '參考資料', '参考文献', '參考文獻',
   '出处', '出處', '文献', '文獻', '外部链接', '外部連結', '外部鏈接',
   '参见', '參見', '相关条目', '相關條目', '另见', '另見', '延伸阅读', '延伸閱讀',
+  // 「相关列表 / 相关主题」与参见同类：条目尾部的纯链接导航小节，无正文价值
+  '相关列表', '相關列表', '相关主题', '相關主題',
   'notes', 'references', 'external links', 'see also', 'further reading',
   'footnotes', 'sources', 'bibliography',
 ];
@@ -623,10 +625,11 @@ export function parseWikipediaDOM(rawHtml) {
 
 // 主力模型目录语义路由：超长条目（> 3500 字）从大纲目录与 Infobox 键名中
 // 挑选最可能包含答案的小节与属性。规则放 system，数据放 user。
-export async function routeArticleSectionsWithSLM(query, headings, infoboxKeys) {
+export async function routeArticleSectionsWithSLM(query, headings, infoboxKeys, signal) {
   if (!query || (!headings.length && !infoboxKeys.length)) {
     return { sections: [], keys: [] };
   }
+  throwIfAborted(signal);
 
   const systemPrompt = `[任务] 从百科条目的章节大纲与 Infobox 属性列表中，挑选最可能直接包含用户问题答案的小节与属性。
 [输出] 只输出一个 JSON 对象：{"sections": ["小节名称"], "keys": ["属性名称"]}，不要输出任何其他文字。
@@ -645,6 +648,7 @@ export async function routeArticleSectionsWithSLM(query, headings, infoboxKeys) 
     systemPrompt,
     maxTokens: 80,
     timeoutMs: 30000,
+    signal,
   });
   if (!out) return { sections: [], keys: [] };
 
@@ -659,7 +663,8 @@ export async function routeArticleSectionsWithSLM(query, headings, infoboxKeys) 
 }
 
 // Assemble zero-truncation, high-fidelity article context
-export async function assembleArticleContext(rawHtml, userQuery) {
+export async function assembleArticleContext(rawHtml, userQuery, signal) {
+  throwIfAborted(signal);
   const dom = parseWikipediaDOM(rawHtml);
 
   // Step 2: 全局二次归一 + 结构化标记还原。
@@ -712,7 +717,9 @@ export async function assembleArticleContext(rawHtml, userQuery) {
   const headings = normSections.map((s) => s.title);
   const infoboxKeys = normInfobox.map((item) => item.key);
 
-  const route = await routeArticleSectionsWithSLM(userQuery, headings, infoboxKeys);
+  // 长文（>3500 字）走切分路由：主力模型从章节大纲里挑相关小节（单独打点）
+  setRagStage('routing');
+  const route = await routeArticleSectionsWithSLM(userQuery, headings, infoboxKeys, signal);
 
   const parts = [];
 
@@ -770,12 +777,41 @@ export async function assembleArticleContext(rawHtml, userQuery) {
  *   关闭时必须同时给 enable_thinking:false 与 reasoning_effort:'none'
  * - 主力模型**不支持多路并发**，调用方必须串行
  */
+// ============ 用户中止支持 ============
+// RAG 管线（实体规划 / 义项选择 / 章节路由）会多次调用主力模型且串行执行；
+// 用户在检索期间点"停止"时，客户端会断开 rag-context 请求，服务端据此把
+// 中止信号沿调用链穿透到每一次模型调用，确保模型不被无谓占用、无残留。
+
+function abortError() {
+  const e = new Error('rag_aborted');
+  e.name = 'AbortError';
+  return e;
+}
+
+function throwIfAborted(signal) {
+  if (signal && signal.aborted) throw abortError();
+}
+
 export async function callMainModel(
   prompt,
-  { systemPrompt = null, maxTokens = 64, timeoutMs = 30000, temperature = 0, seed = null } = {}
+  { systemPrompt = null, maxTokens = 64, timeoutMs = 30000, temperature = 0, seed = null, signal = null } = {}
 ) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // 外部中止信号并入内部超时控制器：fetch 与 body 读取会一并取消。
+  // 与超时区分开——超时按"规划失败"返回 null，用户中止必须向上传播。
+  let abortedByUser = false;
+  if (signal) {
+    if (signal.aborted) {
+      abortedByUser = true;
+      controller.abort();
+    } else {
+      signal.addEventListener('abort', () => {
+        abortedByUser = true;
+        controller.abort();
+      }, { once: true });
+    }
+  }
 
   // Gemma 4 原生支持 system role，规则放 system、问题放 user 比全塞 user 更稳。
   // temperature 用 0：实测与官方建议的 1.0 在 12 个全新问题上质量一致，
@@ -834,11 +870,13 @@ export async function callMainModel(
       }
     }
     return out.trim() || null;
-  } catch (err) {
-    clearTimeout(timer);
-    return null;
+    } catch (err) {
+      clearTimeout(timer);
+      // 用户中止必须向上传播（吞成 null 会让管线带着中止信号继续跑完）
+      if (abortedByUser) throw abortError();
+      return null;
+    }
   }
-}
 
 
 // 规划规则放 system（Gemma 4 原生支持 system role，指令遵循更稳），示例与提问放 user。
@@ -861,8 +899,9 @@ export const MAIN_PLANNER_USER = (query) => `[示例]
 问：${query}
 答：`;
 
-export async function planQueryWithMainModel(query) {
+export async function planQueryWithMainModel(query, signal) {
   if (!query || typeof query !== 'string') return null;
+  throwIfAborted(signal);
   const trimmed = query.trim();
   if (!trimmed) return null;
 
@@ -870,6 +909,7 @@ export async function planQueryWithMainModel(query) {
     systemPrompt: MAIN_PLANNER_SYSTEM,
     maxTokens: 64,
     timeoutMs: 30000,
+    signal,
   });
   if (!out) return null;
 
@@ -892,8 +932,8 @@ export async function planQueryWithMainModel(query) {
 
 // 实体规划入口：由主力模型承担（不做小模型回退——1234 服务已从链路中移除）。
 // 规划失败时返回 null，由 getRagContext 使用归一后的原始提问直接检索。
-export async function planQuery(query) {
-  return planQueryWithMainModel(query);
+export async function planQuery(query, signal) {
+  return planQueryWithMainModel(query, signal);
 }
 
 // ==========================================
@@ -1052,8 +1092,9 @@ const SENSE_PICK_SYSTEM = `[任务] 用户用某个词提问，该词在百科�
 2. 若没有任何候选与用户问题相关，输出 {"pick": null}。严禁猜测。`;
 
 /** 用主力模型从义项列表中选一个（返回 null 表示都不匹配 → 该关键字弃权） */
-async function pickSenseWithMainModel(question, senses) {
+async function pickSenseWithMainModel(question, senses, signal) {
   if (!senses || senses.length === 0) return null;
+  throwIfAborted(signal);
   const lines = senses.map((s) => `- ${s.title}：${s.description}`).join('\n');
   const userPrompt = `[用户问题]\n${question}\n\n[候选条目]\n${lines}\n\n[输出]`;
 
@@ -1061,6 +1102,7 @@ async function pickSenseWithMainModel(question, senses) {
     systemPrompt: SENSE_PICK_SYSTEM,
     maxTokens: 64,
     timeoutMs: 30000,
+    signal,
   });
   if (!out) return null;
 
@@ -1639,14 +1681,17 @@ class WikiService {
    * rejectStrongDisambig：命中「强标记」的消歧义页直接判为不可用（包含命中/全文检索轨使用，
    * 避免把「XX可以指：…」的链接列表当正文注入）。
    */
-  async _fetchSummaryForTitle(title, userQuery = '', rejectStrongDisambig = false) {
+  async _fetchSummaryForTitle(title, userQuery = '', rejectStrongDisambig = false, signal) {
+    throwIfAborted(signal);
+    // 抓取条目原文（kiwix 取回 + DOM 解析 + 归一），打点含条目名
+    setRagStage('fetching', title);
     const page = await this._getPage(title);
     if (!page) return null;
 
     if (rejectStrongDisambig && detectDisambiguation(page.html).strong) return null;
 
     const queryStr = Array.isArray(userQuery) ? userQuery.join(' ') : userQuery || title;
-    const assembled = await assembleArticleContext(page.html, queryStr);
+    const assembled = await assembleArticleContext(page.html, queryStr, signal);
     if (!assembled || !assembled.context) return null;
 
     // 不再由小模型改写事实：直接返回归一后的原文，交给主力模型自行定位与综合
@@ -1664,29 +1709,33 @@ class WikiService {
    *   ③ 模型回答「都不匹配」 → 落到包含命中（按通用相关度取 ≤2 篇）
    *   ④ A/B/C 全无可用候选   → 才启用全文检索（按通用相关度取 ≤2 篇）
    */
-  async _resolveForKeyword(keyword, question) {
+  async _resolveForKeyword(keyword, question, signal) {
+    throwIfAborted(signal);
     const variants = getAllVariants(keyword);
     if (variants.length === 0) return { articles: [], trace: 'no-variant' };
 
     // ---- ① / ② 精确命中 ----
     const exactCands = await this._resolveCandidates(await this._probeExact(variants), variants);
     for (const cand of exactCands) {
+      throwIfAborted(signal);
       const page = await this._getPage(cand.title);
       if (!page) continue;
 
       const dis = detectDisambiguation(page.html);
       if (dis.isDisambig) {
         const senses = extractSenses(page.html);
-        const pick = await pickSenseWithMainModel(question, senses);
+        // 歧义页：主力模型读义项列表选 1 个（单独打点，这一步是整条检索里最耗时的环节之一）
+        setRagStage('sense', keyword);
+        const pick = await pickSenseWithMainModel(question, senses, signal);
         if (pick) {
-          const article = await this._fetchSummaryForTitle(pick, question);
+          const article = await this._fetchSummaryForTitle(pick, question, false, signal);
           if (article) return { articles: [article], trace: 'disambig-picked' };
         }
         if (dis.strong) continue; // 强标记的消歧义页：不注入链接列表，继续看下一个候选
         // 弱判定且模型未选：按普通条目处理，避免误杀列表类条目
       }
 
-      const article = await this._fetchSummaryForTitle(cand.title, question);
+      const article = await this._fetchSummaryForTitle(cand.title, question, false, signal);
       if (article) {
         return { articles: [article], trace: dis.isDisambig ? 'disambig-none' : 'exact' };
       }
@@ -1697,7 +1746,8 @@ class WikiService {
     const picked = [];
     for (const cand of containCands) {
       if (picked.length >= 2) break;
-      const article = await this._fetchSummaryForTitle(cand.title, question, true);
+      throwIfAborted(signal);
+      const article = await this._fetchSummaryForTitle(cand.title, question, true, signal);
       if (article) picked.push(article);
     }
     if (picked.length > 0) return { articles: picked, trace: 'containment' };
@@ -1706,13 +1756,15 @@ class WikiService {
     const fullCands = await this._resolveCandidates(await this._fullTextSearch(keyword), variants);
     for (const cand of fullCands) {
       if (picked.length >= 2) break;
-      const article = await this._fetchSummaryForTitle(cand.title, question, true);
+      throwIfAborted(signal);
+      const article = await this._fetchSummaryForTitle(cand.title, question, true, signal);
       if (article) picked.push(article);
     }
     return { articles: picked, trace: picked.length ? 'fulltext' : 'none' };
   }
   // Atomic High-Performance RAG Pipeline
-  async getRagContext(query) {
+  async getRagContext(query, signal) {
+    throwIfAborted(signal);
     if (!query || typeof query !== 'string' || !query.trim()) {
       return { needsWiki: false, citations: [], promptContext: '', metadata: { latencyMs: 0 } };
     }
@@ -1736,11 +1788,15 @@ class WikiService {
 
     const startTime = Date.now();
 
+    // 阶段上报：供前端在等待首个 token 之前显示"知识库检索"阶段指示（见 /api/wiki/rag-stage）。
+    // 只存最近一次回合的状态（生成串行，前端用时间戳过滤残留）。
+    setRagStage('planning');
+
     // 0ms 归一化：将用户提问规范为大陆标准简体（自动将繁体字形与“记忆体/软体/滑鼠/晶片”等港台特有用法对齐为“内存/软件/鼠标/芯片”）
     const normalizedQuery = toSimplifiedChinese(trimmed);
 
     // 1. 实体规划（主力模型；不做任何小模型回退——规划失败时直接用归一后的原始提问检索）
-    const plan = await planQuery(normalizedQuery);
+    const plan = await planQuery(normalizedQuery, signal);
     const plannerName = plan?.planner || 'raw-fallback';
     const targetArticles =
       plan && Array.isArray(plan.target_articles) && plan.target_articles.length > 0
@@ -1754,8 +1810,10 @@ class WikiService {
 
     // 每个关键字**独立、串行**解析（本环节会调用主力模型做义项选择与长文目录路由；
     // 主力模型不支持多路并发，故严格串行）。具体规则见 _resolveForKeyword。
-    for (const entity of targetArticles) {
-      const { articles, trace } = await this._resolveForKeyword(entity, trimmed);
+    for (let ei = 0; ei < targetArticles.length; ei++) {
+      const entity = targetArticles[ei];
+      setRagStage('resolving', `${ei + 1}/${targetArticles.length} · ${entity}`);
+      const { articles, trace } = await this._resolveForKeyword(entity, trimmed, signal);
       traces.push(`${entity} → ${trace}`);
       if (!articles || articles.length === 0) continue;
 
@@ -1775,6 +1833,7 @@ class WikiService {
     }
 
     // 检索不到相关条目 → 静默回退，不注入任何噪音
+    // （组装上下文是毫秒级字符串拼接，不打点、不显示）
     if (validCitations.length === 0) {
       return {
         needsWiki: false,
@@ -1956,12 +2015,23 @@ class WikiService {
         let body = '';
         req.on('data', (chunk) => (body += chunk));
         req.on('end', async () => {
+          // 客户端提前断开连接（用户点了"停止"）→ 中止检索与所有相关的模型调用，
+          // 串行的主力模型立即释放，不留残留。
+          // ⚠️ 不能监听 req 的 'close'：keep-alive 下请求体读完它也会触发（"请求完成"
+          // 同样算 close），会把刚启动的管线立即误杀。改监听 res：响应没写完就关闭
+          // 才代表客户端真的提前断开了。
+          const ac = new AbortController();
+          res.on('close', () => {
+            if (!res.writableEnded) ac.abort();
+          });
           try {
             const data = JSON.parse(body || '{}');
-            const result = await this.getRagContext(data.query || '');
+            const result = await this.getRagContext(data.query || '', ac.signal);
+            if (res.writableEnded || res.destroyed) return;
             res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify(result));
           } catch (e) {
+            if (e?.name === 'AbortError' || res.writableEnded || res.destroyed) return;
             console.error('[WikiService] rag-context error:', e);
             res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(
@@ -1974,6 +2044,15 @@ class WikiService {
             );
           }
         });
+        return;
+      }
+
+      // RAG 阶段查询：前端在等待首个 token 之前渲染"知识库检索"阶段指示。
+      // 只返回最近一次回合的状态（前端用时间戳过滤上一轮残留）。
+      if (pathname === '/api/wiki/rag-stage') {
+        const active = ragStageState.stage !== 'idle';
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ found: active, ...ragStageState }));
         return;
       }
 
@@ -1991,5 +2070,19 @@ class WikiService {
 
 // 供测试/自查脚本使用（与 getAllVariants / parseWikipediaDOM 等既有导出保持一致）
 export { isNonArticleTitle, relevanceScore, detectDisambiguation, extractSenses };
+
+// ---------------------------------------------------------------------------
+// RAG 阶段上报：记录最近一次检索回合所处阶段，供 /api/wiki/rag-stage 查询，
+// 前端在等待首个 token 之前渲染"知识库检索"阶段指示。只保留最近一次状态
+// （服务端串行处理检索；前端用时间戳过滤上一轮残留）。
+// ---------------------------------------------------------------------------
+let ragStageState = { stage: 'idle', detail: '', at: 0, history: [] };
+
+function setRagStage(stage, detail = '') {
+  ragStageState = { stage, detail, at: Date.now(), history: ragStageState.history };
+  // 历史仅用于排障（/api/wiki/rag-stage 的 history 字段），上限 12 条防止无限增长
+  ragStageState.history.push({ stage, detail, at: ragStageState.at });
+  if (ragStageState.history.length > 12) ragStageState.history.shift();
+}
 
 export const wikiService = new WikiService();

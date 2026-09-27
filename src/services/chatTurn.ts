@@ -73,15 +73,17 @@ export async function buildPromptWithWiki(opts: {
   wikiMasterEnabled: boolean;
   sessionEnableWiki: boolean;
   wikiConnected: boolean;
+  /** 用户点"停止"时的中止信号：会中止检索请求，并沿服务端管线中止所有相关模型调用 */
+  signal?: AbortSignal;
 }): Promise<WikiPromptResult> {
-  const { textToSend, lang, wikiMasterEnabled, sessionEnableWiki, wikiConnected } = opts;
+  const { textToSend, lang, wikiMasterEnabled, sessionEnableWiki, wikiConnected, signal } = opts;
 
   if (!(wikiMasterEnabled && sessionEnableWiki && wikiConnected && textToSend)) {
     return { promptToSend: textToSend, citations: [] };
   }
 
   try {
-    const rag = await WikiAPI.getRagContext(textToSend);
+    const rag = await WikiAPI.getRagContext(textToSend, signal);
     if (rag.needsWiki && rag.citations && rag.citations.length > 0) {
       return {
         promptToSend: buildGroundingPrompt(rag.promptContext, textToSend, lang),
@@ -89,6 +91,8 @@ export async function buildPromptWithWiki(opts: {
       };
     }
   } catch (err) {
+    // 用户中止必须向上传播，由调用方清理本轮占位消息
+    if ((err as Error).name === 'AbortError' || signal?.aborted) throw err;
     console.warn('Knowledge Base retrieval error:', err);
   }
 
@@ -102,7 +106,9 @@ export function buildTurnMessages(opts: {
   images: string[];
   enableThinking: boolean;
 }): { userMessage: ChatMessage; assistantMessage: ChatMessage; nextMessages: ChatMessage[] } {
-  const { historyMessages, textToSend, images, enableThinking } = opts;
+  // enableThinking 仍在 opts 中（调用方传入），但占位消息不再据此置 isThinking：
+  // prefill 阶段不算思考中，首个思考 token 到达后由调用方置 true。
+  const { historyMessages, textToSend, images } = opts;
   const now = Date.now();
 
   const userMessage: ChatMessage = {
@@ -118,7 +124,15 @@ export function buildTurnMessages(opts: {
     role: 'assistant',
     content: '',
     reasoningContent: '',
-    isThinking: enableThinking,
+    // prefill 阶段（尚未收到任何 token）不算"思考中"——否则思考动画会和
+    // PrefillIndicator 同时显示。首个思考 token 到达后由调用方置 true。
+    isThinking: false,
+    // prefill 阶段标记：占位消息尚未收到任何 token。首个 token 到达时由
+    // 调用方（App.tsx / SpotlightView.tsx 的 onFirstToken）置回 false。
+    pending: true,
+    // 回合阶段机：占位消息先进入知识库检索阶段；RAG 解析完成、即将请求推理引擎时
+    // 由调用方切到 'prefill'。任何时刻只显示一个阶段指示器。
+    stage: 'rag',
     timestamp: now + 1,
   };
 

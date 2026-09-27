@@ -8,6 +8,7 @@ import {
   AppSettings,
   ServerHealthInfo,
   TurnMetrics,
+  WikiCitation,
   WikiStatusInfo,
 } from './types/chat';
 import {
@@ -499,32 +500,14 @@ export const App: React.FC = () => {
     const sessionEnableWiki = targetSession.enableWikiSearch ?? false;
     const sessionEnableThinking = targetSession.enableThinking ?? false;
 
-    // 离线维基 RAG：检索 + Grounding Prompt 包装。
-    // 与 Spotlight 浮窗共用 services/chatTurn 的同一实现（提示词逐字一致），且不再有上下文预算。
-    const { promptToSend, citations: foundCitations } = await buildPromptWithWiki({
-      textToSend,
-      lang: activeLang,
-      wikiMasterEnabled: wikiStatus.enabled,
-      sessionEnableWiki,
-      wikiConnected: wikiStatus.connected,
-    });
-
-    if (abortController.signal.aborted) {
-      abortControllersRef.current.delete(targetSessionId);
-      setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetSessionId));
-      return;
-    }
-
-    const { userMessage, assistantMessage: baseAssistantMessage } = buildTurnMessages({
+    // 占位消息**先于知识库检索**创建（stage='rag'）：检索/消歧/路由期间界面不再空转，
+    // 由 TurnStageIndicator 按 stage 显示当前阶段。
+    const { userMessage, assistantMessage } = buildTurnMessages({
       historyMessages,
       textToSend,
       images: currentImages,
       enableThinking: sessionEnableThinking,
     });
-    const assistantMessage: ChatMessage = {
-      ...baseAssistantMessage,
-      citations: foundCitations.length > 0 ? foundCitations : undefined,
-    };
     const assistantMsgId = assistantMessage.id;
 
     // Update session title on first message
@@ -549,9 +532,78 @@ export const App: React.FC = () => {
       })
     );
 
+    // 离线维基 RAG：检索 + Grounding Prompt 包装。
+    // 与 Spotlight 浮窗共用 services/chatTurn 的同一实现（提示词逐字一致），且不再有上下文预算。
+    // abortController.signal 传入后：用户点"停止"不仅撤下占位消息，
+    // 还会沿服务端管线中止正在进行的检索与全部主力模型调用（规划/义项/路由）。
+    let ragResult: { promptToSend: string; citations: WikiCitation[] };
+    try {
+      ragResult = await buildPromptWithWiki({
+        textToSend,
+        lang: activeLang,
+        wikiMasterEnabled: wikiStatus.enabled,
+        sessionEnableWiki,
+        wikiConnected: wikiStatus.connected,
+        signal: abortController.signal,
+      });
+    } catch (e) {
+      if ((e as Error).name === 'AbortError' || abortController.signal.aborted) {
+        // 检索期间被叫停：撤下本轮占位消息，无任何后续调用
+        abortControllersRef.current.delete(targetSessionId);
+        setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetSessionId));
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === targetSessionId
+              ? { ...s, messages: s.messages.filter((m) => m.id !== userMessage.id && m.id !== assistantMsgId) }
+              : s
+          )
+        );
+        return;
+      }
+      throw e;
+    }
+    const { promptToSend, citations: foundCitations } = ragResult;
+
+    if (abortController.signal.aborted) {
+      // 检索期间被叫停：撤下本轮占位消息
+      abortControllersRef.current.delete(targetSessionId);
+      setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetSessionId));
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === targetSessionId
+            ? { ...s, messages: s.messages.filter((m) => m.id !== userMessage.id && m.id !== assistantMsgId) }
+            : s
+        )
+      );
+      return;
+    }
+
+    // RAG 解析完成 → 进入 prefill 阶段；引用胶囊数据此时才确定，一并挂上
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === targetSessionId
+          ? {
+              ...s,
+              messages: s.messages.map((m) =>
+                m.id === assistantMsgId
+                  ? {
+                      ...m,
+                      stage: 'prefill',
+                      // 估算百分比以此为计时起点：RAG 阶段的等待不计入 prefill
+                      prefillStartedAt: Date.now(),
+                      citations: foundCitations.length > 0 ? foundCitations : undefined,
+                    }
+                  : m
+              ),
+            }
+          : s
+      )
+    );
+
     let accumulatedReasoning = '';
     let accumulatedContent = '';
-    let isThinking = sessionEnableThinking;
+    // prefill 阶段不算"思考中"——首个思考 token 到达（onThought）后才置 true
+    let isThinking = false;
     let thinkingDuration = 0;
     const thinkingStartTime = performance.now();
 
@@ -585,7 +637,19 @@ export const App: React.FC = () => {
           });
         },
         onFirstToken: () => {
-          // first token received
+          // 首个 token 到达：prefill 结束，撤下"载入上下文"指示
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === targetSessionId
+                ? {
+                    ...s,
+                    messages: s.messages.map((m) =>
+                      m.id === assistantMsgId ? { ...m, pending: false } : m
+                    ),
+                  }
+                : s
+            )
+          );
         },
         onThought: (delta) => {
           const duration = (performance.now() - thinkingStartTime) / 1000;

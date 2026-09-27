@@ -290,6 +290,49 @@ flowchart TD
 
 会话级 📚 开关默认关闭（知识库检索目前处于早期实验阶段），需手动点亮。会话级 🧠 思考开关与 📚 知识库开关都随会话保存，主窗口与 Spotlight 浮窗通过 `BroadcastChannel` 实时双向同步，两个窗口的问答参数始终一致。
 
+### 问答界面的阶段指示与中止
+
+开启会话级 📚 后，一轮问答在拿到第一个回答 token 之前会经历多个阶段。界面上**任何时刻最多显示一个阶段指示器**（与思考条同风格，大窗口与 Spotlight 浮窗共用同一组件 `TurnStageIndicator`），阶段由服务端真实打点驱动（`GET /api/wiki/rag-stage`）：
+
+| 界面显示 | 对应管线环节 | 何时出现 | 典型耗时 |
+| :--- | :--- | :--- | :--- |
+| 🌀 规划检索词 | 主力模型实体规划（模型调用 ①） | 每轮必现 | 8~11s |
+| 🌀 定位条目 · i/N · 实体名 | 变体展开 + kiwix 多通道召回 + 候选筛选 | 每个关键字 1 次 | 1~5s |
+| 🌀 选择义项 · 实体名 | 主力模型义项选择（模型调用 ②） | 仅命中消歧义页 | 8~10s |
+| 🌀 抓取原文 · 条目名 | kiwix 取全文 HTML + DOM 解析 + 归一 | 每篇入选条目 1 次 | 0.5~2s |
+| 🌀 规划小节 | 主力模型章节路由（模型调用 ③） | 仅条目清洗后 > 3500 字 | 8~10s |
+| ◍ 正在载入上下文 x% | TTF prefill（圆环填充） | 每轮必现 | 随注入长度 |
+
+说明：
+
+- 「组装上下文」是毫秒级字符串拼接，不打点、不显示。
+- 规划 / 义项 / 路由三处是**主力模型调用**（严格串行、时长不可预测），只转圈不显示百分比；
+  prefill 的百分比按「已等待 × 近期实测速率 ÷ 真实 prompt 数」估算（圆环填充，封顶 99%）。
+- 检索阶段**不计入** prefill 的估算计时（`prefillStartedAt` 在 RAG 完成时单独打点）。
+- 主力模型调用全管线**仅上述 3 处**，无隐藏调用。
+
+**中止**：任意阶段点「停止」都会立即撤下本轮占位消息，并经 `AbortSignal` 沿
+`rag-context → getRagContext → planQuery / pickSenseWithMainModel / assembleArticleContext(路由…)`
+全链穿透——正在生成中的主力模型调用会被 TTF 以 `cancelled by client` 真实取消，
+串行的模型即刻释放，无进程与内存残留。prefill / 思考 / 生成阶段的中止同理；
+回合结束后操作按钮与耗时指标照常显示（含中断的轮次）。
+
+**关键参数（逐条核对自 `server/wiki_service.js`）**：
+
+| 参数 | 实际值 | 所在函数 |
+| :--- | :--- | :--- |
+| 目标条目数 | ≤ 2（规划失败时用归一后的原始提问） | `getRagContext` |
+| 变体矩阵 | ≤ 6 个字形：原词 / 简体 / cn→t / tw / twp / hk | `getAllVariants` |
+| 通道 A 精确探针 | kiwix `/content` **HEAD** 跟随 301/302，超时 1.2s，可靠度 0.95 | `_probeExact` |
+| 通道 B 标题联想 | `/suggest count=30`，超时 1.5s，可靠度 0.6 | `_suggestTitles` |
+| 通道 D 全文检索 | `/search pageLength=8`，超时 2.5s，可靠度 0.35（末位手段） | `_fullTextSearch` |
+| 候选收敛 | 按通用相关度粗排后仅前 **12** 个做规范路径 HEAD（各 2s），按规范路径去重 | `_resolveCandidates` |
+| 取原文 | GET 超时 2.5s | `_getPage` |
+| 3500 分支 | 统计口径为**引言 + 小节正文字数（不含 Infobox）** | `assembleArticleContext` |
+| 路由兜底 | 模型未匹配小节 → 取前 2 节；未匹配属性 → 取前 8 个 Infobox 键；引言始终完整保留 | `assembleArticleContext` |
+| 包含/全文命中 | 各取 ≤ 2 篇（`rejectStrongDisambig=true`，强消歧义页直接跳过） | `_resolveForKeyword` |
+| 模型调用参数 | temperature 0 · top_p 0.95 · top_k 64 · max_tokens 64/80 · 关思考 · SSE 流式 · 单次超时 30s | `callMainModel` |
+
 ---
 
 ## 上下文窗口管理
