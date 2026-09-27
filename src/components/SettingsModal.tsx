@@ -3,7 +3,7 @@ import { AppSettings, WikiStatusInfo } from '../types/chat';
 import { DEFAULT_SETTINGS } from '../services/storage';
 import { WikiAPI } from '../services/api';
 import { resolveLanguage, formatArticleCount, translations, Language, TranslationKeys } from '../i18n';
-import { X, RotateCcw, Check, BookOpen } from 'lucide-react';
+import { X, RotateCcw, Check, BookOpen, AppWindow, SlidersHorizontal } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -157,6 +157,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         {/* Form Body */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
+          {/* 应用设置卡片（外观主题 / 显示语言 / Spotlight 空闲重置）——与知识库卡片同风格 */}
+          <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
+            <div className="flex items-center gap-2 mb-3">
+              <AppWindow className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
+                {t('settingsAppCard')}
+              </span>
+            </div>
           {/* Appearance Theme & Display Language */}
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -225,6 +233,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               {t('spotlightResetTip')}
             </p>
           </div>
+          </div>
 
           {/* Knowledge Base Configuration Card */}
           <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
@@ -235,37 +244,85 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   {t('wikiKnowledgeBase')}
                 </span>
               </div>
-              <div className="flex items-center gap-1.5 text-[11px]">
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    wikiStatus?.connected
-                      ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.8)]'
-                      : 'bg-zinc-400 dark:bg-zinc-600'
-                  }`}
-                />
-                <span
-                  className={
-                    wikiStatus?.connected
-                      ? 'text-emerald-600 dark:text-emerald-400 font-medium'
-                      : 'text-zinc-500'
-                  }
-                >
-                  {wikiStatus?.connected
-                    ? `${t('wikiStatusConnected')}${
-                        wikiStatus.articleCount > 0
-                          ? ` (${formatArticleCount(wikiStatus.articleCount, activeLang)})`
-                          : ''
-                      }`
-                    : t('wikiStatusDisconnected')}
-                </span>
-              </div>
+              {/* 服务关闭时不显示状态（此时必然是"已断开"，属于噪音）；
+                  状态未加载时按"开启"处理，保持可见 */}
+              {(wikiStatus?.enabled ?? true) && (
+                <div className="flex items-center gap-1.5 text-[11px]">
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      wikiStatus?.connected
+                        ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.8)]'
+                        : 'bg-zinc-400 dark:bg-zinc-600'
+                    }`}
+                  />
+                  <span
+                    className={
+                      wikiStatus?.connected
+                        ? 'text-emerald-600 dark:text-emerald-400 font-medium'
+                        : 'text-zinc-500'
+                    }
+                  >
+                    {wikiStatus?.connected
+                      ? `${t('wikiStatusConnected')}${
+                          wikiStatus.articleCount > 0
+                            ? ` (${formatArticleCount(wikiStatus.articleCount, activeLang)})`
+                            : ''
+                        }`
+                      : t('wikiStatusDisconnected')}
+                  </span>
+                </div>
+              )}
             </div>
 
-            {/* Custom ZIM Path Input */}
-            <div className="mb-3">
-              <label className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-1">
-                {t('kbPathLabel')}
-              </label>
+            {/* Knowledge Base 服务开关（开关在上，路径在下；状态行保持在最顶上）
+                服务关闭时整块隐藏路径设置——开不了服务，改路径没有意义，
+                同时隐藏该块下方的分隔线（否则会留下一条下面没内容的横线）。 */}
+            <div
+              className={`flex items-center justify-between gap-3 ${
+                wikiStatus?.enabled ?? true
+                  ? 'pb-3 border-b border-black/5 dark:border-white/5'
+                  : ''
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => handleToggleWikiService(!(wikiStatus?.enabled ?? true))}
+                disabled={isTogglingService}
+                className="flex-1 min-w-0 text-left cursor-pointer disabled:cursor-not-allowed"
+              >
+                <div className="font-medium text-zinc-700 dark:text-zinc-200">
+                  {t('wikiServiceToggle')}
+                </div>
+                <div className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                  {t('wikiServiceToggleDesc')}
+                </div>
+              </button>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={wikiStatus?.enabled ?? true}
+                disabled={isTogglingService}
+                onClick={() => handleToggleWikiService(!(wikiStatus?.enabled ?? true))}
+                className={`relative w-10 h-[22px] rounded-full transition-colors flex-shrink-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none ${
+                  wikiStatus?.enabled ?? true
+                    ? 'bg-emerald-600'
+                    : 'bg-zinc-300 dark:bg-zinc-600'
+                }`}
+              >
+                <span
+                  className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] rounded-full bg-white shadow transition-transform duration-200 ${
+                    wikiStatus?.enabled ?? true ? 'translate-x-[18px]' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* Custom ZIM Path Input —— 仅在服务开启时显示 */}
+            {(wikiStatus?.enabled ?? true) && (
+              <div className="pt-3 mb-3">
+                <label className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                  {t('kbPathLabel')}
+                </label>
               <div className="flex gap-2">
                 <input
                   type="text"
@@ -293,26 +350,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               )}
             </div>
-
-            <label className="flex items-center justify-between cursor-pointer pt-2 border-t border-black/5 dark:border-white/5">
-              <div>
-                <div className="font-medium text-zinc-700 dark:text-zinc-200">
-                  {t('wikiServiceToggle')}
-                </div>
-                <div className="text-[10px] text-zinc-500 dark:text-zinc-400">
-                  {t('wikiServiceToggleDesc')}
-                </div>
-              </div>
-              <input
-                type="checkbox"
-                checked={wikiStatus?.enabled ?? true}
-                disabled={isTogglingService}
-                onChange={(e) => handleToggleWikiService(e.target.checked)}
-                className="w-4 h-4 rounded text-blue-600 accent-blue-600 cursor-pointer disabled:opacity-50"
-              />
-            </label>
+            )}
           </div>
 
+          {/* 模型设置卡片（端口 / 模型 / 采样参数 / 停止序列 / 系统提示词）——与知识库卡片同风格 */}
+          <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
+            <div className="flex items-center gap-2 mb-3">
+              <SlidersHorizontal className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+              <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
+                {t('settingsModelCard')}
+              </span>
+            </div>
           {/* Local Service Port Selection */}
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -327,7 +375,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     setFormData({ ...formData, apiPort: Number(val) });
                   }
                 }}
-                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none"
+                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
               >
                 <option value={1235}>{t('portOptionTTF')}</option>
                 <option value={11434}>{t('portOptionOllama')}</option>
@@ -350,7 +398,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 value={formData.apiPort ?? 1235}
                 onChange={(e) => setFormData({ ...formData, apiPort: Number(e.target.value) || 1235 })}
                 placeholder="1235"
-                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none font-mono"
+                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
               />
             </div>
           </div>
@@ -365,7 +413,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 type="text"
                 value={formData.modelId ?? 'gemma-4-26b-a4b-it'}
                 onChange={(e) => setFormData({ ...formData, modelId: e.target.value })}
-                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none font-mono"
+                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
               />
             </div>
 
@@ -383,7 +431,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     maxTokens: Math.floor(val / 2),
                   });
                 }}
-                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none"
+                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
               >
                 <option value={8192}>8,192 (8K)</option>
                 <option value={16384}>16,384 (16K)</option>
@@ -400,7 +448,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div>
               <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
                 <span>{t('temperatureLabel')}</span>
-                <span className="font-mono text-blue-500 dark:text-blue-400">{formData.temperature ?? 1.0}</span>
+                <span className="font-mono text-amber-500 dark:text-amber-400">{formData.temperature ?? 1.0}</span>
               </div>
               <input
                 type="range"
@@ -409,7 +457,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 step="0.05"
                 value={formData.temperature ?? 1.0}
                 onChange={(e) => setFormData({ ...formData, temperature: Number(e.target.value) })}
-                className="w-full accent-blue-500"
+                className="w-full accent-amber-500"
               />
               <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('temperatureTip')}</span>
             </div>
@@ -417,7 +465,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div>
               <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
                 <span>{t('topPLabel')}</span>
-                <span className="font-mono text-blue-500 dark:text-blue-400">{formData.topP ?? 0.95}</span>
+                <span className="font-mono text-amber-500 dark:text-amber-400">{formData.topP ?? 0.95}</span>
               </div>
               <input
                 type="range"
@@ -426,7 +474,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 step="0.01"
                 value={formData.topP ?? 0.95}
                 onChange={(e) => setFormData({ ...formData, topP: Number(e.target.value) })}
-                className="w-full accent-blue-500"
+                className="w-full accent-amber-500"
               />
               <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('topPTip')}</span>
             </div>
@@ -437,7 +485,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div>
               <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
                 <span>{t('topKLabel')}</span>
-                <span className="font-mono text-blue-500 dark:text-blue-400">{formData.topK ?? 64}</span>
+                <span className="font-mono text-amber-500 dark:text-amber-400">{formData.topK ?? 64}</span>
               </div>
               <input
                 type="range"
@@ -446,7 +494,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 step="1"
                 value={formData.topK ?? 64}
                 onChange={(e) => setFormData({ ...formData, topK: Number(e.target.value) })}
-                className="w-full accent-blue-500"
+                className="w-full accent-amber-500"
               />
               <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('topKTip')}</span>
             </div>
@@ -454,7 +502,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div>
               <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
                 <span>{t('repetitionPenaltyLabel')}</span>
-                <span className="font-mono text-blue-500 dark:text-blue-400">{formData.repetitionPenalty ?? 1.0}</span>
+                <span className="font-mono text-amber-500 dark:text-amber-400">{formData.repetitionPenalty ?? 1.0}</span>
               </div>
               <input
                 type="range"
@@ -463,7 +511,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 step="0.05"
                 value={formData.repetitionPenalty ?? 1.0}
                 onChange={(e) => setFormData({ ...formData, repetitionPenalty: Number(e.target.value) })}
-                className="w-full accent-blue-500"
+                className="w-full accent-amber-500"
               />
               <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('repetitionPenaltyTip')}</span>
             </div>
@@ -476,7 +524,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <label className="font-medium text-zinc-600 dark:text-[#9aa0ac]">
                   {t('maxTokensLabel')}
                 </label>
-                <span className="text-[10px] text-blue-600 dark:text-blue-400 font-medium bg-blue-500/10 px-1.5 py-0.5 rounded">
+                <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium bg-amber-500/10 px-1.5 py-0.5 rounded">
                   {t('linkedHalf')}
                 </span>
               </div>
@@ -503,7 +551,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   })
                 }
                 placeholder={t('seedPlaceholder')}
-                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none font-mono"
+                className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
               />
             </div>
           </div>
@@ -518,7 +566,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               value={stopInput}
               onChange={(e) => setStopInput(e.target.value)}
               placeholder={t('stopPlaceholder')}
-              className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none font-mono"
+              className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
             />
           </div>
 
@@ -531,8 +579,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               rows={3}
               value={formData.systemPrompt ?? ''}
               onChange={(e) => setFormData({ ...formData, systemPrompt: e.target.value })}
-              className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none resize-none leading-relaxed"
+              className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none resize-none leading-relaxed"
             />
+          </div>
           </div>
         </div>
 
