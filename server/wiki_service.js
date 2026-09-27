@@ -194,11 +194,12 @@ const DROP_TAGS = new Set(['script', 'style', 'link', 'meta', 'noscript', 'ifram
 const NON_CONTENT_CLASS_TOKENS = new Set([
   'navbox', 'vertical-navbox', 'sidebar', 'ambox', 'metadata', 'mbox-small',
   'hatnote', 'mw-indicator', 'reflist', 'references', 'mw-references-wrap',
-  'thumb', 'mw-editsection', 'sortkey', 'noprint', 'stub', 'catlinks',
+  'mw-editsection', 'sortkey', 'noprint', 'stub', 'catlinks',
   'printfooter', 'toc', 'mw-jump-link', 'mw-hidden-catlinks', 'navbox-styles',
   'mw-empty-elt', 'magnify', 'mw-cite-backlink', 'mw-file-description',
   'navigation-not-searchable', 'shortdescription', 'mw-hidden-catlinks',
-  // 注：thumb / gallery 不在此列——它们承载图注与图集文字，需保留
+  // 注：thumb / gallerybox / gallery 不在此列——它们承载图片与图注，需保留
+  //     （曾把 thumb 留在这里，导致图集与老式缩略图的 <img> 被整枝删掉、面板只剩图注文字）
 ]);
 
 // 结构性「非正文」id（同上，属结构标记）
