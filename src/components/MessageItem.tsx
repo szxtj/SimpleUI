@@ -78,12 +78,11 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, o
             />
           )}
 
-          {/* Assistant Text / Markdown / KaTeX */}
+          {/* Assistant Text / Markdown / KaTeX
+              （思考中且尚无正文时不再额外渲染"Thinking..."——折叠条头部已表达同样状态） */}
           <div className="text-[15px] leading-relaxed">
             {message.content ? (
               <MarkdownRenderer content={message.content} />
-            ) : message.isThinking ? (
-              <span className="text-xs text-zinc-500 italic">{t('thinkingNotice')}</span>
             ) : null}
           </div>
 

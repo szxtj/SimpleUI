@@ -125,16 +125,18 @@ body {
   padding: 0.15rem 0;
 }
 
+/* react-markdown 会把代码块包在一层 <pre> 里，而代码块本身已由 CodeBlock 组件提供
+   边框/底色/圆角/内边距——这层 <pre> 若再各自加框就会出现"双框"。故全部置空。 */
 .markdown-body pre {
-  margin: 0.75rem 0;
-  border-radius: 0.5rem;
-  background-color: #f6f8fa;
-  border: 1px solid #d0d7de;
+  margin: 0;
+  border-radius: 0;
+  background-color: transparent;
+  border: none;
 }
 
 .dark .markdown-body pre {
-  background-color: #1a1b1e;
-  border: 1px solid #2e3036;
+  background-color: transparent;
+  border: none;
 }
 
 .markdown-body code:not(pre code) {

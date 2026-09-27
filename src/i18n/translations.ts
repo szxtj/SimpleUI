@@ -68,6 +68,7 @@ export const translations = {
     // ThinkingAccordion
     thinkingActive: '正在深度思考中...',
     thoughtProcess: '思考过程',
+    thoughtForPrefix: '思考了',
     seconds: '秒',
     organizingThoughts: '组织思绪中...',
 
@@ -251,7 +252,8 @@ export const translations = {
     // ThinkingAccordion
     thinkingActive: 'Deep thinking in progress...',
     thoughtProcess: 'Thought Process',
-    seconds: 's',
+    thoughtForPrefix: 'Thought for',
+    seconds: 'seconds',
     organizingThoughts: 'Organizing thoughts...',
 
     // PerformanceFooter
