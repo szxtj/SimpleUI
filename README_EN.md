@@ -199,7 +199,7 @@ Each keyword is resolved **independently**, in this fixed priority:
 
 #### Step 5.1: Structured markers and panel rendering
 
-The side panel must be *readable*, while what reaches the model must stay **plain text** — one extraction feeds both, split by markers:
+The side panel (entry points and unavailable-state behaviour: see "Knowledge Panel" above) must be *readable*, while what reaches the model must stay **plain text** — one extraction feeds both, split by markers:
 
 | Marker | Payload | Injection side | Panel side |
 | :--- | :--- | :--- | :--- |
@@ -295,24 +295,50 @@ The "Enable knowledge base service" option in Settings is a **service-level mast
 
 The session-level 📚 toggle defaults to OFF (knowledge-base retrieval is still early-stage experimentation) and must be enabled manually. Both the session-level 🧠 thinking toggle and the 📚 knowledge-base toggle are saved per session and synced bidirectionally in real time between the main window and the Spotlight panel via `BroadcastChannel` — the two windows always share the same Q&A parameters.
 
+> The 📚 above is the **retrieval toggle** (whether this turn should search the knowledge base — subject to the master switch and readiness).
+> Opening the **knowledge panel** is a separate concern and is unaffected by those two states — see below.
+
+### Knowledge Panel (two windows · three entry points · one implementation)
+
+The panel has **exactly one implementation** (`WikiPanel.tsx`); the two windows only differ in their container:
+
+| Entry point | Window | Container |
+| :--- | :--- | :--- |
+| "Expand knowledge panel" toggle in the conversation header | Main window | **Docked sidebar** on the right (440px, slides in/out with the layout) |
+| The 🔍 button **left of the send button** | Spotlight panel (present in both the capsule and expanded states) | **Full-cover drawer**: same corner radius (22px) and border as the Spotlight card, with an overall-close ✖ at its top-left and a close ✕ at its top-right |
+| **Citation chip** under an answer | Both windows | Same container as above, opened directly at that article |
+
+Panel contents: search bar + result list + the full article as rich text (formulas / tables / images / sub-headings, rendered natively by `WikiContextView`).
+When opened from a citation chip, the panel additionally shows the **exact plain-text context that was injected into the model for that turn** at the top (verifiable), with the full article below it.
+
+**When the knowledge base is unavailable (master switch off / not ready):**
+
+- The search bar and the content area are replaced by a **single notice of the same style** (stating why: service off / no ZIM found or not connected) — identical in the main window, the Spotlight panel and from any entry point.
+- The **injected context text carried by the citation chip is still shown** above that notice (it is local data attached to the chip and needs no service).
+- **No knowledge-base request is made at all** (no full-article fetch, no search) to avoid connection errors; the header's readiness dot and "open in browser" are hidden as well.
+
+Spotlight sizing: the capsule state is only 88px tall, which cannot host the panel, so opening it expands the window to a readable size (500×640) and closing it shrinks back to the input capsule.
+
 ### Turn Stage Indicator & Abort
 
-With the session-level 📚 enabled, a turn passes through several stages before the first answer token arrives. The UI shows **at most one stage indicator at any moment** (same style as the thinking accordion; the main window and the Spotlight panel share the single `TurnStageIndicator` component), driven by real server-side instrumentation (`GET /api/wiki/rag-stage`):
+With the session-level 📚 enabled, a turn passes through several stages before the first answer token arrives. The UI shows **at most one stage indicator at any moment** (same style as the thinking accordion: spinner + label + elapsed seconds; the main window and the Spotlight panel share the single `TurnStageIndicator` component). Retrieval labels are driven by real server-side instrumentation (`setRagStage` → `GET /api/wiki/rag-stage`):
 
 | UI label | Pipeline step | When | Typical time |
 | :--- | :--- | :--- | :--- |
-| 🌀 Planning search terms | Primary-model entity planning (model call ①) | every turn | 8–11s |
-| 🌀 Locating articles · i/N · entity | Variant expansion + kiwix multi-channel recall + candidate scoring | once per keyword | 1–5s |
-| 🌀 Picking sense · entity | Primary-model sense selection (model call ②) | only when a disambiguation page is hit | 8–10s |
-| 🌀 Fetching article · title | kiwix full-HTML fetch + DOM parsing + normalization | once per selected article | 0.5–2s |
-| 🌀 Planning sections | Primary-model section routing (model call ③) | only when the cleaned article exceeds 3500 chars | 8–10s |
-| ◍ Loading context x% | TTF prefill (ring gauge) | every turn | scales with injection size |
+| 🌀 Planning search terms 3.2s | Primary-model entity planning (model call ①) | every turn | 8–11s |
+| 🌀 Locating articles · i/N · entity 1.4s | Variant expansion + kiwix multi-channel recall + candidate scoring | once per keyword | 1–5s |
+| 🌀 Picking sense · entity 9.1s | Primary-model sense selection (model call ②) | only when a disambiguation page is hit | 8–10s |
+| 🌀 Fetching article · title 0.8s | kiwix full-HTML fetch + DOM parsing + normalization | once per selected article | 0.5–2s |
+| 🌀 Planning sections 8.7s | Primary-model section routing (model call ③) | only when the cleaned article exceeds 3500 chars | 8–10s |
+| 🌀 Loading context 2.1s | Engine prefill (shown as soon as the request is out) | every turn | scales with injection size |
 
 Notes:
 
+- The trailing seconds are **how long this stage has been running** (0.1s precision, refreshed every 250ms).
 - "Assembling context" is millisecond-scale string concatenation — not instrumented, not shown.
-- Planning / sense / routing are **primary-model calls** (strictly serial, unpredictable duration) — spinner only, no percentage; the prefill percentage is estimated as `elapsed × recent measured rate ÷ real prompt tokens` (ring gauge, capped at 99%).
-- The retrieval phase is **excluded** from the prefill estimate's clock (`prefillStartedAt` is stamped separately when RAG completes).
+- Planning / sense / routing are **primary-model calls** (strictly serial, unpredictable duration) — spinner only, no percentage.
+- **The prefill stage does no estimation at all**: the label "Loading context" appears as soon as the request is sent and simply counts seconds — no TTF log polling and no percentage. The earlier percentage estimate (`elapsed × recent measured rate ÷ real prompt tokens`, ring gauge) depended on too many timing windows (first-SSE-chunk arrival, log attribution, serial queuing) and has been removed entirely.
+- When the server has no **fresh** instrumentation (`at` older than 1.5s before this turn started, or the endpoint is unreachable), **no indicator is rendered at all** — never a meaningless label.
 - The whole pipeline contains **exactly these 3 primary-model calls** — there are no hidden ones.
 
 **Abort**: pressing "Stop" at any stage immediately removes this turn's placeholder message and propagates an `AbortSignal` down
@@ -435,7 +461,9 @@ SimpleUI is most deeply optimized for TurboFieldfare (TTF) while fully supportin
 ```bash
 ./start.sh
 ```
-Auto-detects inference service, installs dependencies (first run), builds, starts proxy, and opens `http://127.0.0.1:31235`.
+Probes the inference service → installs dependencies (first run) → builds **only if `dist/` is missing** → starts the proxy and opens `http://127.0.0.1:31235`.
+
+> Note: the script only builds when `dist/` is absent. **Run `npm run build` after changing the frontend**, otherwise you are served a stale build.
 
 ### Option 2: Dev Mode with Hot Reload
 ```bash
@@ -443,12 +471,16 @@ Auto-detects inference service, installs dependencies (first run), builds, start
 # or
 npm run dev
 ```
+Vite dev server (default `http://127.0.0.1:5173`; `/v1` and `/health` are proxied to the inference engine, `/api/wiki` to `31235`).
 
 ### Option 3: Build macOS Desktop App
 ```bash
 ./build_mac_app.sh install
 ```
-Compiles and installs to `/Applications/SimpleUI.app`. Supports global hotkey `⌥ Option + Space` to summon the Spotlight floating panel.
+Compiles the Swift dual-window shell plus the frontend bundle and installs to `/Applications/SimpleUI.app`. Supports the global hotkey `⌥ Option + Space` to summon the Spotlight floating panel.
+
+> The installed app is a **self-contained bundle**: `build_mac_app.sh` copies `dist/` and `server/` into `Contents/Resources`, and the runtime prefers that bundled copy.
+> Therefore **after any frontend change you must re-run `./build_mac_app.sh install`** — rebuilding only the project's `dist/` does not affect the installed app.
 
 ---
 
@@ -458,7 +490,8 @@ Compiles and installs to `/Applications/SimpleUI.app`. Supports global hotkey `�
 SimpleUI/
 ├── server/
 │   ├── proxy.js              # Node.js proxy server (port 31235)
-│   │                         #   SSE passthrough, static hosting, dynamic port routing
+│   │                         #   SSE passthrough, static hosting, dynamic port routing,
+│   │                         #   knowledge-base API
 │   ├── ttf_log.js            # Read-only TTF log probe (real prompt tokens before generation)
 │   ├── wiki_service.js       # Offline RAG pipeline core
 │   │                         #   Primary-model planning / sense selection / section routing
@@ -474,24 +507,42 @@ SimpleUI/
 │   └── Resources/            # Info.plist, AppIcon.icns
 │
 └── src/
-    ├── App.tsx               # Top-level state machine, session management, liveStreamingTokens
+    ├── App.tsx               # Top-level state machine, session management, liveStreamingTokens, sync
+    ├── main.tsx              # Entry point (suppresses the native context menu, except in inputs)
     ├── services/
-    │   ├── api.ts            # Inference engine communication, SSE parsing, onTokenProgress
+    │   ├── api.ts            # Inference engine communication, SSE parsing, real-prompt probe, token progress
     │   ├── chatTurn.ts       # Single implementation of one chat turn (grounding prompt / gating / messages)
     │   └── storage.ts        # localStorage persistence, BroadcastChannel
+    ├── hooks/
+    │   └── useTheme.ts       # system / light / dark theme application (shared by both windows)
+    ├── i18n/
+    │   ├── index.tsx         # I18nProvider / useI18n (`system` follows the OS language)
+    │   └── translations.ts   # Chinese + English string tables (TranslationKeys derives from them)
+    ├── types/
+    │   └── chat.ts           # ChatMessage / ChatSession / AppSettings / WikiStatusInfo…
     ├── utils/
-    │   └── token.ts          # Offline token estimator (CJK + non-CJK + images)
+    │   ├── token.ts          # Offline token estimator (CJK + non-CJK + images) + session calibration
+    │   ├── image.ts          # Paste / drag-and-drop images into data URLs
+    │   └── wikiFrame.ts      # Knowledge-base article external URL builder ("open in browser")
     └── components/
-        ├── ContextRing.tsx   # SVG dynamic context ring (showRemainingPercent option)
-        ├── ChatInput.tsx     # Composite input (thinking toggle, images, send/stop)
-        ├── SpotlightView.tsx # Spotlight panel complete state machine
-        ├── ChatView.tsx      # Main conversation view
-        ├── MessageItem.tsx   # Single message (thinking accordion, Markdown, KaTeX)
-        ├── WikiPanel.tsx     # The single knowledge-panel implementation: injected text + rich full
-        │                     #   article (formulas/tables/images/subheadings) + search.
-        │                     #   WikiSidebar (main window, docked) and WikiDrawer (Spotlight, overlay)
-        │                     #   are thin shells over it, so both windows render byte-identically
-        └── SettingsModal.tsx # Parameter config, inference port, language settings
+        ├── Sidebar.tsx       # Session list + bottom-left service status row + settings entry
+        ├── ChatView.tsx      # Main conversation view (header toolbar, message stream, input area)
+        ├── ChatInput.tsx     # Main-window composite input (attachments, 🧠 thinking / 📚 KB toggles, send·stop, ring)
+        ├── MessageItem.tsx   # Single message (stage indicator, thinking accordion, Markdown, chips, actions, metrics)
+        ├── MarkdownRenderer.tsx   # Markdown + KaTeX rendering
+        ├── ThinkingAccordion.tsx  # Collapsible thinking process
+        ├── TurnStageIndicator.tsx # Turn stage indicator (retrieval stages / loading context, shared)
+        ├── ContextRing.tsx   # SVG context ring (optional remaining-percent label + hover details)
+        ├── ImageAttachment.tsx    # Input-area image previews and removal
+        ├── SettingsModal.tsx # Parameter config, inference port, KB master switch, language & theme
+        ├── WikiPanel.tsx     # The single knowledge-panel implementation: search + rich full article
+        │                     #   (formulas/tables/images/subheadings) + the citation chip's injected text;
+        │                     #   unified notice and zero requests when the service is unavailable
+        ├── WikiContextView.tsx    # Panel body renderer (formulas / tables / images / subheadings)
+        ├── WikiSidebar.tsx   # Main window "docked" thin shell (→ WikiPanel)
+        ├── WikiDrawer.tsx    # Spotlight "overlay" thin shell (→ WikiPanel: same radius + overall close ✖)
+        ├── SpotlightView.tsx # Spotlight panel complete state machine (capsule / expanded, 🔍 panel entry)
+        └── PerformanceFooter.tsx # Legacy performance footer (currently unreferenced, kept for reference)
 ```
 
 ---

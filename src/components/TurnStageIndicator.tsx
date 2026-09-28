@@ -80,7 +80,9 @@ export const TurnStageIndicator: React.FC<TurnStageIndicatorProps> = ({ stage, a
                     ? t('stageSense') + d
                     : j.stage === 'fetching'
                       ? t('stageFetching') + d
-                      : t('stageSearching');
+                      : j.stage === 'routing'
+                        ? t('stageRouting') + d
+                        : t('stageSearching');
           }
         }
       } catch {
