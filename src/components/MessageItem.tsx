@@ -11,9 +11,11 @@ interface MessageItemProps {
   onOpenWiki?: (title: string, context?: string) => void;
   onRetry?: (messageId: string) => void;
   onDelete?: (messageId: string) => void;
+  /** 用户气泡的重试目标：紧随其后的助手回复 id（与浮窗的用户气泡重试一致） */
+  retryTargetId?: string;
 }
 
-export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, onRetry, onDelete }) => {
+export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, onRetry, onDelete, retryTargetId }) => {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const isUser = message.role === 'user';
@@ -52,7 +54,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, o
             </div>
           </div>
 
-          {/* User question action bar: icon-only Copy */}
+          {/* User question action bar: icon-only Copy + Retry（与浮窗一致；重试=重新发送本轮，生成中先停止） */}
           <div className="mt-1 flex items-center pr-1.5 opacity-60 group-hover:opacity-100 transition-opacity">
             <button
               onClick={handleCopy}
@@ -65,6 +67,15 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, o
                 <Copy className="w-3.5 h-3.5" />
               )}
             </button>
+            {onRetry && retryTargetId && (
+              <button
+                onClick={() => onRetry(retryTargetId)}
+                className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-black/5 dark:text-zinc-500 dark:hover:text-zinc-200 dark:hover:bg-white/5 transition-colors"
+                title={t('retryTooltip')}
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
       ) : (

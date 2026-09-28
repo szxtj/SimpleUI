@@ -247,13 +247,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </div>
           ) : (
             <div className="space-y-4">
-              {messages.map((message) => (
+              {messages.map((message, idx) => (
                 <MessageItem
                   key={message.id}
                   message={message}
                   onOpenWiki={onOpenWiki}
                   onRetry={onRetry}
                   onDelete={onDelete}
+                  // 用户气泡的重试目标：紧随其后的助手回复 id（与浮窗的用户气泡重试一致）
+                  retryTargetId={
+                    message.role === 'user' && messages[idx + 1]?.role === 'assistant'
+                      ? messages[idx + 1].id
+                      : undefined
+                  }
                 />
               ))}
               <div ref={messagesEndRef} className="h-4" />

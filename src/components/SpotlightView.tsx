@@ -568,7 +568,10 @@ export const SpotlightView: React.FC = () => {
       foundCitations = rag.citations;
     } catch (e) {
       if ((e as Error).name === 'AbortError' || abortController.signal.aborted) {
-        // 检索期间被叫停：撤下本轮占位消息，无任何后续调用
+        // 检索期间被叫停：撤下本轮占位消息，无任何后续调用。
+        // ⚠️ 若已被重试取代（currentAsstMsgIdRef 指向新回合），本清理必须跳过，
+        // 否则会清空新流的控制器引用与生成状态（实测：停止按钮失灵、状态错乱）
+        if (asstMessageId !== currentAsstMsgIdRef.current) return;
         abortControllerRef.current = null;
         setIsGenerating(false);
         setLiveStreamingTokens(null);
@@ -668,12 +671,14 @@ export const SpotlightView: React.FC = () => {
           });
         },
         onFirstToken: () => {
+          if (asstMessageId !== currentAsstMsgIdRef.current) return; // 过期流：已被重试取代
           // 首个 token 到达：prefill 结束，撤下"载入上下文"指示
           setMessages((prev) =>
             prev.map((m) => (m.id === asstMessageId ? { ...m, pending: false } : m))
           );
         },
         onThought: (delta) => {
+          if (asstMessageId !== currentAsstMsgIdRef.current) return; // 过期流：已被重试取代
           accumulatedThought += delta;
           accumulatedThoughtRef.current = accumulatedThought;
           finalThinkingDuration = (performance.now() - thinkingStartTime) / 1000;
@@ -709,6 +714,7 @@ export const SpotlightView: React.FC = () => {
           });
         },
         onContent: (delta) => {
+          if (asstMessageId !== currentAsstMsgIdRef.current) return; // 过期流：已被重试取代
           accumulatedContent += delta;
           accumulatedContentRef.current = accumulatedContent;
           recordActivity();
@@ -741,6 +747,7 @@ export const SpotlightView: React.FC = () => {
           });
         },
         onDone: (metrics) => {
+          if (asstMessageId !== currentAsstMsgIdRef.current) return; // 过期流：已被重试取代
           setIsGenerating(false);
           setLiveStreamingTokens(null);
           abortControllerRef.current = null;
@@ -780,6 +787,7 @@ export const SpotlightView: React.FC = () => {
           });
         },
         onError: (err) => {
+          if (asstMessageId !== currentAsstMsgIdRef.current) return; // 过期流：已被重试取代
           setIsGenerating(false);
           setLiveStreamingTokens(null);
           abortControllerRef.current = null;
@@ -1255,7 +1263,7 @@ export const SpotlightView: React.FC = () => {
                     {msg.content}
                   </div>
 
-                  {/* User question action bar: icon-only Copy */}
+                  {/* User question action bar: icon-only Copy + Retry（重新发送本轮，生成中先停止） */}
                   <div className="mt-1 flex items-center pr-1.5 opacity-60 group-hover:opacity-100 transition-opacity">
                     <button
                       onClick={() => handleCopyText(msg.id, msg.content)}
@@ -1267,6 +1275,19 @@ export const SpotlightView: React.FC = () => {
                       ) : (
                         <Copy className="w-3.5 h-3.5" />
                       )}
+                    </button>
+                    <button
+                      onClick={() => {
+                        // 重试本轮：找到紧随其后的助手回复，走统一的 handleRetry
+                        // （内部会先停止正在进行的生成，再重新发送）
+                        const idx = messages.findIndex((m) => m.id === msg.id);
+                        const replyId = messages[idx + 1]?.id;
+                        if (replyId) handleRetry(replyId);
+                      }}
+                      className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-black/5 dark:text-zinc-500 dark:hover:text-zinc-200 dark:hover:bg-white/5 transition-colors cursor-pointer"
+                      title={t('retryTooltip')}
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>
