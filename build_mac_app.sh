@@ -39,12 +39,20 @@ swiftc -O \
     mac_app/src/ProcessManager.swift \
     mac_app/src/MainWindowController.swift \
     mac_app/src/SpotlightPanelController.swift \
+    mac_app/src/StatusBarController.swift \
     -o "$MACOS_DIR/SimpleUI"
 
 # 拷贝资源
 cp mac_app/Resources/Info.plist "$CONTENTS_DIR/Info.plist"
 if [ -f "mac_app/Resources/AppIcon.icns" ]; then
     cp mac_app/Resources/AppIcon.icns "$RESOURCES_DIR/AppIcon.icns"
+fi
+if [ -f "mac_app/Resources/StatusBarIcon.png" ]; then
+    cp mac_app/Resources/StatusBarIcon.png "$RESOURCES_DIR/StatusBarIcon.png"
+fi
+# 状态栏图标 SVG 设计源文件（运行时不用，PNG 由它光栅化；改图标几何只改 SVG 再重出 PNG）
+if [ -f "mac_app/Resources/StatusBarIcon.svg" ]; then
+    cp mac_app/Resources/StatusBarIcon.svg "$RESOURCES_DIR/StatusBarIcon.svg"
 fi
 if [ -d "bin/kiwix" ]; then
     mkdir -p "$RESOURCES_DIR/bin"

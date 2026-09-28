@@ -4,6 +4,7 @@ import WebKit
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: MainWindowController!
     private var spotlightController: SpotlightPanelController!
+    private var statusBarController: StatusBarController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -38,6 +39,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.spotlightController.toggle()
         }
         HotKeyManager.shared.register()
+
+        // Menu bar status icon (single icon, left & right click open the same menu)
+        statusBarController = StatusBarController()
+        statusBarController.onOpenMainWindow = { [weak self] in
+            self?.mainWindowController.showAndFocus()
+        }
+        statusBarController.onOpenSpotlight = { [weak self] in
+            self?.spotlightController.show()
+        }
+        statusBarController.setup()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -48,6 +59,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        statusBarController?.teardown()
         HotKeyManager.shared.unregister()
         ProcessManager.shared.stop()
     }
