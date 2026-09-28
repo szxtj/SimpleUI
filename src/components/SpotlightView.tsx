@@ -36,6 +36,7 @@ import {
   Zap,
   Brain,
   BookOpen,
+  Search,
   Copy,
   Check,
   Maximize2,
@@ -86,6 +87,8 @@ export const SpotlightView: React.FC = () => {
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const [activeWikiArticle, setActiveWikiArticle] = useState<string | null>(null);
   const [activeWikiContext, setActiveWikiContext] = useState<string | null>(null);
+  /** 小窗口「搜索」按钮打开的知识库面板（与大窗口侧边栏等价，见 openWikiPanel） */
+  const [isWikiPanelOpen, setIsWikiPanelOpen] = useState(false);
   const activeSessionIdRef = useRef<string | null>(null);
   const isGeneratingRef = useRef(false);
   const messagesRef = useRef<ChatMessage[]>(messages);
@@ -205,6 +208,74 @@ export const SpotlightView: React.FC = () => {
   useEffect(() => {
     notifyResize(hasMessages);
   }, [hasMessages]);
+
+  /* ========================================================================= */
+  /* 输入框「搜索」按钮 → 小窗口内的知识库面板                                   */
+  /*                                                                          */
+  /* 效果与大窗口直接打开右侧侧边栏完全一致：小窗口空间有限，用**覆盖型抽屉**    */
+  /* （WikiDrawer → WikiPanel，同一份实现）承载同一个面板（可搜索维基条目、      */
+  /* 也能看引用条目的完整正文）。展开态与胶囊态都渲染这个按钮，两种状态下         */
+  /* 的容器形式也一样。                                                        */
+  /*                                                                          */
+  /* 唯一的差异是**窗口尺寸**：胶囊态窗口只有 88px 高，面板根本放不下，故打开    */
+  /* 时先把面板撑到可阅读尺寸（复用展开态尺寸），关闭时再收回输入胶囊。           */
+  /* ========================================================================= */
+  const openWikiPanel = () => {
+    setIsWikiPanelOpen(true);
+    if (!hasMessages) notifyResize(true);
+  };
+
+  const closeWikiPanel = () => {
+    setIsWikiPanelOpen(false);
+    setActiveWikiArticle(null);
+    setActiveWikiContext(null);
+    // 胶囊态打开过 → 面板关闭后窗口收回输入胶囊尺寸
+    if (!hasMessages) notifyResize(false);
+  };
+
+  /**
+   * 关闭整个浮窗（原生桥）。展开态头部左上角的 ✖ 与知识库面板左上角的 ✖ 共用同一实现，
+   * 两处外观也刻意保持一致。
+   *
+   * NOTE: 关闭浮窗**不会**中止后台生成。
+   */
+  const closeSpotlightWindow = () => {
+    // @ts-expect-error WebKit bridge
+    window.webkit?.messageHandlers?.closeSpotlight?.postMessage?.({});
+  };
+
+  /**
+   * 面板打开条件 = 「搜索」按钮打开（无条目 → 搜索页）或点击引用胶囊（有条目 → 正文页）。
+   * 两处共用同一个抽屉节点，保证展开/胶囊两种状态的显示机制逐字一致。
+   */
+  const wikiDrawerNode = (
+    <WikiDrawer
+      isOpen={isWikiPanelOpen || !!activeWikiArticle}
+      title={activeWikiArticle}
+      context={activeWikiContext}
+      onClose={closeWikiPanel}
+      onCloseWindow={closeSpotlightWindow}
+      wikiEnabled={wikiStatus.enabled}
+      wikiConnected={wikiStatus.connected}
+    />
+  );
+
+  /** 输入框发送按钮左侧的「搜索」小按钮（胶囊态 / 展开态共用同一份外观）
+   *  尺寸与右侧发送按钮完全一致：w-7 h-7 圆 + w-3.5 h-3.5 图标（发送是 ArrowUp 同尺寸）。
+   *  仅配色更轻（浅底幽灵按钮），避免抢发送这个主操作的视觉权重。
+   *
+   *  **不做服务可用性门禁**：与主窗口头部那个「展开知识库面板」开关保持一致——服务未开启 /
+   *  未就绪时照样能打开面板，由面板内部给出同风格提醒（说明为什么用不了），而不是按钮直接消失。 */
+  const wikiSearchButton = (
+    <button
+      type="button"
+      onClick={openWikiPanel}
+      className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 transition-colors bg-black/5 hover:bg-black/10 text-zinc-600 hover:text-black dark:bg-white/5 dark:hover:bg-white/10 dark:text-zinc-300 dark:hover:text-white"
+      title={t('expandWikiPanel')}
+    >
+      <Search className="w-3.5 h-3.5 stroke-[2.5]" />
+    </button>
+  );
 
   useEffect(() => {
     const isNewMessage = messages.length > prevMessagesLengthRef.current;
@@ -1040,8 +1111,10 @@ export const SpotlightView: React.FC = () => {
   if (!hasMessages) {
     return (
       <div className="w-full h-full select-none bg-transparent">
-        {/* Outer frame: gray background matching expanded bottom (bg-[#f8f9fb] / dark:bg-[#17181c]) */}
-        <div className="w-full h-full bg-[#f8f9fb] dark:bg-[#17181c] border border-black/10 dark:border-white/10 rounded-[22px] p-2 overflow-hidden flex flex-col justify-center">
+        {/* Outer frame: gray background matching expanded bottom (bg-[#f8f9fb] / dark:bg-[#17181c])
+            max-h 钉住胶囊高度 88px：打开知识库面板时原生窗口会被撑高，
+            胶囊本身不该跟着拉伸（面板是覆盖型抽屉，不参与胶囊布局） */}
+        <div className="w-full h-full max-h-[88px] bg-[#f8f9fb] dark:bg-[#17181c] border border-black/10 dark:border-white/10 rounded-[22px] p-2 overflow-hidden flex flex-col justify-center">
           {/* Hidden file input */}
           <input
             ref={fileInputRef}
@@ -1163,8 +1236,10 @@ export const SpotlightView: React.FC = () => {
                 </button>)}
               </div>
 
-              {/* Right: Send Button + Context Ring to its right */}
+              {/* Right: Search (opens knowledge panel) + Send Button + Context Ring to its right */}
               <div className="flex items-center gap-2">
+                {wikiSearchButton}
+
                 <button
                   type="button"
                   onClick={handleSend}
@@ -1184,6 +1259,9 @@ export const SpotlightView: React.FC = () => {
             </div>
           </div>
         </div>
+
+        {/* Wikipedia Offline Article Reader Drawer (胶囊态同样可搜索) */}
+        {wikiDrawerNode}
       </div>
     );
   }
@@ -1199,11 +1277,7 @@ export const SpotlightView: React.FC = () => {
           {/* Left: ✖ inside circle + Title + Status dot */}
           <div className="flex items-center gap-2.5">
             <button
-              onClick={() => {
-                // NOTE: Clicking ✖ closes Spotlight window, but does NOT stop background generation!
-                // @ts-expect-error WebKit bridge
-                window.webkit?.messageHandlers?.closeSpotlight?.postMessage?.({});
-              }}
+              onClick={closeSpotlightWindow}
               className="w-5 h-5 rounded-full bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/20 flex items-center justify-center text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white transition-colors cursor-pointer"
               title={t('closeEsc')}
             >
@@ -1495,8 +1569,10 @@ export const SpotlightView: React.FC = () => {
                 </button>)}
               </div>
 
-              {/* Right: Send Button + Context Ring */}
+              {/* Right: Search (opens knowledge panel) + Send Button + Context Ring */}
               <div className="flex items-center gap-2">
+                {wikiSearchButton}
+
                 {isGenerating ? (
                   <button
                     type="button"
@@ -1530,15 +1606,7 @@ export const SpotlightView: React.FC = () => {
       </div>
 
       {/* Wikipedia Offline Article Reader Drawer */}
-      <WikiDrawer
-        isOpen={!!activeWikiArticle}
-        title={activeWikiArticle}
-        context={activeWikiContext}
-        onClose={() => {
-          setActiveWikiArticle(null);
-          setActiveWikiContext(null);
-        }}
-      />
+      {wikiDrawerNode}
     </div>
   );
 };

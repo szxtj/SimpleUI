@@ -1072,6 +1072,8 @@ export const App: React.FC = () => {
           isOpen={isWikiPanelOpen}
           title={activeWikiArticle}
           context={activeWikiContext}
+          wikiEnabled={wikiStatus.enabled}
+          wikiConnected={wikiStatus.connected}
           onClose={() => {
             setIsWikiPanelOpen(false);
             setActiveWikiArticle(null);
