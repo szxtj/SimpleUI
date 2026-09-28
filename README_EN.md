@@ -48,6 +48,10 @@ User Input (React Frontend)
      ▼
 Node.js Proxy Server (port 31235)
      │
+     ├──► Model Service Manager (ttf_service.js)
+     │         │
+     │         └──► TurboFieldfare Inference Service (port 1235 · auto-start with app, stopped on quit)
+     │
      ├──► Wiki RAG Service (wiki_service.js)
      │         │
      │         ├──► Kiwix Offline Wiki (port 31236 · ZIM file)
@@ -58,9 +62,19 @@ Node.js Proxy Server (port 31235)
 
 | Service | Port | Role |
 | :--- | :--- | :--- |
-| Node.js Proxy (`proxy.js`) | `31235` | SSE passthrough, static hosting, dynamic routing, knowledge-base API |
+| Node.js Proxy (`proxy.js`) | `31235` | SSE passthrough, static hosting, dynamic routing, knowledge-base API, model-service management API |
 | Kiwix Offline Encyclopedia | `31236` | ZIM file serving, title suggestions, article HTTP |
 | Primary Inference Model | `1235` | Entity planning, long-article section routing, final answer generation |
+
+> **Model service management**: SimpleUI is the sole manager of the TurboFieldfare inference service —
+> the app auto-starts the service on launch (`server/ttf_service.js` invokes `ttf_server.sh` bundled
+> into Resources) and stops it on quit (same behavior as the Kiwix database service); port `1235`
+> stays shared with other frontends. The "Model Service" section in Settings provides a status light /
+> start & stop / upstream project path / runtime parameters (context capacity, expert cache,
+> thinking mode, etc.) / log viewer. Configuration persists at
+> `~/Library/Application Support/SimpleUI/model_config.json` and is also exported in
+> TurboFieldfareBar-compatible format to `~/Library/Application Support/TurboFieldfare/config.env`.
+> Management API: `/api/model/status|start|stop|restart|config|logs`.
 
 > Two auxiliary services from the earlier architecture have been removed:
 > **LAYA System 1** (port 1236) intent gate — misclassified roughly 1/3 of knowledge questions as chitchat, blocking the entire pipeline;
@@ -502,6 +516,10 @@ SimpleUI/
 │   ├── proxy.js              # Node.js proxy server (port 31235)
 │   │                         #   SSE passthrough, static hosting, dynamic port routing,
 │   │                         #   knowledge-base API
+│   ├── ttf_service.js        # Model service manager (SimpleUI as sole manager of the TTF service)
+│   │                         #   Auto-start with app / stop on quit, config persistence +
+│   │                         #   config.env-compatible export, /api/model/* endpoints
+│   ├── ttf_server.sh         # TTF start/stop script runtime asset (copied from turbo-fieldfare-manager)
 │   ├── ttf_log.js            # Read-only TTF log probe (real prompt tokens before generation)
 │   ├── wiki_service.js       # Offline RAG pipeline core
 │   │                         #   Primary-model planning / sense selection / section routing
@@ -524,7 +542,11 @@ SimpleUI/
     │   ├── chatTurn.ts       # Single implementation of one chat turn (grounding prompt / gating / messages)
     │   └── storage.ts        # localStorage persistence, BroadcastChannel
     ├── hooks/
-    │   └── useTheme.ts       # system / light / dark theme application (shared by both windows)
+    │   ├── useTheme.ts       # system / light / dark theme application (shared by both windows)
+    │   └── useFollowBottom.ts # The single scroll-protection implementation during generation
+    │                          #   (message streams ×2 + thinking box): pins to the bottom while
+    │                          #   thinking; never auto-scrolls during answer streaming, only
+    │                          #   defends the reading position; one-way stop on user scroll
     ├── i18n/
     │   ├── index.tsx         # I18nProvider / useI18n (`system` follows the OS language)
     │   └── translations.ts   # Chinese + English string tables (TranslationKeys derives from them)

@@ -9,7 +9,7 @@ import * as OpenCC from 'opencc-js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export const KIWIX_PORT = 31236;
+export const DEFAULT_KIWIX_PORT = 31236;
 
 // 主力模型（TurboFieldfare）。承担实体规划、长文目录路由与最终答案生成。
 // 注意：TTF 不支持多路并发，禁止在并行分支里调用。
@@ -117,19 +117,25 @@ function loadStoredConfig() {
       data = JSON.parse(fs.readFileSync(DEV_CONFIG_FILE, 'utf-8'));
     }
     if (data) {
+      const port = Number(data.port);
       return {
         zimPath: (data.zimPath || '').trim() || null,
         enabled: data.enabled !== undefined ? data.enabled !== false : true,
+        port: Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : DEFAULT_KIWIX_PORT,
       };
     }
   } catch (e) {
     // ignore
   }
-  return { zimPath: null, enabled: true };
+  return { zimPath: null, enabled: true, port: DEFAULT_KIWIX_PORT };
 }
 
-function saveStoredConfig(zimPath, enabled) {
-  const payload = { zimPath: (zimPath || '').trim(), enabled: enabled !== false };
+function saveStoredConfig(zimPath, enabled, port) {
+  const payload = {
+    zimPath: (zimPath || '').trim(),
+    enabled: enabled !== false,
+    port: Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : DEFAULT_KIWIX_PORT,
+  };
   try {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(payload, null, 2), 'utf-8');
   } catch (e) {
@@ -1129,6 +1135,8 @@ class WikiService {
     // 知识库服务总开关：关闭时完全停服（不拉起 kiwix、不自动重连）
     const stored = loadStoredConfig();
     this.enabled = stored.enabled;
+    // 服务监听端口（可在设置中修改；kiwix 拉起与检索/内容请求全链路使用）
+    this.port = stored.port;
   }
 
   // Find ZIM file strictly by verifying path existence (no SSD specific detection)
@@ -1179,7 +1187,7 @@ class WikiService {
   async checkHealth() {
     return new Promise((resolve) => {
       const req = http.get(
-        `http://127.0.0.1:${KIWIX_PORT}/catalog/v2/entries`,
+        `http://127.0.0.1:${this.port}/catalog/v2/entries`,
         { timeout: 1500 },
         (res) => {
           if (res.statusCode === 200) {
@@ -1282,7 +1290,7 @@ class WikiService {
 
       console.log(`[WikiService] Launching kiwix-serve for: ${zimPath}`);
       const args = [
-        '-p', `${KIWIX_PORT}`,
+        '-p', `${this.port}`,
         '-i', '127.0.0.1',
         '-n', // no top search bar overlay
         '-m', // no home button overlay
@@ -1309,7 +1317,7 @@ class WikiService {
         await new Promise((r) => setTimeout(r, 250));
         const ready = await this.checkHealth();
         if (ready) {
-          console.log(`[WikiService] kiwix-serve ready on port ${KIWIX_PORT}, content: ${this.contentId}`);
+          console.log(`[WikiService] kiwix-serve ready on port ${this.port}, content: ${this.contentId}`);
           this.isOnline = true;
           this.isStarting = false;
           return true;
@@ -1348,10 +1356,16 @@ class WikiService {
     return true;
   }
 
+  // 重启服务（应用新路径 / 端口后调用）：先停后起，避免旧端口上的存活实例造成端口冲突
+  async restartService() {
+    await this.stopService();
+    return this.startService(this.currentZimPath || undefined);
+  }
+
   // 切换知识库服务总开关
   async setEnabled(enabled) {
     this.enabled = enabled !== false;
-    saveStoredConfig(this.currentZimPath, this.enabled);
+    saveStoredConfig(this.currentZimPath, this.enabled, this.port);
     if (this.enabled) {
       await this.startService(this.currentZimPath || undefined);
     } else {
@@ -1409,7 +1423,7 @@ class WikiService {
     const results = await Promise.all(
       variants.map(async (v) => {
         try {
-          const url = `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(v)}`;
+          const url = `http://127.0.0.1:${this.port}/content/${content}/${encodeURIComponent(v)}`;
           const res = await fetch(url, {
             method: 'HEAD',
             redirect: 'manual',
@@ -1425,7 +1439,7 @@ class WikiService {
               return {
                 title: target,
                 path: target,
-                url: `http://127.0.0.1:${KIWIX_PORT}${loc}`,
+                url: `http://127.0.0.1:${this.port}${loc}`,
                 source: 'exact',
                 reliability: 0.95,
               };
@@ -1446,7 +1460,7 @@ class WikiService {
     const lists = await Promise.all(
       variants.map(async (v) => {
         try {
-          const url = `http://127.0.0.1:${KIWIX_PORT}/suggest?content=${encodeURIComponent(
+          const url = `http://127.0.0.1:${this.port}/suggest?content=${encodeURIComponent(
             content
           )}&term=${encodeURIComponent(v)}&count=${SUGGEST_COUNT}`;
           const res = await fetch(url, { signal: AbortSignal.timeout(1500) });
@@ -1464,7 +1478,7 @@ class WikiService {
                 rank: idx,
                 source: 'suggest',
                 reliability: 0.6,
-                url: `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(p)}`,
+                url: `http://127.0.0.1:${this.port}/content/${content}/${encodeURIComponent(p)}`,
               };
             });
         } catch (e) {
@@ -1487,7 +1501,7 @@ class WikiService {
   async _fullTextSearch(term) {
     const content = this.contentId || 'wikipedia_zh_all_maxi';
     try {
-      const url = `http://127.0.0.1:${KIWIX_PORT}/search?content=${encodeURIComponent(
+      const url = `http://127.0.0.1:${this.port}/search?content=${encodeURIComponent(
         content
       )}&pattern=${encodeURIComponent(term)}&books.count=1&pageLength=${FULLTEXT_COUNT}`;
       const res = await fetch(url, { signal: AbortSignal.timeout(2500) });
@@ -1504,7 +1518,7 @@ class WikiService {
           path: title,
           source: 'fulltext',
           reliability: 0.35,
-          url: `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(title)}`,
+          url: `http://127.0.0.1:${this.port}/content/${content}/${encodeURIComponent(title)}`,
         });
         if (out.length >= FULLTEXT_COUNT) break;
       }
@@ -1560,7 +1574,7 @@ class WikiService {
   async _resolveCanonical(item) {
     const content = this.contentId || 'wikipedia_zh_all_maxi';
     const raw = item.path || item.title;
-    const url = `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(raw)}`;
+    const url = `http://127.0.0.1:${this.port}/content/${content}/${encodeURIComponent(raw)}`;
     try {
       const res = await fetch(url, {
         method: 'HEAD',
@@ -1578,7 +1592,7 @@ class WikiService {
             ...item,
             title: canonicalPath,
             path: canonicalPath,
-            url: `http://127.0.0.1:${KIWIX_PORT}${loc}`,
+            url: `http://127.0.0.1:${this.port}${loc}`,
           };
         }
       }
@@ -1618,7 +1632,7 @@ class WikiService {
   async _getFullArticleTextOnce(title) {
     if (!title || !this.isOnline) return null;
     const content = this.contentId || 'wikipedia_zh_all_maxi';
-    const articleUrl = `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(title)}`;
+    const articleUrl = `http://127.0.0.1:${this.port}/content/${content}/${encodeURIComponent(title)}`;
     try {
       const res = await fetch(articleUrl, { signal: AbortSignal.timeout(10000) });
       if (!res.ok) return null;
@@ -1678,7 +1692,7 @@ class WikiService {
   async _getPage(title) {
     if (!this.isOnline || !title) return null;
     const content = this.contentId || 'wikipedia_zh_all_maxi';
-    const articleUrl = `http://127.0.0.1:${KIWIX_PORT}/content/${content}/${encodeURIComponent(title)}`;
+    const articleUrl = `http://127.0.0.1:${this.port}/content/${content}/${encodeURIComponent(title)}`;
     try {
       const res = await fetch(articleUrl, { signal: AbortSignal.timeout(2500) });
       if (!res.ok) return null;
@@ -1935,7 +1949,7 @@ class WikiService {
           JSON.stringify({
             enabled: this.enabled,
             connected: this.isOnline,
-            port: KIWIX_PORT,
+            port: this.port,
             zimPath: this.currentZimPath,
             contentId: this.contentId,
             bookTitle: this.bookTitle,
@@ -1946,29 +1960,32 @@ class WikiService {
         return;
       }
 
-      // Update / Save ZIM Path config
+      // 更新/保存知识库配置（ZIM 路径 / 端口 / 总开关），三种语义：
+      //   { enabled }                           → 仅切换总开关（开 = 立即拉起，关 = 立即停服）
+      //   { zimPath?, port?, saveOnly }         → 仅持久化，不动运行中的服务（前端「保存路径」）
+      //   { zimPath?, port?, restartIfRunning } → 持久化，运行中则重启使其生效（前端「保存并应用」）
       if (pathname === '/api/wiki/config' && req.method === 'POST') {
         let body = '';
         req.on('data', (chunk) => (body += chunk));
         req.on('end', async () => {
           try {
             const data = JSON.parse(body || '{}');
+            const statusPayload = () => ({
+              success: true,
+              enabled: this.enabled,
+              connected: this.isOnline,
+              port: this.port,
+              zimPath: this.currentZimPath,
+              articleCount: this.articleCount,
+              contentId: this.contentId,
+              bookTitle: this.bookTitle,
+            });
 
-            // 仅切换服务总开关（不影响 ZIM 路径）
-            if (data.enabled !== undefined && !(data.zimPath || '').trim()) {
+            // 仅切换服务总开关（不影响 ZIM 路径 / 端口）
+            if (data.enabled !== undefined && !(data.zimPath || '').trim() && data.port === undefined) {
               await this.setEnabled(data.enabled !== false);
               res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-              res.end(
-                JSON.stringify({
-                  success: true,
-                  enabled: this.enabled,
-                  connected: this.isOnline,
-                  zimPath: this.currentZimPath,
-                  articleCount: this.articleCount,
-                  contentId: this.contentId,
-                  bookTitle: this.bookTitle,
-                })
-              );
+              res.end(JSON.stringify(statusPayload()));
               return;
             }
 
@@ -1995,24 +2012,35 @@ class WikiService {
               return;
             }
 
-            // Save to persistent config（保留当前启用状态）
-            saveStoredConfig(newPath, this.enabled);
+            if (data.port !== undefined) {
+              const portNum = Number(data.port);
+              if (!Number.isInteger(portNum) || portNum < 1024 || portNum > 65535) {
+                res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ error: 'Invalid port (1024-65535)' }));
+                return;
+              }
+              this.port = portNum;
+            }
 
-            // Restart service with new path
-            await this.startService(newPath);
+            this.currentZimPath = newPath;
+            // Save to persistent config（保留当前启用状态）
+            saveStoredConfig(newPath, this.enabled, this.port);
+
+            // saveOnly：仅落盘，不动运行中的服务（由「保存并应用」负责生效）
+            if (data.saveOnly) {
+              res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify({ ...statusPayload(), savedOnly: true }));
+              return;
+            }
+
+            // 运行中则重启使新路径/端口生效；未运行则只保存
+            const wasRunning = !!(this.kiwixProcess || this.isOnline);
+            if (wasRunning) {
+              await this.restartService();
+            }
 
             res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-            res.end(
-              JSON.stringify({
-                success: true,
-                enabled: this.enabled,
-                connected: this.isOnline,
-                zimPath: this.currentZimPath,
-                articleCount: this.articleCount,
-                contentId: this.contentId,
-                bookTitle: this.bookTitle,
-              })
-            );
+            res.end(JSON.stringify({ ...statusPayload(), restarted: wasRunning }));
           } catch (e) {
             res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ error: e.message }));

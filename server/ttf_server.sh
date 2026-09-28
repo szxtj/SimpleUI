@@ -1,0 +1,330 @@
+#!/usr/bin/env bash
+
+# ==============================================================================
+# 📖 TurboFieldfareServer 管理脚本
+#
+# 常用命令:
+#    - 启动服务: ./server.sh start   (或直接 ./server.sh)
+#    - 停止服务: ./server.sh stop
+#    - 重启服务: ./server.sh restart
+#    - 运行状态: ./server.sh status
+#    - 实时日志: ./server.sh logs    (按 Ctrl + C 退出查看)
+#    - 帮助信息: ./server.sh help
+#
+# ⚙️ TurboFieldfareServer 运行配置区
+# ==============================================================================
+
+# 加载由 TurboFieldfareBar GUI 或用户配置的环境变量文件（若存在）
+CONFIG_ENV_FILE="${TURBO_CONFIG_FILE:-$HOME/Library/Application Support/TurboFieldfare/config.env}"
+if [ -f "$CONFIG_ENV_FILE" ]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG_ENV_FILE"
+fi
+
+# 1. 监听端口 (默认: 1235)
+PORT=1235
+PORT="${TURBO_PORT:-${PORT:-1235}}"
+
+# 2. 最大上下文长度 (支持: 4096, 8192, 16384, 32768, 65536, 98304, 131072, 196608, 262144)
+#    - 16384 (16K): 官方默认值，日常多轮图文对话与低内存占用平衡
+#    - 32768 (32K): 推荐值，适合长文本分析与大量图片输入
+#    - 65536 (64K): 进阶长文，适合超长代码库/长文档深度分析
+#    - 131072 (128K) / 262144 (256K): 极限超长上下文 (v0.9.0+)，需注意统一内存占用
+MAX_CONTEXT=32768
+MAX_CONTEXT="${TURBO_MAX_CONTEXT:-${MAX_CONTEXT:-32768}}"
+
+# 3. 专家缓存槽位数 (每层保留专家数，支持: 8, 16, 24, 32)
+#    - 16: 默认值 (约占 2 GB 内存)
+#    - 24: 推荐值 (约占 3~3.5 GB 内存，大幅减少磁盘读取)
+#    - 32: 最大缓存 (约占 4~4.5 GB 内存，极高内存命中率，最少磁盘 I/O)
+EXPERT_CACHE_SLOTS=24
+EXPERT_CACHE_SLOTS="${TURBO_EXPERT_CACHE_SLOTS:-${EXPERT_CACHE_SLOTS:-24}}"
+
+# 4. 专家缓存淘汰策略 (支持: lfu, lru)
+EXPERT_CACHE_POLICY="lfu"
+EXPERT_CACHE_POLICY="${TURBO_EXPERT_CACHE_POLICY:-${EXPERT_CACHE_POLICY:-lfu}}"
+
+# 5. 分块 Prompt 预热 (支持: on, off；开启后显著加速 Prompt/图片处理)
+PREFILL="on"
+PREFILL="${TURBO_PREFILL:-${PREFILL:-on}}"
+
+# 6. Prefill 分块大小 (支持: 32, 64, 128, 256, auto)
+#    - auto (或 256): 推荐值 (v0.7.2+)，服务端自动上限 256，长 Prompt 预热提速 ~16%，仅多占 ~16MB 显存
+PREFILL_CHUNK_TOKENS="auto"
+PREFILL_CHUNK_TOKENS="${TURBO_PREFILL_CHUNK_TOKENS:-${PREFILL_CHUNK_TOKENS:-auto}}"
+
+# 7. 视觉模块常驻策略 (支持: on-demand 按需调度, keep-ready 始终常驻显存)
+VISION_RESIDENCY="on-demand"
+VISION_RESIDENCY="${TURBO_VISION_RESIDENCY:-${VISION_RESIDENCY:-on-demand}}"
+
+# 8. KV 缓存复用模式 (支持: single-prefix 开启单前缀复用, off 关闭)
+PROMPT_CACHE_MODE="single-prefix"
+PROMPT_CACHE_MODE="${TURBO_PROMPT_CACHE_MODE:-${PROMPT_CACHE_MODE:-single-prefix}}"
+
+# 9. 深度思考推理策略 (支持: default 由前端控制, on 始终开启, off 完全关闭)
+#    - default: 默认基准，由客户端/前端请求按需控制
+#    - on:      强制所有对话展开思考 (推荐 Open WebUI 等客户端免配置使用)
+#    - off:     关闭思考模式，以最高速度直接生成正式回复
+THINKING="default"
+THINKING="${TURBO_THINKING:-${THINKING:-default}}"
+
+# 10. 显存准入强制覆盖 (支持: 0 遵循官方内存预算限制, 1 允许超出预算强制启动)
+#     - 0: 默认值，当所选上下文超出 Mac 物理内存安全预算时，服务端自动阻止启动以防卡顿
+#     - 1: 强制覆盖 (v0.9.0+)，强行拉起 128K/256K 超长上下文
+ALLOW_UNBACKED_CONTEXT=0
+ALLOW_UNBACKED_CONTEXT="${TURBO_FIELDFARE_ALLOW_UNBACKED_CONTEXT:-${ALLOW_UNBACKED_CONTEXT:-0}}"
+export TURBO_FIELDFARE_ALLOW_UNBACKED_CONTEXT="$ALLOW_UNBACKED_CONTEXT"
+
+# 11. 自适应读优化 / 专家预取策略 (支持: adaptive, bounded, default, off)
+#     - adaptive: 推荐值，根据负载自适应预取专家权重，显著减少 SSD I/O 阻塞，提升解码速率 ~30%
+#     - bounded:  受限预取
+#     - default:  系统默认预取
+#     - off:      关闭预取
+RDADVISE="adaptive"
+RDADVISE="${TURBO_RDADVISE:-${RDADVISE:-adaptive}}"
+
+# 12. 路径与本体配置 (默认指向用户主目录下的本体 ~/turbo-fieldfare)
+TURBO_DIR="${TURBO_FIELDFARE_DIR:-$HOME/turbo-fieldfare}"
+# 若指定目录为符号链接，自动内部解析至物理真实链接目标，防止路径校验异常
+if [ -L "$TURBO_DIR" ]; then
+    TURBO_DIR="$(cd -P "$TURBO_DIR" 2>/dev/null && pwd -P)"
+fi
+PROJECT_DIR="$TURBO_DIR"
+MODEL_PATH="$PROJECT_DIR/scratch/gemma4.gturbo"
+LOG_FILE="$HOME/Library/Logs/turbo-fieldfare.log"
+PID_FILE="/tmp/turbo_fieldfare_server.pid"
+BINARY="$PROJECT_DIR/.build/release/TurboFieldfareServer"
+OFFICIAL_REPO_URL="https://github.com/drumih/turbo-fieldfare.git"
+
+# ==============================================================================
+
+# 检查进程是否真实存活
+is_running() {
+    if [ -f "$PID_FILE" ]; then
+        local pid
+        pid=$(cat "$PID_FILE" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# 确保本体项目存在 (支持新 Mac 一键克隆)
+ensure_repo() {
+    if [ ! -d "$TURBO_DIR/.git" ]; then
+        echo "⚠️  未在 $TURBO_DIR 检测到 TurboFieldfare 仓库。"
+        echo "🌐 正在从官方源自动克隆到: $TURBO_DIR ..."
+        mkdir -p "$TURBO_DIR"
+        git clone "$OFFICIAL_REPO_URL" "$TURBO_DIR"
+        if [ $? -ne 0 ]; then
+            echo "❌ 克隆官方仓库失败，请检查网络连接。"
+            exit 1
+        fi
+        echo "✅ 克隆完成！"
+    fi
+}
+
+start() {
+    if is_running; then
+        echo "⚠️  TurboFieldfareServer 已经在后台运行中 (PID: $(cat "$PID_FILE"), 端口: $PORT)"
+        exit 0
+    fi
+
+    # 1. 确保本体目录存在
+    ensure_repo
+
+    # 2. 前置检查：模型文件是否存在
+    if [ ! -e "$MODEL_PATH" ]; then
+        echo "❌ 错误: 未找到模型文件/目录: $MODEL_PATH"
+        echo "💡 请先在本体目录下载模型权重，例如执行:"
+        echo "   cd $TURBO_DIR && swift run -c release TurboFieldfareRepack --output scratch/gemma4.gturbo"
+        exit 1
+    fi
+
+    # 2. 确保日志所在目录存在
+    mkdir -p "$(dirname "$LOG_FILE")"
+
+    # 3. 检查二进制是否存在，若无则自动编译
+    if [ ! -f "$BINARY" ]; then
+        echo "📦 正在编译发布版本 TurboFieldfareServer..."
+        (cd "$PROJECT_DIR" && swift build -c release --product TurboFieldfareServer)
+        if [ $? -ne 0 ] || [ ! -f "$BINARY" ]; then
+            echo "❌ 编译失败，请检查编译输出与环境设置。"
+            exit 1
+        fi
+    fi
+
+    # 4. 视觉伴侣包 (Vision Pack) 自愈与挂载检查
+    VISION_FLAGS=()
+    VISION_PATH="$PROJECT_DIR/scratch/gemma4.vision.gturbo"
+    if [ -d "$VISION_PATH" ]; then
+        # 自动校准迁移后的收据绝对路径绑定，杜绝 path mismatch
+        if [ -f "$VISION_PATH/verified-install.json" ]; then
+            sed -i '' "s|\"companionDirectoryPath\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"companionDirectoryPath\" : \"$VISION_PATH\"|g" "$VISION_PATH/verified-install.json" 2>/dev/null || true
+        fi
+        VISION_FLAGS=(--vision-pack "$VISION_PATH" --vision-residency "$VISION_RESIDENCY")
+    fi
+    if [ -f "$MODEL_PATH/verified-install.json" ]; then
+        sed -i '' "s|\"modelDirectoryPath\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"modelDirectoryPath\" : \"$MODEL_PATH\"|g" "$MODEL_PATH/verified-install.json" 2>/dev/null || true
+    fi
+
+    echo "🚀 正在后台启动 TurboFieldfare 服务..."
+    echo "   ├─ 端口: $PORT"
+    echo "   ├─ 上下文: $MAX_CONTEXT"
+    if [ "$ALLOW_UNBACKED_CONTEXT" = "1" ]; then
+        echo "   ├─ 显存准入: 已开启强制覆盖 (ALLOW_UNBACKED_CONTEXT=1)"
+    fi
+    echo "   ├─ 专家缓存槽位: $EXPERT_CACHE_SLOTS (策略: $EXPERT_CACHE_POLICY)"
+    echo "   ├─ Prefill 分块: $PREFILL_CHUNK_TOKENS"
+    echo "   ├─ 视觉模块: $([ -d "$VISION_PATH" ] && echo "已挂载 ($VISION_RESIDENCY)" || echo "未安装")"
+    echo "   ├─ 深度思考: $THINKING"
+    echo "   ├─ 读优化策略: $RDADVISE"
+    echo "   └─ 模型路径: $MODEL_PATH"
+
+    nohup "$BINARY" \
+        --model "$MODEL_PATH" \
+        --port "$PORT" \
+        --max-context "$MAX_CONTEXT" \
+        --expert-cache-slots "$EXPERT_CACHE_SLOTS" \
+        --expert-cache-policy "$EXPERT_CACHE_POLICY" \
+        --prefill "$PREFILL" \
+        --prefill-chunk-tokens "$PREFILL_CHUNK_TOKENS" \
+        --prompt-cache-mode "$PROMPT_CACHE_MODE" \
+        --thinking "$THINKING" \
+        --rdadvise "$RDADVISE" \
+        "${VISION_FLAGS[@]}" > "$LOG_FILE" 2>&1 &
+
+    local pid=$!
+    echo "$pid" > "$PID_FILE"
+    
+    # 等待并探测进程就绪
+    echo -n "⏳ 等待服务初始化..."
+    local waited=0
+    local ready=0
+    while [ $waited -lt 10 ]; do
+        sleep 1
+        waited=$((waited + 1))
+        echo -n "."
+        if ! kill -0 "$pid" 2>/dev/null; then
+            break
+        fi
+        # 尝试通过 HTTP 探针确认就绪
+        if curl -s -m 1 "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; then
+            ready=1
+            break
+        fi
+    done
+    echo ""
+
+    if is_running; then
+        echo "✅ 服务启动成功！"
+        echo "📍 API Base URL: http://127.0.0.1:$PORT/v1"
+        echo "📄 运行日志: $LOG_FILE"
+        echo "🧪 测试命令:"
+        echo "   curl http://127.0.0.1:$PORT/v1/chat/completions \\"
+        echo "     -H 'Content-Type: application/json' \\"
+        echo "     -d '{\"model\":\"gemma-4-26b-a4b-it\",\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}'"
+    else
+        echo "❌ 服务未能正常运行，请查看最后 20 行日志排查错误:"
+        echo "----------------------------------------"
+        tail -n 20 "$LOG_FILE"
+        echo "----------------------------------------"
+        rm -f "$PID_FILE"
+        exit 1
+    fi
+}
+
+stop() {
+    local pid=""
+    if [ -f "$PID_FILE" ]; then
+        pid=$(cat "$PID_FILE" 2>/dev/null)
+    fi
+
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        echo "🛑 正在停止 TurboFieldfareServer (PID: $pid)..."
+        kill "$pid" 2>/dev/null
+        
+        # 优雅等待最多 5 秒
+        local count=0
+        while kill -0 "$pid" 2>/dev/null && [ $count -lt 10 ]; do
+            sleep 0.5
+            count=$((count + 1))
+        done
+
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "⚠️  服务未在预期内退出，正在强制终止 (kill -9)..."
+            kill -9 "$pid" 2>/dev/null
+        fi
+        rm -f "$PID_FILE"
+        echo "✅ 服务已成功停止。"
+        return
+    fi
+
+    # 兜底清理可能失联的残留进程
+    if pgrep -f "$BINARY" >/dev/null 2>&1; then
+        echo "🛑 正在清理残留的 TurboFieldfareServer 进程..."
+        pkill -f "$BINARY" 2>/dev/null
+        sleep 1
+        echo "✅ 残留进程已清理。"
+    else
+        echo "⚠️  未发现正在运行的 TurboFieldfareServer 服务。"
+    fi
+    rm -f "$PID_FILE"
+}
+
+status() {
+    if is_running; then
+        local pid
+        pid=$(cat "$PID_FILE")
+        echo "🟢 TurboFieldfareServer 正在运行中 (PID: $pid)"
+        echo "   ├─ 端口: $PORT"
+        echo "   ├─ 上下文容量: $MAX_CONTEXT"
+        echo "   ├─ 专家缓存槽位: $EXPERT_CACHE_SLOTS ($EXPERT_CACHE_POLICY)"
+        echo "   ├─ Prefill 分块: $PREFILL_CHUNK_TOKENS"
+        echo "   ├─ 深度思考: $THINKING"
+        echo "   └─ API 接口: http://127.0.0.1:$PORT/v1"
+        
+        # 尝试进行健康检查
+        if curl -s -m 2 "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; then
+            echo "   └─ 健康状态: 响应正常 (HTTP 200)"
+        else
+            echo "   └─ 健康状态: 启动中或正在加载权重..."
+        fi
+    else
+        echo "🔴 TurboFieldfareServer 未在运行"
+    fi
+}
+
+logs() {
+    if [ ! -f "$LOG_FILE" ]; then
+        echo "⚠️  日志文件尚不存在: $LOG_FILE"
+        exit 0
+    fi
+    echo "📋 正在跟踪实时运行日志: $LOG_FILE (按 Ctrl + C 退出)..."
+    tail -f "$LOG_FILE"
+}
+
+help() {
+    echo "📖 TurboFieldfareServer 管理脚本使用说明:"
+    echo "   $0 start    - 启动后台服务 (默认)"
+    echo "   $0 stop     - 优雅停止服务"
+    echo "   $0 restart  - 重启服务"
+    echo "   $0 status   - 查看当前运行状态与健康检查"
+    echo "   $0 logs     - 查看实时输出日志"
+    echo "   $0 help     - 显示本帮助信息"
+}
+
+case "${1:-start}" in
+    start)   start ;;
+    stop)    stop ;;
+    restart) stop; sleep 1; start ;;
+    status)  status ;;
+    logs)    logs ;;
+    help|--help|-h) help ;;
+    *)       
+        echo "⚠️  未知指令: $1"
+        help
+        exit 1
+        ;;
+esac

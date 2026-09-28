@@ -48,6 +48,10 @@ SimpleUI 的核心技术亮点在于两大系统：
      ▼
 Node.js 代理服务器 (端口 31235)
      │
+     ├──► 模型服务托管 (ttf_service.js)
+     │         │
+     │         └──► TurboFieldfare 推理服务 (端口 1235 · 随 App 自启/退出终止)
+     │
      ├──► 维基 RAG 服务 (wiki_service.js)
      │         │
      │         ├──► Kiwix 离线维基 (端口 31236 · ZIM 文件)
@@ -58,9 +62,17 @@ Node.js 代理服务器 (端口 31235)
 
 | 服务 | 端口 | 职责 |
 | :--- | :--- | :--- |
-| Node.js 代理 (`proxy.js`) | `31235` | SSE 透传、静态托管、动态路由、知识库 API |
+| Node.js 代理 (`proxy.js`) | `31235` | SSE 透传、静态托管、动态路由、知识库 API、模型服务管理 API |
 | Kiwix 离线百科 | `31236` | ZIM 文件读取、标题联想、条目 HTTP 服务 |
 | 主推理模型 | `1235` | 实体规划、长文目录路由、最终答案生成 |
+
+> **模型服务托管**：SimpleUI 是 TurboFieldfare 推理服务的唯一管理方——
+> App 启动时自动拉起服务（`server/ttf_service.js` 调用打包进 Resources 的 `ttf_server.sh`），
+> 退出时一并终止（与 Kiwix 数据库服务行为一致）；服务端口 `1235` 同时供其他前端使用。
+> 设置页「模型服务」区块提供状态灯 / 启停 / 本体路径 / 运行参数（上下文容量、专家缓存、
+> 思考模式等）/ 日志查看；配置持久化于 `~/Library/Application Support/SimpleUI/model_config.json`，
+> 并同步导出 TurboFieldfareBar 兼容的 `~/Library/Application Support/TurboFieldfare/config.env`。
+> 管理 API：`/api/model/status|start|stop|restart|config|logs`。
 
 > 旧版链路中的两个辅助服务均已移除：
 > **LAYA System 1**（端口 1236）意图门禁——实测会把约 1/3 的知识类提问误判为闲聊而整条链路拦截；
@@ -497,6 +509,9 @@ SimpleUI/
 ├── server/
 │   ├── proxy.js              # Node.js 代理服务器（端口 31235）
 │   │                         #   SSE 透传、静态托管、动态端口路由、知识库 API
+│   ├── ttf_service.js        # 模型服务托管（SimpleUI 作为 TTF 服务唯一管理方）
+│   │                         #   随 App 自启/退出终止、配置持久化 + config.env 兼容导出、/api/model/*
+│   ├── ttf_server.sh         # TTF 启停脚本运行时资产（复制自 turbo-fieldfare-manager）
 │   ├── ttf_log.js            # TTF 日志只读探针（生成前取真实 prompt token 数）
 │   ├── wiki_service.js       # 离线 RAG 流水线核心
 │   │                         #   主力模型规划 / 义项选择 / 目录路由
@@ -518,8 +533,9 @@ SimpleUI/
     │   └── storage.ts        # localStorage 持久化、BroadcastChannel
     ├── hooks/
     │   ├── useTheme.ts       # system / light / dark 主题应用（两窗口共用）
-    │   └── useFollowBottom.ts # 生成中「跟随到底部」的唯一实现（消息流 ×2 + 思考框共用；
-    │                          #   用户一滚即单向停止，不与用户抢滚动条）
+    │   └── useFollowBottom.ts # 生成中滚动保护的唯一实现（消息流 ×2 + 思考框共用）：
+    │                          #   思考期每帧钉底跟随；正文流式期不自动滚、只守住
+    │                          #   用户阅读位置；用户一滚即单向停止，不与用户抢滚动条
     ├── i18n/
     │   ├── index.tsx         # I18nProvider / useI18n（`system` 跟随系统语言）
     │   └── translations.ts   # 中英双语文案表（TranslationKeys 由此推导）

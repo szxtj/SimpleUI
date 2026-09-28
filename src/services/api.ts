@@ -533,6 +533,30 @@ export class WikiAPI {
     return await this.getStatus();
   }
 
+  /**
+   * 知识库配置保存（ZIM 路径 / 端口）：
+   *  - saveOnly: 仅落盘，不动运行中的服务（「保存路径」按钮）
+   *  - restartIfRunning: 落盘后若服务在运行则重启使其生效（「保存并应用」按钮）
+   */
+  static async saveConfig(
+    partial: { zimPath?: string; port?: number },
+    opts: { saveOnly?: boolean; restartIfRunning?: boolean } = {}
+  ): Promise<WikiStatusInfo & { success?: boolean; savedOnly?: boolean; restarted?: boolean; error?: string }> {
+    try {
+      const res = await fetch('/api/wiki/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...partial, saveOnly: opts.saveOnly, restartIfRunning: opts.restartIfRunning }),
+      });
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch (e) {
+      console.error('Wiki saveConfig failed:', e);
+    }
+    return await this.getStatus();
+  }
+
   static async getRagContext(query: string, signal?: AbortSignal): Promise<RagContextResponse> {
     try {
       const res = await fetch('/api/wiki/rag-context', {
@@ -555,5 +579,98 @@ export class WikiAPI {
       citations: [],
       promptContext: '',
     };
+  }
+}
+
+/** 模型服务（TurboFieldfare）聚合状态：与后端 ttf_service.js getStatus 对应 */
+export interface ModelServiceStatus {
+  enabled: boolean;
+  status: 'running' | 'loading' | 'stopped' | 'starting' | 'stopping' | 'restart';
+  pid: number | null;
+  port: number;
+  projectDir: string;
+  modelPath: string;
+  checks: { repo: boolean; binary: boolean; model: boolean; vision: boolean };
+  lastActionAt?: number;
+  lastActionLog?: string;
+}
+
+/** 模型服务运行配置：与后端 model_config.json 对应 */
+export interface ModelServiceConfig {
+  enabled: boolean;
+  projectDir: string;
+  port: number;
+  maxContext: number;
+  expertCacheSlots: number;
+  expertCachePolicy: 'lfu' | 'lru';
+  prefill: 'on' | 'off';
+  prefillChunkTokens: 'auto' | '32' | '64' | '128' | '256';
+  visionResidency: 'on-demand' | 'keep-ready';
+  promptCacheMode: 'single-prefix' | 'off';
+  thinking: 'default' | 'on' | 'off';
+  rdadvise: 'adaptive' | 'bounded' | 'default' | 'off';
+  allowUnbackedContext: boolean;
+  idleAutoResetMinutes: number;
+}
+
+export class ModelServiceAPI {
+  static async getStatus(): Promise<ModelServiceStatus | null> {
+    try {
+      const res = await fetch('/api/model/status');
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('ModelService getStatus failed:', e);
+    }
+    return null;
+  }
+
+  static async getConfig(): Promise<ModelServiceConfig | null> {
+    try {
+      const res = await fetch('/api/model/config');
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('ModelService getConfig failed:', e);
+    }
+    return null;
+  }
+
+  /** 应用部分配置；restartIfRunning=true 时若服务在运行则自动热重启 */
+  static async updateConfig(
+    partial: Partial<ModelServiceConfig>,
+    restartIfRunning = false
+  ): Promise<{ success: boolean; restarted?: boolean; error?: string; config?: ModelServiceConfig }> {
+    try {
+      const res = await fetch('/api/model/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...partial, restartIfRunning }),
+      });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('ModelService updateConfig failed:', e);
+    }
+    return { success: false, error: 'request_failed' };
+  }
+
+  static async control(
+    action: 'start' | 'stop' | 'restart'
+  ): Promise<{ accepted: boolean; status?: string; reason?: string }> {
+    try {
+      const res = await fetch(`/api/model/${action}`, { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error(`ModelService ${action} failed:`, e);
+    }
+    return { accepted: false };
+  }
+
+  static async getLogs(lines = 200): Promise<{ found: boolean; lines: string[] } | null> {
+    try {
+      const res = await fetch(`/api/model/logs?lines=${lines}`);
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('ModelService getLogs failed:', e);
+    }
+    return null;
   }
 }

@@ -139,8 +139,9 @@ function serveStatic(req, res) {
   fs.createReadStream(filePath).pipe(res);
 }
 
-import { wikiService, KIWIX_PORT } from './wiki_service.js';
+import { wikiService } from './wiki_service.js';
 import { ttfLogService, noteForwardedRequest, noteChatForward } from './ttf_log.js';
+import { ttfService } from './ttf_service.js';
 
 const server = http.createServer((req, res) => {
   // Handle CORS preflight
@@ -167,10 +168,17 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // 模型服务管理 API（启停 / 运行参数 / 路径 / 日志）：
+  // SimpleUI 作为 TTF 服务的唯一管理方，随 App 自动拉起、退出一并终止。
+  if (req.url.startsWith('/api/model/')) {
+    ttfService.handleApi(req, res);
+    return;
+  }
+
   // Handle Wiki content proxy (for iframe embedding on the same origin)
   if (req.url.startsWith('/wiki-content/')) {
     const targetPath = req.url.replace('/wiki-content/', '/');
-    proxyRequest(req, res, `http://127.0.0.1:${KIWIX_PORT}${targetPath}`);
+    proxyRequest(req, res, `http://127.0.0.1:${wikiService.port}${targetPath}`);
     return;
   }
 
@@ -178,14 +186,15 @@ const server = http.createServer((req, res) => {
   // 让知识库 iframe 以 /content/{id}/{title} 加载（与应用同源），从而允许父页面
   // 向 iframe 注入「抽取正文」，并与条目内的 ./_mw_/... 相对资源路径天然兼容。
   if (req.url.startsWith('/content/')) {
-    proxyRequest(req, res, `http://127.0.0.1:${KIWIX_PORT}${req.url}`);
+    proxyRequest(req, res, `http://127.0.0.1:${wikiService.port}${req.url}`);
     return;
   }
 
-  // Forward API calls
+  // Forward API calls（默认目标跟随基础模型服务配置的端口，改端口无需重启代理）
   if (req.url.startsWith('/v1/') || req.url === '/health' || req.url.startsWith('/health?')) {
     const customPort = req.headers['x-target-port'];
-    const targetUrl = customPort ? `http://127.0.0.1:${customPort}` : TARGET_API;
+    const defaultPort = ttfService?.config?.port || 1235;
+    const targetUrl = customPort ? `http://127.0.0.1:${customPort}` : `http://127.0.0.1:${defaultPort}`;
     proxyRequest(req, res, targetUrl);
     return;
   }
@@ -201,6 +210,8 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`🚀 SimpleUI running at http://127.0.0.1:${PORT}`);
   console.log(`🔗 Upstream API configured to ${TARGET_API}`);
   wikiService.initWatcher();
+  // 模型服务随 SimpleUI 自动启动（enabled 开关在设置页模型卡片中控制）
+  ttfService.init();
 
   // Automatically exit if parent process (e.g. SimpleUI app) terminates
   if (process.ppid && process.ppid > 1) {
@@ -223,6 +234,14 @@ function cleanupAndExit(code = 0) {
       // ignore
     }
   }
+  // 模型服务随 SimpleUI 退出一并终止（watchdog 作为 SIGKILL 场景的兜底）
+  if (ttfService) {
+    try {
+      ttfService.shutdownSync();
+    } catch (e) {
+      // ignore
+    }
+  }
   process.exit(code);
 }
 
@@ -232,6 +251,13 @@ process.on('exit', () => {
   if (wikiService && wikiService.kiwixProcess) {
     try {
       wikiService.kiwixProcess.kill('SIGKILL');
+    } catch (e) {
+      // ignore
+    }
+  }
+  if (ttfService) {
+    try {
+      ttfService.shutdownForce();
     } catch (e) {
       // ignore
     }
