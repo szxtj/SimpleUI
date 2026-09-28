@@ -199,7 +199,7 @@ export const translations = {
     removeImage: '移除图片',
     imageAnalysisTitle: '图文分析',
     // 模型服务管理（SimpleUI 作为 TTF 服务唯一管理方）
-    modelServiceTitle: '基础模型服务',
+    modelServiceTitle: '基础模型服务(TurboFieldfare)',
     modelServiceStatusRunning: '就绪于',
     modelServiceStatusLoading: '启动中 / 加载权重...',
     modelServiceStatusStopped: '离线',
@@ -437,7 +437,7 @@ export const translations = {
     removeImage: 'Remove image',
     imageAnalysisTitle: 'Image Analysis',
     // Model service management (SimpleUI as the sole manager of the TTF service)
-    modelServiceTitle: 'Base Model Service',
+    modelServiceTitle: 'Base Model Service (TurboFieldfare)',
     modelServiceStatusRunning: 'Ready on ',
     modelServiceStatusLoading: 'Starting / loading weights...',
     modelServiceStatusStopped: 'Offline',
