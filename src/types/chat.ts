@@ -22,6 +22,31 @@ export interface WikiCitation {
   context?: string;
 }
 
+/** 一轮问答在产出首个 token 之前经历的知识库/引擎阶段 */
+export type TurnStageKind =
+  | 'planning'   // 主力模型实体规划
+  | 'resolving'  // 变体展开 + 多通道召回 + 候选筛选
+  | 'sense'      // 主力模型义项选择
+  | 'fetching'   // 取全文 HTML + DOM 解析 + 归一
+  | 'routing'    // 主力模型章节路由
+  | 'prefill';   // 引擎 prefill（载入上下文）
+
+/**
+ * 阶段阶梯的一行。随消息持久化（localStorage），因此切窗口 / 切会话 /
+ * 关闭所有窗口 / 退出 App 再打开，已完成的状态都还在。
+ */
+export interface TurnStageRecord {
+  kind: TurnStageKind;
+  /** 该阶段的细节（实体名 / `1/2` 进度），与阶段指示器文案一致 */
+  detail?: string;
+  /** 阶段开始时刻（epoch ms） */
+  startedAt: number;
+  /** 结束时刻（进行中为 undefined） */
+  endedAt?: number;
+  /** 耗时（ms，结束后写入） */
+  durationMs?: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: MessageRole;
@@ -33,6 +58,8 @@ export interface ChatMessage {
   pending?: boolean;            // 助手占位消息尚未收到首个 token（prefill 阶段）
   stage?: 'rag' | 'prefill';    // pending 期间的细分阶段：知识库检索 / 引擎 prefill
   prefillStartedAt?: number;    // prefill 阶段开始时刻（估算百分比以此为计时起点，而非消息创建时刻）
+  /** 本轮知识库/引擎阶段阶梯（一层一层往下展示，带各阶段耗时） */
+  stages?: TurnStageRecord[];
   metrics?: TurnMetrics;
   timestamp: number;
   error?: string;

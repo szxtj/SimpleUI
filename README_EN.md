@@ -319,9 +319,16 @@ When opened from a citation chip, the panel additionally shows the **exact plain
 
 Spotlight sizing: the capsule state is only 88px tall, which cannot host the panel, so opening it expands the window to a readable size (500×640) and closing it shrinks back to the input capsule.
 
-### Turn Stage Indicator & Abort
+### Turn Stage Ladder & Abort
 
-With the session-level 📚 enabled, a turn passes through several stages before the first answer token arrives. The UI shows **at most one stage indicator at any moment** (same style as the thinking accordion: spinner + label + elapsed seconds; the main window and the Spotlight panel share the single `TurnStageIndicator` component). Retrieval labels are driven by real server-side instrumentation (`setRagStage` → `GET /api/wiki/rag-stage`):
+With the session-level 📚 enabled, a turn passes through several stages before the first answer token arrives. The UI presents them as a **stage ladder** (the main window and the Spotlight panel share the single `StageLadder` component, so both behave identically):
+
+- **While generating**: rows are appended one by one — `stage · detail` plus **that stage's own duration**; the active row spins and counts up live.
+- **When finished**: it auto-collapses into one summary line (e.g. `Knowledge retrieval · 5 steps · 14.6s`); clicking expands the per-stage breakdown.
+- **Position**: the ladder renders **above** the thinking accordion, which always stays at the bottom — matching the real timeline.
+- **Persistence**: records live on the message (localStorage), so switching windows, switching sessions, closing every window, or quitting and relaunching the app keeps the completed stages. The generating window does the recording; the other window mirrors it live via `SESSIONS_CHANGED`.
+
+Retrieval labels are driven by real server-side instrumentation (`setRagStage` → `GET /api/wiki/rag-stage`):
 
 | UI label | Pipeline step | When | Typical time |
 | :--- | :--- | :--- | :--- |
@@ -330,15 +337,18 @@ With the session-level 📚 enabled, a turn passes through several stages before
 | 🌀 Picking sense · entity 9.1s | Primary-model sense selection (model call ②) | only when a disambiguation page is hit | 8–10s |
 | 🌀 Fetching article · title 0.8s | kiwix full-HTML fetch + DOM parsing + normalization | once per selected article | 0.5–2s |
 | 🌀 Planning sections 8.7s | Primary-model section routing (model call ③) | only when the cleaned article exceeds 3500 chars | 8–10s |
-| 🌀 Loading context 2.1s | Engine prefill (shown as soon as the request is out) | every turn | scales with injection size |
+| 🌀 Loading context 2.1s | Engine prefill (counted from the moment the request is out) | every turn | scales with injection size |
 
 Notes:
 
-- The trailing seconds are **how long this stage has been running** (0.1s precision, refreshed every 250ms).
-- "Assembling context" is millisecond-scale string concatenation — not instrumented, not shown.
+- The summary label follows the stages that **actually happened**: with at least one retrieval stage it reads
+  `Knowledge retrieval · N steps · X.Xs`; when the only stage is prefill (knowledge base off, or nothing was
+  retrieved this turn) it reads `Loading context · X.Xs` — so nobody is misled into thinking a retrieval ran.
+- The trailing seconds are **that stage's own duration** (0.1s precision; the active row ticks live, finished rows are fixed).
+- "Assembling context" is millisecond-scale string concatenation — not instrumented, not shown, so it never becomes a row.
 - Planning / sense / routing are **primary-model calls** (strictly serial, unpredictable duration) — spinner only, no percentage.
-- **The prefill stage does no estimation at all**: the label "Loading context" appears as soon as the request is sent and simply counts seconds — no TTF log polling and no percentage. The earlier percentage estimate (`elapsed × recent measured rate ÷ real prompt tokens`, ring gauge) depended on too many timing windows (first-SSE-chunk arrival, log attribution, serial queuing) and has been removed entirely.
-- When the server has no **fresh** instrumentation (`at` older than 1.5s before this turn started, or the endpoint is unreachable), **no indicator is rendered at all** — never a meaningless label.
+- **The prefill stage does no estimation at all**: the "Loading context" row appears as soon as the request is sent and simply counts seconds — no TTF log polling and no percentage. The earlier percentage estimate (`elapsed × recent measured rate ÷ real prompt tokens`, ring gauge) depended on too many timing windows and has been removed entirely.
+- When the server has no **fresh** instrumentation (`at` older than 1.5s before this turn started, or the endpoint is unreachable) no rows are invented; if a turn produced no records at all (e.g. the knowledge base was off), the ladder renders nothing.
 - The whole pipeline contains **exactly these 3 primary-model calls** — there are no hidden ones.
 
 **Abort**: pressing "Stop" at any stage immediately removes this turn's placeholder message and propagates an `AbortSignal` down
@@ -531,7 +541,8 @@ SimpleUI/
         ├── MessageItem.tsx   # Single message (stage indicator, thinking accordion, Markdown, chips, actions, metrics)
         ├── MarkdownRenderer.tsx   # Markdown + KaTeX rendering
         ├── ThinkingAccordion.tsx  # Collapsible thinking process
-        ├── TurnStageIndicator.tsx # Turn stage indicator (retrieval stages / loading context, shared)
+        ├── StageLadder.tsx   # Turn stage ladder: KB/engine stages as rows with per-stage
+        │                     #   durations, collapsing into a summary when done; shared
         ├── ContextRing.tsx   # SVG context ring (optional remaining-percent label + hover details)
         ├── ImageAttachment.tsx    # Input-area image previews and removal
         ├── SettingsModal.tsx # Parameter config, inference port, KB master switch, language & theme

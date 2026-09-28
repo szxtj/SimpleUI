@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
 import { SettingsModal } from './components/SettingsModal';
@@ -10,6 +10,7 @@ import {
   TurnMetrics,
   WikiCitation,
   WikiStatusInfo,
+  TurnStageRecord,
 } from './types/chat';
 import {
   loadSessions,
@@ -19,6 +20,9 @@ import {
   loadSettings,
   saveSettings,
   createNewSession,
+  clearStalePending,
+  requestAbort,
+  readAbortRequest,
   notifySessionUpdate,
   syncChannel,
 } from './services/storage';
@@ -80,7 +84,17 @@ export const App: React.FC = () => {
 
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
     const loaded = loadSessions();
-    return loaded.length > 0 ? loaded : [createNewSession()];
+    const safe = loaded.length > 0 ? loaded : [createNewSession()];
+    // App 启动时清掉「被中断的回合」残留的 pending（生成中被退出/强杀）：
+    // 否则阶段阶梯会永远停在"假进行中"的展开态。
+    if (clearStalePending(safe)) {
+      try {
+        saveSessions(safe, undefined, 'MAIN');
+      } catch {
+        // 回写失败不影响本次会话
+      }
+    }
+    return safe;
   });
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(() => {
     const loaded = loadSessions();
@@ -119,17 +133,20 @@ export const App: React.FC = () => {
   const [isWikiPanelOpen, setIsWikiPanelOpen] = useState(false);
 
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
+  /** 本轮阶段阶梯记录的最新快照：随流式广播带给镜像窗口（浮窗），使它也能实时长出阶梯行 */
+  const stagesRef = useRef<TurnStageRecord[]>([]);
   const activeStreamsRef = useRef<Map<string, {
     messageId: string;
     reasoningContent: string;
     content: string;
     isThinking: boolean;
     thinkingDuration: number;
+    /** 该回合是否仍处于「检索 / 载入上下文」阶段（首个 token 前为 true） */
+    pending: boolean;
   }>>(new Map());
   const isSyncingRef = useRef(false);
   const generatingSessionIdsRef = useRef<string[]>([]);
   const currentSessionIdRef = useRef<string | null>(currentSessionId);
-
   useEffect(() => {
     generatingSessionIdsRef.current = generatingSessionIds;
   }, [generatingSessionIds]);
@@ -200,7 +217,7 @@ export const App: React.FC = () => {
           }
         } else if (data.type === 'STREAM_CHUNK') {
           if (data.source !== 'MAIN') {
-            const { sessionId, messageId, reasoningContent, content, isThinking, thinkingDuration, stage, pending, citations } = data;
+            const { sessionId, messageId, reasoningContent, content, isThinking, thinkingDuration, stage, pending, citations, stages: incomingStages } = data;
             setGeneratingSessionIds((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
             setSessions((prev) => {
               const sessionIdx = prev.findIndex((s) => s.id === sessionId);
@@ -223,6 +240,8 @@ export const App: React.FC = () => {
                           ...(pending !== undefined ? { pending } : {}),
                           // 引用胶囊随载荷同步（浮窗 RAG 完成即已知）
                           ...(citations !== undefined ? { citations } : {}),
+                          // 阶段阶梯记录随载荷同步：镜像窗口的行数/耗时与生成方实时一致
+                          ...(incomingStages !== undefined ? { stages: incomingStages } : {}),
                         }
                       : m
                   );
@@ -243,6 +262,20 @@ export const App: React.FC = () => {
                 return all.length > 0 ? all : prev;
               }
             });
+          }
+        } else if (data.type === 'STAGES_CHANGED') {
+          // 镜像窗口（浮窗）的阶段阶梯记录：实时并入本窗口消息
+          if (data.source !== 'MAIN' && data.sessionId && data.messageId) {
+            setSessions((prev) =>
+              prev.map((s) =>
+                s.id !== data.sessionId
+                  ? s
+                  : {
+                      ...s,
+                      messages: s.messages.map((m) => (m.id === data.messageId ? { ...m, stages: data.stages } : m)),
+                    }
+              )
+            );
           }
         } else if (data.type === 'STREAM_DONE') {
           if (data.source !== 'MAIN') {
@@ -314,6 +347,10 @@ export const App: React.FC = () => {
               content: stream.content,
               isThinking: stream.isThinking,
               thinkingDuration: stream.thinkingDuration,
+              // 用真实状态：回合刚开始就登记了（此时 pending=true），
+              // 硬编码 false 会让浮窗在检索/载入阶段误判成"阶段已结束"
+              pending: stream.pending,
+              stages: stagesRef.current,
               source: 'MAIN',
             });
           });
@@ -332,6 +369,10 @@ export const App: React.FC = () => {
         reloadFromStorage();
       } else if (e.key === 'tff_chat_settings_v1') {
         setSettings(loadSettings());
+      } else if (e.key === 'tff_abort_request_v1') {
+        // 浮窗点了「停止」：本窗口若正持有该回合，就地中止
+        const req = readAbortRequest();
+        if (req) handleStop(req.sessionId);
       }
     };
 
@@ -381,6 +422,45 @@ export const App: React.FC = () => {
     checkWiki();
     const wikiTimer = setInterval(checkWiki, 6000);
     return () => clearInterval(wikiTimer);
+  }, []);
+
+  /**
+   * 阶段阶梯记录回写（由 StageLadder 在生成期间回调，一轮只写几次，开销可忽略）。
+   *
+   * 两步都做：① 更新本窗口状态；② **立即落盘 + 广播**——阶梯记录挂在消息上，
+   * 落盘后另一窗口（浮窗）会通过 SESSIONS_CHANGED 镜像过来，退出 App 再打开也还在。
+   */
+  const handleStagesChange = useCallback((messageId: string, stages: TurnStageRecord[]) => {
+    const sid = currentSessionIdRef.current;
+    if (!sid) return;
+    stagesRef.current = stages; // 供流式广播携带（镜像窗口据此实时长出阶梯行）
+    // 阶段可能发生在"一个 token 都还没有"的检索/载入阶段——那时没有 STREAM_CHUNK，
+    // 所以专门广播一条 STAGES_CHANGED，保证镜像窗口实时长出同样的阶梯行。
+    try {
+      syncChannel?.postMessage({ type: 'STAGES_CHANGED', sessionId: sid, messageId, stages, source: 'MAIN' });
+    } catch {
+      // 广播失败不影响本窗口
+    }
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id !== sid
+          ? s
+          : { ...s, messages: s.messages.map((m) => (m.id === messageId ? { ...m, stages } : m)) }
+      )
+    );
+    try {
+      const all = loadSessions();
+      const idx = all.findIndex((s) => s.id === sid);
+      if (idx >= 0) {
+        all[idx] = {
+          ...all[idx],
+          messages: all[idx].messages.map((m) => (m.id === messageId ? { ...m, stages } : m)),
+        };
+        saveSessions(all, sid, 'MAIN');
+      }
+    } catch {
+      // 落盘失败不影响本窗口显示
+    }
   }, []);
 
   // Save sessions on change only when not syncing from outside
@@ -502,6 +582,7 @@ export const App: React.FC = () => {
 
     const abortController = new AbortController();
     abortControllersRef.current.set(targetSessionId, abortController);
+    stagesRef.current = []; // 新一轮：清空阶段快照
     setGeneratingSessionIds((prev) => (prev.includes(targetSessionId) ? prev : [...prev, targetSessionId]));
 
     // 会话级开关（默认关闭）
@@ -509,7 +590,7 @@ export const App: React.FC = () => {
     const sessionEnableThinking = targetSession.enableThinking ?? false;
 
     // 占位消息**先于知识库检索**创建（stage='rag'）：检索/消歧/路由期间界面不再空转，
-    // 由 TurnStageIndicator 按 stage 显示当前阶段。
+    // 由 StageLadder 按打点逐行固化各阶段。
     const { userMessage, assistantMessage } = buildTurnMessages({
       historyMessages,
       textToSend,
@@ -562,10 +643,13 @@ export const App: React.FC = () => {
         setSessions((prev) =>
           prev.map((s) =>
             s.id === targetSessionId
-              ? { ...s, messages: s.messages.filter((m) => m.id !== userMessage.id && m.id !== assistantMsgId) }
+              // 只撤下助理占位消息，**保留用户的提问**（整轮删除会让会话变空 → 被当成新对话）
+              ? { ...s, messages: s.messages.filter((m) => m.id !== assistantMsgId) }
               : s
           )
         );
+        // 明确通知浮窗"已停止"，否则镜像侧会一直停在生成中
+        syncChannel?.postMessage({ type: 'STREAM_ABORT', sessionId: targetSessionId, source: 'MAIN' });
         return;
       }
       throw e;
@@ -579,10 +663,12 @@ export const App: React.FC = () => {
       setSessions((prev) =>
         prev.map((s) =>
           s.id === targetSessionId
-            ? { ...s, messages: s.messages.filter((m) => m.id !== userMessage.id && m.id !== assistantMsgId) }
+            // 同上：只撤占位消息，保留提问
+            ? { ...s, messages: s.messages.filter((m) => m.id !== assistantMsgId) }
             : s
         )
       );
+      syncChannel?.postMessage({ type: 'STREAM_ABORT', sessionId: targetSessionId, source: 'MAIN' });
       return;
     }
 
@@ -621,6 +707,7 @@ export const App: React.FC = () => {
       content: '',
       isThinking,
       thinkingDuration: 0,
+      pending: true, // 尚未收到任何 token：仍处于检索/载入阶段
     });
 
     const sessionSettings = buildSessionSettings(settings, sessionEnableThinking, sessionEnableWiki);
@@ -671,6 +758,7 @@ export const App: React.FC = () => {
             content: accumulatedContent,
             isThinking: true,
             thinkingDuration: duration,
+            pending: false, // 已有 token：阶段结束
           });
 
           syncChannel?.postMessage({
@@ -681,6 +769,10 @@ export const App: React.FC = () => {
             content: accumulatedContent,
             isThinking: true,
             thinkingDuration: duration,
+            // 首个 token 已到达 → 检索/prefill 阶段结束：把 pending 一并广播，
+            // 否则镜像窗口（浮窗）会一直停在"阶段进行中"的展开态。
+            pending: false,
+            stages: stagesRef.current,
             source: 'MAIN',
           });
 
@@ -712,6 +804,7 @@ export const App: React.FC = () => {
             content: accumulatedContent,
             isThinking: false,
             thinkingDuration: thinkingDuration,
+            pending: false, // 已有 token：阶段结束
           });
 
           syncChannel?.postMessage({
@@ -722,6 +815,9 @@ export const App: React.FC = () => {
             content: accumulatedContent,
             isThinking: false,
             thinkingDuration: thinkingDuration,
+            // 同上：正文已开始 → 阶段结束，镜像窗口同步收起阶段阶梯
+            pending: false,
+            stages: stagesRef.current,
             source: 'MAIN',
           });
 
@@ -959,6 +1055,8 @@ export const App: React.FC = () => {
       return next;
     });
 
+    // BroadcastChannel 不一定能跨两个 WKWebView 投递，中止请求额外走一次 localStorage
+    requestAbort(targetId);
     syncChannel?.postMessage({
       type: 'STREAM_ABORT',
       sessionId: targetId,
@@ -1020,6 +1118,8 @@ export const App: React.FC = () => {
           images={images}
           setImages={setImages}
           isGenerating={isGenerating}
+          ownsTurn={!!currentSessionId && abortControllersRef.current.has(currentSessionId)}
+          onStagesChange={handleStagesChange}
           onSend={handleSend}
           onStop={handleStop}
           usedTokens={usedTokens}

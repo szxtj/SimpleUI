@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
-import { ChatMessage } from '../types/chat';
+import { ChatMessage, TurnStageRecord } from '../types/chat';
 import { useI18n } from '../i18n';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ThinkingAccordion } from './ThinkingAccordion';
-import { TurnStageIndicator } from './TurnStageIndicator';
+import { StageLadder } from './StageLadder';
 import { Check, Copy, AlertCircle, BookOpen, ExternalLink, RotateCcw, Trash2 } from 'lucide-react';
 
 interface MessageItemProps {
@@ -13,12 +13,35 @@ interface MessageItemProps {
   onDelete?: (messageId: string) => void;
   /** 用户气泡的重试目标：紧随其后的助手回复 id（与浮窗的用户气泡重试一致） */
   retryTargetId?: string;
+  /** 本轮是否由**本窗口**负责生成（阶段阶梯只由生成方记录，镜像窗口只渲染） */
+  turnRecording?: boolean;
+  /** 阶段阶梯记录变化 → 回写消息（持久化 + 广播，两窗口共用同一条路径） */
+  onStagesChange?: (messageId: string, stages: TurnStageRecord[]) => void;
 }
 
-export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, onRetry, onDelete, retryTargetId }) => {
+export const MessageItem: React.FC<MessageItemProps> = ({
+  message,
+  onOpenWiki,
+  onRetry,
+  onDelete,
+  retryTargetId,
+  turnRecording,
+  onStagesChange,
+}) => {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const isUser = message.role === 'user';
+  /**
+   * 记录阶段阶梯的条件：本窗口生成中 + 本轮尚未收到任何 token
+   * （检索 / 载入上下文两个阶段；首个思考或正文字符一到即收尾）。
+   */
+  const recordingStages =
+    !!turnRecording && !!message.pending && !message.content && !message.reasoningContent && !message.error;
+  /**
+   * 阶段是否仍在进行 —— 只看消息自身的 pending（广播会把它同步到另一窗口），
+   * 因此**两个窗口的展开/收起时机完全一致**：没结束就不收起，结束了就收起。
+   */
+  const phasesActive = !!message.pending && !message.error;
 
   const handleCopy = async () => {
     try {
@@ -81,15 +104,16 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, o
       ) : (
         /* Assistant Message: Clean full-width flow on the left (Qianwen Style) */
         <div className="w-full text-[#1f2328] dark:text-[#ecedf1]">
-          {/* 回合阶段指示（rag / prefill；与思考条同风格，两窗口共用本组件） */}
-          <TurnStageIndicator
-            stage={message.stage === 'prefill' ? 'prefill' : 'rag'}
-            active={!!message.pending && !message.content && !message.reasoningContent && !message.error}
-            startedAt={
-              message.stage === 'prefill' && message.prefillStartedAt
-                ? message.prefillStartedAt
-                : message.timestamp
-            }
+          {/* 知识库 / 引擎阶段阶梯（一层一层往下固化，带各阶段耗时）——
+              渲染在思考条**上方**，思考条始终在最下面（用户要求）。两窗口共用本组件。 */}
+          <StageLadder
+            messageId={message.id}
+            records={message.stages}
+            recording={recordingStages}
+            phasesActive={phasesActive}
+            turnStage={message.stage}
+            prefillStartedAt={message.prefillStartedAt}
+            onRecordsChange={onStagesChange}
           />
           {/* Thinking Process Accordion */}
           {(message.reasoningContent || message.isThinking) && (
@@ -184,14 +208,15 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message, onOpenWiki, o
                 )}
               </div>
 
-              {/* Next to action buttons: Gray Prefill & tok/s Metrics */}
+              {/* Next to action buttons: Gray Prefill & tok/s Metrics
+                  prefill 只留速度、不再显示耗时——耗时已由上方阶段阶梯的
+                  「正在载入上下文 X.Xs」那行承担，避免同一信息重复两处。 */}
               {message.metrics && (
                 <span className="text-xs font-mono text-zinc-500 dark:text-zinc-400">
-                  {`${t('metricsPrefill')} ${(message.metrics.ttftMs / 1000).toFixed(1)}s${
-                    message.metrics.promptTokens > 0
-                      ? ` (${(message.metrics.promptTokens / (message.metrics.ttftMs / 1000)).toFixed(1)} tok/s)`
-                      : ''
-                  } · ${t('metricsDecode')} ${message.metrics.tokensPerSecond} tok/s`}
+                  {message.metrics.ttftMs > 0 && message.metrics.promptTokens > 0
+                    ? `${t('metricsPrefill')} ${(message.metrics.promptTokens / (message.metrics.ttftMs / 1000)).toFixed(1)} tok/s · `
+                    : ''}
+                  {`${t('metricsDecode')} ${message.metrics.tokensPerSecond} tok/s`}
                 </span>
               )}
             </div>

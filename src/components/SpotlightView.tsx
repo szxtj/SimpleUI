@@ -1,13 +1,16 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ChatMessage,
   AppSettings,
   ServerHealthInfo,
   WikiStatusInfo,
   WikiCitation,
+  TurnStageRecord,
 } from '../types/chat';
 import {
   loadSettings,
+  readAbortRequest,
+  requestAbort,
   loadSessions,
   saveSessions,
   loadCurrentSessionId,
@@ -24,7 +27,7 @@ import {
 } from '../services/chatTurn';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ThinkingAccordion } from './ThinkingAccordion';
-import { TurnStageIndicator } from './TurnStageIndicator';
+import { StageLadder } from './StageLadder';
 import { ImageAttachment } from './ImageAttachment';
 import { ContextRing } from './ContextRing';
 import { WikiDrawer } from './WikiDrawer';
@@ -48,6 +51,7 @@ import {
 } from 'lucide-react';
 import { useI18n } from '../i18n';
 import { useTheme } from '../hooks/useTheme';
+import { useFollowBottom } from '../hooks/useFollowBottom';
 import { estimateHistoryTokens, applyTokenCalibration } from '../utils/token';
 
 export const SpotlightView: React.FC = () => {
@@ -98,6 +102,8 @@ export const SpotlightView: React.FC = () => {
   const accumulatedThoughtRef = useRef('');
   const accumulatedContentRef = useRef('');
   const thinkingStartTimeRef = useRef(0);
+  /** 本轮阶段阶梯记录快照：随流式广播带给镜像窗口（主窗口） */
+  const stagesRef = useRef<TurnStageRecord[]>([]);
 
   // Conversation-level toggles (both default to FALSE / OFF as requested)
   const [enableThinking, setEnableThinking] = useState(false);
@@ -110,7 +116,54 @@ export const SpotlightView: React.FC = () => {
   const prevMessagesLengthRef = useRef(messages.length);
   const prevFirstMsgIdRef = useRef(messages[0]?.id);
 
+  /**
+   * 阶段阶梯记录回写（仅浮窗自己生成的回合会调用）。
+   * 与主窗口同一条路径：① 更新本窗口消息；② 立即落盘 + 广播（主窗口镜像 / 退出重开都在）。
+   */
+  const handleStagesChange = useCallback((messageId: string, stages: TurnStageRecord[]) => {
+    stagesRef.current = stages;
+    setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, stages } : m)));
+    // 检索/载入阶段没有任何 token → 不会有 STREAM_CHUNK，专门广播阶段变化给主窗口
+    try {
+      syncChannel?.postMessage({
+        type: 'STAGES_CHANGED',
+        sessionId: activeSessionIdRef.current,
+        messageId,
+        stages,
+        source: 'SPOTLIGHT',
+      });
+    } catch {
+      // 广播失败不影响本窗口
+    }
+    try {
+      const sid = activeSessionIdRef.current;
+      if (!sid) return;
+      const all = loadSessions();
+      const idx = all.findIndex((s) => s.id === sid);
+      if (idx < 0) return;
+      all[idx] = {
+        ...all[idx],
+        messages: all[idx].messages.map((m) => (m.id === messageId ? { ...m, stages } : m)),
+      };
+      saveSessions(all, sid, 'SPOTLIGHT');
+    } catch {
+      // 落盘失败不影响本窗口显示
+    }
+  }, []);
+
   const hasMessages = messages.length > 0;
+
+  /**
+   * 消息流容器的「跟随底部」行为 —— 与主窗口**共用同一份 hook**（`useFollowBottom`），
+   * 两窗口表现逐字一致。跟随只到"正文开始生成"为止：检索/载入/思考阶段跟随底部
+   * （否则思考框被顶出视野），正文一流式就完全不再动视野（把阅读权交给用户）。
+   */
+  const lastMsg = messages[messages.length - 1];
+  const answerStreaming = !!lastMsg && lastMsg.role === 'assistant' && !!lastMsg.content;
+  const { containerProps: streamProps, markProgrammatic } = useFollowBottom(
+    isGenerating && !answerStreaming,
+    isGenerating ? lastMsg?.id : undefined
+  );
 
   // Track latest state in refs for listeners and intervals
   useEffect(() => {
@@ -284,9 +337,11 @@ export const SpotlightView: React.FC = () => {
     prevFirstMsgIdRef.current = messages[0]?.id;
 
     if (isDifferentSession || isNewMessage) {
+      // 新回合/换会话：这次平滑滚动是程序化的，别被当成"用户滚动了"
+      markProgrammatic(700);
       scrollEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages]);
+  }, [messages, markProgrammatic]);
 
   // Check backend health & Wiki status
   useEffect(() => {
@@ -353,7 +408,15 @@ export const SpotlightView: React.FC = () => {
       } else if (data.type === 'STREAM_CHUNK') {
         if (data.source !== 'SPOTLIGHT') {
           recordActivity();
-          const { sessionId, messageId, reasoningContent, content, isThinking, thinkingDuration } = data;
+          const { sessionId, messageId, reasoningContent, content, isThinking, thinkingDuration, stage, pending, citations, stages: incomingStages } = data;
+          // 阶段字段一并从广播同步（主窗口已在首个 token 时广播 pending:false）：
+          // 阶段阶梯的展开/收起时机因此与生成方窗口完全一致，不会出现"主窗已收起、浮窗还展开"。
+          const stagePatch = {
+            ...(stage !== undefined ? { stage } : {}),
+            ...(pending !== undefined ? { pending } : {}),
+            ...(citations !== undefined ? { citations } : {}),
+            ...(incomingStages !== undefined ? { stages: incomingStages } : {}),
+          };
           if (activeSessionIdRef.current === sessionId) {
             setIsGenerating(true);
 
@@ -368,18 +431,35 @@ export const SpotlightView: React.FC = () => {
                         content,
                         isThinking,
                         thinkingDuration,
+                        ...stagePatch,
                       }
                     : m
                 );
               }
               const all = loadSessions();
-              const target = all.find((s) => s.id === sessionId);
-              if (target && target.messages && target.messages.length > 0) {
-                return target.messages;
+              const targetIdx = all.findIndex((s) => s.id === sessionId);
+              if (targetIdx >= 0 && all[targetIdx].messages && all[targetIdx].messages.length > 0) {
+                // 磁盘回退路径也必须套上载荷里的阶段字段，否则磁盘上过期的
+                // pending:true 会把刚收到的 pending:false 覆盖掉（阶梯就永远不收起）
+                const next = [...all];
+                next[targetIdx] = {
+                  ...all[targetIdx],
+                  messages: all[targetIdx].messages.map((m) =>
+                    m.id === messageId
+                      ? { ...m, reasoningContent, content, isThinking, thinkingDuration, ...stagePatch }
+                      : m
+                  ),
+                };
+                return next[targetIdx].messages;
               }
               return prev;
             });
           }
+        }
+      } else if (data.type === 'STAGES_CHANGED') {
+        // 镜像窗口（主窗口）的阶段阶梯记录：实时并入本窗口消息
+        if (data.source !== 'SPOTLIGHT' && data.messageId) {
+          setMessages((prev) => prev.map((m) => (m.id === data.messageId ? { ...m, stages: data.stages } : m)));
         }
       } else if (data.type === 'STREAM_DONE') {
         if (data.source !== 'SPOTLIGHT') {
@@ -427,6 +507,10 @@ export const SpotlightView: React.FC = () => {
             // 只有思考真的开始（已有思考 token）才算"思考中"，prefill 阶段不算
             isThinking: accumulatedThoughtRef.current.length > 0,
             thinkingDuration: (performance.now() - thinkingStartTimeRef.current) / 1000,
+            // 尚未收到任何 token 即为仍在「检索 / 载入上下文」阶段——重放必须带上，
+            // 否则主窗口镜像会在检索阶段误判成"阶段已结束"（汇总行提前显示已完成）
+            pending: !accumulatedThoughtRef.current && !accumulatedContentRef.current,
+            stages: stagesRef.current,
             source: 'SPOTLIGHT',
           });
         }
@@ -454,6 +538,18 @@ export const SpotlightView: React.FC = () => {
     const handleStorage = (e: StorageEvent) => {
       if (e.key === 'tff_chat_settings_v1') {
         setSettings(loadSettings());
+      } else if (e.key === 'tff_abort_request_v1') {
+        // 主窗口点了「停止」：本窗口若正持有该回合，就地中止
+        const req = readAbortRequest();
+        if (!req) return;
+        if (activeSessionIdRef.current && req.sessionId === activeSessionIdRef.current && abortControllerRef.current) {
+          abortControllerRef.current.abort();
+          abortControllerRef.current = null;
+          setIsGenerating(false);
+          setLiveStreamingTokens(null);
+        }
+      } else if (e.key === 'tff_chat_sessions_v1') {
+        // 生成中的回合由广播驱动，这里不重载，避免把流式内容回滚
       }
     };
     window.addEventListener('storage', handleStorage);
@@ -621,6 +717,7 @@ export const SpotlightView: React.FC = () => {
     // AbortController 先建：停止按钮在检索阶段同样生效（中止检索与所有相关模型调用）。
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
+    stagesRef.current = []; // 新一轮：清空阶段快照
     thinkingStartTimeRef.current = performance.now();
     const thinkingStartTime = thinkingStartTimeRef.current;
 
@@ -646,9 +743,32 @@ export const SpotlightView: React.FC = () => {
         abortControllerRef.current = null;
         setIsGenerating(false);
         setLiveStreamingTokens(null);
-        setMessages((prev) =>
-          prev.filter((m) => m.id !== userMessage.id && m.id !== asstMessageId)
-        );
+        // ⚠️ 只撤下助理占位消息，**必须保留用户的提问**：
+        // 整轮删除会让会话变空 → 被当成"新对话"，用户以为聊天记录丢了。
+        setMessages((prev) => prev.filter((m) => m.id !== asstMessageId));
+        try {
+          const sid = activeSessionIdRef.current;
+          if (sid) {
+            const all = loadSessions();
+            const idx = all.findIndex((s) => s.id === sid);
+            if (idx >= 0) {
+              all[idx] = {
+                ...all[idx],
+                messages: all[idx].messages.filter((m) => m.id !== asstMessageId),
+                updatedAt: Date.now(),
+              };
+              saveSessions(all, sid, 'SPOTLIGHT');
+            }
+          }
+          // 明确告诉另一个窗口"已停止"，否则镜像侧会一直停在生成中（看着像点了没反应）
+          syncChannel?.postMessage({
+            type: 'STREAM_ABORT',
+            sessionId: sid,
+            source: 'SPOTLIGHT',
+          });
+        } catch {
+          // 广播失败不影响本窗口
+        }
         recordActivity();
         return;
       }
@@ -690,8 +810,10 @@ export const SpotlightView: React.FC = () => {
         const all = loadSessions();
         const idx = all.findIndex((s) => s.id === currentId);
         if (idx >= 0) {
-          // 保留既有的 pending/stage/prefillStartedAt：重建对象若丢弃这些字段，
-          // 主窗口镜像的回合会丢失阶段指示器（同步经 notifySessionUpdate → 主窗口重载）
+          // 保留既有的 stage/prefillStartedAt：重建对象若丢弃这些字段，
+          // 主窗口镜像的回合会丢失阶段阶梯（同步经 notifySessionUpdate → 主窗口重载）。
+          // pending **不能**照抄旧值：中止/出错后若落盘仍是 pending:true，
+          // 一次同步就会把"永远在转圈的僵尸回合"带回到两个窗口。
           const prevAsst = all[idx].messages.find((m) => m.id === asstMessageId);
           const asstMsg: ChatMessage = {
             ...(prevAsst ?? {}),
@@ -700,6 +822,7 @@ export const SpotlightView: React.FC = () => {
             content: accumulatedContent,
             reasoningContent: accumulatedThought,
             isThinking: isFinal ? false : (accumulatedThought.length > 0 && !accumulatedContent),
+            pending: isFinal ? false : (prevAsst?.pending ?? true),
             thinkingDuration: finalThinkingDuration || (performance.now() - thinkingStartTime) / 1000,
             timestamp: Date.now(),
             metrics,
@@ -779,6 +902,7 @@ export const SpotlightView: React.FC = () => {
             thinkingDuration: finalThinkingDuration,
             // pending:false 随载荷同步：主窗口镜像的 prefill 指示器同步撤下
             pending: false,
+            stages: stagesRef.current,
             // 引用胶囊随载荷同步：主窗口镜像与磁盘存档不至于丢失引用
             citations: foundCitations.length > 0 ? foundCitations : undefined,
             source: 'SPOTLIGHT',
@@ -813,6 +937,7 @@ export const SpotlightView: React.FC = () => {
             isThinking: false,
             thinkingDuration: finalThinkingDuration,
             pending: false,
+            stages: stagesRef.current,
             citations: foundCitations.length > 0 ? foundCitations : undefined,
             source: 'SPOTLIGHT',
           });
@@ -991,6 +1116,8 @@ export const SpotlightView: React.FC = () => {
     }
     setIsGenerating(false);
     setLiveStreamingTokens(null);
+    // 同上：额外走一次 localStorage，保证主窗口一定能收到
+    if (activeSessionIdRef.current) requestAbort(activeSessionIdRef.current);
     syncChannel?.postMessage({
       type: 'STREAM_ABORT',
       sessionId: activeSessionIdRef.current,
@@ -1315,7 +1442,10 @@ export const SpotlightView: React.FC = () => {
         </div>
 
         {/* Message Scroll Area */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 text-sm">
+        <div
+          {...streamProps}
+          className="flex-1 overflow-y-auto p-4 space-y-4 text-sm [overflow-anchor:none]"
+        >
           {messages.map((msg) => {
             if (msg.role === 'user') {
               const isCopied = copiedMsgId === msg.id;
@@ -1371,13 +1501,24 @@ export const SpotlightView: React.FC = () => {
             // Assistant message
             return (
               <div key={msg.id} className="space-y-2">
-                {/* 回合阶段指示（rag / prefill；与主窗口同一组件） */}
-                <TurnStageIndicator
-                  stage={msg.stage === 'prefill' ? 'prefill' : 'rag'}
-                  active={!!msg.pending && !msg.content && !msg.reasoningContent && !msg.error}
-                  startedAt={
-                    msg.stage === 'prefill' && msg.prefillStartedAt ? msg.prefillStartedAt : msg.timestamp
+                {/* 知识库 / 引擎阶段阶梯 —— 与主窗口**同一个组件**（StageLadder），
+                    渲染在思考条上方，思考条始终在最下面。 */}
+                <StageLadder
+                  messageId={msg.id}
+                  records={msg.stages}
+                  recording={
+                    // 只有本窗口发起的回合才记录（abortControllerRef 仅在本窗口发起时非空）；
+                    // 用 isGenerating 会把镜像过来的回合也当成自己的、两个窗口双写
+                    !!abortControllerRef.current &&
+                    !!msg.pending &&
+                    !msg.content &&
+                    !msg.reasoningContent &&
+                    !msg.error
                   }
+                  phasesActive={!!msg.pending && !msg.error}
+                  turnStage={msg.stage}
+                  prefillStartedAt={msg.prefillStartedAt}
+                  onRecordsChange={handleStagesChange}
                 />
                 {/* Thinking accordion */}
                 {(msg.reasoningContent || msg.isThinking) && (
@@ -1469,14 +1610,14 @@ export const SpotlightView: React.FC = () => {
                       </button>
                     </div>
 
-                    {/* Gray Prefill & tok/s metrics */}
+                    {/* Gray Prefill & tok/s metrics —— 与主窗口一致：prefill 只留速度不留耗时
+                        （耗时由上方阶段阶梯的「正在载入上下文」那行承担） */}
                     {msg.metrics && (
                       <span className="text-xs font-mono text-zinc-500 dark:text-zinc-400">
-                        {`${t('metricsPrefill')} ${(msg.metrics.ttftMs / 1000).toFixed(1)}s${
-                          msg.metrics.promptTokens > 0
-                            ? ` (${(msg.metrics.promptTokens / (msg.metrics.ttftMs / 1000)).toFixed(1)} tok/s)`
-                            : ''
-                        } · ${t('metricsDecode')} ${msg.metrics.tokensPerSecond} tok/s`}
+                        {msg.metrics.ttftMs > 0 && msg.metrics.promptTokens > 0
+                          ? `${t('metricsPrefill')} ${(msg.metrics.promptTokens / (msg.metrics.ttftMs / 1000)).toFixed(1)} tok/s · `
+                          : ''}
+                        {`${t('metricsDecode')} ${msg.metrics.tokensPerSecond} tok/s`}
                       </span>
                     )}
                   </div>

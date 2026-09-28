@@ -78,6 +78,9 @@ export const translations = {
     stageSense: '选择义项',
     stageFetching: '抓取原文',
     stageRouting: '规划小节',
+    stageSummaryLabel: '知识库检索',
+    stageStepsUnit: ' 步',
+    stageStepUnit: ' 步',
     organizingThoughts: '组织思绪中...',
 
     // PerformanceFooter
@@ -275,6 +278,9 @@ export const translations = {
     stageSense: 'Picking sense',
     stageFetching: 'Fetching article',
     stageRouting: 'Planning sections',
+    stageSummaryLabel: 'Knowledge retrieval',
+    stageStepsUnit: ' steps',
+    stageStepUnit: ' step',
     organizingThoughts: 'Organizing thoughts...',
 
     // PerformanceFooter

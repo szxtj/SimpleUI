@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { ChatMessage, TurnMetrics } from '../types/chat';
+import { ChatMessage, TurnMetrics, TurnStageRecord } from '../types/chat';
 import { useI18n } from '../i18n';
+import { useFollowBottom } from '../hooks/useFollowBottom';
 import { MessageItem } from './MessageItem';
 import { ChatInput } from './ChatInput';
 import {
@@ -22,6 +23,14 @@ interface ChatViewProps {
   images: string[];
   setImages: React.Dispatch<React.SetStateAction<string[]>>;
   isGenerating: boolean;
+  /**
+   * 本轮是否由**本窗口**发起（主窗口 = 有自己的 abortController）。
+   * 注意不能用 isGenerating：镜像窗口也会为"显示停止按钮"把它置 true，
+   * 用它会导致两个窗口都去记录同一轮的阶段（双写、互相覆盖）。
+   */
+  ownsTurn: boolean;
+  /** 阶段阶梯记录变化 → 回写消息（App 负责持久化 + 广播） */
+  onStagesChange?: (messageId: string, stages: TurnStageRecord[]) => void;
   onSend: (promptText?: string) => void;
   onStop: () => void;
   usedTokens: number;
@@ -77,12 +86,29 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onRetry,
   onDelete,
   onShrinkToSpotlight,
+  onStagesChange,
+  ownsTurn,
 }) => {
   const { t } = useI18n();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const prevMessagesLengthRef = useRef(messages.length);
   const prevFirstMsgIdRef = useRef(messages[0]?.id);
   const [showModelMenu, setShowModelMenu] = useState(false);
+
+  /**
+   * 消息流容器的「跟随底部」行为（与浮窗共用同一份 hook，两窗口完全一致）。
+   *
+   * 跟随范围**只到"正文开始生成"为止**：检索 / 载入上下文 / 思考阶段跟随底部
+   * （否则思考框会被顶出视野，看不到最新一行）；**一旦正文开始流式输出就完全不再动视野**，
+   * 把阅读权交给用户（用户明确要求：非思考的回复不要动）。
+   * 用户中途滚动滚轮 → 本轮彻底停止（单向闩锁，见 hook）；turnKey = 本轮助手消息 id。
+   */
+  const lastMsg = messages[messages.length - 1];
+  const answerStreaming = !!lastMsg && lastMsg.role === 'assistant' && !!lastMsg.content;
+  const { containerProps: streamProps, markProgrammatic } = useFollowBottom(
+    isGenerating && !answerStreaming,
+    isGenerating ? lastMsg?.id : undefined
+  );
 
   // Auto-scroll to bottom only when a new message turn is added or session changes
   // Do NOT force focus on the line being generated so content flows naturally
@@ -93,9 +119,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
     prevFirstMsgIdRef.current = messages[0]?.id;
 
     if (isDifferentSession || isNewMessage) {
+      // 新回合/换会话：这次的平滑滚动是程序化的，别被当成"用户滚动了"
+      markProgrammatic(700);
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages]);
+  }, [messages, markProgrammatic]);
 
   const quickPrompts = [
     {
@@ -205,8 +233,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       </div>
 
-      {/* Messages Stream Scroll Area */}
-      <div className="flex-1 overflow-y-auto px-3 cq-md:px-6 cq-lg:px-8 py-3 cq-md:py-6">
+      {/* Messages Stream Scroll Area
+          生成中由 useFollowBottom 每帧钉底；用户一滚即交还控制权（本轮不再自动聚焦）。
+          `[overflow-anchor:none]`：关掉浏览器滚动锚定——流式追加内容时它会把视口钉在旧位置，
+          与跟随互相打架，也是"用户滚到最后一行却被拽回去"的元凶。 */}
+      <div
+        {...streamProps}
+        className="flex-1 overflow-y-auto px-3 cq-md:px-6 cq-lg:px-8 py-3 cq-md:py-6 [overflow-anchor:none]"
+      >
         <div className="max-w-4xl mx-auto min-h-full flex flex-col justify-start">
           {messages.length === 0 ? (
             <div className="my-auto py-4 cq-md:py-8 cq-lg:py-10 flex flex-col items-center text-center w-full max-w-lg mx-auto">
@@ -254,6 +288,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   onOpenWiki={onOpenWiki}
                   onRetry={onRetry}
                   onDelete={onDelete}
+                  turnRecording={ownsTurn}
+                  onStagesChange={onStagesChange}
                   // 用户气泡的重试目标：紧随其后的助手回复 id（与浮窗的用户气泡重试一致）
                   retryTargetId={
                     message.role === 'user' && messages[idx + 1]?.role === 'assistant'

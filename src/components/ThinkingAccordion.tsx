@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ChevronRight, Loader2, Sparkles } from 'lucide-react';
 import { useI18n } from '../i18n';
+import { useFollowBottom } from '../hooks/useFollowBottom';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
 interface ThinkingAccordionProps {
@@ -22,26 +23,19 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
 }) => {
   const { t } = useI18n();
   const [isOpen, setIsOpen] = useState(isThinking);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  // 用户是否"贴底"：只有贴底时才跟随滚动；一旦手动上滚就停止，不与用户抢滚动条
-  const pinnedRef = useRef(true);
 
   // Auto expand when thinking starts, and auto collapse when thinking finishes
   useEffect(() => {
     setIsOpen(isThinking);
   }, [isThinking]);
 
-  // While thinking, keep the latest line of thought in view —
-  // 节流到每帧一次（rAF），且只在贴底时跟随：避免每个 token 都强制滚动把整个界面带着抖。
-  useEffect(() => {
-    if (!isThinking || !isOpen) return;
-    const el = scrollContainerRef.current;
-    if (!el || !pinnedRef.current) return;
-    const id = requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight;
-    });
-    return () => cancelAnimationFrame(id);
-  }, [content, isThinking, isOpen]);
+  /**
+   * 思考内容跟随滚动 —— 与两个窗口的消息流**共用同一份 hook**：
+   * 思考中每帧钉在最底部；**用户一旦手动滚动（滚轮/触摸/键盘/拖滚动条），本轮立即彻底停止自动聚焦**，
+   * 不再"滚回底部又自动恢复"（那样会让正在读前文的用户被反复拽动、界面抖动）。
+   * 重新展开思考条（active 由 false 变 true）时重新开始跟随。
+   */
+  const { containerProps: boxProps } = useFollowBottom(isThinking && isOpen);
 
   if (!content && !isThinking) return null;
 
@@ -83,16 +77,14 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
         />
       </button>
 
-      {/* 展开内容：左侧细竖线 + 弱化文字；最大高度减半，滚动只在贴底时跟随 */}
+      {/* 展开内容：左侧细竖线 + 弱化文字；生成中由 useFollowBottom 每帧钉在底部，
+          用户一滚即交还控制权（本轮不再自动聚焦）。
+          `[overflow-anchor:none]`：关掉浏览器的滚动锚定——流式追加时它会把视口锚在旧位置，
+          正是"用户滚到最后一行却被滚回去"的元凶。 */}
       {isOpen && (
         <div
-          ref={scrollContainerRef}
-          onScroll={() => {
-            const el = scrollContainerRef.current;
-            if (!el) return;
-            pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-          }}
-          className="mt-1.5 mb-1 ml-[7px] pl-3.5 border-l-2 border-black/[0.07] dark:border-white/[0.09] max-h-48 overflow-y-auto select-text"
+          {...boxProps}
+          className="mt-1.5 mb-1 ml-[7px] pl-3.5 border-l-2 border-black/[0.07] dark:border-white/[0.09] max-h-48 overflow-y-auto select-text [overflow-anchor:none]"
         >
           {displayContent ? (
             <MarkdownRenderer

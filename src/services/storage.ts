@@ -144,6 +144,60 @@ export function saveSessions(sessions: ChatSession[], updatedSessionId?: string,
   }
 }
 
+/**
+ * 跨窗口「请求中止本轮生成」。
+ *
+ * 为什么要走 localStorage 而不是 BroadcastChannel：主窗口与浮窗是**两个独立 WKWebView**，
+ * BroadcastChannel 不一定跨实例投递（实测镜像能看到内容靠的是落盘 + storage 事件，
+ * 不是 BroadcastChannel）。storage 事件在同源的其他浏览上下文里必定触发，因此用它传播中止请求。
+ * 发起方与接收方是不同窗口，`storage` 事件不会在写入方自己触发，正好。
+ */
+const ABORT_KEY = 'tff_abort_request_v1';
+
+export function requestAbort(sessionId: string): void {
+  try {
+    localStorage.setItem(ABORT_KEY, JSON.stringify({ sessionId, at: Date.now() }));
+  } catch {
+    // 写失败不影响
+  }
+}
+
+export function readAbortRequest(): { sessionId: string; at: number } | null {
+  try {
+    const raw = localStorage.getItem(ABORT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed.sessionId === 'string' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 清理「被中断的回合」残留的 pending 标记。
+ *
+ * 场景：生成中被退出 App / 强杀进程，`pending: true` 会随消息落盘；下次打开时
+ * 没有任何窗口在生成，若不清掉，阶段阶梯会一直停在"展开 + 转圈"的假进行中状态。
+ * 只在**App 启动时**（主窗口首次装载会话）调用一次 —— 生成中的会话不能清
+ * （浮窗会在回合进行中反复 loadSessions 做持久化，那里清掉会把真实进行中的状态抹掉）。
+ *
+ * @returns 是否发生了修改（发生了就应回写 + 广播）
+ */
+export function clearStalePending(sessions: ChatSession[]): boolean {
+  let changed = false;
+  for (const s of sessions) {
+    for (const m of s.messages) {
+      if (m.pending || m.isThinking || m.stage) {
+        m.pending = false;
+        m.isThinking = false;
+        delete m.stage;
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
 export function loadCurrentSessionId(): string | null {
   return localStorage.getItem(CURRENT_ID_KEY);
 }
