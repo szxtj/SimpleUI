@@ -321,12 +321,16 @@ class TtfService {
 
   // ----------------------------- 闲置自动重置 (极低负载保护) -----------------------------
   //
-  // 与 TurboFieldfareBar ServiceManager 完全同源的实现：
-  //   - 每 2s 扫描服务日志，统计 "] request ... accepted" 与 "... completed in" 行；
-  //   - accepted-completed 即在途请求数（推理中绝不重置）；
+  // 与 TurboFieldfareBar ServiceManager 同源，但修正了其计数缺陷：
+  //   - 每 2s 扫描服务日志，统计 "] request ... accepted" 行与三种终态行
+  //     （completed in / cancelled by client / failed phase=，词汇来自本体 ServerLog.swift）；
+  //   - accepted − 终态数 即在途请求数（生成中绝不重置 = 计时停止）；
+  //   - 任一终态到达 = 本轮生成结束，从该行时间戳重新起算闲置（计时开始）；
   //   - 从未处理过请求时不重置（启动后本身就是 ~75MB 极低待机）；
-  //   - 闲置（最后一次 completed 起算）满 idleAutoResetMinutes 分钟 → 平滑重启，
+  //   - 闲置（最后一次终态起算）满 idleAutoResetMinutes 分钟 → 平滑重启，
   //     释放 2~4GB 显存回退至极低待机；重启会清空日志，状态自然归零。
+  // 注意：manager 只统计 completed，cancelled/failed 的请求会被它永远算作在途
+  // （用户点一次「停止」后闲置重置即失效）；本实现以源码确认的三终态为准。
 
   startIdleMonitor() {
     if (this.idleTimer) return;
@@ -358,26 +362,37 @@ class TtfService {
     if (!isPidAlive(readPid())) return; // 服务未运行
 
     // 扫描日志（start 每次截断重写，tail 窗口足以覆盖本生命周期内的全部请求行）
+    // 请求终态以本体 ServerLog.swift 的词汇为准，恰好三种：
+    //   "request <id> completed in ..."   — 正常完成
+    //   "request <id> cancelled by client in ..." — 客户端中断（用户点停止/断连）
+    //   "request <id> failed phase=..."   — 请求失败
+    // 三种都算「生成结束」：在途数 = accepted − 全部终态；最后终态时刻 = 计时起点。
+    // 漏掉 cancelled/failed 会让在途数永远 >0，闲置重置从此失效。
     const { lines } = this.tailLog(5000);
     let acceptedCount = 0;
-    let completedCount = 0;
-    let latestCompletedAt = null;
+    let terminalCount = 0;
+    let latestTerminalAt = null;
     for (const line of lines) {
-      if (line.includes('] request ') && line.includes(' accepted')) acceptedCount++;
-      if (line.includes('] request ') && line.includes(' completed in ')) {
-        completedCount++;
+      if (!line.includes('] request ')) continue;
+      const isTerminal =
+        line.includes(' completed in ') ||
+        line.includes(' cancelled by client ') ||
+        line.includes(' failed phase=');
+      if (line.includes(' accepted')) acceptedCount++;
+      if (isTerminal) {
+        terminalCount++;
         const ts = this.parseLogTimestamp(line);
-        if (ts && (latestCompletedAt === null || ts > latestCompletedAt)) latestCompletedAt = ts;
+        if (ts && (latestTerminalAt === null || ts > latestTerminalAt)) latestTerminalAt = ts;
       }
     }
 
     if (acceptedCount > 0) {
       this.idleState.hasHandled = true;
-      this.idleState.inFlight = Math.max(0, acceptedCount - completedCount);
-      if (latestCompletedAt !== null) {
-        this.idleState.lastFinishedAt = latestCompletedAt;
+      this.idleState.inFlight = Math.max(0, acceptedCount - terminalCount);
+      if (latestTerminalAt !== null) {
+        this.idleState.lastFinishedAt = latestTerminalAt;
       } else if (this.idleState.lastFinishedAt === null) {
-        // 有请求被接受但尚未见到 completed（极端情况下时间戳缺失），以当前时间兜底
+        // 有请求被接受但尚未见到任何终态（正在生成 / 时间戳缺失），以当前时间兜底
         this.idleState.lastFinishedAt = Date.now();
       }
     } else {
