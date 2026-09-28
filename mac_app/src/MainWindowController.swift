@@ -6,6 +6,14 @@ class TitleBarDragView: NSView {
     var isSidebarOpen: Bool = true
     var isWikiPanelOpen: Bool = false
 
+    // —— 手动拖拽状态（不用 performDrag，是为了在最大尺寸下拖动时能先还原原尺寸再继续拖）——
+    private var dragging = false
+    private var initialMouseLocation = NSPoint.zero
+    private var initialWindowOrigin = NSPoint.zero
+    /** 本次按下时处于自定义缩放态；实际位移超过阈值时先还原原尺寸、再无缝继续拖 */
+    private var pendingUnzoom = false
+    private static let unzoomDragThreshold: CGFloat = 4.0
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         // point passed to hitTest is in superview's coordinate system!
         guard frame.contains(point) else { return nil }
@@ -77,17 +85,58 @@ class TitleBarDragView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         // 双击顶部栏 → 在「非全屏的最大尺寸」与原尺寸之间切换（macOS 应用常见行为）。
-        // performZoom(_:):zoom 态填充可视工作区但**不进入** macOS 全屏；再次双击恢复原尺寸。
+        // 两个方向**都由双击触发**；单击/拖动不再触发还原（2026-09-28 用户要求统一）。
         if event.clickCount >= 2 {
-            window?.performZoom(nil)
+            (window?.windowController as? MainWindowController)?.toggleZoomAnimated()
             return
         }
-        // 缩放态（双击最大化后）拖拽：先恢复原尺寸再拖——与原生 macOS 应用一致
-        // （performDrag 只移动窗口，不会自动解除 zoom 态）。
-        if let win = window, win.isZoomed {
-            win.performZoom(nil)
+        let controller = window?.windowController as? MainWindowController
+        // 动画进行中用户按下鼠标：停掉动画，把窗口交给拖拽，避免两套帧互相打架
+        controller?.cancelZoomAnimation()
+        guard let win = window else { return }
+        dragging = true
+        initialMouseLocation = NSEvent.mouseLocation
+        initialWindowOrigin = win.frame.origin
+        pendingUnzoom = controller?.isZoomed ?? false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard dragging, let win = window else { return }
+        let mouse = NSEvent.mouseLocation
+
+        // 最大尺寸下首次实际拖动：先还原原尺寸（光标保持在标题栏上
+        // 相同的相对水平位置、相同的"距顶边"高度，与原生 macOS 一致），随后无缝续拖
+        if pendingUnzoom {
+            let dx = mouse.x - initialMouseLocation.x
+            let dy = mouse.y - initialMouseLocation.y
+            guard sqrt(dx * dx + dy * dy) >= TitleBarDragView.unzoomDragThreshold else { return }
+            guard let controller = window?.windowController as? MainWindowController,
+                  var restore = controller.consumePreZoomFrame() else {
+                pendingUnzoom = false
+                return
+            }
+            restore.size.width = max(restore.width, win.minSize.width)
+            restore.size.height = max(restore.height, win.minSize.height)
+            let relativeX = (mouse.x - win.frame.minX) / win.frame.width
+            let topOffset = win.frame.maxY - mouse.y
+            restore.origin.x = mouse.x - restore.width * relativeX
+            restore.origin.y = mouse.y - restore.height + topOffset
+            win.setFrame(restore, display: true)
+            // 以还原瞬间为新的拖拽基准，后续位移无缝衔接
+            initialMouseLocation = mouse
+            initialWindowOrigin = restore.origin
+            pendingUnzoom = false
+            return
         }
-        window?.performDrag(with: event)
+
+        let deltaX = mouse.x - initialMouseLocation.x
+        let deltaY = mouse.y - initialMouseLocation.y
+        win.setFrameOrigin(NSPoint(x: initialWindowOrigin.x + deltaX, y: initialWindowOrigin.y + deltaY))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragging = false
+        pendingUnzoom = false
     }
 
     override var mouseDownCanMoveWindow: Bool {
@@ -99,6 +148,12 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
     private var webView: WKWebView!
     private var dragView: TitleBarDragView!
     var onShrinkToSpotlight: ((String?) -> Void)?
+    /** 双击缩放前的原帧（自定义 zoom 态，替代 performZoom，见 toggleZoomAnimated 注释） */
+    private var preZoomFrame: NSRect?
+    /** 双击缩放的步进动画定时器 */
+    private var zoomAnimationTimer: Timer?
+    /** 用户在全屏下点了关闭：先退全屏，退完再隐藏窗口（避免全屏 Space 残留黑屏） */
+    private var pendingCloseAfterFullscreenExit = false
 
     init() {
         let width: CGFloat = 1180
@@ -238,9 +293,100 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
 
     // MARK: - NSWindowDelegate
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        // 全屏下直接 orderOut 会把全屏 Space 留在屏幕上（表现为全屏黑屏，App 还活着）。
+        // macOS 惯例是先退全屏、动画收完再隐藏窗口 —— 用 windowDidExitFullScreen 收尾。
+        if sender.styleMask.contains(.fullScreen) {
+            pendingCloseAfterFullscreenExit = true
+            sender.toggleFullScreen(nil)
+            return false
+        }
         sender.orderOut(nil)
         return false
     }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        guard pendingCloseAfterFullscreenExit,
+              let win = notification.object as? NSWindow, win === window else { return }
+        pendingCloseAfterFullscreenExit = false
+        // 再让系统跑完 Space 收起的收尾帧，然后隐藏窗口
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.window?.orderOut(nil)
+        }
+    }
+
+    // MARK: - 双击缩放（自定义动画）
+    /**
+     * 双击顶部栏在「非全屏的最大尺寸」与原尺寸之间切换。
+     *
+     * 为什么不用 performZoom：它的帧动画期间 WKWebView 的远程图层不会逐帧重排，
+     * 内容被整体拉伸、边缘露底，整个界面观感异常；而用户自由拖拽边框是逐帧真实布局，
+     * 从来不糊。因此这里把帧变化拆成 ~60fps 的小步 `setFrame(display: true)`——
+     * 每一步都触发一次真实布局，观感与自由拉伸一致。
+     */
+    /// 中断进行中的缩放动画（拖拽/新一轮缩放开始前调用）
+    func cancelZoomAnimation() {
+        zoomAnimationTimer?.invalidate()
+        zoomAnimationTimer = nil
+    }
+
+    /// 是否处于自定义缩放态（双击放大后、尚未还原）
+    var isZoomed: Bool { preZoomFrame != nil }
+
+    /// 取走记忆的原尺寸（拖动还原用）；取走即清空，避免重复还原到过期帧
+    func consumePreZoomFrame() -> NSRect? {
+        defer { preZoomFrame = nil }
+        return preZoomFrame
+    }
+
+    func toggleZoomAnimated() {
+        guard let win = window, let screen = win.screen ?? NSScreen.main else { return }
+        // 原生全屏态下不做自定义缩放（全屏有自己的进出场动画）
+        guard !win.styleMask.contains(.fullScreen) else { return }
+
+        zoomAnimationTimer?.invalidate()
+        zoomAnimationTimer = nil
+
+        let startFrame = win.frame
+        let targetFrame: NSRect
+        if let restore = preZoomFrame {
+            // 已是缩放态 → 回到双击前的原尺寸
+            targetFrame = restore
+            preZoomFrame = nil
+        } else {
+            preZoomFrame = startFrame
+            targetFrame = screen.visibleFrame
+        }
+        guard startFrame != targetFrame else { return }
+
+        let steps = 16
+        var step = 0
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
+            guard let self = self, let win = self.window else {
+                timer.invalidate()
+                return
+            }
+            step += 1
+            let t = min(1.0, Double(step) / Double(steps))
+            // ease-in-out：节奏接近系统缩放动画
+            let eased = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
+            var frame = NSRect.zero
+            frame.origin.x = startFrame.origin.x + (targetFrame.origin.x - startFrame.origin.x) * eased
+            frame.origin.y = startFrame.origin.y + (targetFrame.origin.y - startFrame.origin.y) * eased
+            frame.size.width = startFrame.width + (targetFrame.width - startFrame.width) * eased
+            frame.size.height = startFrame.height + (targetFrame.height - startFrame.height) * eased
+            // 夹到最小尺寸，避免把窗口缩穿
+            frame.size.width = max(frame.size.width, win.minSize.width)
+            frame.size.height = max(frame.size.height, win.minSize.height)
+            win.setFrame(frame, display: true)
+            if step >= steps {
+                timer.invalidate()
+                self.zoomAnimationTimer = nil
+                win.setFrame(targetFrame, display: true)
+            }
+        }
+        zoomAnimationTimer = timer
+    }
+
 
     // MARK: - WKUIDelegate (External Links)
     // WKWebView silently ignores `target="_blank"` navigations unless this delegate

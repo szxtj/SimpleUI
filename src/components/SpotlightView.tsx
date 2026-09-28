@@ -154,15 +154,17 @@ export const SpotlightView: React.FC = () => {
   const hasMessages = messages.length > 0;
 
   /**
-   * 消息流容器的「跟随底部」行为 —— 与主窗口**共用同一份 hook**（`useFollowBottom`），
+   * 消息流容器的「跟随底部 / 保位」行为 —— 与主窗口**共用同一份 hook**（`useFollowBottom`），
    * 两窗口表现逐字一致。跟随只到"正文开始生成"为止：检索/载入/思考阶段跟随底部
-   * （否则思考框被顶出视野），正文一流式就完全不再动视野（把阅读权交给用户）。
+   * （否则思考框被顶出视野），正文一流式就进入保位期——完全不自动滚动，但由 hook
+   * 守住阅读位置（流式 Markdown 重排/思考条收起会把 scrollTop 钳向上方，即"往顶上跳"）。
    */
   const lastMsg = messages[messages.length - 1];
   const answerStreaming = !!lastMsg && lastMsg.role === 'assistant' && !!lastMsg.content;
   const { containerProps: streamProps, markProgrammatic } = useFollowBottom(
     isGenerating && !answerStreaming,
-    isGenerating ? lastMsg?.id : undefined
+    isGenerating ? lastMsg?.id : undefined,
+    isGenerating
   );
 
   // Track latest state in refs for listeners and intervals
@@ -1441,7 +1443,7 @@ export const SpotlightView: React.FC = () => {
           </div>
         </div>
 
-        {/* Message Scroll Area */}
+        {/* Message Scroll Area（跟随/保位由 useFollowBottom 接管，与主窗口一致） */}
         <div
           {...streamProps}
           className="flex-1 overflow-y-auto p-4 space-y-4 text-sm [overflow-anchor:none]"

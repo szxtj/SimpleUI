@@ -66,10 +66,7 @@ export const translations = {
     thinkingNotice: '正在思考...',
 
     // ThinkingAccordion
-    thinkingActive: '正在深度思考中...',
-    thoughtProcess: '思考过程',
-    thoughtForPrefix: '思考了',
-    seconds: '秒',
+    thinkingLabel: '深度思考',
     prefillLoading: '正在载入上下文',
     stageQueued: '等待模型空闲',
     stageSearching: '检索知识库',
@@ -266,10 +263,7 @@ export const translations = {
     thinkingNotice: 'Thinking...',
 
     // ThinkingAccordion
-    thinkingActive: 'Deep thinking in progress...',
-    thoughtProcess: 'Thought Process',
-    thoughtForPrefix: 'Thought for',
-    seconds: 'seconds',
+    thinkingLabel: 'Thinking',
     prefillLoading: 'Loading context',
     stageQueued: 'Waiting for the model',
     stageSearching: 'Searching knowledge base',

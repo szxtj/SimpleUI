@@ -218,7 +218,7 @@ export const StageLadder: React.FC<StageLadderProps> = ({
         {phasesActive ? (
           <Loader2 className="w-4 h-4 text-blue-500 dark:text-blue-400 animate-spin flex-shrink-0" />
         ) : (
-          <Check className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+          <Check className="w-4 h-4 text-blue-500 dark:text-blue-400 flex-shrink-0" />
         )}
         <span
           className={`text-[13px] font-medium transition-colors ${
@@ -246,7 +246,7 @@ export const StageLadder: React.FC<StageLadderProps> = ({
             return (
               <div key={`${r.kind}-${i}`} data-stage-ladder-row className="flex items-center gap-2 text-xs leading-relaxed">
                 {done ? (
-                  <Check className="w-3.5 h-3.5 text-emerald-500/80 flex-shrink-0" />
+                  <Check className="w-3.5 h-3.5 text-blue-500 dark:text-blue-400 flex-shrink-0" />
                 ) : (
                   <Loader2 className="w-3.5 h-3.5 text-blue-500 dark:text-blue-400 animate-spin flex-shrink-0" />
                 )}

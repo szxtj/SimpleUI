@@ -12,7 +12,8 @@ interface ThinkingAccordionProps {
 
 /**
  * 思考过程折叠区（现代聊天式样，参考 Claude/GPT 的思考条）：
- *   - 折叠态只有一行：小图标 + 「思考了 N 秒」+ 右向箭头，无边框无底色
+ *   - 折叠态只有一行：小图标 + 「深度思考 · Ns」（进行中/结束后同款，仅图标与时长的值不同）
+ *     + 右向箭头，无边框无底色
  *   - 展开态：内容以左侧细竖线 + 弱化文字呈现，不再是"框中框"
  * 思考中自动展开并跟随滚动；结束后自动折叠。
  */
@@ -45,9 +46,10 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
   const displayContent =
     isThinking && content ? content.replace(/\n+$/, '') + CURSOR : content;
 
-  const headerText = isThinking
-    ? t('thinkingActive')
-    : `${t('thoughtForPrefix')} ${duration > 0 ? duration.toFixed(1) : '0'} ${t('seconds')}`;
+  // 进行中 / 结束后**共用同一格式**（与阶段阶梯汇总行同款语法）：
+  //   进行中（转圈）: 深度思考 · 1.4s（时长随思考块实时跳动）
+  //   结束后（✦）  : 深度思考 · 3.2s
+  const headerText = `${t('thinkingLabel')} · ${Math.max(0, duration).toFixed(1)}s`;
 
   return (
     <div className="my-2.5 text-sm">
@@ -59,7 +61,7 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
         {isThinking ? (
           <Loader2 className="w-4 h-4 text-blue-500 dark:text-blue-400 animate-spin flex-shrink-0" />
         ) : (
-          <Sparkles className="w-4 h-4 text-indigo-400 dark:text-indigo-300 flex-shrink-0" />
+          <Sparkles className="w-4 h-4 text-blue-500 dark:text-blue-400 flex-shrink-0" />
         )}
         <span
           className={`text-[13px] font-medium transition-colors ${

@@ -96,18 +96,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [showModelMenu, setShowModelMenu] = useState(false);
 
   /**
-   * 消息流容器的「跟随底部」行为（与浮窗共用同一份 hook，两窗口完全一致）。
+   * 消息流容器的「跟随底部 / 保位」行为（与浮窗共用同一份 hook，两窗口完全一致）。
    *
    * 跟随范围**只到"正文开始生成"为止**：检索 / 载入上下文 / 思考阶段跟随底部
-   * （否则思考框会被顶出视野，看不到最新一行）；**一旦正文开始流式输出就完全不再动视野**，
-   * 把阅读权交给用户（用户明确要求：非思考的回复不要动）。
-   * 用户中途滚动滚轮 → 本轮彻底停止（单向闩锁，见 hook）；turnKey = 本轮助手消息 id。
+   * （否则思考框会被顶出视野，看不到最新一行）；**一旦正文开始流式输出就进入保位期**
+   * （keepPosition）：完全不自动滚动，但守住用户阅读位置——流式 Markdown 重排、
+   * 思考条收起会把 scrollTop 钳向上方（表现为"不停往顶上跳"），由 hook 拉回。
+   * 用户中途滚动滚轮 → 本轮彻底停止跟随（单向闩锁，见 hook）；turnKey = 本轮助手消息 id。
    */
   const lastMsg = messages[messages.length - 1];
   const answerStreaming = !!lastMsg && lastMsg.role === 'assistant' && !!lastMsg.content;
   const { containerProps: streamProps, markProgrammatic } = useFollowBottom(
     isGenerating && !answerStreaming,
-    isGenerating ? lastMsg?.id : undefined
+    isGenerating ? lastMsg?.id : undefined,
+    isGenerating
   );
 
   // Auto-scroll to bottom only when a new message turn is added or session changes
@@ -234,7 +236,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
       </div>
 
       {/* Messages Stream Scroll Area
-          生成中由 useFollowBottom 每帧钉底；用户一滚即交还控制权（本轮不再自动聚焦）。
+          生成中由 useFollowBottom 分两段接管：思考期每帧钉底；正文流式期进入保位期
+          （不自动滚，但把重排钳制拽走的视野拉回）。用户一滚即交还控制权（本轮不再自动跟随）。
           `[overflow-anchor:none]`：关掉浏览器滚动锚定——流式追加内容时它会把视口钉在旧位置，
           与跟随互相打架，也是"用户滚到最后一行却被拽回去"的元凶。 */}
       <div
