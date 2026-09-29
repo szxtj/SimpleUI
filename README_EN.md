@@ -347,6 +347,8 @@ With the session-level 📚 enabled, a turn passes through several stages before
 
 - **While generating**: rows are appended one by one — `stage · detail` plus **that stage's own duration**; the active row spins and counts up live.
 - **When finished**: it auto-collapses into one summary line (e.g. `Knowledge retrieval · 5 steps · 14.6s`); clicking expands the per-stage breakdown.
+- **Two separate blocks**: the ladder is split into "Knowledge retrieval" and "Loading context" (engine prefill), each collapsing on its own. **Engine prefill is not a retrieval step** — it is not counted in the retrieval block's step count, and its duration is not added to that block's total.
+- **No wrapper for a single row**: when a block holds exactly one row (e.g. nothing was retrieved this turn, leaving only prefill) that row is shown as-is — the old "summary line + an identical indented row right below it" duplication is gone.
 - **Position**: the ladder renders **above** the thinking accordion, which always stays at the bottom — matching the real timeline.
 - **Persistence**: records live on the message (localStorage), so switching windows, switching sessions, closing every window, or quitting and relaunching the app keeps the completed stages. The generating window does the recording; the other window mirrors it live via `SESSIONS_CHANGED`.
 
@@ -363,9 +365,10 @@ Retrieval labels are driven by real server-side instrumentation (`setRagStage` �
 
 Notes:
 
-- The summary label follows the stages that **actually happened**: with at least one retrieval stage it reads
-  `Knowledge retrieval · N steps · X.Xs`; when the only stage is prefill (knowledge base off, or nothing was
-  retrieved this turn) it reads `Loading context · X.Xs` — so nobody is misled into thinking a retrieval ran.
+- The summary label follows the stages that **actually happened**: with retrieval stages it reads
+  `Knowledge retrieval · N steps · X.Xs` (both N and the total cover retrieval only); when the only stage
+  is prefill (knowledge base off, or nothing was retrieved this turn) it reads `Loading context · X.Xs`
+  as a single flat row — so nobody is misled into thinking a retrieval ran.
 - The trailing seconds are **that stage's own duration** (0.1s precision; the active row ticks live, finished rows are fixed).
 - "Assembling context" is millisecond-scale string concatenation — not instrumented, not shown, so it never becomes a row.
 - Planning / sense / routing are **primary-model calls** (strictly serial, unpredictable duration) — spinner only, no percentage.
@@ -734,7 +737,7 @@ SimpleUI/
         ├── ChatView.tsx      # Main conversation view (header toolbar, message stream, input area)
         ├── ChatInput.tsx     # Main-window composite input (attachments, 🧠 thinking / 📚 KB toggles, send·stop, ring)
         ├── MessageItem.tsx   # Single message (stage indicator, thinking accordion, Markdown, chips, actions, metrics)
-        ├── MarkdownRenderer.tsx   # Markdown + KaTeX rendering
+        ├── MarkdownRenderer.tsx   # Markdown + KaTeX rendering (CJK-friendly emphasis parsing)
         ├── ThinkingAccordion.tsx  # Collapsible thinking process
         ├── StageLadder.tsx   # Turn stage ladder: KB/engine stages as rows with per-stage
         │                     #   durations, collapsing into a summary when done; shared

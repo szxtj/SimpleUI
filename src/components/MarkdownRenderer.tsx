@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
+import remarkCjkFriendly from 'remark-cjk-friendly';
 import { Check, Copy } from 'lucide-react';
 import { useI18n } from '../i18n';
 
@@ -12,17 +13,25 @@ interface MarkdownRendererProps {
 }
 
 /**
- * Preprocess markdown content to solve CommonMark bold (**) parsing failures
- * with CJK punctuation, trailing colons, and internal spaces without altering code blocks or math.
+ * 唯一保留的一处预处理：**定界符内侧带空格**的写法（`** 加粗 **`）。
+ * CommonMark 规定定界符串不能以空白开头或结尾，所以这种写法在解析层**根本不成强调**，
+ * 插件也无从修复 —— 只能先把这两侧空白摘掉再交给解析器。
+ *
+ * 代码块 / 行内代码 / LaTeX 里的 `** x **` 是**内容**，先摘出来占位、事后原样放回。
+ *
+ * 其余中文标点的加粗问题（`**自动语音识别（ASR）**模型`、`**【中文】**`、`**注意：**不要`……）
+ * 已改为由 `remark-cjk-friendly` 在**解析层**按 CJK 友好规范处理：定界符的 flanking 规则
+ * 按中文语境放宽，括号/引号**连同文字一起**加粗，与模型本意一致。
+ * （旧实现用正则把括号、标点挪到加粗范围之外，等于改写语义；且跨行加粗一律失效，已删。）
  */
-function preprocessMarkdownBold(content: string): string {
+function trimInnerSpacesInBold(content: string): string {
   if (!content) return '';
 
   const tokens: string[] = [];
   const placeholder = (idx: number) => `__PROTECTED_BLOCK_${idx}__`;
 
   // Protect code blocks, inline code, and LaTeX math ($$ and $)
-  let protectedContent = content.replace(
+  const protectedContent = content.replace(
     /(```[\s\S]*?```|`[^`\n]+`|\$\$[\s\S]*?\$\$|\$[^\$\n]+\$)/g,
     (match) => {
       tokens.push(match);
@@ -30,46 +39,28 @@ function preprocessMarkdownBold(content: string): string {
     }
   );
 
-  // 1. Trim inner spaces inside **...**: ** text ** -> **text**
-  protectedContent = protectedContent.replace(/\*\*([ \t]+)(.+?)\*\*/g, '**$2**');
-  protectedContent = protectedContent.replace(/\*\*(.+?)([ \t]+)\*\*/g, '**$1**');
-
-  // 2. Bracket pairs inside **: **【xxx】** -> 【**xxx**】, etc.
-  const bracketPairs: [string, string][] = [
-    ['【', '】'],
-    ['（', '）'],
-    ['(', ')'],
-    ['[', ']'],
-    ['“', '”'],
-    ['「', '」'],
-    ['《', '》'],
-    ['『', '』'],
-  ];
-  for (const [open, close] of bracketPairs) {
-    const escOpen = open.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const escClose = close.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const re = new RegExp(`\\*\\*${escOpen}([^\\*\\n]+?)${escClose}\\*\\*`, 'g');
-    protectedContent = protectedContent.replace(re, `${open}**$1**${close}`);
-  }
-
-  // 3. Trailing punctuation inside ** followed immediately by non-space/non-punctuation (CommonMark 6.2 right-flanking issue)
-  // e.g. **注意：**不要关闭 -> **注意**：不要关闭
-  protectedContent = protectedContent.replace(
-    /\*\*([^\*\n]+?)([：:，,。\.！!？\?；;、~～]+)\*\*([^\s：:，,。\.！!？\?；;、\*\n])/g,
-    '**$1**$2$3'
+  /*
+   * 一次匹配一对定界符，同时吃掉两侧空白：`**$2**`。
+   * 正文（$2）不允许包含 `*` 或换行 —— 这样绝不会跨过一对正常的 `**…**`
+   * 去跟后面那对配对（旧实现的两个独立替换就会：`**a** 文本 **b**` 里的空格被吃掉）。
+   * 正文全为空白（`** **`）时原样返回，不制造一个空强调。
+   */
+  const trimmed = protectedContent.replace(
+    /\*\*([ \t]*)([^\*\n]*?)([ \t]*)\*\*/g,
+    (match, _lead: string, body: string) => (body.trim() ? `**${body}**` : match)
   );
 
   // Restore protected blocks
-  return protectedContent.replace(/__PROTECTED_BLOCK_(\d+)__/g, (_, idx) => tokens[parseInt(idx, 10)]);
+  return trimmed.replace(/__PROTECTED_BLOCK_(\d+)__/g, (_, idx) => tokens[parseInt(idx, 10)]);
 }
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, className }) => {
-  const normalizedContent = useMemo(() => preprocessMarkdownBold(content), [content]);
+  const normalizedContent = useMemo(() => trimInnerSpacesInBold(content), [content]);
 
   return (
     <div className={`markdown-body ${className || 'text-[#e0e1e4] leading-relaxed'}`}>
       <ReactMarkdown
-        remarkPlugins={[remarkMath, remarkGfm]}
+        remarkPlugins={[remarkMath, remarkGfm, remarkCjkFriendly]}
         rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
         components={{
           // Assistant answers routinely contain links. Without target="_blank" the

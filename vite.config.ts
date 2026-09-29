@@ -32,6 +32,7 @@ export default defineConfig({
             'remark-math',
             'react-markdown',
             'remark-gfm',
+            'remark-cjk-friendly',
           ],
           'vendor-react': ['react', 'react-dom'],
           'vendor-icons': ['lucide-react'],
