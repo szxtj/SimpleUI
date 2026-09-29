@@ -435,6 +435,7 @@ export class WikiAPI {
     return {
       enabled: true,
       connected: false,
+      status: 'stopped',
       port: 31236,
       zimPath: null,
       contentId: null,
@@ -457,6 +458,7 @@ export class WikiAPI {
         return {
           enabled: data.enabled !== false,
           connected: !!data.connected,
+          status: data.status ?? (data.connected ? 'running' : 'stopped'),
           port: 31236,
           zimPath: data.zimPath ?? null,
           contentId: data.contentId ?? null,
@@ -590,6 +592,8 @@ export interface ModelServiceStatus {
   port: number;
   projectDir: string;
   modelPath: string;
+  /** 本体项目主页：安装（克隆本体 / 编译 / 准备模型权重）交给用户按项目文档完成 */
+  projectUrl: string;
   checks: { repo: boolean; binary: boolean; model: boolean; vision: boolean };
   lastActionAt?: number;
   lastActionLog?: string;
@@ -740,16 +744,5 @@ export class ASRServiceAPI {
       console.error('ASRService getLogs failed:', e);
     }
     return null;
-  }
-
-  /** 异步下载官方 SenseVoice GGUF（约 254MB），进度经 getStatus().download 查看 */
-  static async downloadModel(): Promise<{ started: boolean; reason?: string; path?: string }> {
-    try {
-      const res = await fetch('/api/asr/download-model', { method: 'POST' });
-      if (res.ok) return await res.json();
-    } catch (e) {
-      console.error('ASRService downloadModel failed:', e);
-    }
-    return { started: false, reason: 'request_failed' };
   }
 }

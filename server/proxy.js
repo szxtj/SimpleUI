@@ -144,6 +144,10 @@ import { ttfLogService, noteForwardedRequest, noteChatForward } from './ttf_log.
 import { ttfService } from './ttf_service.js';
 import { asrService } from './asr_service.js';
 
+// 本进程是否成功抢到端口、从而成为受管服务的管理方。
+// 见 server.listen 回调与 server.on('error')：失败的重复实例不得清理别人的服务。
+let ownsServices = false;
+
 const server = http.createServer((req, res) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -154,6 +158,36 @@ const server = http.createServer((req, res) => {
       'Access-Control-Max-Age': '86400',
     });
     res.end();
+    return;
+  }
+
+  // ----------------------------- 代理自身的管理端点 -----------------------------
+
+  // 身份探针：App 用它判断「31235 上跑的确实是 SimpleUI 代理」。
+  // 不能用 /health —— 它会被转发给基础模型服务（见下方路由），模型未就绪时返回 502，
+  // App 会误判成「代理没在跑」而重复拉起一个注定 EADDRINUSE 的 node；更糟的是
+  // 那个进程会成为 App 眼里的「代理」，退出时自然也就停不掉真正的代理与三个服务。
+  if (req.url === '/api/system/ping') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ app: 'SimpleUI', role: 'proxy', pid: process.pid }));
+    return;
+  }
+
+  // 远程退出：代理不是本 App 拉起时（例如先在终端跑过 ./start.sh），
+  // App 仍要能把它连同三个受管服务一起停掉 —— 满足「退出即全停」。
+  // 只接受非浏览器发起的 POST：带 Origin 的一律拒绝，否则任意网页都能
+  // POST 到 127.0.0.1 把用户的服务关掉（CSRF）。
+  if (req.url === '/api/system/quit') {
+    const origin = req.headers['origin'];
+    if (req.method !== 'POST' || (origin && origin !== `http://127.0.0.1:${PORT}`)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'forbidden' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    // 先把响应发出去，再走与 SIGTERM 完全相同的退出钩子
+    setTimeout(() => cleanupAndExit(0), 30);
     return;
   }
 
@@ -215,6 +249,10 @@ const server = http.createServer((req, res) => {
 // 1236 端口的 LAYA 服务不再被自动拉起；server/laya_mlx_server.py 保留在原处以备后用。
 
 server.listen(PORT, '127.0.0.1', () => {
+  // 只有真正抢到端口的实例才有资格管理/清理受管服务。
+  // 否则重复拉起的代理在 EADDRINUSE 退出时，会顺着退出钩子把**正在运行的**
+  // 那个实例的服务（共用同一批 PID 文件）一起杀掉。
+  ownsServices = true;
   console.log(`🚀 SimpleUI running at http://127.0.0.1:${PORT}`);
   console.log(`🔗 Upstream API configured to ${TARGET_API}`);
   wikiService.initWatcher();
@@ -236,7 +274,23 @@ server.listen(PORT, '127.0.0.1', () => {
   }
 });
 
+// 端口被占用说明已有实例在跑：干净退出，且**不触碰**受管服务（ownsServices 仍为 false）
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error(`[Proxy] 端口 ${PORT} 已被占用，另一个 SimpleUI 代理正在运行；本进程直接退出。`);
+  } else {
+    console.error('[Proxy] server error:', err && err.message);
+  }
+  process.exit(1);
+});
+
+let exiting = false;
+
 function cleanupAndExit(code = 0) {
+  if (exiting) return;
+  exiting = true;
+  // 没抢到端口的实例不是服务的管理方，绝不能去杀别人的服务
+  if (!ownsServices) process.exit(code);
   if (wikiService && wikiService.kiwixProcess) {
     try {
       wikiService.kiwixProcess.kill('SIGTERM');
@@ -266,6 +320,7 @@ function cleanupAndExit(code = 0) {
 process.on('SIGINT', () => cleanupAndExit(0));
 process.on('SIGTERM', () => cleanupAndExit(0));
 process.on('exit', () => {
+  if (!ownsServices) return;
   if (wikiService && wikiService.kiwixProcess) {
     try {
       wikiService.kiwixProcess.kill('SIGKILL');

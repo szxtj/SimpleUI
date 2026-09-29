@@ -77,12 +77,20 @@ Node.js Proxy Server (port 31235)
 > **Model service management**: SimpleUI is the sole manager of the TurboFieldfare inference service —
 > the app auto-starts the service on launch (`server/ttf_service.js` invokes `ttf_server.sh` bundled
 > into Resources) and stops it on quit (same behavior as the Kiwix database service); port `1235`
-> stays shared with other frontends. The "Model Service" section in Settings provides a status light /
-> start & stop / upstream project path / runtime parameters (context capacity, expert cache,
-> thinking mode, etc.) / log viewer. Configuration persists at
+> stays shared with other frontends. The "Base Model Service" block in the Service Manager provides a
+> status light / start & stop / upstream project path / runtime parameters (context capacity, expert
+> cache, thinking mode, etc.) / log viewer. Configuration persists at
 > `~/Library/Application Support/SimpleUI/model_config.json` and is also exported in
 > TurboFieldfareBar-compatible format to `~/Library/Application Support/TurboFieldfare/config.env`.
 > Management API: `/api/model/status|start|stop|restart|config|logs`.
+>
+> **Prerequisites are up to you**: TurboFieldfare is an experimental, developer-facing project, so the
+> **upstream repo and the model weights are not distributed with this repository** — clone and prepare
+> them following the [project page](https://github.com/drumih/turbo-fieldfare). The app only *detects and
+> guides*: when the repo or the weights are missing, the Service Manager shows a matching notice plus a
+> "View setup guide" button that opens the project page in your default browser. It **no longer
+> `git clone`s anything and offers no online download**. If the repo is present but the binary is not
+> built, startup still runs `swift build` automatically.
 
 > Two auxiliary services from the earlier architecture have been removed:
 > **LAYA System 1** (port 1236) intent gate — misclassified roughly 1/3 of knowledge questions as chitchat, blocking the entire pipeline;
@@ -412,11 +420,11 @@ no cloud dependency.
 | Port | `1236` (auto-started with the app, stopped on quit) |
 | Persisted config | `~/Library/Application Support/SimpleUI/asr_config.json` |
 | Derived runtime config | `~/Library/Application Support/SimpleUI/asr_server.json` (audiocpp `server.json`) |
-| Management API | `/api/asr/status｜start｜stop｜restart｜config｜logs｜transcribe｜download-model` |
+| Management API | `/api/asr/status｜start｜stop｜restart｜config｜logs｜transcribe` |
 
 ### Defaults tuned for Chinese + English
 
-The "Speech Recognition Service" card in Settings (placed right below "Base Model Service") exposes these:
+The "Speech Recognition Service" card in the Service Manager exposes these:
 
 | Parameter | Default | Notes |
 | :--- | :--- | :--- |
@@ -493,7 +501,7 @@ Implementation notes (`mac_app/src/VoiceInputManager.swift`):
 | **Accessibility** | Synthesizing ⌘V to paste the result into other apps (inside SimpleUI it is inserted directly through the bridge — no focus reading and no permission needed for that path) |
 | **Input Monitoring** | Installing the global listen-only event tap (right ⌘ long-press) |
 
-The settings card shows the live grant state of all three and offers both a "Grant" and an
+The Service Manager card shows the live grant state of all three and offers both a "Grant" and an
 "Open System Settings" action; the native side pushes a refresh whenever the state changes in System Settings.
 
 ### Runtime and model: three distribution shapes
@@ -533,15 +541,15 @@ Omit `--with-model` and the app still ships the runtime — the model is fetched
 
 **Model** (whatever its source): it ships inside the app (`Contents/Resources/asr/models/`, ~254 MB) and
 works fully offline out of the box. For a self-build, `./scripts/sync_audiocpp.sh --with-model` fetches it at
-build time (reusing the local `~/Library/Application Support/SimpleUI/models/` cache when present). The
-settings card no longer has a "Download model" button — at runtime `findModel` auto-detects the model by
-priority (explicit path → bundled → `~/Library/.../models/` → project `models/`), with the bundled copy winning.
-The default fetch source is `auto`: it tries the official HuggingFace endpoint first and **falls back to the
-`hf-mirror.com` mirror on failure** (huggingface.co is frequently unreachable from mainland China).
+build time (reusing the local `~/Library/Application Support/SimpleUI/models/` cache when present). At runtime
+`findModel` auto-detects the model by priority (explicit path → bundled → `~/Library/.../models/` → project
+`models/`), with the bundled copy winning. **There is no online download any more** — on either the server or
+the UI: the model ships with the app, so the `/api/asr/download-model` endpoint, the `downloadSource` config
+option and the progress state have all been removed (mirror fallback included).
 
 **Runtime only** (you already have audio.cpp): just drop your `audiocpp_server` into `bin/audiocpp/bin/`
 (or the bundled `Contents/Resources/asr/bin/`). `findBinary` auto-detects it by priority
-(explicit path → bundled → project `build/bin/` → Homebrew) — no path field in Settings. When the binary or
+(explicit path → bundled → project `build/bin/` → Homebrew) — no path field to fill in. When the binary or
 model is missing the card shows an explicit amber hint and the service stays "Offline" instead of erroring.
 
 ---
@@ -660,7 +668,7 @@ Vite dev server (default `http://127.0.0.1:5173`; `/v1` and `/health` are proxie
 ```bash
 ./build_mac_app.sh install
 ```
-Compiles the Swift dual-window shell plus the frontend bundle and installs to `/Applications/SimpleUI.app`. Supports the global hotkey `⌥ Option + Space` to summon the Spotlight floating panel, plus **long-pressing the right Command ⌘ key** to dictate — inserted at the cursor inside SimpleUI, pasted in any other app (the first use requires granting Microphone, Accessibility, and Input Monitoring in System Settings → Privacy & Security; the settings card links straight there).
+Compiles the Swift dual-window shell plus the frontend bundle and installs to `/Applications/SimpleUI.app`. Supports the global hotkey `⌥ Option + Space` to summon the Spotlight floating panel, plus **long-pressing the right Command ⌘ key** to dictate — inserted at the cursor inside SimpleUI, pasted in any other app (the first use requires granting Microphone, Accessibility, and Input Monitoring in System Settings → Privacy & Security; the Service Manager card links straight there).
 
 > The installed app is a **self-contained bundle**: `build_mac_app.sh` copies `dist/` and `server/` into `Contents/Resources`, and the runtime prefers that bundled copy.
 > Therefore **after any frontend change you must re-run `./build_mac_app.sh install`** — rebuilding only the project's `dist/` does not affect the installed app.

@@ -3,7 +3,8 @@ import Cocoa
 // 菜单栏状态图标（单图标、无状态变化）
 //
 //  - 单击 / 右键行为一致：statusItem.menu 赋值后两种点击天然打开同一个菜单；
-//  - 菜单内容：知识库服务状态、基础模型服务状态（红绿样式与设置页逐字一致）、
+//  - 菜单内容：三项受管服务状态（基础模型 / 知识库 / 语音识别，**始终显示**，
+//    统一三态：绿「就绪」/ 红「离线」/ 黄「启动中」，与主界面左下角逐字一致）、
 //    打开主界面、打开小窗口、退出并停止所有服务；
 //  - 状态来源与前端同源：proxy 的 /api/wiki/status 与 /api/model/status，
 //    每 5s 轮询 + 菜单打开时立即刷新（异步回调直接改标题，菜单打开期间也会实时更新）；
@@ -31,13 +32,12 @@ class StatusBarController: NSObject, NSMenuDelegate {
 
     private let zh = Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
 
-    private var lblKB: String { zh ? "知识库服务" : "Knowledge Base" }
-    private var lblSvc: String { zh ? "基础模型服务" : "Base Model" }
-    private var lblAsr: String { zh ? "语音识别服务" : "Speech Recognition" }
-    private var lblReady: String { zh ? "就绪于" : "Ready on" }
+    private var lblKB: String { zh ? "知识库" : "Knowledge Base" }
+    private var lblSvc: String { zh ? "基础模型" : "Base Model" }
+    private var lblAsr: String { zh ? "语音识别" : "Speech Recognition" }
+    private var lblReady: String { zh ? "就绪" : "Ready" }
     private var lblOffline: String { zh ? "离线" : "Offline" }
-    private var lblNoZim: String { zh ? "离线 (未找到ZIM文件)" : "Offline (ZIM file not found)" }
-    private var lblLoading: String { zh ? "启动中…" : "Starting…" }
+    private var lblStarting: String { zh ? "启动中" : "Starting" }
     private var lblOpenMain: String { zh ? "打开主界面" : "Open Main Window" }
     private var lblOpenSpotlight: String { zh ? "打开小窗口" : "Open Mini Window" }
     private var lblQuit: String { zh ? "退出并停止所有服务" : "Quit & Stop All Services" }
@@ -148,63 +148,44 @@ class StatusBarController: NSObject, NSMenuDelegate {
         }.resume()
     }
 
+    /// 统一三态：与主界面左下角逐字一致。
+    ///
+    ///   绿灯「就绪」 / 红灯「离线」 / 黄灯「启动中」
+    ///
+    /// 三个服务的 /status 都返回 status 字段（知识库为 running|starting|stopped，
+    /// 模型 / 语音还多出 loading|stopping|restart），统一在这里收敛，
+    /// 避免三个服务各写一套判断而出现「同一状态两处不同灯色」。
+    private func view(forStatus status: String?) -> ServiceView {
+        switch status {
+        case "running":
+            return ServiceView(dot: .systemGreen, text: lblReady)
+        // "start" / "restart" 是 pendingOp 的原始值（见 ttf_service/asr_service 的 getStatus）：
+        // 启动动作进行中时 status 直接就是这两个词，漏掉会把「正在启动」误判成离线。
+        case "loading", "starting", "start", "restart":
+            return ServiceView(dot: .systemOrange, text: lblStarting)
+        default:
+            // stopped / stopping / stop 以及「接口不可达」：一律离线
+            return ServiceView(dot: .systemRed, text: lblOffline)
+        }
+    }
+
     func refreshStatuses() {
-        // 知识库：connected → 绿「就绪于 {port}」；enabled 但未连 → 红「离线 (未找到ZIM文件)」；关闭 → 红「离线」
+        // 三项服务始终显示，状态同源同文案（与主界面左下角一致）
         fetchJSON("/api/wiki/status") { [weak self] json in
             guard let self = self else { return }
-            let view: ServiceView
-            if let j = json {
-                let port = (j["port"] as? Int) ?? 31236
-                if (j["connected"] as? Bool) == true {
-                    view = ServiceView(dot: .systemGreen, text: "\(self.lblReady) \(port)")
-                } else if (j["enabled"] as? Bool) == true {
-                    view = ServiceView(dot: .systemRed, text: self.lblNoZim)
-                } else {
-                    view = ServiceView(dot: .systemRed, text: self.lblOffline)
-                }
-            } else {
-                view = ServiceView(dot: .systemRed, text: self.lblOffline)
-            }
+            let view = self.view(forStatus: json?["status"] as? String)
             self.kbStatusItem.attributedTitle = self.statusLine(label: self.lblKB, view: view)
         }
 
-        // 基础模型：running → 绿「就绪于 {port}」；过渡态 → 橙「启动中… (port)」；stopped/不可达 → 红「离线」
         fetchJSON("/api/model/status") { [weak self] json in
             guard let self = self else { return }
-            let view: ServiceView
-            if let j = json, let status = j["status"] as? String {
-                let port = (j["port"] as? Int) ?? 1235
-                switch status {
-                case "running":
-                    view = ServiceView(dot: .systemGreen, text: "\(self.lblReady) \(port)")
-                case "stopped":
-                    view = ServiceView(dot: .systemRed, text: self.lblOffline)
-                default: // loading / starting / stopping / restart
-                    view = ServiceView(dot: .systemOrange, text: "\(self.lblLoading) (\(port))")
-                }
-            } else {
-                view = ServiceView(dot: .systemRed, text: self.lblOffline)
-            }
+            let view = self.view(forStatus: json?["status"] as? String)
             self.svcStatusItem.attributedTitle = self.statusLine(label: self.lblSvc, view: view)
         }
 
-        // 语音识别：running → 绿「就绪于 {port}」；过渡态 → 橙「启动中… (port)」；stopped/不可达 → 红「离线」
         fetchJSON("/api/asr/status") { [weak self] json in
             guard let self = self else { return }
-            let view: ServiceView
-            if let j = json, let status = j["status"] as? String {
-                let port = (j["port"] as? Int) ?? 1236
-                switch status {
-                case "running":
-                    view = ServiceView(dot: .systemGreen, text: "\(self.lblReady) \(port)")
-                case "stopped":
-                    view = ServiceView(dot: .systemRed, text: self.lblOffline)
-                default: // loading / starting / stopping / restart
-                    view = ServiceView(dot: .systemOrange, text: "\(self.lblLoading) (\(port))")
-                }
-            } else {
-                view = ServiceView(dot: .systemRed, text: self.lblOffline)
-            }
+            let view = self.view(forStatus: json?["status"] as? String)
             self.asrStatusItem.attributedTitle = self.statusLine(label: self.lblAsr, view: view)
         }
     }

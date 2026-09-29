@@ -109,6 +109,8 @@ export interface ServerHealthInfo {
 export interface WikiStatusInfo {
   enabled: boolean;   // 知识库服务总开关（关闭时整个服务停服）
   connected: boolean; // 服务已启用且 ZIM 就绪
+  /** 与模型 / 语音服务对齐的状态字段，供左下角与状态栏菜单渲染统一三态 */
+  status: 'running' | 'starting' | 'stopped';
   port: number;
   zimPath: string | null;
   contentId: string | null;
@@ -132,16 +134,6 @@ export interface AsrServiceStatus {
     binaryPath: string | null;
     modelPath: string | null;
   };
-  download: {
-    active: boolean;
-    received: number;
-    total: number;
-    error: string | null;
-    /** 实际使用的下载源（auto 模式下用于展示回退结果） */
-    source?: 'huggingface' | 'mirror' | null;
-    /** 当前正在请求的主机（302 跳到 CDN 后即为 CDN 域名），用于诊断 */
-    host?: string | null;
-  };
   lastActionAt?: number;
   lastActionLog?: string;
 }
@@ -159,8 +151,6 @@ export interface AsrServiceConfig {
   audioChunkMode: 'none' | 'auto' | 'fixed';
   audioChunkDurationSec: number;
   keepTags: boolean;
-  /** 模型下载源：auto = 官方源失败自动回退国内镜像 */
-  downloadSource: 'auto' | 'huggingface' | 'mirror';
   projectDir: string;
   binaryPath: string;
   modelPath: string;

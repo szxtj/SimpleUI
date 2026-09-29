@@ -273,7 +273,11 @@ export const StageLadder: React.FC<StageLadderProps> = ({
   );
 
   return (
-    <div className="my-2.5 text-sm" data-stage-ladder>
+    // `space-y-2.5`：块与块之间统一 10px。
+    // 这个值必须与「阶梯 → 思考条」的间距一致 —— 思考条是独立组件，
+    // 它的 mt-2.5 与本容器的 mb-2.5 折叠后正好也是 10px，于是三行（检索 / 载入上下文 / 思考）
+    // 的间距完全一致。行内**不再各自加 py**，否则会在这个间距上再叠 2+2px，破坏一致性。
+    <div className="my-2.5 text-sm space-y-2.5" data-stage-ladder>
       {blocks.map(({ key, rows }) => {
         const single = rows.length === 1;
         // 单步不套壳：直接显示那一行，连箭头都不给（没有可展开的东西）
@@ -283,7 +287,7 @@ export const StageLadder: React.FC<StageLadderProps> = ({
             <div
               key={key}
               data-stage-ladder-single={key}
-              className="flex items-center gap-2 py-0.5"
+              className="flex items-center gap-2"
             >
               <LadderRow text={rowText(r)} ms={elapsed(r)} done={r.endedAt !== undefined} active={r.endedAt === undefined} headline />
             </div>
@@ -303,7 +307,7 @@ export const StageLadder: React.FC<StageLadderProps> = ({
             <button
               onClick={() => setUserOpen((prev) => ({ ...prev, [key]: !open }))}
               data-stage-ladder-summary={key}
-              className="w-full flex items-center gap-2 py-0.5 group/ladder text-left cursor-pointer select-none"
+              className="w-full flex items-center gap-2 group/ladder text-left cursor-pointer select-none"
             >
               <LadderRow
                 text={summaryText}

@@ -9,6 +9,11 @@ class ProcessManager {
     private var port: Int { ProcessManager.serverPort }
     private(set) var isRunning = false
 
+    /// 退出清理的总预算；超时后不再等待（会尝试硬杀自己拉起的代理）
+    private let shutdownTimeout: TimeInterval = 8.0
+    /// 代理退出后，detached 兜底 watchdog 最多再活一个轮询周期（0.5s），留 1s 余量
+    private let watchdogGrace: TimeInterval = 1.0
+
     func startProxyIfNeeded(completion: @escaping (Bool) -> Void) {
         checkServerReady { isReady in
             if isReady {
@@ -25,23 +30,37 @@ class ProcessManager {
         }
     }
 
-    private func checkServerReady(completion: @escaping (Bool) -> Void) {
-        guard let url = URL(string: "http://127.0.0.1:\(port)/health") else {
+    // MARK: - 代理身份探测
+
+    /// 探测 31235 上是否跑着 SimpleUI 代理。
+    ///
+    /// 用代理自己的 `/api/system/ping`，而不是 `/health`：后者会被代理转发给基础模型服务，
+    /// 模型未就绪（加载中 / 开关关闭）时返回 502，会被误判成「代理没在跑」——于是重复拉起
+    /// 一个注定 EADDRINUSE 的 node，而真正的代理反倒不在本 App 管理之下，退出时停不掉它。
+    private func pingProxy(timeout: TimeInterval, completion: @escaping (Bool) -> Void) {
+        guard let url = URL(string: "\(ProcessManager.baseURLString)/api/system/ping") else {
             completion(false)
             return
         }
-
         var request = URLRequest(url: url)
-        request.timeoutInterval = 1.0
+        request.timeoutInterval = timeout
+        request.cachePolicy = .reloadIgnoringLocalCacheData
 
-        let task = URLSession.shared.dataTask(with: request) { _, response, error in
-            if error == nil, let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
-                DispatchQueue.main.async { completion(true) }
-            } else {
-                DispatchQueue.main.async { completion(false) }
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            var alive = false
+            if error == nil,
+               let http = response as? HTTPURLResponse, http.statusCode == 200,
+               let data = data,
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               (obj["app"] as? String) == "SimpleUI" {
+                alive = true
             }
-        }
-        task.resume()
+            DispatchQueue.main.async { completion(alive) }
+        }.resume()
+    }
+
+    private func checkServerReady(completion: @escaping (Bool) -> Void) {
+        pingProxy(timeout: 1.0, completion: completion)
     }
 
     private func launchNodeProxy(completion: @escaping (Bool) -> Void) {
@@ -143,6 +162,76 @@ class ProcessManager {
         return nil
     }
 
+    // MARK: - 退出清理
+
+    /// 退出前把代理与三个受管服务全部停掉，完成后回调（主线程）。
+    ///
+    /// 两种情况都要覆盖，才谈得上「退出即全停」：
+    ///  - 代理由本 App 拉起 → 直接 SIGTERM，走 proxy 的 cleanupAndExit 钩子；
+    ///  - 代理已在运行（例如先在终端跑过 ./start.sh）→ 走 POST /api/system/quit 请它自己退出。
+    /// 两条路径最终都汇到同一处：依次终止 kiwix / 基础模型 / 语音识别。
+    /// 回调前会等到 31235 不再响应，并留出兜底 watchdog 自行退出的时间。
+    func stopAllServices(completion: @escaping () -> Void) {
+        pingProxy(timeout: 1.0) { [weak self] alive in
+            guard let self = self else { completion(); return }
+            guard alive else {
+                // 代理本来就没在跑（或端口上不是 SimpleUI），无需清理
+                self.process = nil
+                self.isRunning = false
+                completion()
+                return
+            }
+
+            if let proc = self.process, proc.isRunning {
+                proc.terminate()
+            } else {
+                self.requestRemoteQuit()
+            }
+
+            self.waitUntilProxyGone(deadline: Date().addingTimeInterval(self.shutdownTimeout),
+                                    completion: completion)
+        }
+    }
+
+    /// 请已在运行的代理自己退出（等价于 Ctrl+C，走同一套退出钩子）
+    private func requestRemoteQuit() {
+        guard let url = URL(string: "\(ProcessManager.baseURLString)/api/system/quit") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 2.0
+        // 故意不带 Origin 头：代理据此确认请求不是浏览器发起的（防 CSRF）
+        URLSession.shared.dataTask(with: request) { _, _, _ in }.resume()
+    }
+
+    private func waitUntilProxyGone(deadline: Date, completion: @escaping () -> Void) {
+        pingProxy(timeout: 0.4) { [weak self] alive in
+            guard let self = self else { completion(); return }
+            guard alive else {
+                self.finishStop(completion)
+                return
+            }
+            if Date() >= deadline {
+                // 最后手段：确实是自己拉起的就直接 SIGKILL
+                //（受管服务交给 detached watchdog 收拾）
+                if let proc = self.process, proc.isRunning {
+                    kill(proc.processIdentifier, SIGKILL)
+                }
+                self.finishStop(completion)
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    self.waitUntilProxyGone(deadline: deadline, completion: completion)
+                }
+            }
+        }
+    }
+
+    private func finishStop(_ completion: @escaping () -> Void) {
+        process = nil
+        isRunning = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + watchdogGrace) { completion() }
+    }
+
+    /// 兜底：直接给代理进程发 SIGTERM（正常退出走 stopAllServices）
     func stop() {
         if let proc = process, proc.isRunning {
             proc.terminate()

@@ -68,10 +68,53 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
+    // MARK: - 退出：先停服务，再退出
+
+    private var isTerminating = false
+    private var didReplyToTermination = false
+    private var didTeardownUI = false
+
+    /// Dock 右键退出 / Cmd+Q / 状态栏菜单三条路径都汇到这里。
+    ///
+    /// 用 `applicationShouldTerminate` + `.terminateLater`，而不是在 `applicationWillTerminate`
+    /// 里发个信号就走：这样「App 图标消失」时，代理与三个受管服务已经确认全部停止，
+    /// 不会留下「App 没了但服务还在跑」的窗口。
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // 清理进行中又收到一次退出请求：继续等同一轮清理，不重复发起
+        if isTerminating { return .terminateLater }
+        isTerminating = true
+
+        ProcessManager.shared.stopAllServices { [weak self] in
+            self?.teardownUI()
+            self?.replyTermination()
+        }
+
+        // 安全阀：清理异常卡住时也不能让 App 退不掉（用户可能在注销 / 关机）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            self?.teardownUI()
+            self?.replyTermination()
+        }
+
+        return .terminateLater
+    }
+
+    private func replyTermination() {
+        guard !didReplyToTermination else { return }
+        didReplyToTermination = true
+        NSApp.reply(toApplicationShouldTerminate: true)
+    }
+
+    private func teardownUI() {
+        guard !didTeardownUI else { return }
+        didTeardownUI = true
         statusBarController?.teardown()
         HotKeyManager.shared.unregister()
         VoiceInputManager.shared.uninstall()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // 正常路径已在 applicationShouldTerminate 里做完，这里只是最后兜底
+        teardownUI()
         ProcessManager.shared.stop()
     }
 

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
 import { SettingsModal } from './components/SettingsModal';
+import { ServiceManagerModal } from './components/ServiceManagerModal';
 import {
   ChatSession,
   ChatMessage,
@@ -27,7 +28,8 @@ import {
   notifySessionUpdate,
   syncChannel,
 } from './services/storage';
-import { TurboFieldfareAPI, WikiAPI, ASRServiceAPI } from './services/api';
+import { TurboFieldfareAPI, WikiAPI, ASRServiceAPI, ModelServiceAPI } from './services/api';
+import type { ModelServiceStatus } from './services/api';
 import {
   buildPromptWithWiki,
   buildTurnMessages,
@@ -179,6 +181,8 @@ export const App: React.FC = () => {
   const isGenerating = currentSessionId ? generatingSessionIds.includes(currentSessionId) : false;
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  /** 服务管理界面（三项受管服务的启停与参数，与设置界面并列的独立入口） */
+  const [isServiceManagerOpen, setIsServiceManagerOpen] = useState(false);
   const [healthInfo, setHealthInfo] = useState<ServerHealthInfo>({
     status: 'connecting',
     vision: 'missing',
@@ -189,6 +193,7 @@ export const App: React.FC = () => {
   const [wikiStatus, setWikiStatus] = useState<WikiStatusInfo>({
     enabled: true,
     connected: false,
+    status: 'stopped',
     port: 31236,
     zimPath: null,
     contentId: null,
@@ -201,6 +206,8 @@ export const App: React.FC = () => {
   const [isWikiPanelOpen, setIsWikiPanelOpen] = useState(false);
   /** 语音识别服务状态（左下角服务行） */
   const [asrStatus, setAsrStatus] = useState<AsrServiceStatus | null>(null);
+  /** 基础模型服务状态（左下角服务行；带 status 字段，可区分启动中） */
+  const [modelStatus, setModelStatus] = useState<ModelServiceStatus | null>(null);
 
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
   /** 本轮阶段阶梯记录的最新快照：随流式广播带给镜像窗口（浮窗），使它也能实时长出阶梯行 */
@@ -505,6 +512,19 @@ export const App: React.FC = () => {
     return () => clearInterval(asrTimer);
   }, []);
 
+  // Poll 基础模型服务状态（左下角服务行）。
+  // 用 /api/model/status 而不是 /health 探测：前者带 status 字段，能区分
+  // running / loading / stopped，左下角才能显示黄灯「启动中」。
+  useEffect(() => {
+    const checkModel = async () => {
+      const status = await ModelServiceAPI.getStatus();
+      setModelStatus(status);
+    };
+    checkModel();
+    const modelTimer = setInterval(checkModel, 6000);
+    return () => clearInterval(modelTimer);
+  }, []);
+
   /**
    * 阶段阶梯记录回写（由 StageLadder 在生成期间回调，一轮只写几次，开销可忽略）。
    *
@@ -558,11 +578,11 @@ export const App: React.FC = () => {
     }
   }, [currentSessionId]);
 
-  // Notify native macOS wrapper to disable TitleBarDragView when SettingsModal is open
+  // Notify native macOS wrapper to disable TitleBarDragView when a modal is open
   useEffect(() => {
     // @ts-expect-error WebKit bridge
-    window.webkit?.messageHandlers?.setModalOpen?.postMessage?.(isSettingsOpen);
-  }, [isSettingsOpen]);
+    window.webkit?.messageHandlers?.setModalOpen?.postMessage?.(isSettingsOpen || isServiceManagerOpen);
+  }, [isSettingsOpen, isServiceManagerOpen]);
 
   // Notify native macOS wrapper about sidebar open state for titlebar drag hit-testing
   useEffect(() => {
@@ -649,6 +669,18 @@ export const App: React.FC = () => {
   const handleSaveSettings = (newSettings: AppSettings) => {
     setSettings(newSettings);
     saveSettings(newSettings);
+  };
+
+  /**
+   * 服务管理界面里改了基础模型监听端口后，同步本地的请求端口并立即持久化。
+   * 否则用户改完端口直接关弹窗，对话请求（x-target-port）会打不到服务。
+   */
+  const handleServiceApiPortChange = (port: number) => {
+    setSettings((prev) => {
+      const updated = { ...prev, apiPort: port };
+      saveSettings(updated);
+      return updated;
+    });
   };
 
   // Helper to execute chat streaming with given prompt, attachments and history
@@ -1185,7 +1217,8 @@ export const App: React.FC = () => {
           onDeleteSession={handleDeleteSession}
           onRenameSession={handleRenameSession}
           onOpenSettings={() => setIsSettingsOpen(true)}
-          healthInfo={healthInfo}
+          onOpenServiceManager={() => setIsServiceManagerOpen(true)}
+          modelStatus={modelStatus}
           wikiStatus={wikiStatus}
           asrStatus={asrStatus}
           isOpen={isSidebarOpen}
@@ -1269,6 +1302,14 @@ export const App: React.FC = () => {
           onClose={() => setIsSettingsOpen(false)}
           settings={settings}
           onSave={handleSaveSettings}
+        />
+
+        {/* 服务管理界面（三项受管服务：基础模型 / 知识库 / 语音识别） */}
+        <ServiceManagerModal
+          isOpen={isServiceManagerOpen}
+          onClose={() => setIsServiceManagerOpen(false)}
+          settings={settings}
+          onApiPortChange={handleServiceApiPortChange}
         />
       </div>
     </I18nProvider>

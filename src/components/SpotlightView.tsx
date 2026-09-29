@@ -70,6 +70,7 @@ export const SpotlightView: React.FC = () => {
   const [wikiStatus, setWikiStatus] = useState<WikiStatusInfo>({
     enabled: true,
     connected: false,
+    status: 'stopped',
     port: 31236,
     zimPath: null,
     contentId: null,

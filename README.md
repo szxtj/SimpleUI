@@ -76,10 +76,15 @@ Node.js 代理服务器 (端口 31235)
 > **模型服务托管**：SimpleUI 是 TurboFieldfare 推理服务的唯一管理方——
 > App 启动时自动拉起服务（`server/ttf_service.js` 调用打包进 Resources 的 `ttf_server.sh`），
 > 退出时一并终止（与 Kiwix 数据库服务行为一致）；服务端口 `1235` 同时供其他前端使用。
-> 设置页「模型服务」区块提供状态灯 / 启停 / 本体路径 / 运行参数（上下文容量、专家缓存、
+> 服务管理界面「基础模型服务」区块提供状态灯 / 启停 / 本体路径 / 运行参数（上下文容量、专家缓存、
 > 思考模式等）/ 日志查看；配置持久化于 `~/Library/Application Support/SimpleUI/model_config.json`，
 > 并同步导出 TurboFieldfareBar 兼容的 `~/Library/Application Support/TurboFieldfare/config.env`。
 > 管理 API：`/api/model/status|start|stop|restart|config|logs`。
+>
+> **前置条件需自行准备**：TurboFieldfare 是实验性、面向开发者的项目，**本体仓库与模型权重不随本仓库分发**，
+> 需按[项目主页](https://github.com/drumih/turbo-fieldfare)的文档自行克隆并准备。App 只做**检测与引导**——
+> 缺少本体或模型时，服务管理界面会显示对应提示，并给一个「查看安装说明」按钮用系统默认浏览器打开项目主页；
+> **不再自动 `git clone`、也不再提供在线下载**。本体已就位但二进制未编译时，启动流程仍会自动 `swift build`。
 
 > 旧版链路中的两个辅助服务均已移除：
 > **LAYA System 1**（端口 1236）意图门禁——实测会把约 1/3 的知识类提问误判为闲聊而整条链路拦截；
@@ -405,11 +410,11 @@ Q8 GGUF 量化包，由 **audio.cpp** 的 `audiocpp_server` 承载，完全本�
 | 服务端口 | `1236`（随 App 自启 / 退出一并终止） |
 | 配置持久化 | `~/Library/Application Support/SimpleUI/asr_config.json` |
 | 运行时派生配置 | `~/Library/Application Support/SimpleUI/asr_server.json`（audiocpp 的 `server.json`） |
-| 管理 API | `/api/asr/status｜start｜stop｜restart｜config｜logs｜transcribe｜download-model` |
+| 管理 API | `/api/asr/status｜start｜stop｜restart｜config｜logs｜transcribe` |
 
 ### 中英语音场景的默认参数
 
-设置页「语音识别服务」卡片（位于「基础模型服务」下方）可调下列参数，默认值面向中英场景：
+服务管理界面「语音识别服务」卡片可调下列参数，默认值面向中英场景：
 
 | 参数 | 默认 | 说明 |
 | :--- | :--- | :--- |
@@ -479,7 +484,7 @@ Q8 GGUF 量化包，由 **audio.cpp** 的 `audiocpp_server` 承载，完全本�
 | **辅助功能** | 合成 ⌘V 把结果粘进其它 App（本 App 内为前端桥直接插入，不读焦点也不需要此权限） |
 | **输入监控** | 挂全局只读事件监听（捕获长按右 ⌘） |
 
-设置页卡片内直接展示三项的实时授权状态，并提供「去授权」与「打开系统设置」两个入口；
+服务管理界面的语音识别卡片内直接展示三项的实时授权状态，并提供「去授权」与「打开系统设置」两个入口；
 原生侧在系统设置里改动后会主动回推刷新。
 
 ### 运行时与模型：默认随包，打开即用
@@ -523,14 +528,14 @@ Q8 GGUF 量化包，由 **audio.cpp** 的 `audiocpp_server` 承载，完全本�
 
 **模型**（无论来源）：随包即包含（`Contents/Resources/asr/models/sensevoice-small-q8-audiocpp-v1.gguf`，约 254 MB），
 打开即用、完全离线；自构建时 `./scripts/sync_audiocpp.sh --with-model` 会在打包前拉取模型并随包打入
-（优先复用 `~/Library/.../models/` 本地缓存，零下载）。设置页**不再提供「下载模型」按钮**——
-运行时按 `findModel` 优先级（显式路径 → 随包 → `~/Library/Application Support/SimpleUI/models/` → 本体 `models/`）
-自动探测，随包副本优先。下载源默认 `auto`：先试 HuggingFace 官方源，**失败自动回退 `hf-mirror.com` 国内镜像**
-（huggingface.co 在大陆常不可达）。
+（优先复用 `~/Library/.../models/` 本地缓存，零下载）。运行时按 `findModel` 优先级
+（显式路径 → 随包 → `~/Library/Application Support/SimpleUI/models/` → 本体 `models/`）自动探测，随包副本优先。
+**服务端与前端均不再提供在线下载**：模型已随包分发，原先的 `/api/asr/download-model` 端点、
+`downloadSource` 配置项与进度状态已整体移除（含镜像回退逻辑）。
 
 **只想要运行时**（自己已编译 audio.cpp）：把 `audiocpp_server` 放到 `bin/audiocpp/bin/`（或随包
 `Contents/Resources/asr/bin/`）即可，运行时按 `findBinary` 优先级（显式路径 → 随包 → 本体 `build/bin/` → Homebrew）
-自动探测，**无需在设置页填路径**。二进制或模型缺失时，卡片会给出明确的黄色提示，服务状态保持「离线」而不报错。
+自动探测，**无需手动填路径**。二进制或模型缺失时，卡片会给出明确提示，服务状态保持「离线」而不报错。
 
 ---
 
@@ -650,7 +655,7 @@ Vite 开发服务器（默认 `http://127.0.0.1:5173`；`/v1`、`/health` 代理
 ```
 编译 Swift 双窗口外壳 + 前端产物，安装至 `/Applications/SimpleUI.app`，支持全局热键 `⌥ Option + Space` 唤起 Spotlight 浮窗，
 以及**长按右侧 Command ⌘ 键**语音转文字：在 SimpleUI 内直接插入光标处，在其它 App 内粘贴（首次使用需在「系统设置 → 隐私与安全性」中授予
-麦克风、辅助功能、输入监控三项权限，设置页卡片内有直达入口）。
+麦克风、辅助功能、输入监控三项权限，服务管理界面的语音识别卡片内有直达入口）。
 
 > 装好的 App 是**自包含包**：`build_mac_app.sh` 会把 `dist/` 与 `server/` 一并拷进 `Contents/Resources`，运行时优先使用包内副本。
 > 因此**改完前端必须重新执行一次 `./build_mac_app.sh install`**——只重建项目里的 `dist/` 不会影响已安装的 App。
@@ -717,7 +722,7 @@ SimpleUI/
     │   ├── image.ts          # 粘贴 / 拖拽图片读取为 Data URL
     │   └── wikiFrame.ts      # 知识库条目外部链接构造（「在浏览器中打开」）
     └── components/
-        ├── Sidebar.tsx       # 会话列表 + 左下角服务状态行 + 设置入口
+        ├── Sidebar.tsx       # 会话列表 + 左下角服务状态行 + 服务管理 / 设置入口
         ├── ChatView.tsx      # 主对话视窗（头部工具条、消息流、输入区）
         ├── ChatInput.tsx     # 主窗口复合输入框（附件、🧠 思考 / 📚 知识库开关、发送·停止、上下文圆环）
         ├── MessageItem.tsx   # 单条消息（阶段指示、思考折叠、Markdown、引用胶囊、操作与指标）
@@ -727,8 +732,9 @@ SimpleUI/
         │                     #   结束后折叠成一行汇总；两窗口共用同一组件
         ├── ContextRing.tsx   # SVG 上下文圆环（可选余量百分比 + 悬浮详情）
         ├── ImageAttachment.tsx   # 输入区图片预览与删除
-        ├── SettingsModal.tsx # 参数配置、推理端口、知识库服务总开关、语言与主题
-        │                     #   + 基础模型服务卡片 / 语音识别服务卡片（含权限申请）
+        ├── SettingsModal.tsx # 应用设置（主题 / 语言 / Spotlight 空闲重置）+ 模型设置（采样参数、系统提示词）
+        ├── ServiceManagerModal.tsx # 服务管理界面：三项受管服务的启停 / 参数 / 日志
+        │                     #   （基础模型 / 知识库 / 语音识别，含语音权限三件套）
         ├── VoiceOverlay.tsx  # 屏幕底部居中语音识别胶囊（绿渐变 + 麦克风 + 电平点阵）
         │                     #   由原生 VoiceOverlayPanelController 承载（#/voice 路由）
         ├── WikiPanel.tsx     # 知识库面板**唯一实现**：搜索 + 完整条目富文本（公式/表格/图片/子标题）

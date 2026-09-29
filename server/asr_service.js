@@ -22,15 +22,16 @@
 // 纯中文/纯英文可显式指定以获得更稳定的语种标签；enable_itn=true 输出带标点。
 //
 // 退出兜底：与 ttf_service 同款 detached watchdog——Node 意外死亡（含 SIGKILL）时
-// 由 watchdog 兜底终止 audiocpp_server；正常退出走 proxy 的 cleanupAndExit 钩子。
+// 由 watchdog 按 PID 精确终止 audiocpp_server；正常退出走 proxy 的 cleanupAndExit 钩子。
+// watchdog 实现统一在 server/watchdog.js。
 
 import { spawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import http from 'http';
-import https from 'https';
 import { fileURLToPath } from 'url';
+import { startWatchdog } from './watchdog.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,13 +48,10 @@ const SERVER_JSON_FILE = path.join(userConfigDir, 'asr_server.json');
 const LOG_FILE = process.env.SIMPLEUI_ASR_LOG || path.join(HOME, 'Library', 'Logs', 'simpleui-asr.log');
 const PID_FILE = '/tmp/simpleui_audiocpp.pid';
 
-// 官方推荐的独立 Q8 GGUF 包（见 HuggingFace 模型卡与 audio.cpp 文档）
+// 官方推荐的独立 Q8 GGUF 包（见 HuggingFace 模型卡与 audio.cpp 文档）。
+// 模型随 App 打包分发（Contents/Resources/asr/models/），运行时按 findModel 的优先级探测，
+// 不再提供在线下载——相关下载逻辑与 downloadSource 配置已整体移除。
 const MODEL_FILENAME = 'sensevoice-small-q8-audiocpp-v1.gguf';
-const MODEL_DOWNLOAD_URL =
-  'https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp/resolve/main/' + MODEL_FILENAME;
-// 国内镜像（huggingface.co 在大陆常不可达；auto 模式下官方源失败会自动回退到这里）
-const MODEL_MIRROR_URL =
-  'https://hf-mirror.com/FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp/resolve/main/' + MODEL_FILENAME;
 
 // audiocpp 服务端里该模型的 id（客户端在 /v1/audio/transcriptions 里引用）
 const SERVER_MODEL_ID = 'sense_asr';
@@ -78,8 +76,6 @@ export const DEFAULT_ASR_CONFIG = {
   audioChunkDurationSec: 30,
   // 是否在转写结果里保留 <|event|>/<|emotion|>/<|language|> 元标签（默认关）
   keepTags: false,
-  // 模型下载源：auto = 官方源失败自动回退国内镜像
-  downloadSource: 'auto',
   // ---- 本体与模型位置 ----
   projectDir: path.join(HOME, 'audio.cpp'),
   // 留空则自动探测（见 findBinary）
@@ -93,7 +89,6 @@ const ENUMS = {
   // 仅列出模型的「原生语种标签」——其余标签会回退到 auto，故不暴露
   language: ['auto', 'zh', 'en', 'yue', 'ja', 'ko'],
   audioChunkMode: ['none', 'auto', 'fixed'],
-  downloadSource: ['auto', 'huggingface', 'mirror'],
 };
 
 // ----------------------------- 配置持久化 -----------------------------
@@ -174,7 +169,7 @@ function sanitizeConfig(partial) {
     const v = Number(partial.audioChunkDurationSec);
     if (Number.isFinite(v) && v >= 1 && v <= 300) out.audioChunkDurationSec = v;
   }
-  for (const key of ['backend', 'language', 'audioChunkMode', 'downloadSource']) {
+  for (const key of ['backend', 'language', 'audioChunkMode']) {
     if (partial[key] !== undefined && ENUMS[key].includes(partial[key])) out[key] = partial[key];
   }
   if (partial.enableItn !== undefined) out.enableItn = partial.enableItn === true || partial.enableItn === 'true';
@@ -218,8 +213,6 @@ class AsrService {
     // 子进程最近输出（环形缓冲）：进程异常退出时把真实原因带进 lastActionLog，
     // 让设置卡片能直接显示「GGUF 读取失败」这类信息，而不只是「服务未就绪」
     this.childLogTail = [];
-    // 模型下载状态（/download-model 异步进行，进度经 /status 暴露）
-    this.download = { active: false, received: 0, total: 0, error: null };
   }
 
   // audiocpp_server 可执行文件：优先用户指定，其次**随 App 分发的运行时**，
@@ -381,30 +374,20 @@ class AsrService {
         binaryPath,
         modelPath,
       },
-      download: this.download,
       lastActionAt: this.lastActionAt || undefined,
       lastActionLog: this.lastActionLog || undefined,
     };
   }
 
-  // 兜底守护：监视本 Node 进程，Node 死亡（含 SIGKILL）后终止 audiocpp_server
+  // 兜底守护：监视本 Node 进程，Node 死亡（含 SIGKILL）后按 PID 精确终止 audiocpp_server。
+  // 实现见 server/watchdog.js（统一形态：不做 pkill -f 全局匹配，避免误杀无关进程）。
   ensureWatchdog() {
     if (this.watchdog) return;
-    const owner = process.pid;
-    const script = [
-      `while kill -0 ${owner} 2>/dev/null; do sleep 2; done`,
-      `PID=$(cat ${PID_FILE} 2>/dev/null)`,
-      `if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then`,
-      `  kill -TERM "$PID" 2>/dev/null`,
-      `  for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$PID" 2>/dev/null || break; sleep 0.5; done`,
-      `  kill -0 "$PID" 2>/dev/null && kill -9 "$PID" 2>/dev/null`,
-      `fi`,
-      `pkill -f "[${BINARY_BASENAME[0]}]${BINARY_BASENAME.slice(1)}" 2>/dev/null`,
-      `rm -f ${PID_FILE} 2>/dev/null`,
-    ].join('\n');
     try {
-      this.watchdog = spawn('/bin/bash', ['-c', script], { detached: true, stdio: 'ignore' });
-      this.watchdog.unref();
+      this.watchdog = startWatchdog({
+        pidFile: PID_FILE,
+        binaryBasename: BINARY_BASENAME,
+      });
     } catch (e) {
       // watchdog 失败不阻断启动（正常退出仍由 proxy 退出钩子兜底）
     }
@@ -723,129 +706,6 @@ class AsrService {
     });
   }
 
-  // ----------------------------- 模型下载 -----------------------------
-
-  /**
-   * 异步下载官方 GGUF（约 254MB）到 App 的 models 目录。
-   * 立即返回；进度经 /status 的 download 字段暴露（写 .part 后原子改名）。
-   *
-   * 下载源：默认 auto —— 先试 HuggingFace 官方源，失败自动回退到 hf-mirror 镜像
-   * （huggingface.co 在中国大陆常不可达，镜像是刚需）。也可在设置里强制指定其一。
-   */
-  startModelDownload() {
-    if (this.download.active) return { started: false, reason: 'already_downloading' };
-    const dest = path.join(MODELS_DIR, MODEL_FILENAME);
-    try {
-      if (fs.existsSync(dest) && fs.statSync(dest).size > 100 * 1024 * 1024) {
-        return { started: false, reason: 'already_present', path: dest };
-      }
-      if (!fs.existsSync(MODELS_DIR)) fs.mkdirSync(MODELS_DIR, { recursive: true });
-    } catch (e) {
-      return { started: false, reason: 'mkdir_failed', error: e.message };
-    }
-
-    const partFile = dest + '.part';
-    this.download = { active: true, received: 0, total: 0, error: null, source: null, host: null };
-
-    const sources =
-      this.config.downloadSource === 'huggingface'
-        ? [MODEL_DOWNLOAD_URL]
-        : this.config.downloadSource === 'mirror'
-        ? [MODEL_MIRROR_URL]
-        : [MODEL_DOWNLOAD_URL, MODEL_MIRROR_URL];
-
-    // 来源标签只取决于「本次尝试选的是哪个源」，不随 302 跳转改变
-    // （跳转后 url 变成 CDN 地址，若按 url 判定会把 mirror 误标成 huggingface）
-    const sourceLabel = (u) => (u === MODEL_MIRROR_URL ? 'mirror' : 'huggingface');
-
-    let sourceIndex = 0;
-
-    // 单个源失败时自动切到下一个；全部用尽才落错误
-    const fail = (reason) => {
-      sourceIndex += 1;
-      try { fs.unlinkSync(partFile); } catch (e) { /* ignore */ }
-      if (sourceIndex < sources.length) {
-        this.download = { active: true, received: 0, total: 0, error: null, source: null, host: null };
-        follow(sources[sourceIndex], sourceLabel(sources[sourceIndex]));
-        return;
-      }
-      this.download = { ...this.download, active: false, error: reason };
-    };
-
-    const follow = (url, label, redirects = 0) => {
-      if (redirects > 6) {
-        fail('too_many_redirects');
-        return;
-      }
-      this.download.source = label;
-      try { this.download.host = new URL(url).host; } catch (e) { /* ignore */ }
-      const mod = url.startsWith('https:') ? https : http;
-      const req = mod.get(url, { headers: { 'User-Agent': 'SimpleUI-ASR/1.0' } }, (res) => {
-        if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
-          res.resume();
-          follow(new URL(res.headers.location, url).toString(), label, redirects + 1);
-          return;
-        }
-        if (res.statusCode !== 200) {
-          res.resume();
-          fail(`http_${res.statusCode}`);
-          return;
-        }
-        const total = parseInt(res.headers['content-length'] || '0', 10);
-        this.download = { active: true, received: 0, total, error: null, source: label, host: this.download.host };
-        const out = fs.createWriteStream(partFile);
-        res.on('data', (chunk) => {
-          this.download.received += chunk.length;
-        });
-        // 网络中断等异常会让流提前结束——必须校验实际字节数，
-        // 否则「0 字节的成功」会被误判为下载完成。
-        res.on('error', (e) => {
-          try { out.destroy(); } catch (err) { /* ignore */ }
-          try { fs.unlinkSync(partFile); } catch (err) { /* ignore */ }
-          fail(e.code || e.message || 'stream_error');
-        });
-        res.pipe(out);
-        out.on('finish', () => {
-          out.close(() => {
-            const received = this.download.received;
-            const expected = this.download.total;
-            const complete = received >= 1024 * 1024 && (expected === 0 || received >= expected);
-            if (!complete) {
-              try { fs.unlinkSync(partFile); } catch (e) { /* ignore */ }
-              fail(expected > 0 ? `incomplete_${received}_of_${expected}` : 'empty_response');
-              return;
-            }
-            try {
-              fs.renameSync(partFile, dest);
-              // 下载完成后把配置指向该模型
-              this.config = { ...this.config, modelPath: dest };
-              fs.writeFileSync(CONFIG_FILE, JSON.stringify(this.config, null, 2));
-              this.download = {
-                active: false,
-                received,
-                total: expected,
-                error: null,
-                source: label,
-                host: this.download.host,
-              };
-            } catch (e) {
-              fail(e.message);
-            }
-          });
-        });
-        out.on('error', (e) => {
-          fail(e.code || e.message || 'write_error');
-        });
-      });
-      req.on('error', (e) => {
-        // Node 的网络错误 message 常为空串，需回退到 code
-        fail(e.code || e.message || 'network_error');
-      });
-    };
-    follow(sources[0], sourceLabel(sources[0]));
-    return { started: true, path: dest };
-  }
-
   // ----------------------------- HTTP API -----------------------------
 
   async handleApi(req, res) {
@@ -923,11 +783,6 @@ class AsrService {
       if (pathname === '/logs' && req.method === 'GET') {
         const maxLines = Math.min(Number(urlObj.searchParams.get('lines')) || 200, 1000);
         sendJson(200, this.tailLog(maxLines));
-        return;
-      }
-
-      if (pathname === '/download-model' && req.method === 'POST') {
-        sendJson(200, this.startModelDownload());
         return;
       }
 

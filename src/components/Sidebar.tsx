@@ -1,10 +1,17 @@
 import React, { useState } from 'react';
-import { ChatSession, ServerHealthInfo, WikiStatusInfo, AsrServiceStatus } from '../types/chat';
+import { ChatSession, WikiStatusInfo, AsrServiceStatus } from '../types/chat';
+import { ModelServiceStatus } from '../services/api';
 import { useI18n, formatArticleCount } from '../i18n';
+import {
+  SERVICE_STATE_DOT_CLASS,
+  SERVICE_STATE_LABEL_KEY,
+  toServiceState,
+} from '../utils/serviceState';
 import {
   Plus,
   Trash2,
   Settings,
+  Server,
   Edit2,
   Check,
   X,
@@ -23,12 +30,45 @@ interface SidebarProps {
   onDeleteSession: (id: string) => void;
   onRenameSession: (id: string, newTitle: string) => void;
   onOpenSettings: () => void;
-  healthInfo: ServerHealthInfo;
+  onOpenServiceManager: () => void;
+  modelStatus?: ModelServiceStatus | null;
   wikiStatus?: WikiStatusInfo;
   asrStatus?: AsrServiceStatus | null;
   isOpen: boolean;
   onToggleOpen: () => void;
 }
+
+/**
+ * 左下角服务状态行。
+ *
+ * 三项服务（基础模型 / 知识库 / 语音识别）共用本组件，**始终显示**，
+ * 状态统一收敛为三态（见 utils/serviceState.ts），与状态栏图标菜单逐字一致：
+ *   绿灯「就绪」 / 红灯「离线」 / 黄灯「启动中」
+ * 额外信息（如知识库条目数）只放进 hover 提示，不污染状态文案。
+ */
+const ServiceRow: React.FC<{ label: string; status?: string | null; hint?: string }> = ({
+  label,
+  status,
+  hint,
+}) => {
+  const { t } = useI18n();
+  const state = toServiceState(status);
+  const text = t(SERVICE_STATE_LABEL_KEY[state]);
+  return (
+    <div
+      className="flex items-center gap-2 min-w-0 cursor-default"
+      title={`${label}: ${text}${hint ? ` · ${hint}` : ''}`}
+    >
+      <span
+        className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${SERVICE_STATE_DOT_CLASS[state]}`}
+      />
+      <div className="flex items-center gap-1.5 min-w-0 text-[11px] leading-none truncate">
+        <span className="font-semibold text-[#1f2328] dark:text-[#f1f3f7]">{label}</span>
+        <span className="text-[10px] text-zinc-500 dark:text-zinc-400">{text}</span>
+      </div>
+    </div>
+  );
+};
 
 export const Sidebar: React.FC<SidebarProps> = ({
   sessions,
@@ -39,7 +79,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDeleteSession,
   onRenameSession,
   onOpenSettings,
-  healthInfo,
+  onOpenServiceManager,
+  modelStatus,
   wikiStatus,
   asrStatus,
   isOpen,
@@ -285,97 +326,40 @@ export const Sidebar: React.FC<SidebarProps> = ({
         )}
       </div>
 
-      {/* Footer: User / Service Status & Settings */}
+      {/* Footer: 服务状态 & 设置 */}
       <div className="p-2.5 border-t border-black/5 dark:border-white/5 bg-[#eaecef] dark:bg-[#17181c] flex items-center justify-between gap-1.5">
+        {/* 三项服务始终显示（不再随总开关隐藏），状态与状态栏菜单同源同文案 */}
         <div className="flex flex-col gap-1.5 px-1 min-w-0 flex-1">
-          {/* 1. Model Service Status */}
-          <div
-            className="flex items-center gap-2 min-w-0 cursor-default"
-            title={`${t('modelService')}: ${healthInfo.online ? t('statusReady') : t('statusOffline')}`}
-          >
-            <span
-              className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                healthInfo.online
-                  ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.7)]'
-                  : 'bg-red-400'
-              }`}
-            />
-            <div className="flex items-center gap-1.5 min-w-0 text-[11px] leading-none truncate">
-              <span className="font-semibold text-[#1f2328] dark:text-[#f1f3f7]">
-                {t('modelService')}
-              </span>
-              <span className="text-[10px] text-zinc-500 dark:text-zinc-400">
-                {healthInfo.online ? t('statusReady') : t('statusOffline')}
-              </span>
-            </div>
-          </div>
-
-          {/* 2. Knowledge Base Service Status — 服务总开关关闭时整行不渲染 */}
-          {wikiStatus?.enabled && (<div
-            className="flex items-center gap-2 min-w-0 cursor-default"
-            title={`${t('kbService')}: ${
-              wikiStatus?.connected
-                ? `${t('statusReady')}${
-                    wikiStatus.articleCount > 0
-                      ? ` (${formatArticleCount(wikiStatus.articleCount, lang)})`
-                      : ''
-                  }`
-                : t('statusOffline')
-            }`}
-          >
-            <span
-              className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                wikiStatus?.connected
-                  ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.7)]'
-                  : 'bg-zinc-400 dark:bg-zinc-600'
-              }`}
-            />
-            <div className="flex items-center gap-1.5 min-w-0 text-[11px] leading-none truncate">
-              <span className="font-semibold text-[#1f2328] dark:text-[#f1f3f7]">
-                {t('kbService')}
-              </span>
-              <span className="text-[10px] text-zinc-500 dark:text-zinc-400">
-                {wikiStatus?.connected
-                  ? wikiStatus.articleCount > 0
-                    ? formatArticleCount(wikiStatus.articleCount, lang)
-                    : t('statusReady')
-                  : t('statusOffline')}
-              </span>
-            </div>
-          </div>)}
-
-          {/* 3. 语音识别服务状态 — 服务总开关关闭时整行不渲染 */}
-          {asrStatus?.enabled && (<div
-            className="flex items-center gap-2 min-w-0 cursor-default"
-            title={`${t('asrService')}: ${asrStatus?.status === 'running' ? t('statusReady') : t('statusOffline')}`}
-          >
-            <span
-              className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                asrStatus?.status === 'running'
-                  ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.7)]'
-                  : asrStatus?.status === 'stopped' || !asrStatus
-                  ? 'bg-zinc-400 dark:bg-zinc-600'
-                  : 'bg-amber-500 animate-pulse'
-              }`}
-            />
-            <div className="flex items-center gap-1.5 min-w-0 text-[11px] leading-none truncate">
-              <span className="font-semibold text-[#1f2328] dark:text-[#f1f3f7]">
-                {t('asrService')}
-              </span>
-              <span className="text-[10px] text-zinc-500 dark:text-zinc-400">
-                {asrStatus?.status === 'running' ? t('statusReady') : t('statusOffline')}
-              </span>
-            </div>
-          </div>)}
+          <ServiceRow label={t('modelService')} status={modelStatus?.status} />
+          <ServiceRow
+            label={t('kbService')}
+            status={wikiStatus?.status}
+            hint={
+              wikiStatus?.connected && wikiStatus.articleCount > 0
+                ? formatArticleCount(wikiStatus.articleCount, lang)
+                : undefined
+            }
+          />
+          <ServiceRow label={t('asrService')} status={asrStatus?.status} />
         </div>
 
-        {/* Settings button */}        <button
-          onClick={onOpenSettings}
-          className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors flex-shrink-0"
-          title={t('settings')}
-        >
-          <Settings className="w-4 h-4" />
-        </button>
+        {/* 右侧按钮列：服务管理在设置上方，与左侧三行服务状态上下并列 */}
+        <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
+          <button
+            onClick={onOpenServiceManager}
+            className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
+            title={t('openServiceManager')}
+          >
+            <Server className="w-4 h-4" />
+          </button>
+          <button
+            onClick={onOpenSettings}
+            className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
+            title={t('settings')}
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+        </div>
       </div>
     </aside>
   );

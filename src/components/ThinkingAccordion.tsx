@@ -52,11 +52,13 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
   const headerText = `${t('thinkingLabel')} · ${Math.max(0, duration).toFixed(1)}s`;
 
   return (
+    // mt-2.5 与 StageLadder 的 mb-2.5 折叠成 10px —— 必须与阶梯内部的块间距（space-y-2.5）一致，
+    // 三行（检索 / 载入上下文 / 思考）的间距才统一。按钮上不加 py，否则会再叠 2px 破坏一致性。
     <div className="my-2.5 text-sm">
       {/* 头部行：无边框，靠留白和层级表达 */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center gap-2 py-0.5 group/select text-left cursor-pointer select-none"
+        className="w-full flex items-center gap-2 group/select text-left cursor-pointer select-none"
       >
         {isThinking ? (
           <Loader2 className="w-4 h-4 text-blue-500 dark:text-blue-400 animate-spin flex-shrink-0" />

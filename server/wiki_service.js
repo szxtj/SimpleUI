@@ -1949,6 +1949,9 @@ class WikiService {
           JSON.stringify({
             enabled: this.enabled,
             connected: this.isOnline,
+            // 与模型 / 语音服务对齐的 status 字段：running | starting | stopped。
+            // 前端左下角与状态栏菜单据此渲染统一的红 / 绿 / 黄三态。
+            status: this.isOnline ? 'running' : this.isStarting ? 'starting' : 'stopped',
             port: this.port,
             zimPath: this.currentZimPath,
             contentId: this.contentId,
@@ -1974,6 +1977,7 @@ class WikiService {
               success: true,
               enabled: this.enabled,
               connected: this.isOnline,
+              status: this.isOnline ? 'running' : this.isStarting ? 'starting' : 'stopped',
               port: this.port,
               zimPath: this.currentZimPath,
               articleCount: this.articleCount,

@@ -17,7 +17,8 @@
 //
 // 退出兜底：TurboFieldfareServer 本体没有 kiwix 那样的 --attachToProcess 机制，
 // 因此首次启动时拉起一个 detached watchdog（仅监视本 Node 进程），Node 意外死亡
-// （含 SIGKILL）时由 watchdog 兜底终止模型服务。正常退出走 cleanupAndExit 钩子。
+// （含 SIGKILL）时由 watchdog 按 PID 精确终止模型服务。正常退出走 cleanupAndExit 钩子。
+// watchdog 实现统一在 server/watchdog.js（曾用 pkill -f 名字匹配，会误杀无关进程，已废弃）。
 
 import { spawn } from 'child_process';
 import fs from 'fs';
@@ -25,6 +26,7 @@ import os from 'os';
 import path from 'path';
 import http from 'http';
 import { fileURLToPath } from 'url';
+import { startWatchdog } from './watchdog.js';
 
 // ESM 环境没有 __dirname，从 import.meta.url 推导（与 proxy.js / wiki_service.js 同款写法）
 const __filename = fileURLToPath(import.meta.url);
@@ -46,6 +48,11 @@ const TTF_LOG_FILE = process.env.TTF_LOG_FILE ||
   path.join(HOME, 'Library', 'Logs', 'turbo-fieldfare.log');
 const PID_FILE = '/tmp/turbo_fieldfare_server.pid';
 const BINARY_BASENAME = 'TurboFieldfareServer';
+
+// 本体项目主页。TurboFieldfare 是实验性、面向开发者的项目，克隆本体 / 编译 / 准备模型权重
+// 都交给用户按项目文档自行完成 —— App 只做检测与引导（前端用它渲染「查看安装说明」入口，
+// 经原生桥用默认浏览器打开），不再代劳克隆或下载。
+const PROJECT_URL = 'https://github.com/drumih/turbo-fieldfare';
 
 export const DEFAULT_MODEL_CONFIG = {
   // 随 SimpleUI 自动启动模型服务（用户明确要求 SimpleUI 作为唯一管理方）
@@ -284,6 +291,7 @@ class TtfService {
       port: this.config.port,
       projectDir,
       modelPath,
+      projectUrl: PROJECT_URL,
       checks: {
         repo: fs.existsSync(path.join(projectDir, 'Package.swift')),
         binary: fs.existsSync(path.join(projectDir, '.build/release/TurboFieldfareServer')),
@@ -296,24 +304,15 @@ class TtfService {
   }
 
   // 兜底守护：仅在首次真正启动服务时拉起一次，监视本 Node 进程；
-  // Node 死亡（含被 SIGKILL）后重读 PID 文件并终止模型服务。
+  // Node 死亡（含被 SIGKILL）后按 PID 精确终止模型服务。
+  // 实现见 server/watchdog.js（统一形态：不做 pkill -f 全局匹配，避免误杀无关进程）。
   ensureWatchdog() {
     if (this.watchdog) return;
-    const owner = process.pid;
-    const script = [
-      `while kill -0 ${owner} 2>/dev/null; do sleep 2; done`,
-      `PID=$(cat ${PID_FILE} 2>/dev/null)`,
-      `if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then`,
-      `  kill -TERM "$PID" 2>/dev/null`,
-      `  for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$PID" 2>/dev/null || break; sleep 0.5; done`,
-      `  kill -0 "$PID" 2>/dev/null && kill -9 "$PID" 2>/dev/null`,
-      `fi`,
-      `pkill -f "[${BINARY_BASENAME[0]}]${BINARY_BASENAME.slice(1)}" 2>/dev/null`,
-      `rm -f ${PID_FILE} 2>/dev/null`,
-    ].join('\n');
     try {
-      this.watchdog = spawn('/bin/bash', ['-c', script], { detached: true, stdio: 'ignore' });
-      this.watchdog.unref();
+      this.watchdog = startWatchdog({
+        pidFile: PID_FILE,
+        binaryBasename: BINARY_BASENAME,
+      });
     } catch (e) {
       // watchdog 失败不阻断启动（正常退出仍由 proxy 退出钩子兜底）
     }

@@ -196,6 +196,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         userContent.add(self, name: "shrinkToSpotlight")
         // 语音输入权限桥（设置页「语音识别服务」卡片据此展示/申请三件套权限）
         userContent.add(self, name: "voiceInput")
+        userContent.add(self, name: "openExternal")
         config.userContentController = userContent
 
         // 权限状态在系统设置里被改动后，主动回推给页面刷新
@@ -308,7 +309,20 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             onShrinkToSpotlight?(sessionId)
         } else if message.name == "voiceInput", let dict = message.body as? [String: Any] {
             handleVoiceInputMessage(dict)
+        } else if message.name == "openExternal", let urlString = message.body as? String {
+            openExternal(urlString)
         }
+    }
+
+    /// 用系统默认浏览器打开外部链接（网页里的 <a target="_blank"> 在 WKWebView 里不会自己跳转）。
+    /// 只放行 http/https —— 防止网页侧意外触发 file: / 自定义 scheme 打开本地内容。
+    private func openExternal(_ urlString: String) {
+        guard let url = URL(string: urlString),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 
     // MARK: - 语音输入权限桥

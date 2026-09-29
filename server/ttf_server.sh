@@ -94,7 +94,9 @@ MODEL_PATH="$PROJECT_DIR/scratch/gemma4.gturbo"
 LOG_FILE="$HOME/Library/Logs/turbo-fieldfare.log"
 PID_FILE="/tmp/turbo_fieldfare_server.pid"
 BINARY="$PROJECT_DIR/.build/release/TurboFieldfareServer"
-OFFICIAL_REPO_URL="https://github.com/drumih/turbo-fieldfare.git"
+# 本体项目主页：TurboFieldfare 是实验性、面向开发者的项目，克隆本体 / 编译 / 准备模型权重
+# 都请按项目文档完成；本脚本只做检测并打印这个入口，不再自动克隆或下载。
+PROJECT_URL="https://github.com/drumih/turbo-fieldfare"
 
 # ==============================================================================
 
@@ -110,42 +112,32 @@ is_running() {
     return 1
 }
 
-# 确保本体项目存在 (支持新 Mac 一键克隆)
-ensure_repo() {
-    if [ ! -d "$TURBO_DIR/.git" ]; then
-        echo "⚠️  未在 $TURBO_DIR 检测到 TurboFieldfare 仓库。"
-        echo "🌐 正在从官方源自动克隆到: $TURBO_DIR ..."
-        mkdir -p "$TURBO_DIR"
-        git clone "$OFFICIAL_REPO_URL" "$TURBO_DIR"
-        if [ $? -ne 0 ]; then
-            echo "❌ 克隆官方仓库失败，请检查网络连接。"
-            exit 1
-        fi
-        echo "✅ 克隆完成！"
-    fi
-}
-
 start() {
     if is_running; then
         echo "⚠️  TurboFieldfareServer 已经在后台运行中 (PID: $(cat "$PID_FILE"), 端口: $PORT)"
         exit 0
     fi
 
-    # 1. 确保本体目录存在
-    ensure_repo
-
-    # 2. 前置检查：模型文件是否存在
-    if [ ! -e "$MODEL_PATH" ]; then
-        echo "❌ 错误: 未找到模型文件/目录: $MODEL_PATH"
-        echo "💡 请先在本体目录下载模型权重，例如执行:"
-        echo "   cd $TURBO_DIR && swift run -c release TurboFieldfareRepack --output scratch/gemma4.gturbo"
+    # 1. 前置检查：本体仓库是否存在
+    #    （原先这里会自动 git clone，已移除 —— 项目面向开发者，安装交给用户按文档完成）
+    if [ ! -f "$PROJECT_DIR/Package.swift" ]; then
+        echo "❌ 未找到 TurboFieldfare 本体: $PROJECT_DIR"
+        echo "📖 安装步骤见项目主页: $PROJECT_URL"
         exit 1
     fi
 
-    # 2. 确保日志所在目录存在
+    # 2. 前置检查：模型权重是否存在
+    #    （原先这里会打印 swift run TurboFieldfareRepack 的下载命令，已移除，只留项目主页入口）
+    if [ ! -e "$MODEL_PATH" ]; then
+        echo "❌ 未找到模型权重: $MODEL_PATH"
+        echo "📖 准备方式见项目主页: $PROJECT_URL"
+        exit 1
+    fi
+
+    # 3. 确保日志所在目录存在
     mkdir -p "$(dirname "$LOG_FILE")"
 
-    # 3. 检查二进制是否存在，若无则自动编译
+    # 4. 检查二进制是否存在，若无则自动编译
     if [ ! -f "$BINARY" ]; then
         echo "📦 正在编译发布版本 TurboFieldfareServer..."
         (cd "$PROJECT_DIR" && swift build -c release --product TurboFieldfareServer)
