@@ -43,8 +43,8 @@ export const translations = {
     defaultPrompt3Content: '简述混合专家模型 (MoE) 的路由机制与稀疏激活原理，为什么它能在 2GB 内存下高效运行？',
 
     // ChatInput
-    placeholderInitial: '向 SimpleUI 提问...',
-    placeholderFollowUp: '追问 SimpleUI...',
+    placeholderInitial: '向 LLM 提问...',
+    placeholderFollowUp: '追问 LLM ...',
     attachImage: '添加图片 (支持拖入与剪贴板粘贴)',
     attachImageReady: '图片模块就绪',
     thinkingOn: '思考',
@@ -98,7 +98,7 @@ export const translations = {
     tokens: 'tokens',
 
     // SettingsModal
-    settingsTitle: 'SimpleUI 模型参数配置',
+    settingsTitle: 'SimpleUI 设置',
     closeSettings: '关闭设置 (Esc)',
     openServiceManager: '服务管理',
     serviceManagerTitle: 'SimpleUI 服务管理',
@@ -338,7 +338,7 @@ export const translations = {
     defaultPrompt3Content: 'Explain the routing mechanism and sparse activation of Mixture-of-Experts (MoE) models, and how they run efficiently in constrained memory.',
 
     // ChatInput
-    placeholderInitial: 'Ask SimpleUI anything...',
+    placeholderInitial: 'Ask anything...',
     placeholderFollowUp: 'Ask a follow-up...',
     attachImage: 'Add image (drag & drop or paste supported)',
     attachImageReady: 'Image module ready',
@@ -393,7 +393,7 @@ export const translations = {
     tokens: 'tokens',
 
     // SettingsModal
-    settingsTitle: 'SimpleUI Model Settings',
+    settingsTitle: 'SimpleUI Settings',
     closeSettings: 'Close settings (Esc)',
     openServiceManager: 'Service Manager',
     serviceManagerTitle: 'SimpleUI Service Manager',

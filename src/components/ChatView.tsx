@@ -5,7 +5,6 @@ import { useFollowBottom } from '../hooks/useFollowBottom';
 import { MessageItem } from './MessageItem';
 import { ChatInput } from './ChatInput';
 import {
-  Sparkles,
   HelpCircle,
   Code2,
   BookOpen,
@@ -247,9 +246,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
         <div className="max-w-4xl mx-auto min-h-full flex flex-col justify-start">
           {messages.length === 0 ? (
             <div className="my-auto py-4 cq-md:py-8 cq-lg:py-10 flex flex-col items-center text-center w-full max-w-lg mx-auto">
-              <div className="w-10 h-10 cq-md:w-12 cq-md:h-12 rounded-xl cq-md:rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/20 mb-3 cq-md:mb-4 flex-shrink-0">
-                <Sparkles className="w-5 h-5 cq-md:w-6 cq-md:h-6 text-white" />
-              </div>
+              {/* App 图标。用 192px 的版本（`public/icon-192.png`）而不是 1024px 的源图：
+                  页面最大只显示 48px（Retina 下 96 物理像素），192 已留足余量，
+                  而源图有 1.17MB / 解码后 4MB，纯属浪费。两处引用同一张，运行时不再加载源图。
+                  图标自带圆角与透明外框、四角为全透明，因此**不加** border-radius（会切掉外发光）
+                  也**不加** box-shadow（阴影会沿矩形盒子走，在透明四角处露出直角）。
+                  图形本身约占画布 85%，留白即 macOS 图标的标准边距，保持原尺寸即可。 */}
+              <img
+                src="/icon-192.png"
+                alt="SimpleUI"
+                draggable={false}
+                className="w-10 h-10 cq-md:w-12 cq-md:h-12 mb-3 cq-md:mb-4 flex-shrink-0 select-none"
+              />
               <h1 className="text-lg cq-md:text-xl font-semibold text-[#1f2328] dark:text-[#f3f5f8] mb-1.5 cq-md:mb-2 tracking-tight">
                 {t('greetingTitle')}
               </h1>
