@@ -125,6 +125,33 @@ if [ -d "bin/audiocpp" ]; then
 else
     echo "  ⚠ bin/audiocpp 仍缺失：语音识别将不可用（请检查网络或 ~/audio.cpp 构建）"
 fi
+
+# 随包分发 Node 运行时：让 App 在没装 Node 的 Mac 上也能断网开箱即用。
+# 直接从当前构建环境拷贝 node 单文件二进制（自包含，无需 npm/include/lib），
+# 不写系统 PATH、不动 homebrew/nvm，完全私有于本 App。
+ensure_node_runtime() {
+  local NODE_BIN
+  NODE_BIN="$(command -v node 2>/dev/null || true)"
+  if [ -z "$NODE_BIN" ]; then
+    echo "  ⚠ 未检测到 node，跳过打包（运行时将回退系统 PATH 中的 node）"
+    return 0
+  fi
+  # 解析符号链接，拷真实二进制（homebrew 的 node 是 Cellar 的符号链接）
+  local NODE_REAL
+  NODE_REAL="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$NODE_BIN" 2>/dev/null || echo "$NODE_BIN")"
+  if [ ! -x "$NODE_REAL" ]; then
+    echo "  ⚠ 无法定位 node 真实二进制，跳过打包"
+    return 0
+  fi
+  mkdir -p "$RESOURCES_DIR/node/bin"
+  cp -f "$NODE_REAL" "$RESOURCES_DIR/node/bin/node"
+  chmod +x "$RESOURCES_DIR/node/bin/node"
+  local NODE_VER
+  NODE_VER="$($RESOURCES_DIR/node/bin/node --version 2>/dev/null || echo '?')"
+  echo "  -> 已打包 Node 运行时: $NODE_VER ($(du -h "$RESOURCES_DIR/node/bin/node" | cut -f1))"
+}
+ensure_node_runtime
+
 cp -R dist "$RESOURCES_DIR/dist"
 cp -R server "$RESOURCES_DIR/server"
 cp package.json "$RESOURCES_DIR/package.json"

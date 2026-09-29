@@ -134,6 +134,15 @@ class ProcessManager {
     }
 
     private func findNodeExecutable() -> String? {
+        // 优先使用随 App 打包的 Node 运行时（Contents/Resources/node/bin/node），
+        // 完全私有于本 App、不依赖用户系统是否安装 Node、不影响整体环境。
+        if let resourcesDir = Bundle.main.resourcePath {
+            let bundled = "\(resourcesDir)/node/bin/node"
+            if FileManager.default.isExecutableFile(atPath: bundled) {
+                return bundled
+            }
+        }
+
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var candidates: [String] = [
             "/opt/homebrew/bin/node",
