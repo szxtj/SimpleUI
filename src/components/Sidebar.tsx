@@ -343,19 +343,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <ServiceRow label={t('asrService')} status={asrStatus?.status} />
         </div>
 
-        {/* 右侧按钮列：服务管理在设置上方，与左侧三行服务状态上下并列 */}
+        {/* 右侧按钮列：服务管理在设置上方，与左侧三行服务状态上下并列。
+            悬停描述直接用各自弹窗的标题 key —— 两个按钮口径一致，且以后改标题会自动跟随，
+            不会再出现「tooltip 与实际标题对不上」的情况。 */}
         <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
           <button
             onClick={onOpenServiceManager}
             className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
-            title={t('openServiceManager')}
+            title={t('serviceManagerTitle')}
           >
             <Server className="w-4 h-4" />
           </button>
           <button
             onClick={onOpenSettings}
             className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
-            title={t('settings')}
+            title={t('settingsTitle')}
           >
             <Settings className="w-4 h-4" />
           </button>
