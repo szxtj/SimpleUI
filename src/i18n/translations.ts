@@ -279,7 +279,7 @@ export const translations = {
     asrLogEmpty: '暂无日志',
     asrHotkeyLabel: '语音输入快捷键',
     asrHotkeyValue: '长按右侧 Command ⌘ 键',
-    asrHotkeyDesc: '在任意输入框长按右 ⌘：识别结果直接写入；不在输入框时自动复制到剪贴板',
+    asrHotkeyDesc: '在 SimpleUI 内长按右 ⌘：结果直接插入输入框光标处；在其它 App 内：结果经剪贴板粘贴（⌘V）',
     asrPermTitle: '权限',
     asrPermMicrophone: '麦克风',
     asrPermAccessibility: '辅助功能',
@@ -289,13 +289,13 @@ export const translations = {
     asrPermUndetermined: '未申请',
     asrPermGrant: '去授权',
     asrPermOpen: '打开系统设置',
-    asrPermTip: '麦克风用于录音；辅助功能用于读取焦点输入框并写入识别结果；输入监控用于监听长按右 ⌘。',
+    asrPermTip: '麦克风用于录音；辅助功能用于向其它 App 合成 ⌘V 写入识别结果（本 App 内直接插入，无需此权限）；输入监控用于监听长按右 ⌘。',
     asrPermUnavailable: '权限仅在桌面应用内可用（当前为浏览器调试模式）',
     asrServiceLogEmptyHint: '暂无日志',
 
     // 语音识别悬浮胶囊
-    voiceCopied: '已复制',
     voiceInserted: '已输入',
+    voicePasted: '已粘贴',
     voiceTranscribing: '正在识别…',
   },
   en: {
@@ -576,7 +576,7 @@ export const translations = {
     asrLogEmpty: 'No log yet',
     asrHotkeyLabel: 'Voice input shortcut',
     asrHotkeyValue: 'Long-press the right Command ⌘ key',
-    asrHotkeyDesc: 'Long-press right ⌘ in any text field to insert the transcript; when not in a text field the result is copied to the clipboard',
+    asrHotkeyDesc: 'Long-press right ⌘ inside SimpleUI to insert the transcript at the cursor; in any other app the result is pasted via the clipboard (⌘V)',
     asrPermTitle: 'Permissions',
     asrPermMicrophone: 'Microphone',
     asrPermAccessibility: 'Accessibility',
@@ -586,13 +586,13 @@ export const translations = {
     asrPermUndetermined: 'Not requested',
     asrPermGrant: 'Grant',
     asrPermOpen: 'Open System Settings',
-    asrPermTip: 'Microphone records audio; Accessibility reads the focused text field and inserts the result; Input Monitoring listens for the right ⌘ long-press.',
+    asrPermTip: 'Microphone records audio; Accessibility sends the synthetic ⌘V that writes the result into other apps (inside SimpleUI it is inserted directly, no permission needed); Input Monitoring listens for the right ⌘ long-press.',
     asrPermUnavailable: 'Permissions are only available inside the desktop app (currently in browser dev mode)',
     asrServiceLogEmptyHint: 'No log yet',
 
     // Voice recognition overlay capsule
-    voiceCopied: 'Copied',
     voiceInserted: 'Inserted',
+    voicePasted: 'Pasted',
     voiceTranscribing: 'Transcribing…',
   },
 } as const;

@@ -69,8 +69,11 @@ class VoiceInputManager {
     private var samplesLock = NSLock()
     private var lastLevelEmit = Date.distantPast
 
-    /// 本次录音的落点：true = 写入焦点输入框；false = 仅复制到剪贴板
-    private var pasteTarget = false
+    /// 落点规则（用户 2026-09-29 定，两条，不再探测焦点是否为输入框）：
+    ///   焦点在本 App  → 前端桥直接插入光标处，**不动剪贴板**；
+    ///   焦点在其它 App → 剪贴板 + 合成 ⌘V 粘贴。
+    /// 之所以不再做「焦点是不是输入框」的判定：Electron / Web 类 App 的系统级 AX 焦点查询
+    /// 会直接失败（实测 role=<no-focused-element>），任何基于该判定的门槛都会让这类 App 不可用。
 
     private init() {}
 
@@ -243,8 +246,9 @@ class VoiceInputManager {
             return
         }
 
-        // 判定落点：焦点是否在文本输入框
-        pasteTarget = VoiceInputManager.focusedElementIsTextInput()
+        VoiceInputManager.diagLog(
+            "beginCapture front=\(VoiceInputManager.frontmostBundleID) self=\(VoiceInputManager.isSelfAppFocused()) axTrusted=\(AXIsProcessTrusted()) inputMonitoring=\(CGPreflightListenEventAccess())"
+        )
 
         guard startRecording() else {
             emit(.error, 0, "无法访问麦克风")
@@ -282,18 +286,20 @@ class VoiceInputManager {
                 }
                 if VoiceInputManager.isSelfAppFocused() {
                     // 本 App 自身的输入框在 WKWebView 内，AX 判定为 AXWebArea 会被误判非文本，
-                    // 因此走前端桥把文本直接插入光标处；同时兜底复制到剪贴板（插入失败仍可取用）。
+                    // 因此走前端桥把文本直接插入光标处。按用户要求：**不写剪贴板**（不污染用户的剪贴板）。
                     NotificationCenter.default.post(name: VoiceInputManager.insertTextNotification, object: trimmed)
-                    self.copyToClipboard(trimmed)
+                    VoiceInputManager.diagLog("finish branch=insert len=\(trimmed.count)")
                     self.emit(.done, 0, trimmed, "insert")
-                } else if self.pasteTarget {
-                    self.pasteToFocusedApp(trimmed)
-                    self.emit(.done, 0, trimmed, "paste")
                 } else {
-                    self.copyToClipboard(trimmed)
-                    self.emit(.done, 0, trimmed, "copy")
+                    // 其它 App：剪贴板 + 合成 ⌘V 粘贴（与系统听写、Superwhisper 等商业 App 同做法）。
+                    // 不做任何焦点判定 —— 判定在 Electron / Web 类 App 里必然失败，加了就等于不可用。
+                    // ⌘V 落在非文本处通常无副作用，且剪贴板留着文本可随时手动粘贴。
+                    self.pasteToFocusedApp(trimmed)
+                    VoiceInputManager.diagLog("finish branch=paste front=\(VoiceInputManager.frontmostBundleID) len=\(trimmed.count)")
+                    self.emit(.done, 0, trimmed, "paste")
                 }
             case .failure(let err):
+                VoiceInputManager.diagLog("finish branch=error \(err.localizedDescription)")
                 self.emit(.error, 0, err.localizedDescription)
             }
         }
@@ -476,43 +482,37 @@ class VoiceInputManager {
 
     // MARK: - 焦点判定与写入
 
-    /// 焦点元素是否为「可写入的文本输入框」
-    private static func focusedElementIsTextInput() -> Bool {
-        guard AXIsProcessTrusted() else { return false }
-        let system = AXUIElementCreateSystemWide()
-        var focusedRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
-              let focusedRef = focusedRef else {
-            return false
-        }
-        let element = unsafeBitCast(focusedRef, to: AXUIElement.self)
-
-        let textRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
-        let nonTextRoles: Set<String> = [
-            "AXStaticText", "AXHeading", "AXImage", "AXButton", "AXLink", "AXMenuItem",
-            "AXMenuBar", "AXMenu", "AXList", "AXRow", "AXTable", "AXWindow", "AXWebArea",
-            "AXScrollArea", "AXGroup", "AXSplitGroup", "AXTabGroup", "AXToolbar",
-        ]
-
-        var roleRef: CFTypeRef?
-        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
-        let role = (roleRef as? String) ?? ""
-
-        if textRoles.contains(role) { return true }
-        if nonTextRoles.contains(role) { return false }
-
-        // 兜底：同时具备「可写的 value」与「选中文本范围」才算可编辑文本上下文
-        var settable: DarwinBoolean = false
-        AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
-        var rangeRef: CFTypeRef?
-        let hasRange = AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success
-        return settable.boolValue && hasRange
-    }
-
     /// 当前前台 App 是否为本 App 自身（语音目标是本 App 自己的输入框时走前端桥插入）
     private static func isSelfAppFocused() -> Bool {
         guard let front = NSWorkspace.shared.frontmostApplication else { return false }
         return front.bundleIdentifier == Bundle.main.bundleIdentifier
+    }
+
+    /// 前台 App 的 bundle id（诊断日志用）
+    private static var frontmostBundleID: String {
+        NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "<nil>"
+    }
+
+    // MARK: - 诊断日志（排查「其它 App 里能否写入」：~/Library/Logs/SimpleUI/voice-diag.log）
+
+    /// 追加一行诊断日志；超过 256KB 自动截断，避免无限增长。
+    static func diagLog(_ message: String) {
+        let dir = ("~/Library/Logs/SimpleUI" as NSString).expandingTildeInPath
+        let path = dir + "/voice-diag.log"
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        if let attrs = try? fm.attributesOfItem(atPath: path),
+           let size = attrs[.size] as? Int, size > 262_144 {
+            try? fm.removeItem(atPath: path)
+        }
+        if !fm.fileExists(atPath: path) { fm.createFile(atPath: path, contents: nil) }
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        guard let data = "[\(stamp)] \(message)\n".data(using: .utf8) else { return }
+        if let handle = FileHandle(forWritingAtPath: path) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        }
     }
 
     private func copyToClipboard(_ text: String) {

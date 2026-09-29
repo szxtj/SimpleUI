@@ -8,7 +8,7 @@ interface VoicePayload {
   state: VoiceState;
   level?: number;
   text?: string;
-  action?: 'paste' | 'copy';
+  action?: 'insert' | 'paste';
 }
 
 declare global {
@@ -24,14 +24,14 @@ declare global {
  * 状态由原生侧经 `window.__setVoiceState` 下发：
  *   recording    长按右 ⌘ 录音中（点阵随实时音量起伏）
  *   transcribing 转写中（点阵匀速呼吸）
- *   done         完成（对勾 + 识别结果，区分「已输入」/「已复制」）
+ *   done         完成（对勾 + 识别结果，区分「已输入」/「已粘贴」）
  *   error        失败（感叹号 + 原因）
  */
 export const VoiceOverlay: React.FC = () => {
   const { t } = useI18n();
   const [state, setState] = useState<VoiceState>('idle');
   const [text, setText] = useState<string | undefined>(undefined);
-  const [action, setAction] = useState<'paste' | 'copy' | undefined>(undefined);
+  const [action, setAction] = useState<'insert' | 'paste' | undefined>(undefined);
 
   const levelRef = useRef(0);
   const stateRef = useRef<VoiceState>('idle');
@@ -115,11 +115,14 @@ export const VoiceOverlay: React.FC = () => {
       <Mic className="w-[14px] h-[14px] text-white" strokeWidth={2.2} />
     );
 
+  // 落点只有两种：本 App 内插入（insert）/ 其它 App 粘贴（paste）
+  const actionLabel = action === 'paste' ? t('voicePasted') : t('voiceInserted');
+
   const caption =
     state === 'error'
       ? text
       : state === 'done' && text
-      ? `${action === 'copy' ? t('voiceCopied') : t('voiceInserted')}：${text}`
+      ? `${actionLabel}：${text}`
       : state === 'transcribing'
       ? t('voiceTranscribing')
       : undefined;

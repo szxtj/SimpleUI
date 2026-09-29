@@ -436,6 +436,8 @@ The "Speech Recognition Service" card in Settings (placed right below "Base Mode
 
 ### Measured performance (Apple M4 · CPU · Q8_0)
 
+> Note: these figures are for the **CPU backend** (historical data). The default backend is now `metal`, so the actual default path is typically faster.
+
 | Case | Time | Real-time factor |
 | :--- | :--- | :--- |
 | 5.5 s Chinese (first call, incl. model load) | 7.4 s | — |
@@ -450,10 +452,16 @@ system TTS audio.
 
 ### Long-press right ⌘ — system-wide voice input
 
+There are exactly two outcomes — no "is the focus a text field?" detection at all:
+
 | Context | Behavior |
 | :--- | :--- |
-| Focus is in **any text field** (any app) | Long-press right ⌘ → record → transcribe → the result is **inserted** into that field (clipboard + synthesized ⌘V, same as macOS Dictation) |
-| Focus is **not** in a text field | Long-press right ⌘ → record → transcribe → the result is **copied** to the clipboard |
+| Focus is in **SimpleUI itself** | Long-press right ⌘ → record → transcribe → the result is **inserted at the cursor** (written through the frontend bridge; **the clipboard is untouched**) |
+| Focus is in **any other app** | Long-press right ⌘ → record → transcribe → the result is **written to the clipboard and pasted with a synthesized ⌘V** (same as macOS Dictation) |
+
+> Why there is no focus detection: the system-level Accessibility focus query fails outright in
+> Electron / WebKit-based apps (the focused element cannot even be read), so any gate built on that
+> query would make voice input unusable in those apps.
 
 A green gradient capsule (microphone + level dots) floats at the **bottom center** of the screen,
 reflecting recording level and recognition state in real time. It is a **transparent, non-activating
@@ -467,9 +475,10 @@ Implementation notes (`mac_app/src/VoiceInputManager.swift`):
   ⌘C) the trigger is cancelled immediately — **user shortcuts are never hijacked**.
 - Recording uses `AVAudioEngine`; the hardware format is converted via `AVAudioConverter` to 16 kHz
   mono Int16 and wrapped as WAV.
-- "Is the focus in a text field?" is answered via Accessibility (`AXUIElement`): first by checking
-  whether the role is a text control, otherwise by falling back to "has a selected-text range and a
-  settable `value`".
+- The focus is **not** inspected for being a text field: the only check is "is the frontmost app
+  SimpleUI itself?" (bundle id from `NSWorkspace.frontmostApplication`). If yes → the frontend bridge
+  inserts; if no → clipboard + ⌘V. Accessibility is used only to synthesize the keystroke, never to
+  read the focus.
 - Transcription is posted as raw WAV bytes to the local proxy at `POST /api/asr/transcribe`, which
   builds the multipart request audiocpp expects — so the Swift side and the browser share one entry point.
 
@@ -478,7 +487,7 @@ Implementation notes (`mac_app/src/VoiceInputManager.swift`):
 | Permission | Purpose |
 | :--- | :--- |
 | **Microphone** | Recording (`NSMicrophoneUsageDescription` is declared in Info.plist) |
-| **Accessibility** | Reading the focused text field + synthesizing ⌘V |
+| **Accessibility** | Synthesizing ⌘V to paste the result into other apps (inside SimpleUI it is inserted directly through the bridge — no focus reading and no permission needed for that path) |
 | **Input Monitoring** | Installing the global listen-only event tap (right ⌘ long-press) |
 
 The settings card shows the live grant state of all three and offers both a "Grant" and an
@@ -648,7 +657,7 @@ Vite dev server (default `http://127.0.0.1:5173`; `/v1` and `/health` are proxie
 ```bash
 ./build_mac_app.sh install
 ```
-Compiles the Swift dual-window shell plus the frontend bundle and installs to `/Applications/SimpleUI.app`. Supports the global hotkey `⌥ Option + Space` to summon the Spotlight floating panel, plus **long-pressing the right Command ⌘ key** to dictate into any text field in any app (the first use requires granting Microphone, Accessibility, and Input Monitoring in System Settings → Privacy & Security; the settings card links straight there).
+Compiles the Swift dual-window shell plus the frontend bundle and installs to `/Applications/SimpleUI.app`. Supports the global hotkey `⌥ Option + Space` to summon the Spotlight floating panel, plus **long-pressing the right Command ⌘ key** to dictate — inserted at the cursor inside SimpleUI, pasted in any other app (the first use requires granting Microphone, Accessibility, and Input Monitoring in System Settings → Privacy & Security; the settings card links straight there).
 
 > The installed app is a **self-contained bundle**: `build_mac_app.sh` copies `dist/` and `server/` into `Contents/Resources`, and the runtime prefers that bundled copy.
 > Therefore **after any frontend change you must re-run `./build_mac_app.sh install`** — rebuilding only the project's `dist/` does not affect the installed app.
