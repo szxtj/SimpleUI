@@ -19,6 +19,7 @@
 - [Overview](#overview)
 - [System Architecture](#system-architecture)
 - [Offline Wiki RAG Pipeline](#offline-wiki-rag-pipeline)
+- [Speech Recognition Service (SenseVoice · audio.cpp)](#speech-recognition-service-sensevoice--audiocpp)
 - [Context Window Management](#context-window-management)
 - [Inference Engine Compatibility](#inference-engine-compatibility)
 - [Quick Start](#quick-start)
@@ -57,13 +58,20 @@ Node.js Proxy Server (port 31235)
      │         ├──► Kiwix Offline Wiki (port 31236 · ZIM file)
      │         └──► Primary Model (port 1235) ← entity planning / long-article section routing
      │
+     ├──► Speech Recognition Manager (asr_service.js)
+     │         │
+     │         └──► audiocpp_server · SenseVoice-Small (port 1236 · auto-start with app, stopped on quit)
+     │                   ▲
+     │                   └── long-press right ⌘ (Swift VoiceInputManager) → /api/asr/transcribe
+     │
      └──► Primary Inference Model (port 1235 · TTF / Ollama / vLLM etc.) ← final answer generation
 ```
 
 | Service | Port | Role |
 | :--- | :--- | :--- |
-| Node.js Proxy (`proxy.js`) | `31235` | SSE passthrough, static hosting, dynamic routing, knowledge-base API, model-service management API |
+| Node.js Proxy (`proxy.js`) | `31235` | SSE passthrough, static hosting, dynamic routing, knowledge-base API, model-service API, speech-recognition API |
 | Kiwix Offline Encyclopedia | `31236` | ZIM file serving, title suggestions, article HTTP |
+| Speech Recognition (audiocpp · SenseVoice) | `1236` | Local Chinese/English speech-to-text (GGUF + audio.cpp) |
 | Primary Inference Model | `1235` | Entity planning, long-article section routing, final answer generation |
 
 > **Model service management**: SimpleUI is the sole manager of the TurboFieldfare inference service —
@@ -387,6 +395,145 @@ Notes:
 
 ---
 
+## Speech Recognition Service (SenseVoice · audio.cpp)
+
+SimpleUI ships a third managed service: local speech recognition. It runs **SenseVoice-Small**
+(FunAudioLLM) as a Q8 GGUF package on top of **audio.cpp**'s `audiocpp_server` — fully local,
+no cloud dependency.
+
+| Item | Value |
+| :--- | :--- |
+| Model | [`FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp`](https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp) |
+| Model file | `sensevoice-small-q8-audiocpp-v1.gguf` (~254 MB, Q8_0) |
+| Runtime | [audio.cpp](https://github.com/0xShug0/audio.cpp) `audiocpp_server` (`--config server.json`) |
+| Port | `1236` (auto-started with the app, stopped on quit) |
+| Persisted config | `~/Library/Application Support/SimpleUI/asr_config.json` |
+| Derived runtime config | `~/Library/Application Support/SimpleUI/asr_server.json` (audiocpp `server.json`) |
+| Management API | `/api/asr/status｜start｜stop｜restart｜config｜logs｜transcribe｜download-model` |
+
+### Defaults tuned for Chinese + English
+
+The "Speech Recognition Service" card in Settings (placed right below "Base Model Service") exposes these:
+
+| Parameter | Default | Notes |
+| :--- | :--- | :--- |
+| `language` | `auto` | **Best for mixed Chinese/English** — the model performs language ID itself; set `zh` / `en` explicitly for pure-language audio |
+| `enable_itn` | on | Inverse text normalization: punctuation and normalized numbers (`false` strips punctuation entirely) |
+| `audio_chunk_mode` | `none` | One encoder pass is most accurate for short clips; use `auto` (bundled silero VAD) or `fixed` for long audio |
+| `audio_chunk_duration_sec` | 30 | Chunk duration for `fixed` mode |
+| `keep_tags` | off | Whether to keep `<\|event\|>/<\|emotion\|>/<\|language\|>` meta tags |
+| `backend` / `threads` | `metal` / 4 | Native Metal GPU acceleration on Apple Silicon — faster and more power-efficient than CPU (CPU is fallback only). `threads` only affects the CPU fallback path and is largely unused under Metal |
+
+> **How options reach the model**: audio.cpp's server contract only exposes
+> `model / file / language / prompt / busy_timeout_ms` on `/v1/audio/transcriptions`;
+> `enable_itn` and `audio_chunk_mode` are **model request options** and must be delivered via
+> `default_request_options` in `server.json`. `asr_service.js` therefore regenerates
+> `asr_server.json` on every start / config change, and parameter edits take effect via a warm restart.
+>
+> Also note: `audiocpp_server` must be launched with the **project root as its working directory** —
+> sense_asr's bundled silero VAD path is relative (`assets/framework/models/silero_vad`), otherwise
+> the `auto` / `fixed` chunk modes fail with "Silero VAD model path does not exist".
+
+### Measured performance (Apple M4 · CPU · Q8_0)
+
+| Case | Time | Real-time factor |
+| :--- | :--- | :--- |
+| 5.5 s Chinese (first call, incl. model load) | 7.4 s | — |
+| 5.5 s Chinese (warm) | ~145 ms | ~38× |
+| 3.9 s English (warm) | ~131 ms | ~30× |
+| 46 s Chinese · `none` | 2.11 s | 22× |
+| 46 s Chinese · `auto` (VAD) | 1.73 s | 27× |
+
+Short Chinese/English utterances transcribe accurately; a 46 s clip is handled in a single encoder pass
+with correct punctuation and number normalization. Real human speech performs better than synthesized
+system TTS audio.
+
+### Long-press right ⌘ — system-wide voice input
+
+| Context | Behavior |
+| :--- | :--- |
+| Focus is in **any text field** (any app) | Long-press right ⌘ → record → transcribe → the result is **inserted** into that field (clipboard + synthesized ⌘V, same as macOS Dictation) |
+| Focus is **not** in a text field | Long-press right ⌘ → record → transcribe → the result is **copied** to the clipboard |
+
+A green gradient capsule (microphone + level dots) floats at the **bottom center** of the screen,
+reflecting recording level and recognition state in real time. It is a **transparent, non-activating
+panel that ignores mouse events** — it never steals focus, so ⌘V always lands in the right place.
+
+Implementation notes (`mac_app/src/VoiceInputManager.swift`):
+
+- Right ⌘ is a **modifier**, not a regular hotkey, so `RegisterEventHotKey` cannot be used. Instead a
+  listen-only `CGEventTap` watches `flagsChanged` (keyCode 54) and `keyDown`. Recording begins only
+  after a 350 ms hold; if any other key is pressed during the hold (i.e. it is really a combo such as
+  ⌘C) the trigger is cancelled immediately — **user shortcuts are never hijacked**.
+- Recording uses `AVAudioEngine`; the hardware format is converted via `AVAudioConverter` to 16 kHz
+  mono Int16 and wrapped as WAV.
+- "Is the focus in a text field?" is answered via Accessibility (`AXUIElement`): first by checking
+  whether the role is a text control, otherwise by falling back to "has a selected-text range and a
+  settable `value`".
+- Transcription is posted as raw WAV bytes to the local proxy at `POST /api/asr/transcribe`, which
+  builds the multipart request audiocpp expects — so the Swift side and the browser share one entry point.
+
+### Permissions (all three are required)
+
+| Permission | Purpose |
+| :--- | :--- |
+| **Microphone** | Recording (`NSMicrophoneUsageDescription` is declared in Info.plist) |
+| **Accessibility** | Reading the focused text field + synthesizing ⌘V |
+| **Input Monitoring** | Installing the global listen-only event tap (right ⌘ long-press) |
+
+The settings card shows the live grant state of all three and offers both a "Grant" and an
+"Open System Settings" action; the native side pushes a refresh whenever the state changes in System Settings.
+
+### Runtime and model: three distribution shapes
+
+Speech recognition needs two pieces: the **runtime** (`audiocpp_server`, ~11.8 MB) and the
+**model** (SenseVoice GGUF, ~254 MB). Neither depends on any cloud — once set up it works **fully offline**.
+
+| Shape | Where the runtime comes from | Where the model comes from | Works right after install? |
+| :--- | :--- | :--- | :--- |
+| **Local dev / self-build** | `./scripts/sync_audiocpp.sh --build` clones and compiles it | fetched by `sync_audiocpp.sh --with-model` at build time | One-time setup needed |
+| **Self-build (no model)** | Shipped inside the app (`Contents/Resources/asr/`) | fetched by `sync_audiocpp.sh --with-model` (254 MB) at build time | Yes, after build |
+| **Release package (with model)** | Shipped inside the app | Shipped inside the app | **Yes, immediately — fully offline** |
+
+A packager only needs:
+
+```bash
+./scripts/sync_audiocpp.sh --build --with-model   # compile runtime + fetch model into bin/audiocpp/
+./build_mac_app.sh install                        # produce a self-contained app
+```
+
+`--with-model` places the 254 MB GGUF into `bin/audiocpp/models/` (already in `.gitignore`, so it is never
+committed; the binary and bundled VAD *are* committed, matching the existing `bin/kiwix` policy).
+Omit `--with-model` and the app still ships the runtime — the model is fetched by `sync_audiocpp.sh --with-model` or copied from the local cache before install.
+
+**Lookup order** (`asr_service.js`):
+
+| Resource | Order |
+| :--- | :--- |
+| Executable | user path → **bundled `Resources/asr/bin/`** → project `build/bin/` → Homebrew / `/usr/local/bin` |
+| Model GGUF | user path → **bundled `Resources/asr/models/`** → `~/Library/Application Support/SimpleUI/models/` → project `models/` |
+| Runtime root (cwd) | **bundled `Resources/asr/`** → project dir (verified by the presence of the bundled silero VAD) |
+
+> The runtime root is the `cwd` of `audiocpp_server` — sense_asr's bundled silero VAD path is **relative**
+> (`assets/framework/models/silero_vad`), and picking the wrong directory makes
+> `audio_chunk_mode=auto/fixed` fail with "Silero VAD model path does not exist". That is why those 1.2 MB
+> of VAD assets must be bundled too.
+
+**Model** (whatever its source): it ships inside the app (`Contents/Resources/asr/models/`, ~254 MB) and
+works fully offline out of the box. For a self-build, `./scripts/sync_audiocpp.sh --with-model` fetches it at
+build time (reusing the local `~/Library/Application Support/SimpleUI/models/` cache when present). The
+settings card no longer has a "Download model" button — at runtime `findModel` auto-detects the model by
+priority (explicit path → bundled → `~/Library/.../models/` → project `models/`), with the bundled copy winning.
+The default fetch source is `auto`: it tries the official HuggingFace endpoint first and **falls back to the
+`hf-mirror.com` mirror on failure** (huggingface.co is frequently unreachable from mainland China).
+
+**Runtime only** (you already have audio.cpp): just drop your `audiocpp_server` into `bin/audiocpp/bin/`
+(or the bundled `Contents/Resources/asr/bin/`). `findBinary` auto-detects it by priority
+(explicit path → bundled → project `build/bin/` → Homebrew) — no path field in Settings. When the binary or
+model is missing the card shows an explicit amber hint and the service stays "Offline" instead of erroring.
+
+---
+
 ## Context Window Management
 
 ### Two-Phase Dynamic Tracking (Surge / Recede)
@@ -501,7 +648,7 @@ Vite dev server (default `http://127.0.0.1:5173`; `/v1` and `/health` are proxie
 ```bash
 ./build_mac_app.sh install
 ```
-Compiles the Swift dual-window shell plus the frontend bundle and installs to `/Applications/SimpleUI.app`. Supports the global hotkey `⌥ Option + Space` to summon the Spotlight floating panel.
+Compiles the Swift dual-window shell plus the frontend bundle and installs to `/Applications/SimpleUI.app`. Supports the global hotkey `⌥ Option + Space` to summon the Spotlight floating panel, plus **long-pressing the right Command ⌘ key** to dictate into any text field in any app (the first use requires granting Microphone, Accessibility, and Input Monitoring in System Settings → Privacy & Security; the settings card links straight there).
 
 > The installed app is a **self-contained bundle**: `build_mac_app.sh` copies `dist/` and `server/` into `Contents/Resources`, and the runtime prefers that bundled copy.
 > Therefore **after any frontend change you must re-run `./build_mac_app.sh install`** — rebuilding only the project's `dist/` does not affect the installed app.
@@ -521,6 +668,9 @@ SimpleUI/
 │   │                         #   config.env-compatible export, /api/model/* endpoints
 │   ├── ttf_server.sh         # TTF start/stop script runtime asset (copied from turbo-fieldfare-manager)
 │   ├── ttf_log.js            # Read-only TTF log probe (real prompt tokens before generation)
+│   ├── asr_service.js        # Speech recognition manager (SenseVoice / audio.cpp)
+│   │                         #   Auto-start with app / stop on quit, generates audiocpp server.json,
+│   │                         #   persists asr_config.json, /api/asr/* (incl. transcribe + model download)
 │   ├── wiki_service.js       # Offline RAG pipeline core
 │   │                         #   Primary-model planning / sense selection / section routing
 │   │                         #   Multi-channel recall (exact probe · suggest · senses · full-text)
@@ -530,9 +680,23 @@ SimpleUI/
 │   │                         #   toSimplifiedChinese, getAllVariants (OpenCC)
 │   └── laya_mlx_server.py    # LAYA System 1 service (removed from the pipeline, file kept for reference)
 │
+├── bin/
+│   ├── kiwix/                # Kiwix runtime (shipped inside the app)
+│   └── audiocpp/             # Speech-recognition runtime (shipped as Contents/Resources/asr/)
+│       ├── bin/audiocpp_server              # populated by scripts/sync_audiocpp.sh
+│       ├── assets/framework/models/silero_vad/   # bundled VAD (needed by audio_chunk_mode=auto/fixed)
+│       └── models/                          # optional in-bundle model (.gitignored, 254MB not committed)
+│
+├── scripts/
+│   └── sync_audiocpp.sh      # build/sync the audiocpp runtime; --build clones+builds, --with-model fetches the model
+│
 ├── mac_app/                  # macOS native dual-window wrapper (Swift + WebKit)
 │   ├── src/                  # AppDelegate, HotKey, WindowControllers
-│   └── Resources/            # Info.plist, AppIcon.icns
+│   │                         #   VoiceInputManager.swift  global right-⌘ voice input
+│   │                         #     (CGEventTap hold detection / AVAudioEngine capture /
+│   │                         #      AX focus detection / ⌘V insertion)
+│   │                         #   VoiceOverlayPanelController.swift  bottom-center capsule container
+│   └── Resources/            # Info.plist (incl. microphone usage description), AppIcon.icns
 │
 └── src/
     ├── App.tsx               # Top-level state machine, session management, liveStreamingTokens, sync
@@ -568,6 +732,9 @@ SimpleUI/
         ├── ContextRing.tsx   # SVG context ring (optional remaining-percent label + hover details)
         ├── ImageAttachment.tsx    # Input-area image previews and removal
         ├── SettingsModal.tsx # Parameter config, inference port, KB master switch, language & theme
+        │                     #   + base model service card / speech recognition card (with permissions)
+        ├── VoiceOverlay.tsx  # Bottom-center voice capsule (green gradient + mic + level dots),
+        │                     #   hosted by the native VoiceOverlayPanelController (#/voice route)
         ├── WikiPanel.tsx     # The single knowledge-panel implementation: search + rich full article
         │                     #   (formulas/tables/images/subheadings) + the citation chip's injected text;
         │                     #   unified notice and zero requests when the service is unavailable

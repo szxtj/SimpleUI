@@ -24,6 +24,12 @@ html.dark {
   color-scheme: dark;
 }
 
+/* 语音识别胶囊：录音中的轻微呼吸（配合 Tailwind animate-[voicePulse_...]） */
+@keyframes voicePulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.035); }
+}
+
 *, ::before, ::after {
   -webkit-tap-highlight-color: transparent;
 }

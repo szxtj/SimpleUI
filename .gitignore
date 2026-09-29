@@ -35,10 +35,15 @@ pnpm-debug.log*
 .vscode/
 .idea/
 .workbuddy
+.workbuddy-ai
 *.swp
 *.swo
 
 # Local runtime configs
 server/wiki_config.json
+
+# 语音识别运行时：二进制与内置 VAD 随包提交（与 bin/kiwix 同策略，约 14MB），
+# 但 254MB 的模型不入库——打包时用 scripts/sync_audiocpp.sh --with-model 放入。
+bin/audiocpp/models/
 
 

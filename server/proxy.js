@@ -142,6 +142,7 @@ function serveStatic(req, res) {
 import { wikiService } from './wiki_service.js';
 import { ttfLogService, noteForwardedRequest, noteChatForward } from './ttf_log.js';
 import { ttfService } from './ttf_service.js';
+import { asrService } from './asr_service.js';
 
 const server = http.createServer((req, res) => {
   // Handle CORS preflight
@@ -172,6 +173,13 @@ const server = http.createServer((req, res) => {
   // SimpleUI 作为 TTF 服务的唯一管理方，随 App 自动拉起、退出一并终止。
   if (req.url.startsWith('/api/model/')) {
     ttfService.handleApi(req, res);
+    return;
+  }
+
+  // 语音识别服务 API（SenseVoice / audio.cpp 托管 + 转写）：
+  // 与基础模型服务并列的第三个受管服务，随 App 自动拉起、退出一并终止。
+  if (req.url.startsWith('/api/asr/')) {
+    asrService.handleApi(req, res);
     return;
   }
 
@@ -212,6 +220,8 @@ server.listen(PORT, '127.0.0.1', () => {
   wikiService.initWatcher();
   // 模型服务随 SimpleUI 自动启动（enabled 开关在设置页模型卡片中控制）
   ttfService.init();
+  // 语音识别服务随 SimpleUI 自动启动（enabled 开关在设置页语音卡片中控制）
+  asrService.init();
 
   // Automatically exit if parent process (e.g. SimpleUI app) terminates
   if (process.ppid && process.ppid > 1) {
@@ -242,6 +252,14 @@ function cleanupAndExit(code = 0) {
       // ignore
     }
   }
+  // 语音识别服务同样随退出一并终止
+  if (asrService) {
+    try {
+      asrService.shutdownSync();
+    } catch (e) {
+      // ignore
+    }
+  }
   process.exit(code);
 }
 
@@ -258,6 +276,13 @@ process.on('exit', () => {
   if (ttfService) {
     try {
       ttfService.shutdownForce();
+    } catch (e) {
+      // ignore
+    }
+  }
+  if (asrService) {
+    try {
+      asrService.shutdownForce();
     } catch (e) {
       // ignore
     }

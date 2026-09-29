@@ -5,6 +5,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: MainWindowController!
     private var spotlightController: SpotlightPanelController!
     private var statusBarController: StatusBarController!
+    private var voiceOverlayController: VoiceOverlayPanelController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -15,6 +16,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Initialize Window Controllers
         mainWindowController = MainWindowController()
         spotlightController = SpotlightPanelController()
+        voiceOverlayController = VoiceOverlayPanelController()
 
         spotlightController.onOpenMainWindow = { [weak self] in
             // Focus and trigger in-memory session sync without reloading the whole web page
@@ -31,6 +33,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.mainWindowController.loadContent()
                 self?.mainWindowController.showAndFocus()
                 self?.spotlightController.loadContent()
+                self?.voiceOverlayController.loadContent()
             }
         }
 
@@ -39,6 +42,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.spotlightController.toggle()
         }
         HotKeyManager.shared.register()
+
+        // 全局语音输入：长按右侧 Command 键 → 语音转文字
+        // 状态实时驱动屏幕底部居中的悬浮胶囊 UI
+        VoiceInputManager.shared.onStateChange = { [weak self] state, level, text, action in
+            self?.voiceOverlayController.update(state: state, level: level, text: text, action: action)
+        }
+        VoiceInputManager.shared.install()
 
         // Menu bar status icon (single icon, left & right click open the same menu)
         statusBarController = StatusBarController()
@@ -61,6 +71,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         statusBarController?.teardown()
         HotKeyManager.shared.unregister()
+        VoiceInputManager.shared.uninstall()
         ProcessManager.shared.stop()
     }
 

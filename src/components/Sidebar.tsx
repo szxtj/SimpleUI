@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChatSession, ServerHealthInfo, WikiStatusInfo } from '../types/chat';
+import { ChatSession, ServerHealthInfo, WikiStatusInfo, AsrServiceStatus } from '../types/chat';
 import { useI18n, formatArticleCount } from '../i18n';
 import {
   Plus,
@@ -25,6 +25,7 @@ interface SidebarProps {
   onOpenSettings: () => void;
   healthInfo: ServerHealthInfo;
   wikiStatus?: WikiStatusInfo;
+  asrStatus?: AsrServiceStatus | null;
   isOpen: boolean;
   onToggleOpen: () => void;
 }
@@ -40,6 +41,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenSettings,
   healthInfo,
   wikiStatus,
+  asrStatus,
   isOpen,
   onToggleOpen,
 }) => {
@@ -341,10 +343,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </span>
             </div>
           </div>)}
+
+          {/* 3. 语音识别服务状态 — 服务总开关关闭时整行不渲染 */}
+          {asrStatus?.enabled && (<div
+            className="flex items-center gap-2 min-w-0 cursor-default"
+            title={`${t('asrService')}: ${asrStatus?.status === 'running' ? t('statusReady') : t('statusOffline')}`}
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                asrStatus?.status === 'running'
+                  ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.7)]'
+                  : asrStatus?.status === 'stopped' || !asrStatus
+                  ? 'bg-zinc-400 dark:bg-zinc-600'
+                  : 'bg-amber-500 animate-pulse'
+              }`}
+            />
+            <div className="flex items-center gap-1.5 min-w-0 text-[11px] leading-none truncate">
+              <span className="font-semibold text-[#1f2328] dark:text-[#f1f3f7]">
+                {t('asrService')}
+              </span>
+              <span className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                {asrStatus?.status === 'running' ? t('statusReady') : t('statusOffline')}
+              </span>
+            </div>
+          </div>)}
         </div>
 
-        {/* Settings button */}
-        <button
+        {/* Settings button */}        <button
           onClick={onOpenSettings}
           className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors flex-shrink-0"
           title={t('settings')}

@@ -11,6 +11,7 @@ import {
   WikiCitation,
   WikiStatusInfo,
   TurnStageRecord,
+  AsrServiceStatus,
 } from './types/chat';
 import {
   loadSessions,
@@ -26,7 +27,7 @@ import {
   notifySessionUpdate,
   syncChannel,
 } from './services/storage';
-import { TurboFieldfareAPI, WikiAPI } from './services/api';
+import { TurboFieldfareAPI, WikiAPI, ASRServiceAPI } from './services/api';
 import {
   buildPromptWithWiki,
   buildTurnMessages,
@@ -34,6 +35,7 @@ import {
   buildSessionSettings,
 } from './services/chatTurn';
 import { SpotlightView } from './components/SpotlightView';
+import { VoiceOverlay } from './components/VoiceOverlay';
 import { WikiSidebar } from './components/WikiSidebar';
 import { I18nProvider, resolveLanguage } from './i18n';
 import { useTheme } from './hooks/useTheme';
@@ -68,11 +70,77 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('storage', handleStorage);
   }, []);
 
+  // 语音输入桥：原生侧在「焦点在本 App 自身输入框」时调用，把转写结果插入当前光标处。
+  // 因输入框是受控组件，需用原生 value setter + 派发 input 事件触发 React onChange。
+  useEffect(() => {
+    const w = window as any;
+    w.__insertVoiceText = (text: string) => {
+      if (!text) return;
+      const isEditable = (el: Element | null): el is HTMLElement =>
+        !!el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' || (el as HTMLElement).isContentEditable);
+
+      // 优先插入当前焦点输入框；焦点不在输入框时回退到聊天输入框
+      // （在本 App 内长按右 ⌘ 说话，通常就是想往聊天框里写）
+      let field = document.activeElement as HTMLElement | null;
+      if (!isEditable(field)) {
+        const fallback = document.querySelector<HTMLElement>('[data-chat-input]');
+        if (fallback) {
+          fallback.focus();
+          field = fallback;
+        }
+      }
+      if (!isEditable(field)) return;
+
+      // contentEditable：在当前选区插入文本（当前 App 无此场景，作通用兜底）
+      if (field.isContentEditable) {
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0) return;
+        const range = sel.getRangeAt(0);
+        range.deleteContents();
+        range.insertNode(document.createTextNode(text));
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+      }
+
+      const input = field as HTMLTextAreaElement & HTMLInputElement;
+      const start = input.selectionStart ?? input.value.length;
+      const end = input.selectionEnd ?? start;
+      const next = input.value.slice(0, start) + text + input.value.slice(end);
+      const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value');
+      if (desc?.set) desc.set.call(input, next);
+      else input.value = next;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const pos = start + text.length;
+      try {
+        input.setSelectionRange(pos, pos);
+      } catch {
+        /* 非受支持元素忽略 */
+      }
+    };
+    return () => {
+      w.__insertVoiceText = undefined;
+    };
+  }, []);
+
   const isSpotlight =
     window.location.hash === '#/spotlight' ||
     window.location.search.includes('mode=spotlight');
 
-  useTheme(settings.theme, isSpotlight);
+  // 语音识别悬浮胶囊（原生 VoiceOverlayPanelController 承载的独立窗口）
+  const isVoiceOverlay = window.location.hash === '#/voice';
+
+  useTheme(settings.theme, isSpotlight || isVoiceOverlay);
+
+  if (isVoiceOverlay) {
+    return (
+      <I18nProvider preference={settings.language}>
+        <VoiceOverlay />
+      </I18nProvider>
+    );
+  }
 
   if (isSpotlight) {
     return (
@@ -131,6 +199,8 @@ export const App: React.FC = () => {
   const [activeWikiArticle, setActiveWikiArticle] = useState<string | null>(null);
   const [activeWikiContext, setActiveWikiContext] = useState<string | null>(null);
   const [isWikiPanelOpen, setIsWikiPanelOpen] = useState(false);
+  /** 语音识别服务状态（左下角服务行） */
+  const [asrStatus, setAsrStatus] = useState<AsrServiceStatus | null>(null);
 
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
   /** 本轮阶段阶梯记录的最新快照：随流式广播带给镜像窗口（浮窗），使它也能实时长出阶梯行 */
@@ -422,6 +492,17 @@ export const App: React.FC = () => {
     checkWiki();
     const wikiTimer = setInterval(checkWiki, 6000);
     return () => clearInterval(wikiTimer);
+  }, []);
+
+  // Poll 语音识别服务状态（左下角服务行）
+  useEffect(() => {
+    const checkAsr = async () => {
+      const status = await ASRServiceAPI.getStatus();
+      setAsrStatus(status);
+    };
+    checkAsr();
+    const asrTimer = setInterval(checkAsr, 6000);
+    return () => clearInterval(asrTimer);
   }, []);
 
   /**
@@ -1106,6 +1187,7 @@ export const App: React.FC = () => {
           onOpenSettings={() => setIsSettingsOpen(true)}
           healthInfo={healthInfo}
           wikiStatus={wikiStatus}
+          asrStatus={asrStatus}
           isOpen={isSidebarOpen}
           onToggleOpen={() => setIsSidebarOpen(!isSidebarOpen)}
         />

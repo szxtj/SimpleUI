@@ -17,6 +17,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var kbStatusItem: NSMenuItem!
     private var svcStatusItem: NSMenuItem!
+    private var asrStatusItem: NSMenuItem!
     private var pollTimer: Timer?
     private var pinAttempts = 0
 
@@ -32,6 +33,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
 
     private var lblKB: String { zh ? "知识库服务" : "Knowledge Base" }
     private var lblSvc: String { zh ? "基础模型服务" : "Base Model" }
+    private var lblAsr: String { zh ? "语音识别服务" : "Speech Recognition" }
     private var lblReady: String { zh ? "就绪于" : "Ready on" }
     private var lblOffline: String { zh ? "离线" : "Offline" }
     private var lblNoZim: String { zh ? "离线 (未找到ZIM文件)" : "Offline (ZIM file not found)" }
@@ -60,6 +62,10 @@ class StatusBarController: NSObject, NSMenuDelegate {
         svcStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         svcStatusItem.isEnabled = false
         menu.addItem(svcStatusItem)
+
+        asrStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        asrStatusItem.isEnabled = false
+        menu.addItem(asrStatusItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -180,6 +186,26 @@ class StatusBarController: NSObject, NSMenuDelegate {
                 view = ServiceView(dot: .systemRed, text: self.lblOffline)
             }
             self.svcStatusItem.attributedTitle = self.statusLine(label: self.lblSvc, view: view)
+        }
+
+        // 语音识别：running → 绿「就绪于 {port}」；过渡态 → 橙「启动中… (port)」；stopped/不可达 → 红「离线」
+        fetchJSON("/api/asr/status") { [weak self] json in
+            guard let self = self else { return }
+            let view: ServiceView
+            if let j = json, let status = j["status"] as? String {
+                let port = (j["port"] as? Int) ?? 1236
+                switch status {
+                case "running":
+                    view = ServiceView(dot: .systemGreen, text: "\(self.lblReady) \(port)")
+                case "stopped":
+                    view = ServiceView(dot: .systemRed, text: self.lblOffline)
+                default: // loading / starting / stopping / restart
+                    view = ServiceView(dot: .systemOrange, text: "\(self.lblLoading) (\(port))")
+                }
+            } else {
+                view = ServiceView(dot: .systemRed, text: self.lblOffline)
+            }
+            self.asrStatusItem.attributedTitle = self.statusLine(label: self.lblAsr, view: view)
         }
     }
 

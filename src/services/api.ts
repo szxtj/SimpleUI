@@ -1,4 +1,4 @@
-import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo } from '../types/chat';
+import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus } from '../types/chat';
 import { estimateHistoryTokens, setTokenCalibration } from '../utils/token';
 
 /** 服务端 usage 的实际形状（TTF 会给出 cached / reasoning 明细） */
@@ -672,5 +672,84 @@ export class ModelServiceAPI {
       console.error('ModelService getLogs failed:', e);
     }
     return null;
+  }
+}
+
+/**
+ * 语音识别服务（SenseVoice / audio.cpp）。
+ *
+ * 与基础模型服务同构：SimpleUI 是 audiocpp_server 的唯一管理方，
+ * 随 App 自动拉起、退出一并终止；配置持久化于 asr_config.json。
+ */
+export class ASRServiceAPI {
+  static async getStatus(): Promise<AsrServiceStatus | null> {
+    try {
+      const res = await fetch('/api/asr/status');
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('ASRService getStatus failed:', e);
+    }
+    return null;
+  }
+
+  static async getConfig(): Promise<AsrServiceConfig | null> {
+    try {
+      const res = await fetch('/api/asr/config');
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('ASRService getConfig failed:', e);
+    }
+    return null;
+  }
+
+  /** 应用部分配置；restartIfRunning=true 时若服务在运行则自动热重启 */
+  static async updateConfig(
+    partial: Partial<AsrServiceConfig>,
+    restartIfRunning = false
+  ): Promise<{ success: boolean; restarted?: boolean; error?: string; config?: AsrServiceConfig }> {
+    try {
+      const res = await fetch('/api/asr/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...partial, restartIfRunning }),
+      });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('ASRService updateConfig failed:', e);
+    }
+    return { success: false, error: 'request_failed' };
+  }
+
+  static async control(
+    action: 'start' | 'stop' | 'restart'
+  ): Promise<{ accepted: boolean; status?: string; reason?: string }> {
+    try {
+      const res = await fetch(`/api/asr/${action}`, { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error(`ASRService ${action} failed:`, e);
+    }
+    return { accepted: false };
+  }
+
+  static async getLogs(lines = 200): Promise<{ found: boolean; lines: string[] } | null> {
+    try {
+      const res = await fetch(`/api/asr/logs?lines=${lines}`);
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('ASRService getLogs failed:', e);
+    }
+    return null;
+  }
+
+  /** 异步下载官方 SenseVoice GGUF（约 254MB），进度经 getStatus().download 查看 */
+  static async downloadModel(): Promise<{ started: boolean; reason?: string; path?: string }> {
+    try {
+      const res = await fetch('/api/asr/download-model', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('ASRService downloadModel failed:', e);
+    }
+    return { started: false, reason: 'request_failed' };
   }
 }

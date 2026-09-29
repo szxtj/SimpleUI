@@ -151,6 +151,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       <div className="px-4 pt-3.5 pb-1">
         <textarea
           ref={textareaRef}
+          data-chat-input="true"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}

@@ -116,3 +116,59 @@ export interface WikiStatusInfo {
   articleCount: number;
   mediaCount: number;
 }
+
+/** 语音识别服务（SenseVoice / audio.cpp）聚合状态：与后端 asr_service.js getStatus 对应 */
+export interface AsrServiceStatus {
+  enabled: boolean;
+  status: 'running' | 'loading' | 'stopped' | 'starting' | 'stopping' | 'restart';
+  pid: number | null;
+  port: number;
+  backend: string;
+  language: string;
+  projectDir: string;
+  checks: {
+    binary: boolean;
+    model: boolean;
+    binaryPath: string | null;
+    modelPath: string | null;
+  };
+  download: {
+    active: boolean;
+    received: number;
+    total: number;
+    error: string | null;
+    /** 实际使用的下载源（auto 模式下用于展示回退结果） */
+    source?: 'huggingface' | 'mirror' | null;
+    /** 当前正在请求的主机（302 跳到 CDN 后即为 CDN 域名），用于诊断 */
+    host?: string | null;
+  };
+  lastActionAt?: number;
+  lastActionLog?: string;
+}
+
+/** 语音识别服务运行配置：与后端 asr_config.json 对应 */
+export interface AsrServiceConfig {
+  enabled: boolean;
+  port: number;
+  backend: 'cpu' | 'metal' | 'best';
+  threads: number;
+  /** auto 由模型做语种判定，中英混说最稳 */
+  language: 'auto' | 'zh' | 'en' | 'yue' | 'ja' | 'ko';
+  /** 逆文本归一化：开 = 输出带标点与规范数字 */
+  enableItn: boolean;
+  audioChunkMode: 'none' | 'auto' | 'fixed';
+  audioChunkDurationSec: number;
+  keepTags: boolean;
+  /** 模型下载源：auto = 官方源失败自动回退国内镜像 */
+  downloadSource: 'auto' | 'huggingface' | 'mirror';
+  projectDir: string;
+  binaryPath: string;
+  modelPath: string;
+}
+
+/** 原生侧回推的语音输入权限快照 */
+export interface VoicePermissionStatus {
+  microphone: 'granted' | 'denied' | 'restricted' | 'undetermined';
+  accessibility: boolean;
+  inputMonitoring: boolean;
+}

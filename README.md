@@ -57,13 +57,20 @@ Node.js 代理服务器 (端口 31235)
      │         ├──► Kiwix 离线维基 (端口 31236 · ZIM 文件)
      │         └──► 主力模型 (端口 1235) ← 实体规划 / 长文目录路由
      │
+     ├──► 语音识别服务托管 (asr_service.js)
+     │         │
+     │         └──► audiocpp_server · SenseVoice-Small (端口 1236 · 随 App 自启/退出终止)
+     │                   ▲
+     │                   └── 长按右 ⌘（Swift VoiceInputManager）→ /api/asr/transcribe
+     │
      └──► 主推理模型 (端口 1235 · TTF / Ollama / vLLM 等) ← 最终答案生成
 ```
 
 | 服务 | 端口 | 职责 |
 | :--- | :--- | :--- |
-| Node.js 代理 (`proxy.js`) | `31235` | SSE 透传、静态托管、动态路由、知识库 API、模型服务管理 API |
+| Node.js 代理 (`proxy.js`) | `31235` | SSE 透传、静态托管、动态路由、知识库 API、模型服务管理 API、语音识别 API |
 | Kiwix 离线百科 | `31236` | ZIM 文件读取、标题联想、条目 HTTP 服务 |
+| 语音识别（audiocpp · SenseVoice） | `1236` | 本地中英语音转文字（GGUF + audio.cpp） |
 | 主推理模型 | `1235` | 实体规划、长文目录路由、最终答案生成 |
 
 > **模型服务托管**：SimpleUI 是 TurboFieldfare 推理服务的唯一管理方——
@@ -381,6 +388,141 @@ flowchart TD
 
 ---
 
+## 语音识别服务（SenseVoice · audio.cpp）
+
+SimpleUI 内置第三个受管服务：本地语音识别。基于 **SenseVoice-Small**（FunAudioLLM）的
+Q8 GGUF 量化包，由 **audio.cpp** 的 `audiocpp_server` 承载，完全本地运行、无云端依赖。
+
+| 项目 | 值 |
+| :--- | :--- |
+| 模型 | [`FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp`](https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp) |
+| 模型文件 | `sensevoice-small-q8-audiocpp-v1.gguf`（约 254 MB，Q8_0） |
+| 运行时 | [audio.cpp](https://github.com/0xShug0/audio.cpp) 的 `audiocpp_server`（`--config server.json`） |
+| 服务端口 | `1236`（随 App 自启 / 退出一并终止） |
+| 配置持久化 | `~/Library/Application Support/SimpleUI/asr_config.json` |
+| 运行时派生配置 | `~/Library/Application Support/SimpleUI/asr_server.json`（audiocpp 的 `server.json`） |
+| 管理 API | `/api/asr/status｜start｜stop｜restart｜config｜logs｜transcribe｜download-model` |
+
+### 中英语音场景的默认参数
+
+设置页「语音识别服务」卡片（位于「基础模型服务」下方）可调下列参数，默认值面向中英场景：
+
+| 参数 | 默认 | 说明 |
+| :--- | :--- | :--- |
+| `language` | `auto` | **中英混说最稳**——由模型自行做语种判定（LID）；纯中文 / 纯英文可显式指定 `zh` / `en` |
+| `enable_itn` | 开 | 逆文本归一化：输出自动带标点、数字规范化（`enable_itn=false` 会连标点一起去掉） |
+| `audio_chunk_mode` | `none` | 短语音整段一次编码最准；长音频可切 `auto`（内置 silero VAD 切分）或 `fixed` |
+| `audio_chunk_duration_sec` | 30 | `fixed` 模式的分块时长 |
+| `keep_tags` | 关 | 是否保留 `<\|event\|>/<\|emotion\|>/<\|language\|>` 元标签 |
+| `backend` / `threads` | `metal` / 4 | Apple Silicon 默认走 Metal（原生 GPU 加速，比 CPU 更快更省电）；CPU 仅作兜底。`threads` 仅影响 CPU 回退路径，Metal 下基本不生效 |
+
+> **参数下发路径**：audio.cpp 的服务端契约只在 `/v1/audio/transcriptions` 上暴露
+> `model / file / language / prompt / busy_timeout_ms`；`enable_itn`、`audio_chunk_mode`
+> 等属**模型请求选项**，必须经 `server.json` 的 `default_request_options` 下发。
+> 因此 `asr_service.js` 在每次启动/改配置时都会重新生成 `asr_server.json`，
+> 改参数即热重启生效。
+>
+> 另注：`audiocpp_server` 必须以**本体目录**为工作目录启动——sense_asr 内置 silero VAD
+> 的默认路径是相对路径（`assets/framework/models/silero_vad`），否则 `auto` / `fixed`
+> 分块模式会直接报 “Silero VAD model path does not exist”。
+
+### 实测性能（Apple M4 · CPU · Q8_0）
+
+| 场景 | 耗时 | 相对实时 |
+| :--- | :--- | :--- |
+| 5.5s 中文（首次含模型加载） | 7.4s | — |
+| 5.5s 中文（热态） | ~145ms | ~38× |
+| 3.9s 英文（热态） | ~131ms | ~30× |
+| 46s 长中文 · `none` | 2.11s | 22× |
+| 46s 长中文 · `auto`(VAD) | 1.73s | 27× |
+
+中英短句识别准确率高；46s 长音频整段一次编码也能稳定输出（标点、数字归一化正常）。
+真实人声效果优于系统 TTS 合成的语音。
+
+### 长按右 ⌘ 全系统语音输入
+
+| 场景 | 行为 |
+| :--- | :--- |
+| 焦点在**任意输入框**（任意 App） | 长按右 ⌘ 录音 → 转写 → 结果**直接写入**该输入框（置剪贴板后合成 ⌘V，与系统听写一致） |
+| 焦点**不在**输入框 | 长按右 ⌘ 录音 → 转写 → 结果**一键复制**到剪贴板 |
+
+屏幕**底部居中**会浮出一枚绿色渐变胶囊（麦克风 + 电平点阵），实时反映录音音量与识别状态。
+该胶囊是一个**透明、非激活、不接收鼠标事件**的浮动面板——绝不抢走焦点，因此 ⌘V 总能贴到正确位置。
+
+实现要点（`mac_app/src/VoiceInputManager.swift`）：
+
+- 右 ⌘ 是**修饰键**而非普通热键，不能用 `RegisterEventHotKey`；改为在会话级事件流上挂只读
+  `CGEventTap`，监听 `flagsChanged`（keyCode 54）与 `keyDown`。长按超过 350 ms 才进入录音；
+  期间若按下任何其它键（说明是 ⌘C 这类组合键）立即取消，**绝不抢用户的组合键**。
+- 录音用 `AVAudioEngine`，硬件格式经 `AVAudioConverter` 转 16 kHz 单声道 Int16，再封装 WAV。
+- 是否「在输入框中」用辅助功能（`AXUIElement`）判定：先看角色是否文本类控件，否则回退到
+  「有选中文本范围且 `value` 可写」。
+- 转写请求走本地代理 `POST /api/asr/transcribe`（裸 WAV 字节），由 Node 侧构造 audiocpp 需要的
+  multipart 请求——Swift 端与浏览器端因此可共用同一入口。
+
+### 权限（三件套）
+
+| 权限 | 用途 |
+| :--- | :--- |
+| **麦克风** | 录音（`NSMicrophoneUsageDescription` 已在 Info.plist 声明） |
+| **辅助功能** | 读取焦点输入框 + 合成 ⌘V |
+| **输入监控** | 挂全局只读事件监听（捕获长按右 ⌘） |
+
+设置页卡片内直接展示三项的实时授权状态，并提供「去授权」与「打开系统设置」两个入口；
+原生侧在系统设置里改动后会主动回推刷新。
+
+### 运行时与模型：默认随包，打开即用
+
+语音识别需要两样东西：**运行时**（`audiocpp_server`，约 11.8 MB）与**模型**（SenseVoice GGUF，约 254 MB）。
+两者都不依赖任何云端，随包打进 App 后**完全离线、打开即用**。
+
+| 形态 | 运行时从哪来 | 模型从哪来 | 装完能否直接用 |
+| :--- | :--- | :--- | :--- |
+| **本机开发/自打包** | 随 App 分发（打进 `Contents/Resources/asr/`） | 随 App 分发（打进 `Contents/Resources/asr/models/`） | **打开即用，全程离线** |
+| **源码克隆后自构建** | `build_mac_app.sh` 自动 ensure（本地有则复用，否则 clone+编译） | `build_mac_app.sh` 自动 ensure（本地有则复用 `~Library` 缓存，否则下载） | 一条命令自动补齐 |
+| **Release 包（带模型）** | 随 App 分发 | 随 App 分发 | **装完即用，全程离线** |
+
+**打包 / 构建只需一条命令**（运行时与模型会自动就位，本地已缓存则直接复用，不重复下载或编译）：
+
+```bash
+./build_mac_app.sh install          # 打出并安装自包含 App（含语音识别运行时 + 模型）
+```
+
+`build_mac_app.sh` 在打包前会调用 `ensure_asr_assets`：
+- 若 `bin/audiocpp/bin/audiocpp_server` 缺失，自动 `./scripts/sync_audiocpp.sh --build`（本地已有 `~/audio.cpp` 构建则只同步，否则克隆并编译）；
+- 若 `bin/audiocpp/models/*.gguf` 缺失，优先复用 `~/Library/Application Support/SimpleUI/models/` 里已下载的缓存，否则下载官方 GGUF（约 254MB，失败自动回退 `hf-mirror.com` 镜像）。
+
+需要手动准备时仍可单独跑 `./scripts/sync_audiocpp.sh --build --with-model`。
+
+模型 GGUF 放在 `bin/audiocpp/models/`（已在 `.gitignore` 中，不入库）；
+二进制与内置 VAD 随仓库提交，与 `bin/kiwix` 同策略。因此克隆仓库后直接 `build_mac_app.sh install` 即可，
+分发的 App 自带模型，**其他开发者下载打开即能用语音输入，无需任何额外下载或编译**。
+
+**查找顺序**（`asr_service.js`）：
+
+| 资源 | 顺序 |
+| :--- | :--- |
+| 可执行文件 | 用户指定路径 → **随包 `Resources/asr/bin/`** → 本体 `build/bin/` → Homebrew / `/usr/local/bin` |
+| 模型 GGUF | 用户指定路径 → **随包 `Resources/asr/models/`** → `~/Library/Application Support/SimpleUI/models/` → 本体 `models/` |
+| 运行时根目录（cwd） | **随包 `Resources/asr/`** → 本体目录（以「该目录下确有内置 silero VAD」为准） |
+
+> 运行时根目录即 `audiocpp_server` 的 `cwd`——sense_asr 内置 silero VAD 的默认路径是**相对路径**
+> （`assets/framework/models/silero_vad`），选错目录会让 `audio_chunk_mode=auto/fixed`
+> 直接报 “Silero VAD model path does not exist”。因此打包时必须一并带上这 1.2 MB 的 VAD 资源。
+
+**模型**（无论来源）：随包即包含（`Contents/Resources/asr/models/sensevoice-small-q8-audiocpp-v1.gguf`，约 254 MB），
+打开即用、完全离线；自构建时 `./scripts/sync_audiocpp.sh --with-model` 会在打包前拉取模型并随包打入
+（优先复用 `~/Library/.../models/` 本地缓存，零下载）。设置页**不再提供「下载模型」按钮**——
+运行时按 `findModel` 优先级（显式路径 → 随包 → `~/Library/Application Support/SimpleUI/models/` → 本体 `models/`）
+自动探测，随包副本优先。下载源默认 `auto`：先试 HuggingFace 官方源，**失败自动回退 `hf-mirror.com` 国内镜像**
+（huggingface.co 在大陆常不可达）。
+
+**只想要运行时**（自己已编译 audio.cpp）：把 `audiocpp_server` 放到 `bin/audiocpp/bin/`（或随包
+`Contents/Resources/asr/bin/`）即可，运行时按 `findBinary` 优先级（显式路径 → 随包 → 本体 `build/bin/` → Homebrew）
+自动探测，**无需在设置页填路径**。二进制或模型缺失时，卡片会给出明确的黄色提示，服务状态保持「离线」而不报错。
+
+---
+
 ## 上下文窗口管理
 
 ### 两阶段动态追踪（潮起 / 潮落）
@@ -495,7 +637,9 @@ Vite 开发服务器（默认 `http://127.0.0.1:5173`；`/v1`、`/health` 代理
 ```bash
 ./build_mac_app.sh install
 ```
-编译 Swift 双窗口外壳 + 前端产物，安装至 `/Applications/SimpleUI.app`，支持全局热键 `⌥ Option + Space` 唤起 Spotlight 浮窗。
+编译 Swift 双窗口外壳 + 前端产物，安装至 `/Applications/SimpleUI.app`，支持全局热键 `⌥ Option + Space` 唤起 Spotlight 浮窗，
+以及**长按右侧 Command ⌘ 键**在任何 App 的输入框内语音转文字（首次使用需在「系统设置 → 隐私与安全性」中授予
+麦克风、辅助功能、输入监控三项权限，设置页卡片内有直达入口）。
 
 > 装好的 App 是**自包含包**：`build_mac_app.sh` 会把 `dist/` 与 `server/` 一并拷进 `Contents/Resources`，运行时优先使用包内副本。
 > 因此**改完前端必须重新执行一次 `./build_mac_app.sh install`**——只重建项目里的 `dist/` 不会影响已安装的 App。
@@ -513,6 +657,9 @@ SimpleUI/
 │   │                         #   随 App 自启/退出终止、配置持久化 + config.env 兼容导出、/api/model/*
 │   ├── ttf_server.sh         # TTF 启停脚本运行时资产（复制自 turbo-fieldfare-manager）
 │   ├── ttf_log.js            # TTF 日志只读探针（生成前取真实 prompt token 数）
+│   ├── asr_service.js        # 语音识别服务托管（SenseVoice / audio.cpp）
+│   │                         #   随 App 自启/退出终止、生成 audiocpp server.json
+│   │                         #   配置持久化 asr_config.json、/api/asr/*（含 transcribe 与模型下载）
 │   ├── wiki_service.js       # 离线 RAG 流水线核心
 │   │                         #   主力模型规划 / 义项选择 / 目录路由
 │   │                         #   多通道召回（精确探针·标题联想·义项·全文检索）+ 命名空间过滤 + 重定向去重
@@ -520,9 +667,22 @@ SimpleUI/
 │   │                         #   assembleArticleContext、toSimplifiedChinese / getAllVariants (OpenCC)
 │   └── laya_mlx_server.py    # LAYA System 1 服务（已从链路移除，文件保留备查）
 │
+├── bin/
+│   ├── kiwix/                # Kiwix 运行时（随包分发）
+│   └── audiocpp/             # 语音识别运行时（随包分发，打进 Contents/Resources/asr/）
+│       ├── bin/audiocpp_server              # 由 scripts/sync_audiocpp.sh 同步
+│       ├── assets/framework/models/silero_vad/   # 内置 VAD（audio_chunk_mode=auto/fixed 需要）
+│       └── models/                          # 可选：随包模型（.gitignore，254MB 不入库）
+│
+├── scripts/
+│   └── sync_audiocpp.sh      # 编译/同步 audiocpp 运行时；--build 自动克隆编译，--with-model 拉模型
+│
 ├── mac_app/                  # macOS 原生双窗口包装层（Swift + WebKit）
 │   ├── src/                  # AppDelegate、HotKey、WindowControllers
-│   └── Resources/            # Info.plist、AppIcon.icns
+│   │                         #   VoiceInputManager.swift      长按右 ⌘ 全局语音输入
+│   │                         #     （CGEventTap 长按判定 / AVAudioEngine 录音 / AX 落点判定 / ⌘V 写入）
+│   │                         #   VoiceOverlayPanelController.swift  底部居中悬浮胶囊容器
+│   └── Resources/            # Info.plist（含麦克风用途说明）、AppIcon.icns
 │
 └── src/
     ├── App.tsx               # 顶层状态机、会话管理、liveStreamingTokens、跨窗口同步
@@ -557,6 +717,9 @@ SimpleUI/
         ├── ContextRing.tsx   # SVG 上下文圆环（可选余量百分比 + 悬浮详情）
         ├── ImageAttachment.tsx   # 输入区图片预览与删除
         ├── SettingsModal.tsx # 参数配置、推理端口、知识库服务总开关、语言与主题
+        │                     #   + 基础模型服务卡片 / 语音识别服务卡片（含权限申请）
+        ├── VoiceOverlay.tsx  # 屏幕底部居中语音识别胶囊（绿渐变 + 麦克风 + 电平点阵）
+        │                     #   由原生 VoiceOverlayPanelController 承载（#/voice 路由）
         ├── WikiPanel.tsx     # 知识库面板**唯一实现**：搜索 + 完整条目富文本（公式/表格/图片/子标题）
         │                     #   + 引用胶囊的注入原文；服务不可用时统一提醒且不发请求
         ├── WikiContextView.tsx   # 面板正文渲染器（公式 / 表格 / 图片 / 子标题）

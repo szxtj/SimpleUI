@@ -194,7 +194,25 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         userContent.add(self, name: "setSidebarOpen")
         userContent.add(self, name: "setWikiPanelOpen")
         userContent.add(self, name: "shrinkToSpotlight")
+        // 语音输入权限桥（设置页「语音识别服务」卡片据此展示/申请三件套权限）
+        userContent.add(self, name: "voiceInput")
         config.userContentController = userContent
+
+        // 权限状态在系统设置里被改动后，主动回推给页面刷新
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onVoicePermissionsChanged),
+            name: .simpleUIVoicePermissionsChanged,
+            object: nil
+        )
+
+        // 语音转写结果要插入本 App 自身的输入框（WKWebView 内 AX 判定不到），经前端桥写入光标处
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onVoiceInsertText(_:)),
+            name: VoiceInputManager.insertTextNotification,
+            object: nil
+        )
 
         webView = WKWebView(frame: win.contentView?.bounds ?? .zero, configuration: config)
         webView.autoresizingMask = [.width, .height]
@@ -288,7 +306,61 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             let sessionId = dict?["sessionId"] as? String
             window?.orderOut(nil)
             onShrinkToSpotlight?(sessionId)
+        } else if message.name == "voiceInput", let dict = message.body as? [String: Any] {
+            handleVoiceInputMessage(dict)
         }
+    }
+
+    // MARK: - 语音输入权限桥
+
+    private func handleVoiceInputMessage(_ dict: [String: Any]) {
+        guard let action = dict["action"] as? String else { return }
+        switch action {
+        case "getPermissions":
+            pushVoicePermissions()
+        case "requestMicrophone":
+            VoiceInputManager.shared.requestMicrophone()
+        case "requestAccessibility":
+            VoiceInputManager.shared.requestAccessibility()
+        case "requestInputMonitoring":
+            VoiceInputManager.shared.requestInputMonitoring()
+        case "openPrivacyPane":
+            if let pane = dict["pane"] as? String {
+                VoiceInputManager.shared.openPrivacyPane(pane)
+            }
+        default:
+            break
+        }
+    }
+
+    @objc private func onVoiceInsertText(_ note: Notification) {
+        guard let text = note.object as? String, !text.isEmpty else { return }
+        // 该通知是从 URLSession 回调线程（com.apple.NSURLSession-delegate）发出的，
+        // 而 WKWebView.evaluateJavaScript 必须在主线程调用 —— 先切回主线程再操作。
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            // 只有本窗口是当前 key 窗口时才插入，避免把文字塞进非前台窗口
+            // （例如 Spotlight 浮窗在前台时，语音结果不该落到主窗口输入框）。
+            guard self.window?.isKeyWindow == true else { return }
+            // 顶层必须是 Array / Dictionary：JSONSerialization 传裸 String 会抛
+            // ObjC 异常（NSInvalidArgumentException），而 try? 接不住 ObjC 异常 → 直接 abort。
+            // 因此包进字典再取 .t；引号/换行/反斜杠等转义交给序列化器，避免拼出坏 JS。
+            guard let data = try? JSONSerialization.data(withJSONObject: ["t": text]),
+                  let json = String(data: data, encoding: .utf8) else { return }
+            // json 形如 {"t":"…"}，本身是合法 JS 对象字面量
+            self.webView.evaluateJavaScript("window.__insertVoiceText && window.__insertVoiceText((\(json)).t)") { _, _ in }
+        }
+    }
+
+    private func pushVoicePermissions() {
+        let snap = VoiceInputManager.shared.permissionSnapshot()
+        guard let data = try? JSONSerialization.data(withJSONObject: snap),
+              let json = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript("window.__onVoicePermissions && window.__onVoicePermissions(\(json))") { _, _ in }
+    }
+
+    @objc private func onVoicePermissionsChanged() {
+        pushVoicePermissions()
     }
 
     // MARK: - NSWindowDelegate

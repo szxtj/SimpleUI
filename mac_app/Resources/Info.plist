@@ -22,6 +22,8 @@
     <string>12.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>SimpleUI 需要使用麦克风，以便长按右侧 Command 键进行语音转文字。</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>
