@@ -92,11 +92,11 @@ export const ContextRing: React.FC<ContextRingProps> = ({
           />
         </svg>
 
-        {showRemainingPercent && (
-          <span className="text-[11px] font-mono font-medium tracking-tight text-zinc-500 dark:text-zinc-400 select-none tabular-nums leading-none">
-            {remainingPercent >= 99.95 ? '100%' : `${remainingPercent.toFixed(1)}%`}
-          </span>
-        )}
+        <span className="text-[11px] font-mono font-medium tracking-tight text-zinc-500 dark:text-zinc-400 select-none tabular-nums leading-none">
+          {showRemainingPercent
+            ? remainingPercent >= 99.95 ? '100%' : `${remainingPercent.toFixed(1)}%`
+            : percent >= 99.95 ? '100%' : `${percent.toFixed(1)}%`}
+        </span>
       </div>
 
       {/* Floating Detailed Context Tooltip */}
