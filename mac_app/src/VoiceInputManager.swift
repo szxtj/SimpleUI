@@ -246,10 +246,6 @@ class VoiceInputManager {
             return
         }
 
-        VoiceInputManager.diagLog(
-            "beginCapture front=\(VoiceInputManager.frontmostBundleID) self=\(VoiceInputManager.isSelfAppFocused()) axTrusted=\(AXIsProcessTrusted()) inputMonitoring=\(CGPreflightListenEventAccess())"
-        )
-
         guard startRecording() else {
             emit(.error, 0, "无法访问麦克风")
             return
@@ -288,18 +284,15 @@ class VoiceInputManager {
                     // 本 App 自身的输入框在 WKWebView 内，AX 判定为 AXWebArea 会被误判非文本，
                     // 因此走前端桥把文本直接插入光标处。按用户要求：**不写剪贴板**（不污染用户的剪贴板）。
                     NotificationCenter.default.post(name: VoiceInputManager.insertTextNotification, object: trimmed)
-                    VoiceInputManager.diagLog("finish branch=insert len=\(trimmed.count)")
                     self.emit(.done, 0, trimmed, "insert")
                 } else {
                     // 其它 App：剪贴板 + 合成 ⌘V 粘贴（与系统听写、Superwhisper 等商业 App 同做法）。
                     // 不做任何焦点判定 —— 判定在 Electron / Web 类 App 里必然失败，加了就等于不可用。
                     // ⌘V 落在非文本处通常无副作用，且剪贴板留着文本可随时手动粘贴。
                     self.pasteToFocusedApp(trimmed)
-                    VoiceInputManager.diagLog("finish branch=paste front=\(VoiceInputManager.frontmostBundleID) len=\(trimmed.count)")
                     self.emit(.done, 0, trimmed, "paste")
                 }
             case .failure(let err):
-                VoiceInputManager.diagLog("finish branch=error \(err.localizedDescription)")
                 self.emit(.error, 0, err.localizedDescription)
             }
         }
@@ -488,32 +481,8 @@ class VoiceInputManager {
         return front.bundleIdentifier == Bundle.main.bundleIdentifier
     }
 
-    /// 前台 App 的 bundle id（诊断日志用）
-    private static var frontmostBundleID: String {
-        NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "<nil>"
-    }
-
-    // MARK: - 诊断日志（排查「其它 App 里能否写入」：~/Library/Logs/SimpleUI/voice-diag.log）
-
-    /// 追加一行诊断日志；超过 256KB 自动截断，避免无限增长。
-    static func diagLog(_ message: String) {
-        let dir = ("~/Library/Logs/SimpleUI" as NSString).expandingTildeInPath
-        let path = dir + "/voice-diag.log"
-        let fm = FileManager.default
-        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        if let attrs = try? fm.attributesOfItem(atPath: path),
-           let size = attrs[.size] as? Int, size > 262_144 {
-            try? fm.removeItem(atPath: path)
-        }
-        if !fm.fileExists(atPath: path) { fm.createFile(atPath: path, contents: nil) }
-        let stamp = ISO8601DateFormatter().string(from: Date())
-        guard let data = "[\(stamp)] \(message)\n".data(using: .utf8) else { return }
-        if let handle = FileHandle(forWritingAtPath: path) {
-            handle.seekToEndOfFile()
-            handle.write(data)
-            try? handle.close()
-        }
-    }
+    // 注：排查期曾有一份诊断日志（~/Library/Logs/SimpleUI/voice-diag.log），
+    // 落点分支确认稳定后已移除 —— 语音链路不在磁盘上留下任何记录。
 
     private func copyToClipboard(_ text: String) {
         let pb = NSPasteboard.general
