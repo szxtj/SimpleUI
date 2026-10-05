@@ -4,7 +4,8 @@ import { useI18n } from '../i18n';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ThinkingAccordion } from './ThinkingAccordion';
 import { StageLadder } from './StageLadder';
-import { Check, Copy, AlertCircle, BookOpen, ExternalLink, RotateCcw, Trash2 } from 'lucide-react';
+import { Check, Copy, AlertCircle, BookOpen, ExternalLink, RotateCcw, Trash2, FileText } from 'lucide-react';
+import { RawMarkdownModal } from './RawMarkdownModal';
 
 interface MessageItemProps {
   message: ChatMessage;
@@ -30,6 +31,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 }) => {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
+  const [showRawModal, setShowRawModal] = useState(false);
   const isUser = message.role === 'user';
   /**
    * 记录阶段阶梯的条件：本窗口生成中 + 本轮尚未收到任何 token
@@ -175,7 +177,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                 {/* 复制 */}
                 <button
                   onClick={handleCopy}
-                  className="p-1.5 rounded-lg hover:text-zinc-900 hover:bg-black/5 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
+                  className="p-1.5 rounded-lg hover:text-zinc-900 hover:bg-black/5 dark:hover:text-white dark:hover:bg-white/5 transition-colors cursor-pointer"
                   title={copied ? t('copied') : t('copyTooltip')}
                 >
                   {copied ? (
@@ -185,11 +187,22 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                   )}
                 </button>
 
+                {/* 查看原始 Markdown */}
+                {message.content && (
+                  <button
+                    onClick={() => setShowRawModal(true)}
+                    className="p-1.5 rounded-lg hover:text-zinc-900 hover:bg-black/5 dark:hover:text-white dark:hover:bg-white/5 transition-colors cursor-pointer"
+                    title={t('viewRawMarkdown')}
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                  </button>
+                )}
+
                 {/* 重试 */}
                 {onRetry && (
                   <button
                     onClick={() => onRetry(message.id)}
-                    className="p-1.5 rounded-lg hover:text-zinc-900 hover:bg-black/5 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
+                    className="p-1.5 rounded-lg hover:text-zinc-900 hover:bg-black/5 dark:hover:text-white dark:hover:bg-white/5 transition-colors cursor-pointer"
                     title={t('retryTooltip')}
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
@@ -200,7 +213,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                 {onDelete && (
                   <button
                     onClick={() => onDelete(message.id)}
-                    className="p-1.5 rounded-lg hover:text-red-600 hover:bg-red-500/10 dark:hover:text-red-400 dark:hover:bg-red-500/10 transition-colors"
+                    className="p-1.5 rounded-lg hover:text-red-600 hover:bg-red-500/10 dark:hover:text-red-400 dark:hover:bg-red-500/10 transition-colors cursor-pointer"
                     title={t('deleteTurnTooltip')}
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -221,6 +234,13 @@ export const MessageItem: React.FC<MessageItemProps> = ({
               )}
             </div>
           )}
+
+          {/* 原始 Markdown 弹窗 */}
+          <RawMarkdownModal
+            isOpen={showRawModal}
+            onClose={() => setShowRawModal(false)}
+            content={message.content || ''}
+          />
         </div>
       )}
     </div>

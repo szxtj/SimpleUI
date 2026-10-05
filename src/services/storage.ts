@@ -394,3 +394,27 @@ export function createNewSession(title?: string): ChatSession {
     enableWikiSearch: false, // Default OFF
   };
 }
+
+/**
+ * 查找已存在的空会话，若无则新建一个空白会话。
+ * 主窗口（新建对话）与 Spotlight 浮窗（初始化/刷新/点击新建）完全复用该逻辑：
+ * 如果已经有空会话就不新建，直接切换过去。
+ */
+export function getOrCreateEmptySession(
+  title?: string,
+  source: string = 'UNKNOWN'
+): { session: ChatSession; isNew: boolean; allSessions: ChatSession[] } {
+  const allSessions = loadSessions();
+  const existingEmpty = allSessions.find((s) => !s.messages || s.messages.length === 0);
+  if (existingEmpty) {
+    saveCurrentSessionId(existingEmpty.id);
+    return { session: existingEmpty, isNew: false, allSessions };
+  }
+  const newSession = createNewSession(title);
+  const nextSessions = [newSession, ...allSessions];
+  saveSessions(nextSessions, newSession.id, source);
+  saveCurrentSessionId(newSession.id);
+  notifySessionUpdate(newSession.id, source);
+  return { session: newSession, isNew: true, allSessions: nextSessions };
+}
+

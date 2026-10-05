@@ -15,6 +15,7 @@ import {
   saveSessions,
   loadCurrentSessionId,
   saveCurrentSessionId,
+  getOrCreateEmptySession,
   notifySessionUpdate,
   syncChannel,
   hydrateSessionImages,
@@ -50,7 +51,9 @@ import {
   RotateCcw,
   Trash2,
   ExternalLink,
+  FileText,
 } from 'lucide-react';
+import { RawMarkdownModal } from './RawMarkdownModal';
 import { useI18n } from '../i18n';
 import { useTheme } from '../hooks/useTheme';
 import { useFollowBottom } from '../hooks/useFollowBottom';
@@ -96,6 +99,8 @@ export const SpotlightView: React.FC = () => {
   const [activeWikiContext, setActiveWikiContext] = useState<string | null>(null);
   /** 小窗口「搜索」按钮打开的知识库面板（与大窗口侧边栏等价，见 openWikiPanel） */
   const [isWikiPanelOpen, setIsWikiPanelOpen] = useState(false);
+  /** 弹出显示原 Markdown 文本的目标内容 */
+  const [rawMarkdownTarget, setRawMarkdownTarget] = useState<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
   const isGeneratingRef = useRef(false);
   const messagesRef = useRef<ChatMessage[]>(messages);
@@ -264,6 +269,42 @@ export const SpotlightView: React.FC = () => {
       });
     }
   };
+
+  /**
+   * 自动切入空白会话（复用已有空会话，若无则新建）。
+   * 保证 Spotlight 每次启动 / 刷新 / 点击新建对话时，始终落在干净的胶囊态。
+   */
+  const initEmptySession = useCallback(() => {
+    const { session } = getOrCreateEmptySession(
+      lang === 'en' ? 'New Chat' : '新对话',
+      'SPOTLIGHT'
+    );
+    activeSessionIdRef.current = session.id;
+    setMessages([]);
+    setInput('');
+    setImages([]);
+    setUsedTokens(0);
+    setLiveStreamingTokens(null);
+    setEnableThinking(session.enableThinking ?? false);
+    setEnableWikiSearch(session.enableWikiSearch ?? false);
+    notifyResize(false);
+    recordActivity();
+  }, [lang]);
+
+  const handleNewChat = useCallback(() => {
+    if (isGeneratingRef.current && abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    generatingSessionIdRef.current = null;
+    setIsGenerating(false);
+    initEmptySession();
+  }, [initEmptySession]);
+
+  // 首次挂载 / 刷新：直接进入空白会话（复用已有空会话，没有则新建），坚决不展示旧历史
+  useEffect(() => {
+    initEmptySession();
+  }, [initEmptySession]);
 
   useEffect(() => {
     if (!isWikiPanelOpen) {
@@ -658,12 +699,6 @@ export const SpotlightView: React.FC = () => {
       checkIdleReset();
       setSettings(loadSettings());
       WikiAPI.getStatus().then(setWikiStatus);
-      if (!isGeneratingRef.current) {
-        const curId = loadCurrentSessionId();
-        if (curId && curId !== activeSessionIdRef.current) {
-          loadSessionById(curId);
-        }
-      }
       syncChannel?.postMessage({ type: 'STREAM_QUERY' });
     };
 
@@ -678,15 +713,10 @@ export const SpotlightView: React.FC = () => {
     };
   }, []);
 
-  // Global ESC key listener to close floating spotlight window WITHOUT stopping generation
+  // Global shortcut listener (Cmd+O to open in main window)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       recordActivity();
-      if (e.key === 'Escape') {
-        // NOTE: Esc closes Spotlight window, but does NOT stop ongoing background generation!
-        // @ts-expect-error WebKit bridge
-        window.webkit?.messageHandlers?.closeSpotlight?.postMessage?.({});
-      }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') {
         e.preventDefault();
         handleOpenInMain();
@@ -1243,26 +1273,6 @@ export const SpotlightView: React.FC = () => {
     });
   };
 
-  const handleNewChat = () => {
-    if (isGenerating && abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-    generatingSessionIdRef.current = null;
-    setIsGenerating(false);
-    setLiveStreamingTokens(null);
-    setUsedTokens(0);
-    activeSessionIdRef.current = null;
-    setMessages([]);
-    setInput('');
-    setImages([]);
-    // Reset conversation-level toggles to default false
-    setEnableThinking(false);
-    setEnableWikiSearch(false);
-    notifyResize(false);
-    recordActivity();
-  };
-
   const handleOpenInMain = () => {
     const currentId =
       generatingSessionIdRef.current ||
@@ -1616,7 +1626,7 @@ export const SpotlightView: React.FC = () => {
             <button
               onClick={closeSpotlightWindow}
               className="w-5 h-5 rounded-full bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/20 flex items-center justify-center text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white transition-colors cursor-pointer"
-              title={t('closeEsc')}
+              title={t('close')}
             >
               <X className="w-3 h-3" />
             </button>
@@ -1801,6 +1811,17 @@ export const SpotlightView: React.FC = () => {
                         )}
                       </button>
 
+                      {/* 查看原始 Markdown */}
+                      {msg.content && (
+                        <button
+                          onClick={() => setRawMarkdownTarget(msg.content)}
+                          className="p-1.5 rounded-lg hover:text-zinc-900 hover:bg-black/5 dark:hover:text-white dark:hover:bg-white/5 transition-colors cursor-pointer"
+                          title={t('viewRawMarkdown')}
+                        >
+                          <FileText className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+
                       {/* 重试 */}
                       <button
                         onClick={() => handleRetry(msg.id)}
@@ -1961,6 +1982,14 @@ export const SpotlightView: React.FC = () => {
 
       {/* Wikipedia Offline Article Reader Drawer */}
       {wikiDrawerNode}
+
+      {/* 原始 Markdown 弹窗 */}
+      <RawMarkdownModal
+        isOpen={rawMarkdownTarget !== null}
+        onClose={() => setRawMarkdownTarget(null)}
+        content={rawMarkdownTarget || ''}
+        isSpotlight
+      />
     </div>
   );
 };

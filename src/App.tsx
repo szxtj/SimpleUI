@@ -22,6 +22,7 @@ import {
   loadSettings,
   saveSettings,
   createNewSession,
+  getOrCreateEmptySession,
   clearStalePending,
   requestAbort,
   readAbortRequest,
@@ -723,18 +724,14 @@ export const App: React.FC = () => {
 
   // Session management handlers
   const handleNewSession = () => {
-    // If an empty session already exists, navigate to it instead of creating duplicate blank sessions
-    const existingEmpty = sessions.find((s) => !s.messages || s.messages.length === 0);
-    if (existingEmpty) {
-      setCurrentSessionId(existingEmpty.id);
-      setLastMetrics(undefined);
-      setInput('');
-      setImages([]);
-      return;
+    const { session, allSessions, isNew } = getOrCreateEmptySession(
+      activeLang === 'en' ? 'New Chat' : '新对话',
+      'MAIN'
+    );
+    if (isNew) {
+      setSessions(allSessions);
     }
-    const newSession = createNewSession(activeLang === 'en' ? 'New Chat' : '新对话');
-    setSessions((prev) => [newSession, ...prev]);
-    setCurrentSessionId(newSession.id);
+    setCurrentSessionId(session.id);
     setLastMetrics(undefined);
     setInput('');
     setImages([]);
