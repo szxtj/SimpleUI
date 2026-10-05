@@ -31,87 +31,125 @@ function proxyRequest(req, res, targetUrl) {
   // 推理请求的转发时刻：SSE 首块（携带 id）可能到 prefill 结束才出现，
   // 归属兜底需要知道"我们刚刚发出过推理请求"（见 ttf_log.js prefillStatus）
   if (req.url.includes('/v1/chat/completions')) noteChatForward();
-  const urlObj = new URL(targetUrl);
-  const options = {
-    hostname: urlObj.hostname,
-    port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
-    path: req.url,
-    method: req.method,
-    headers: {
+
+  const isChatCompletions = req.url.includes('/v1/chat/completions') && req.method === 'POST';
+
+  const sendRequest = (bodyBuffer) => {
+    const urlObj = new URL(targetUrl);
+    const headers = {
       ...req.headers,
       host: `${urlObj.hostname}:${urlObj.port}`,
-    },
-  };
+    };
 
-  // Remove origin to prevent upstream confusion
-  delete options.headers['origin'];
-  delete options.headers['referer'];
+    // Remove origin to prevent upstream confusion
+    delete headers['origin'];
+    delete headers['referer'];
 
-  let completed = false;
-  let upstreamRes = null;
+    if (bodyBuffer) {
+      headers['content-length'] = Buffer.byteLength(bodyBuffer);
+    }
 
-  const transport = urlObj.protocol === 'https:' ? https : http;
-  const proxyReq = transport.request(options, (proxyRes) => {
-    upstreamRes = proxyRes;
-    // 记录本代理转发的推理请求 id（SSE 首块的 id 字段）——供 /api/ttf/prefill 做归属判定：
-    // TTF 日志是全局的，其他客户端的任务不能显示在本 APP 的阶段指示器里
-    const respCt = String(proxyRes.headers['content-type'] || '');
-    if (respCt.includes('text/event-stream')) {
-      proxyRes.once('data', (chunk) => {
-        try {
-          const line = String(chunk).split('\n').find((l) => l.startsWith('data:'));
-          if (!line) return;
-          const j = JSON.parse(line.slice(5).trim());
-          if (j && typeof j.id === 'string') noteForwardedRequest(j.id);
-        } catch {
-          // 非 JSON 行忽略
-        }
+    const options = {
+      hostname: urlObj.hostname,
+      port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
+      path: req.url,
+      method: req.method,
+      headers,
+    };
+
+    let completed = false;
+    let upstreamRes = null;
+
+    const transport = urlObj.protocol === 'https:' ? https : http;
+    const proxyReq = transport.request(options, (proxyRes) => {
+      upstreamRes = proxyRes;
+      // 记录本代理转发的推理请求 id（SSE 首块的 id 字段）——供 /api/ttf/prefill 做归属判定：
+      // TTF 日志是全局的，其他客户端的任务不能显示在本 APP 的阶段指示器里
+      const respCt = String(proxyRes.headers['content-type'] || '');
+      if (respCt.includes('text/event-stream')) {
+        proxyRes.once('data', (chunk) => {
+          try {
+            const line = String(chunk).split('\n').find((l) => l.startsWith('data:'));
+            if (!line) return;
+            const j = JSON.parse(line.slice(5).trim());
+            if (j && typeof j.id === 'string') noteForwardedRequest(j.id);
+          } catch {
+            // 非 JSON 行忽略
+          }
+        });
+      }
+      // Add CORS headers for good measure
+      res.writeHead(proxyRes.statusCode, {
+        ...proxyRes.headers,
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-target-port',
       });
-    }
-    // Add CORS headers for good measure
-    res.writeHead(proxyRes.statusCode, {
-      ...proxyRes.headers,
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-target-port',
+      proxyRes.pipe(res);
     });
-    proxyRes.pipe(res);
-  });
 
-  const abortUpstream = () => {
-    if (!completed) {
-      if (!proxyReq.destroyed) proxyReq.destroy();
-      if (upstreamRes && !upstreamRes.destroyed) upstreamRes.destroy();
+    const abortUpstream = () => {
+      if (!completed) {
+        if (!proxyReq.destroyed) proxyReq.destroy();
+        if (upstreamRes && !upstreamRes.destroyed) upstreamRes.destroy();
+      }
+    };
+
+    res.on('finish', () => {
+      completed = true;
+    });
+
+    res.on('close', () => {
+      if (!completed) abortUpstream();
+    });
+
+    req.on('aborted', abortUpstream);
+
+    proxyReq.on('error', (err) => {
+      if (err.code === 'ECONNRESET' || proxyReq.destroyed) {
+        return;
+      }
+      console.error('[Proxy Error]:', err.message);
+      if (!res.headersSent) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: {
+            message: `Failed to connect to TurboFieldfare server at ${TARGET_API}. Please ensure it is running.`,
+            code: 'upstream_unavailable',
+          },
+        }));
+      }
+    });
+
+    if (bodyBuffer) {
+      proxyReq.end(bodyBuffer);
+    } else {
+      req.pipe(proxyReq);
     }
   };
 
-  res.on('finish', () => {
-    completed = true;
-  });
-
-  res.on('close', () => {
-    if (!completed) abortUpstream();
-  });
-
-  req.on('aborted', abortUpstream);
-
-  proxyReq.on('error', (err) => {
-    if (err.code === 'ECONNRESET' || proxyReq.destroyed) {
-      return;
-    }
-    console.error('[Proxy Error]:', err.message);
-    if (!res.headersSent) {
-      res.writeHead(502, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        error: {
-          message: `Failed to connect to TurboFieldfare server at ${TARGET_API}. Please ensure it is running.`,
-          code: 'upstream_unavailable',
-        },
-      }));
-    }
-  });
-
-  req.pipe(proxyReq);
+  if (isChatCompletions) {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      let buf = Buffer.concat(chunks);
+      const str = buf.toString('utf-8');
+      if (str.includes('/api/media/')) {
+        try {
+          const payload = JSON.parse(str);
+          const resolved = mediaService.resolveMediaUrlsInPayload(payload);
+          if (resolved > 0) {
+            buf = Buffer.from(JSON.stringify(payload), 'utf-8');
+          }
+        } catch (e) {
+          console.error('[Proxy] Failed to resolve media URLs in payload:', e);
+        }
+      }
+      sendRequest(buf);
+    });
+  } else {
+    sendRequest(null);
+  }
 }
 
 function serveStatic(req, res) {
@@ -143,6 +181,7 @@ import { wikiService } from './wiki_service.js';
 import { ttfLogService, noteForwardedRequest, noteChatForward } from './ttf_log.js';
 import { ttfService } from './ttf_service.js';
 import { asrService } from './asr_service.js';
+import { mediaService } from './media_service.js';
 
 // 本进程是否成功抢到端口、从而成为受管服务的管理方。
 // 见 server.listen 回调与 server.on('error')：失败的重复实例不得清理别人的服务。
@@ -214,6 +253,12 @@ const server = http.createServer((req, res) => {
   // 与基础模型服务并列的第三个受管服务，随 App 自动拉起、退出一并终止。
   if (req.url.startsWith('/api/asr/')) {
     asrService.handleApi(req, res);
+    return;
+  }
+
+  // 本地媒体资源存储 API（上传、按哈希寻址获取、持久化图片库）
+  if (req.url.startsWith('/api/media/')) {
+    mediaService.handleApi(req, res);
     return;
   }
 

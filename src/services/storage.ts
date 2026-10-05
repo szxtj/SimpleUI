@@ -1,4 +1,6 @@
-import { ChatSession, AppSettings } from '../types/chat';
+import { ChatSession, AppSettings, ChatMessage } from '../types/chat';
+import { saveImageToDB, getImagesFromDB } from './imageStore';
+import { uploadDataUrl } from '../utils/image';
 
 const SESSIONS_KEY = 'tff_chat_sessions_v1';
 const CURRENT_ID_KEY = 'tff_chat_current_id_v1';
@@ -114,7 +116,7 @@ export function loadSessions(): ChatSession[] {
       return [initial];
     }
     // Guarantee loaded history messages never remain in an active thinking/spinning state
-    return list.map((session) => ({
+    const mapped = list.map((session) => ({
       ...session,
       enableThinking: session?.enableThinking ?? false,
       enableWikiSearch: session?.enableWikiSearch ?? false,
@@ -125,6 +127,15 @@ export function loadSessions(): ChatSession[] {
           }))
         : [],
     }));
+
+    const hasLegacyImages = mapped.some((s) =>
+      s.messages?.some((m: ChatMessage) => m.images?.some((img: string) => img.startsWith('data:')))
+    );
+    if (hasLegacyImages) {
+      scheduleLegacyImageMigration(mapped);
+    }
+
+    return mapped;
   } catch (e) {
     console.error('Failed to load sessions:', e);
     const initial = createNewSession();
@@ -134,13 +145,154 @@ export function loadSessions(): ChatSession[] {
   }
 }
 
+/**
+ * Asynchronously migrates legacy inline Data URLs to the local media store
+ */
+let migrationScheduled = false;
+export function scheduleLegacyImageMigration(sessions: ChatSession[]): void {
+  if (migrationScheduled) return;
+  migrationScheduled = true;
+  setTimeout(async () => {
+    let hasChanges = false;
+    for (const session of sessions) {
+      if (!session.messages) continue;
+      for (const msg of session.messages) {
+        if (!msg.images || msg.images.length === 0) continue;
+        for (let i = 0; i < msg.images.length; i++) {
+          const img = msg.images[i];
+          if (img.startsWith('data:')) {
+            try {
+              const url = await uploadDataUrl(img);
+              if (url && url !== img) {
+                msg.images[i] = url;
+                hasChanges = true;
+              }
+            } catch (err) {
+              // ignore
+            }
+          }
+        }
+      }
+    }
+    if (hasChanges) {
+      console.log('[storage] Migrated legacy data URLs to local media store');
+      saveSessions(sessions);
+    }
+    migrationScheduled = false;
+  }, 1000);
+}
+
+/**
+ * Asynchronously persist all image Data URLs to IndexedDB for permanent durability
+ */
+function persistImagesToIndexedDB(sessions: ChatSession[]): void {
+  for (const session of sessions) {
+    if (!session.messages) continue;
+    for (const msg of session.messages) {
+      if (!msg.images || msg.images.length === 0) continue;
+      msg.images.forEach((imgUrl, idx) => {
+        if (imgUrl.startsWith('data:')) {
+          const key = `img_${session.id}_${msg.id}_${idx}`;
+          saveImageToDB(key, imgUrl).catch(() => {});
+        }
+      });
+    }
+  }
+}
+
+function offloadOlderImagesForStorage(sessions: ChatSession[], updatedSessionId?: string): ChatSession[] {
+  return sessions.map((session) => {
+    const isTarget = updatedSessionId ? session.id === updatedSessionId : false;
+    return {
+      ...session,
+      messages: session.messages.map((m, msgIdx) => {
+        if (!m.images || m.images.length === 0) return m;
+        // Keep actual images for the most recent message in the active session
+        if (isTarget && msgIdx >= session.messages.length - 2) {
+          return m;
+        }
+        return {
+          ...m,
+          images: m.images.map((img, idx) =>
+            img.startsWith('data:') ? `__idb__:img_${session.id}_${m.id}_${idx}` : img
+          ),
+        };
+      }),
+    };
+  });
+}
+
+function stripAllImagesForStorage(sessions: ChatSession[]): ChatSession[] {
+  return sessions.map((session) => ({
+    ...session,
+    messages: session.messages.map((m) => {
+      if (!m.images || m.images.length === 0) return m;
+      return {
+        ...m,
+        images: m.images.map((img, idx) =>
+          img.startsWith('data:') ? `__idb__:img_${session.id}_${m.id}_${idx}` : img
+        ),
+      };
+    }),
+  }));
+}
+
+export async function hydrateSessionImages(session: ChatSession): Promise<boolean> {
+  let changed = false;
+  if (!session.messages) return false;
+  const keysToFetch: { msgIdx: number; imgIdx: number; key: string }[] = [];
+  session.messages.forEach((m, msgIdx) => {
+    if (!m.images) return;
+    m.images.forEach((img, imgIdx) => {
+      if (img.startsWith('__idb__:')) {
+        keysToFetch.push({ msgIdx, imgIdx, key: img.slice(8) });
+      }
+    });
+  });
+  if (keysToFetch.length === 0) return false;
+  const dbImages = await getImagesFromDB(keysToFetch.map((k) => k.key));
+  for (const item of keysToFetch) {
+    const dataUrl = dbImages[item.key];
+    if (dataUrl && session.messages[item.msgIdx]?.images) {
+      session.messages[item.msgIdx].images![item.imgIdx] = dataUrl;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 export function saveSessions(sessions: ChatSession[], updatedSessionId?: string, source: string = 'UNKNOWN'): void {
+  const safeSessions = sessions.length > 0 ? sessions : [createNewSession()];
+
+  // 1. Durably backup all images in IndexedDB asynchronously
+  persistImagesToIndexedDB(safeSessions);
+
+  // 2. Direct save attempt to localStorage
   try {
-    const safeSessions = sessions.length > 0 ? sessions : [createNewSession()];
     localStorage.setItem(SESSIONS_KEY, JSON.stringify(safeSessions));
     notifySessionUpdate(updatedSessionId, source);
+    return;
   } catch (e) {
-    console.error('Failed to save sessions:', e);
+    console.warn('[storage] Direct localStorage save failed (quota exceeded), offloading older images...', e);
+  }
+
+  // 3. Fallback: offload older images to IndexedDB keys, preserving recent messages
+  try {
+    const stripped = offloadOlderImagesForStorage(safeSessions, updatedSessionId);
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify(stripped));
+    notifySessionUpdate(updatedSessionId, source);
+    return;
+  } catch (e2) {
+    console.warn('[storage] Secondary save failed, stripping all images from localStorage payload...', e2);
+  }
+
+  // 4. Ultimate fallback: strip all images to guarantee text sessions and titles are never lost
+  try {
+    const textOnly = stripAllImagesForStorage(safeSessions);
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify(textOnly));
+    notifySessionUpdate(updatedSessionId, source);
+  } catch (e3) {
+    console.error('[storage] Fatal localStorage write error:', e3);
   }
 }
 

@@ -25,6 +25,10 @@ function suppressNativeContextMenu(): void {
 
 suppressNativeContextMenu();
 
+// 阻止 WKWebView 在非放置区域拖入文件时默认触发页面跳转 (如 file:// 导航)
+window.addEventListener('dragover', (e) => e.preventDefault(), false);
+window.addEventListener('drop', (e) => e.preventDefault(), false);
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <App />

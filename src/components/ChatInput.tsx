@@ -1,9 +1,11 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { ArrowUp, Plus, Square, Zap, Brain, BookOpen } from 'lucide-react';
 import { useI18n } from '../i18n';
 import { ContextRing } from './ContextRing';
 import { ImageAttachment } from './ImageAttachment';
 import { extractImagesFromPaste, fileToDataURL } from '../utils/image';
+import { deleteUnreferencedMedia } from '../services/mediaCleanup';
+import { loadSessions } from '../services/storage';
 
 interface ChatInputProps {
   input: string;
@@ -47,7 +49,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const { t } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [isDragging, setIsDragging] = useState(false);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -93,42 +94,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
   };
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDragging(false);
-  };
-
-  const handleDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const files = Array.from(e.dataTransfer.files).filter((f) =>
-      f.type.startsWith('image/')
-    );
-    if (files.length > 0) {
-      try {
-        const urls = await Promise.all(files.map(fileToDataURL));
-        setImages((prev) => [...prev, ...urls]);
-      } catch (err) {
-        console.error('Failed to drop image:', err);
-      }
-    }
-  };
-
   return (
-    <div
-      className={`relative w-full rounded-[24px] border transition-all duration-200 bg-white dark:bg-[#25262c] shadow-lg dark:shadow-xl ${
-        isDragging
-          ? 'border-blue-500 bg-blue-50/50 dark:bg-[#292b33]'
-          : 'border-black/10 dark:border-white/10 focus-within:border-black/20 dark:focus-within:border-white/20'
-      }`}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
+    <div className="relative w-full rounded-[24px] border border-black/10 dark:border-white/10 focus-within:border-black/20 dark:focus-within:border-white/20 transition-all duration-200 bg-white dark:bg-[#25262c] shadow-lg dark:shadow-xl">
       {/* Hidden file input for image upload */}
       <input
         ref={fileInputRef}
@@ -142,9 +109,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       {/* Image attachments preview pill */}
       <ImageAttachment
         images={images}
-        onRemove={(idx) =>
-          setImages((prev) => prev.filter((_, i) => i !== idx))
-        }
+        onRemove={(idx) => {
+          const removed = images[idx];
+          setImages((prev) => prev.filter((_, i) => i !== idx));
+          if (removed) {
+            deleteUnreferencedMedia([removed], loadSessions());
+          }
+        }}
       />
 
       {/* Main Textarea */}

@@ -13,7 +13,9 @@ import {
   PanelLeftOpen,
   PanelRightOpen,
   Minimize2,
+  ImageUp,
 } from 'lucide-react';
+import { isImageFile, fileToDataURL } from '../utils/image';
 
 interface ChatViewProps {
   messages: ChatMessage[];
@@ -147,8 +149,75 @@ export const ChatView: React.FC<ChatViewProps> = ({
     },
   ];
 
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragCounterRef = useRef(0);
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes('Files')) {
+      dragCounterRef.current++;
+      setIsDragOver(true);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes('Files')) {
+      e.dataTransfer.dropEffect = 'copy';
+      setIsDragOver(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current--;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current = 0;
+    setIsDragOver(false);
+
+    const droppedFiles = Array.from(e.dataTransfer.files).filter(isImageFile);
+    if (droppedFiles.length > 0) {
+      try {
+        const urls = await Promise.all(droppedFiles.map(fileToDataURL));
+        setImages((prev) => [...prev, ...urls]);
+      } catch (err) {
+        console.error('Failed to process dropped images:', err);
+      }
+    }
+  };
+
   return (
-    <div className="chat-container flex-1 min-w-0 flex flex-col h-full overflow-hidden bg-[#f8f9fb] dark:bg-[#18191c]">
+    <div
+      className="chat-container relative flex-1 min-w-0 flex flex-col h-full overflow-hidden bg-[#f8f9fb] dark:bg-[#18191c]"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {/* 全窗口拖拽图片吸附提示遮罩 */}
+      {isDragOver && (
+        <div className="absolute inset-0 z-50 bg-blue-500/10 dark:bg-blue-400/10 backdrop-blur-[2px] border-2 border-dashed border-blue-500/80 dark:border-blue-400/80 rounded-2xl m-3 flex flex-col items-center justify-center pointer-events-none transition-all">
+          <div className="p-5 rounded-2xl bg-white/95 dark:bg-[#202126]/95 shadow-2xl flex flex-col items-center gap-2 border border-blue-500/30">
+            <div className="w-12 h-12 rounded-xl bg-blue-500/15 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+              <ImageUp className="w-6 h-6 stroke-[2.2]" />
+            </div>
+            <span className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+              {t('dropImagesHere')}
+            </span>
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">
+              {t('dropImagesHint')}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Top 52px Header Bar */}
       <div
         className={`h-[52px] border-b border-black/5 dark:border-white/5 bg-[#f8f9fb]/80 dark:bg-[#18191c]/80 backdrop-blur flex items-center justify-between flex-shrink-0 select-none transition-all duration-200 ${

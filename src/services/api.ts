@@ -134,6 +134,8 @@ export class TurboFieldfareAPI {
       });
     }
 
+    const isExternalApi = Boolean(baseUrl && !baseUrl.includes('127.0.0.1:31235') && !baseUrl.includes('localhost:31235'));
+
     for (const msg of messages) {
       if (msg.role === 'user') {
         if (msg.images && msg.images.length > 0) {
@@ -142,9 +144,26 @@ export class TurboFieldfareAPI {
             parts.push({ type: 'text', text: msg.content });
           }
           for (const imgUrl of msg.images) {
+            let finalUrl = imgUrl;
+            if (isExternalApi && (imgUrl.startsWith('/api/media/') || imgUrl.includes('/api/media/'))) {
+              try {
+                const resp = await fetch(imgUrl);
+                if (resp.ok) {
+                  const blob = await resp.blob();
+                  finalUrl = await new Promise<string>((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result as string);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(blob);
+                  });
+                }
+              } catch (e) {
+                console.warn('[api] Failed to resolve media URL for external endpoint:', e);
+              }
+            }
             parts.push({
               type: 'image_url',
-              image_url: { url: imgUrl, detail: 'auto' },
+              image_url: { url: finalUrl, detail: 'auto' },
             });
           }
           wireMessages.push({

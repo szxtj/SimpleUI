@@ -27,6 +27,7 @@ import {
   readAbortRequest,
   notifySessionUpdate,
   syncChannel,
+  hydrateSessionImages,
 } from './services/storage';
 import { TurboFieldfareAPI, WikiAPI, ASRServiceAPI, ModelServiceAPI } from './services/api';
 import type { ModelServiceStatus } from './services/api';
@@ -42,6 +43,7 @@ import { WikiSidebar } from './components/WikiSidebar';
 import { I18nProvider, resolveLanguage } from './i18n';
 import { useTheme } from './hooks/useTheme';
 import { estimateHistoryTokens, applyTokenCalibration } from './utils/token';
+import { deleteUnreferencedMedia, triggerMediaGC } from './services/mediaCleanup';
 
 export const App: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings>(loadSettings());
@@ -224,6 +226,11 @@ export const App: React.FC = () => {
   const isSyncingRef = useRef(false);
   const generatingSessionIdsRef = useRef<string[]>([]);
   const currentSessionIdRef = useRef<string | null>(currentSessionId);
+  const sessionsRef = useRef<ChatSession[]>(sessions);
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
   useEffect(() => {
     generatingSessionIdsRef.current = generatingSessionIds;
   }, [generatingSessionIds]);
@@ -249,20 +256,52 @@ export const App: React.FC = () => {
 
   // Real-time synchronization helper
   const reloadFromStorage = () => {
-    if (generatingSessionIdsRef.current.length > 0) {
-      // Main window is actively generating! Do not overwrite in-memory generating session!
+    const loaded = loadSessions();
+    // Safety guard: If storage returns empty or blank default chat, but in-memory state
+    // has active conversation messages, DO NOT overwrite memory with empty!
+    const memoryHasContent = sessionsRef.current.some(
+      (s) => s.messages && s.messages.length > 0
+    );
+    const loadedHasContent = loaded.some(
+      (s) => s.messages && s.messages.length > 0
+    );
+    if (!loadedHasContent && memoryHasContent) {
+      saveSessions(sessionsRef.current, currentSessionIdRef.current || undefined, 'MAIN');
       return;
     }
-    const loaded = loadSessions();
+
     const safeLoaded = loaded.length > 0 ? loaded : [createNewSession()];
+
+    // Merge: for any session that is actively generating, preserve its latest in-memory messages
+    // so incoming live stream chunks are never rolled back or lost.
+    const mergedSessions = safeLoaded.map((s) => {
+      if (generatingSessionIdsRef.current.includes(s.id)) {
+        const inMem = sessionsRef.current.find((m) => m.id === s.id);
+        if (inMem && inMem.messages.length > 0) {
+          return {
+            ...s,
+            messages: inMem.messages,
+          };
+        }
+      }
+      return s;
+    });
+
+    // Also include any generating session that might exist in memory but not yet flushed to disk
+    for (const inMem of sessionsRef.current) {
+      if (generatingSessionIdsRef.current.includes(inMem.id) && !mergedSessions.some((s) => s.id === inMem.id)) {
+        mergedSessions.unshift(inMem);
+      }
+    }
+
     isSyncingRef.current = true;
-    setSessions(safeLoaded);
+    setSessions(mergedSessions);
     const savedId = loadCurrentSessionId();
-    if (savedId && safeLoaded.some((s) => s.id === savedId)) {
+    if (savedId && mergedSessions.some((s) => s.id === savedId)) {
       setCurrentSessionId(savedId);
-    } else {
-      setCurrentSessionId(safeLoaded[0].id);
-      saveCurrentSessionId(safeLoaded[0].id);
+    } else if (!currentSessionIdRef.current || !mergedSessions.some((s) => s.id === currentSessionIdRef.current)) {
+      setCurrentSessionId(mergedSessions[0].id);
+      saveCurrentSessionId(mergedSessions[0].id);
     }
     setTimeout(() => {
       isSyncingRef.current = false;
@@ -407,12 +446,35 @@ export const App: React.FC = () => {
               delete next[targetId];
               return next;
             });
+            // Also defensively clear pending / isThinking and sync from storage if placeholder was deleted
+            const all = loadSessions();
+            const sFromDisk = all.find((s) => s.id === targetId);
+            setSessions((prev) =>
+              prev.map((s) => {
+                if (s.id !== targetId) return s;
+                if (sFromDisk) return sFromDisk;
+                return {
+                  ...s,
+                  messages: s.messages.map((m) =>
+                    m.pending || m.isThinking ? { ...m, pending: false, isThinking: false } : m
+                  ),
+                };
+              })
+            );
           } else {
             abortControllersRef.current.forEach((controller) => controller.abort());
             abortControllersRef.current.clear();
             activeStreamsRef.current.clear();
             setGeneratingSessionIds([]);
             setLiveStreamingTokens({});
+            setSessions((prev) =>
+              prev.map((s) => ({
+                ...s,
+                messages: s.messages.map((m) =>
+                  m.pending || m.isThinking ? { ...m, pending: false, isThinking: false } : m
+                ),
+              }))
+            );
           }
         } else if (data.type === 'STREAM_QUERY') {
           activeStreamsRef.current.forEach((stream, sessId) => {
@@ -564,10 +626,34 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // Save sessions on change only when not syncing from outside
+  const lastSaveTimeRef = useRef(0);
+  const saveTimeoutRef = useRef<any>(null);
+
+  // Save sessions on change only when not syncing from outside (throttled during generation)
   useEffect(() => {
-    if (sessions.length > 0 && !isSyncingRef.current) {
-      saveSessions(sessions);
+    if (sessions.length === 0 || isSyncingRef.current) return;
+
+    const isGeneratingNow = generatingSessionIdsRef.current.length > 0;
+    if (isGeneratingNow) {
+      const now = Date.now();
+      if (now - lastSaveTimeRef.current < 300) {
+        if (!saveTimeoutRef.current) {
+          saveTimeoutRef.current = setTimeout(() => {
+            saveTimeoutRef.current = null;
+            lastSaveTimeRef.current = Date.now();
+            saveSessions(sessionsRef.current, currentSessionIdRef.current || undefined, 'MAIN');
+          }, 300);
+        }
+        return;
+      }
+      lastSaveTimeRef.current = now;
+      saveSessions(sessions, currentSessionIdRef.current || undefined, 'MAIN');
+    } else {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
+      }
+      saveSessions(sessions, currentSessionIdRef.current || undefined, 'MAIN');
     }
   }, [sessions]);
 
@@ -596,6 +682,14 @@ export const App: React.FC = () => {
     window.webkit?.messageHandlers?.setWikiPanelOpen?.postMessage?.(isWikiPanelOpen);
   }, [isWikiPanelOpen]);
 
+  // 后台静默执行磁盘孤立媒体文件垃圾回收（启动 3 秒后执行，5 分钟安全缓冲期）
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      triggerMediaGC(loadSessions());
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, []);
+
   // Current session helper
   const currentSession = sessions.find((s) => s.id === currentSessionId);
   const messages = currentSession?.messages || [];
@@ -609,6 +703,23 @@ export const App: React.FC = () => {
 
   const currentLiveTokens = currentSessionId ? liveStreamingTokens[currentSessionId] : undefined;
   const usedTokens = (isGenerating && currentLiveTokens !== undefined) ? currentLiveTokens : persistentHistoryTokens;
+
+  // Hydrate any offloaded images from IndexedDB for the current session
+  useEffect(() => {
+    if (!currentSession) return;
+    const hasOffloadedImages = currentSession.messages?.some((m) =>
+      m.images?.some((img) => img.startsWith('__idb__:'))
+    );
+    if (hasOffloadedImages) {
+      hydrateSessionImages(currentSession).then((changed) => {
+        if (changed) {
+          setSessions((prev) =>
+            prev.map((s) => (s.id === currentSession.id ? { ...currentSession } : s))
+          );
+        }
+      });
+    }
+  }, [currentSessionId]);
 
   // Session management handlers
   const handleNewSession = () => {
@@ -634,18 +745,24 @@ export const App: React.FC = () => {
     if (generatingSessionIds.includes(id)) {
       return;
     }
-    setSessions((prev) => {
-      const target = prev.find((s) => s.id === id);
-      // Lock-down: If this is the last remaining blank session, refuse deletion
-      if (prev.length <= 1 && (!target?.messages || target.messages.length === 0)) {
-        return prev;
-      }
+    const target = sessions.find((s) => s.id === id);
+    // Lock-down: If this is the last remaining blank session, refuse deletion
+    if (sessions.length <= 1 && (!target?.messages || target.messages.length === 0)) {
+      return;
+    }
 
+    const deletedImages: string[] = [];
+    target?.messages?.forEach((m) => {
+      if (m.images) deletedImages.push(...m.images);
+    });
+
+    setSessions((prev) => {
       const filtered = prev.filter((s) => s.id !== id);
       if (filtered.length === 0) {
         const fresh = createNewSession(activeLang === 'en' ? 'New Chat' : '新对话');
         setCurrentSessionId(fresh.id);
         saveCurrentSessionId(fresh.id);
+        deleteUnreferencedMedia(deletedImages, [fresh]);
         return [fresh];
       }
       if (currentSessionId === id) {
@@ -653,6 +770,7 @@ export const App: React.FC = () => {
         setCurrentSessionId(nextId);
         saveCurrentSessionId(nextId);
       }
+      deleteUnreferencedMedia(deletedImages, filtered);
       return filtered;
     });
   };
@@ -1120,6 +1238,8 @@ export const App: React.FC = () => {
       handleStop(targetSession.id);
     }
 
+    const deletedTurnImages: string[] = [];
+
     const updatedSessions = sessions.map((s) => {
       const asstIdx = s.messages.findIndex((m) => m.id === assistantMessageId);
       if (asstIdx === -1) return s;
@@ -1135,6 +1255,9 @@ export const App: React.FC = () => {
       const idsToDelete = new Set<string>([assistantMessageId]);
       if (userIdx !== -1) {
         idsToDelete.add(s.messages[userIdx].id);
+        if (s.messages[userIdx].images) {
+          deletedTurnImages.push(...s.messages[userIdx].images!);
+        }
       }
 
       return {
@@ -1146,6 +1269,7 @@ export const App: React.FC = () => {
 
     setSessions(updatedSessions);
     saveSessions(updatedSessions, targetSession?.id, 'MAIN');
+    deleteUnreferencedMedia(deletedTurnImages, updatedSessions);
   };
 
   const handleStop = (sessionIdToStop?: string) => {
@@ -1168,6 +1292,19 @@ export const App: React.FC = () => {
       return next;
     });
 
+    // Also defensively clear pending and isThinking in this session's messages
+    setSessions((prev) =>
+      prev.map((s) => {
+        if (s.id !== targetId) return s;
+        return {
+          ...s,
+          messages: s.messages.map((m) =>
+            m.pending || m.isThinking ? { ...m, pending: false, isThinking: false } : m
+          ),
+        };
+      })
+    );
+
     // BroadcastChannel 不一定能跨两个 WKWebView 投递，中止请求额外走一次 localStorage
     requestAbort(targetId);
     syncChannel?.postMessage({
@@ -1187,9 +1324,11 @@ export const App: React.FC = () => {
     }
 
     // 2. Notify Spotlight via syncChannel to load this session
+    const targetSession = sessions.find((s) => s.id === currentSessionId);
     syncChannel?.postMessage({
       type: 'LOAD_SESSION_IN_SPOTLIGHT',
       sessionId: currentSessionId,
+      session: targetSession,
     });
 
     // 3. Ask native macOS container to show Spotlight with this session and hide Main Window
@@ -1233,7 +1372,7 @@ export const App: React.FC = () => {
           images={images}
           setImages={setImages}
           isGenerating={isGenerating}
-          ownsTurn={!!currentSessionId && abortControllersRef.current.has(currentSessionId)}
+          ownsTurn={isGenerating}
           onStagesChange={handleStagesChange}
           onSend={handleSend}
           onStop={handleStop}

@@ -17,6 +17,7 @@ import {
   saveCurrentSessionId,
   notifySessionUpdate,
   syncChannel,
+  hydrateSessionImages,
 } from '../services/storage';
 import { TurboFieldfareAPI, WikiAPI } from '../services/api';
 import {
@@ -31,7 +32,8 @@ import { StageLadder } from './StageLadder';
 import { ImageAttachment } from './ImageAttachment';
 import { ContextRing } from './ContextRing';
 import { WikiDrawer } from './WikiDrawer';
-import { extractImagesFromPaste, fileToDataURL } from '../utils/image';
+import { extractImagesFromPaste, fileToDataURL, isImageFile } from '../utils/image';
+import { deleteUnreferencedMedia } from '../services/mediaCleanup';
 import {
   ArrowUp,
   Square,
@@ -113,6 +115,7 @@ export const SpotlightView: React.FC = () => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const generatingSessionIdRef = useRef<string | null>(null);
   const scrollEndRef = useRef<HTMLDivElement>(null);
   const prevMessagesLengthRef = useRef(messages.length);
   const prevFirstMsgIdRef = useRef(messages[0]?.id);
@@ -125,10 +128,11 @@ export const SpotlightView: React.FC = () => {
     stagesRef.current = stages;
     setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, stages } : m)));
     // 检索/载入阶段没有任何 token → 不会有 STREAM_CHUNK，专门广播阶段变化给主窗口
+    const curSid = generatingSessionIdRef.current || activeSessionIdRef.current;
     try {
       syncChannel?.postMessage({
         type: 'STAGES_CHANGED',
-        sessionId: activeSessionIdRef.current,
+        sessionId: curSid,
         messageId,
         stages,
         source: 'SPOTLIGHT',
@@ -137,16 +141,15 @@ export const SpotlightView: React.FC = () => {
       // 广播失败不影响本窗口
     }
     try {
-      const sid = activeSessionIdRef.current;
-      if (!sid) return;
+      if (!curSid) return;
       const all = loadSessions();
-      const idx = all.findIndex((s) => s.id === sid);
+      const idx = all.findIndex((s) => s.id === curSid);
       if (idx < 0) return;
       all[idx] = {
         ...all[idx],
         messages: all[idx].messages.map((m) => (m.id === messageId ? { ...m, stages } : m)),
       };
-      saveSessions(all, sid, 'SPOTLIGHT');
+      saveSessions(all, curSid, 'SPOTLIGHT');
     } catch {
       // 落盘失败不影响本窗口显示
     }
@@ -239,31 +242,34 @@ export const SpotlightView: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
+  // Track last resize payload sent to native bridge to avoid redundant postMessages
+  const lastResizeSentRef = useRef<{ width: number; height: number; expanded: boolean } | null>(null);
+
   // Notify native AppKit panel to resize dynamically
-  const notifyResize = (expanded: boolean) => {
+  const notifyResize = (expanded: boolean, hasImages: boolean = false) => {
     // @ts-expect-error WebKit bridge
     if (window.webkit?.messageHandlers?.resizePanel) {
-      if (expanded) {
-        // @ts-expect-error WebKit bridge
-        window.webkit.messageHandlers.resizePanel.postMessage({
-          width: 500,
-          height: 640,
-          expanded: true,
-        });
-      } else {
-        // @ts-expect-error WebKit bridge
-        window.webkit.messageHandlers.resizePanel.postMessage({
-          width: 540,
-          height: 88,
-          expanded: false,
-        });
+      const width = expanded ? 500 : 540;
+      const height = expanded ? 640 : (hasImages ? 138 : 88);
+      const last = lastResizeSentRef.current;
+      if (last && last.width === width && last.height === height && last.expanded === expanded) {
+        return; // Skip duplicate message to native panel
       }
+      lastResizeSentRef.current = { width, height, expanded };
+      // @ts-expect-error WebKit bridge
+      window.webkit.messageHandlers.resizePanel.postMessage({
+        width,
+        height,
+        expanded,
+      });
     }
   };
 
   useEffect(() => {
-    notifyResize(hasMessages);
-  }, [hasMessages]);
+    if (!isWikiPanelOpen) {
+      notifyResize(hasMessages, images.length > 0);
+    }
+  }, [hasMessages, images.length, isWikiPanelOpen]);
 
   /* ========================================================================= */
   /* 输入框「搜索」按钮 → 小窗口内的知识库面板                                   */
@@ -286,7 +292,7 @@ export const SpotlightView: React.FC = () => {
     setActiveWikiArticle(null);
     setActiveWikiContext(null);
     // 胶囊态打开过 → 面板关闭后窗口收回输入胶囊尺寸
-    if (!hasMessages) notifyResize(false);
+    if (!hasMessages) notifyResize(false, images.length > 0);
   };
 
   /**
@@ -374,8 +380,20 @@ export const SpotlightView: React.FC = () => {
       setLiveStreamingTokens(null);
       setEnableThinking(target.enableThinking ?? false);
       setEnableWikiSearch(target.enableWikiSearch ?? false);
-      notifyResize((target.messages && target.messages.length > 0) || false);
+      notifyResize((target.messages && target.messages.length > 0) || false, images.length > 0);
       recordActivity();
+
+      // Hydrate any offloaded images from IndexedDB
+      const hasOffloaded = target.messages?.some((m) =>
+        m.images?.some((img) => img.startsWith('__idb__:'))
+      );
+      if (hasOffloaded) {
+        hydrateSessionImages(target).then((changed) => {
+          if (changed && activeSessionIdRef.current === sessionId) {
+            setMessages([...target.messages]);
+          }
+        });
+      }
     }
   };
 
@@ -402,7 +420,19 @@ export const SpotlightView: React.FC = () => {
         setSettings(loadSettings());
       } else if (data.type === 'LOAD_SESSION_IN_SPOTLIGHT') {
         if (data.sessionId) {
-          loadSessionById(data.sessionId);
+          if (data.session && Array.isArray(data.session.messages)) {
+            activeSessionIdRef.current = data.sessionId;
+            setMessages(data.session.messages);
+            const cleanTokens = estimateHistoryTokens(data.session.messages, settings.systemPrompt);
+            setUsedTokens(cleanTokens);
+            setLiveStreamingTokens(null);
+            setEnableThinking(data.session.enableThinking ?? false);
+            setEnableWikiSearch(data.session.enableWikiSearch ?? false);
+            notifyResize(data.session.messages.length > 0, images.length > 0);
+            recordActivity();
+          } else {
+            loadSessionById(data.sessionId);
+          }
         }
       } else if (data.type === 'STREAM_TOKEN_PROGRESS') {
         if (data.source !== 'SPOTLIGHT' && activeSessionIdRef.current === data.sessionId) {
@@ -420,7 +450,8 @@ export const SpotlightView: React.FC = () => {
             ...(citations !== undefined ? { citations } : {}),
             ...(incomingStages !== undefined ? { stages: incomingStages } : {}),
           };
-          if (activeSessionIdRef.current === sessionId) {
+          if (!activeSessionIdRef.current || activeSessionIdRef.current === sessionId) {
+            activeSessionIdRef.current = sessionId;
             setIsGenerating(true);
 
             setMessages((prev) => {
@@ -439,24 +470,65 @@ export const SpotlightView: React.FC = () => {
                     : m
                 );
               }
+              // 若 prev 已有当前会话的消息但尚未含有本轮助手消息，直接追加
+              if (prev.length > 0) {
+                return [
+                  ...prev,
+                  {
+                    id: messageId,
+                    role: 'assistant' as const,
+                    content,
+                    reasoningContent,
+                    isThinking,
+                    thinkingDuration,
+                    timestamp: Date.now(),
+                    ...stagePatch,
+                  },
+                ];
+              }
               const all = loadSessions();
               const targetIdx = all.findIndex((s) => s.id === sessionId);
               if (targetIdx >= 0 && all[targetIdx].messages && all[targetIdx].messages.length > 0) {
-                // 磁盘回退路径也必须套上载荷里的阶段字段，否则磁盘上过期的
-                // pending:true 会把刚收到的 pending:false 覆盖掉（阶梯就永远不收起）
-                const next = [...all];
-                next[targetIdx] = {
-                  ...all[targetIdx],
-                  messages: all[targetIdx].messages.map((m) =>
+                const targetMsgs = all[targetIdx].messages;
+                const existingIdx = targetMsgs.findIndex((m) => m.id === messageId);
+                if (existingIdx >= 0) {
+                  return targetMsgs.map((m) =>
                     m.id === messageId
                       ? { ...m, reasoningContent, content, isThinking, thinkingDuration, ...stagePatch }
                       : m
-                  ),
-                };
-                return next[targetIdx].messages;
+                  );
+                }
+                return [
+                  ...targetMsgs,
+                  {
+                    id: messageId,
+                    role: 'assistant' as const,
+                    content,
+                    reasoningContent,
+                    isThinking,
+                    thinkingDuration,
+                    timestamp: Date.now(),
+                    ...stagePatch,
+                  },
+                ];
               }
-              return prev;
+              // 磁盘与内存皆空时创建最小助手占位
+              return [
+                {
+                  id: messageId,
+                  role: 'assistant' as const,
+                  content,
+                  reasoningContent,
+                  isThinking,
+                  thinkingDuration,
+                  timestamp: Date.now(),
+                  ...stagePatch,
+                },
+              ];
             });
+            if (messagesRef.current.length === 0) {
+              notifyResize(true);
+            }
           }
         }
       } else if (data.type === 'STAGES_CHANGED') {
@@ -472,38 +544,54 @@ export const SpotlightView: React.FC = () => {
             setLiveStreamingTokens(null);
             recordActivity();
             setMessages((prev) => {
-              const updated = prev.map((m) =>
-                m.id === messageId
-                  ? {
-                      ...m,
-                      reasoningContent,
-                      content,
-                      isThinking: false,
-                      thinkingDuration,
-                      metrics,
-                    }
-                  : m
-              );
-              const cleanTokens = estimateHistoryTokens(updated, settings.systemPrompt);
-              setUsedTokens(cleanTokens);
-              return updated;
+              const msgIdx = prev.findIndex((m) => m.id === messageId);
+              if (msgIdx >= 0) {
+                const updated = prev.map((m) =>
+                  m.id === messageId
+                    ? {
+                        ...m,
+                        reasoningContent,
+                        content,
+                        isThinking: false,
+                        thinkingDuration,
+                        metrics,
+                        pending: false,
+                      }
+                    : m
+                );
+                const cleanTokens = estimateHistoryTokens(updated, settings.systemPrompt);
+                setUsedTokens(cleanTokens);
+                return updated;
+              }
+              const all = loadSessions();
+              const target = all.find((s) => s.id === sessionId);
+              if (target && target.messages) {
+                return target.messages;
+              }
+              return prev;
             });
           }
         }
       } else if (data.type === 'STREAM_ABORT') {
-        if (!data.sessionId || data.sessionId === activeSessionIdRef.current) {
+        const isTarget =
+          !data.sessionId ||
+          data.sessionId === generatingSessionIdRef.current ||
+          data.sessionId === activeSessionIdRef.current;
+        if (isTarget) {
           if (abortControllerRef.current) {
             abortControllerRef.current.abort();
             abortControllerRef.current = null;
           }
+          generatingSessionIdRef.current = null;
           setIsGenerating(false);
           setLiveStreamingTokens(null);
         }
       } else if (data.type === 'STREAM_QUERY') {
-        if (isGeneratingRef.current && abortControllerRef.current && activeSessionIdRef.current) {
+        const curGenId = generatingSessionIdRef.current || activeSessionIdRef.current;
+        if (isGeneratingRef.current && abortControllerRef.current && curGenId) {
           syncChannel?.postMessage({
             type: 'STREAM_CHUNK',
-            sessionId: activeSessionIdRef.current,
+            sessionId: curGenId,
             messageId: currentAsstMsgIdRef.current,
             reasoningContent: accumulatedThoughtRef.current,
             content: accumulatedContentRef.current,
@@ -526,7 +614,7 @@ export const SpotlightView: React.FC = () => {
             setEnableThinking(target.enableThinking ?? false);
             setEnableWikiSearch(target.enableWikiSearch ?? false);
             if (!target.messages || target.messages.length === 0) {
-              notifyResize(false);
+              notifyResize(false, images.length > 0);
             }
           }
         }
@@ -545,9 +633,14 @@ export const SpotlightView: React.FC = () => {
         // 主窗口点了「停止」：本窗口若正持有该回合，就地中止
         const req = readAbortRequest();
         if (!req) return;
-        if (activeSessionIdRef.current && req.sessionId === activeSessionIdRef.current && abortControllerRef.current) {
+        const isTarget =
+          !req.sessionId ||
+          req.sessionId === generatingSessionIdRef.current ||
+          req.sessionId === activeSessionIdRef.current;
+        if (isTarget && abortControllerRef.current) {
           abortControllerRef.current.abort();
           abortControllerRef.current = null;
+          generatingSessionIdRef.current = null;
           setIsGenerating(false);
           setLiveStreamingTokens(null);
         }
@@ -565,6 +658,12 @@ export const SpotlightView: React.FC = () => {
       checkIdleReset();
       setSettings(loadSettings());
       WikiAPI.getStatus().then(setWikiStatus);
+      if (!isGeneratingRef.current) {
+        const curId = loadCurrentSessionId();
+        if (curId && curId !== activeSessionIdRef.current) {
+          loadSessionById(curId);
+        }
+      }
       syncChannel?.postMessage({ type: 'STREAM_QUERY' });
     };
 
@@ -653,6 +752,7 @@ export const SpotlightView: React.FC = () => {
       currentSessionId = 'session-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
       activeSessionIdRef.current = currentSessionId;
     }
+    generatingSessionIdRef.current = currentSessionId;
 
     // 向主窗口广播回合阶段（stage='rag' → 'prefill'）：主窗口据此把发送按钮切成"停止"、
     // 并在其镜像的回合上显示同一套阶段指示器（否则浮窗生成期间主窗口毫无感知）。
@@ -744,13 +844,14 @@ export const SpotlightView: React.FC = () => {
         // 否则会清空新流的控制器引用与生成状态（实测：停止按钮失灵、状态错乱）
         if (asstMessageId !== currentAsstMsgIdRef.current) return;
         abortControllerRef.current = null;
+        generatingSessionIdRef.current = null;
         setIsGenerating(false);
         setLiveStreamingTokens(null);
         // ⚠️ 只撤下助理占位消息，**必须保留用户的提问**：
         // 整轮删除会让会话变空 → 被当成"新对话"，用户以为聊天记录丢了。
         setMessages((prev) => prev.filter((m) => m.id !== asstMessageId));
         try {
-          const sid = activeSessionIdRef.current;
+          const sid = currentSessionId;
           if (sid) {
             const all = loadSessions();
             const idx = all.findIndex((s) => s.id === sid);
@@ -808,7 +909,7 @@ export const SpotlightView: React.FC = () => {
       lastSaveTime = now;
 
       try {
-        const currentId = activeSessionIdRef.current;
+        const currentId = currentSessionId;
         if (!currentId) return;
         const all = loadSessions();
         const idx = all.findIndex((s) => s.id === currentId);
@@ -950,6 +1051,7 @@ export const SpotlightView: React.FC = () => {
           setIsGenerating(false);
           setLiveStreamingTokens(null);
           abortControllerRef.current = null;
+          generatingSessionIdRef.current = null;
           recordActivity();
 
           const finalAsstMessage: ChatMessage = {
@@ -990,6 +1092,7 @@ export const SpotlightView: React.FC = () => {
           setIsGenerating(false);
           setLiveStreamingTokens(null);
           abortControllerRef.current = null;
+          generatingSessionIdRef.current = null;
           recordActivity();
 
           const cleanHistoryTokens = estimateHistoryTokens(
@@ -1081,8 +1184,12 @@ export const SpotlightView: React.FC = () => {
     }
 
     const idsToDelete = new Set<string>([assistantMessageId]);
+    const deletedImages: string[] = [];
     if (userIdx !== -1) {
       idsToDelete.add(messages[userIdx].id);
+      if (messages[userIdx]?.images) {
+        deletedImages.push(...messages[userIdx].images!);
+      }
     }
 
     const nextMessages = messages.filter((m) => !idsToDelete.has(m.id));
@@ -1101,29 +1208,37 @@ export const SpotlightView: React.FC = () => {
           };
           saveSessions(all, currentSessionId, 'SPOTLIGHT');
           notifySessionUpdate(currentSessionId, 'SPOTLIGHT');
+          deleteUnreferencedMedia(deletedImages, all);
         }
       } catch (e) {
         console.error('Failed to sync deleted turn in spotlight:', e);
       }
     }
     if (nextMessages.length === 0) {
-      notifyResize(false);
+      notifyResize(false, images.length > 0);
     }
     recordActivity();
   };
 
   const handleStop = () => {
+    const curSid = generatingSessionIdRef.current || activeSessionIdRef.current;
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
+    generatingSessionIdRef.current = null;
     setIsGenerating(false);
     setLiveStreamingTokens(null);
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.pending || m.isThinking ? { ...m, pending: false, isThinking: false } : m
+      )
+    );
     // 同上：额外走一次 localStorage，保证主窗口一定能收到
-    if (activeSessionIdRef.current) requestAbort(activeSessionIdRef.current);
+    if (curSid) requestAbort(curSid);
     syncChannel?.postMessage({
       type: 'STREAM_ABORT',
-      sessionId: activeSessionIdRef.current,
+      sessionId: curSid,
       source: 'SPOTLIGHT',
     });
   };
@@ -1133,6 +1248,7 @@ export const SpotlightView: React.FC = () => {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
+    generatingSessionIdRef.current = null;
     setIsGenerating(false);
     setLiveStreamingTokens(null);
     setUsedTokens(0);
@@ -1148,12 +1264,16 @@ export const SpotlightView: React.FC = () => {
   };
 
   const handleOpenInMain = () => {
+    const currentId =
+      generatingSessionIdRef.current ||
+      activeSessionIdRef.current ||
+      loadCurrentSessionId() ||
+      ('session-' + Date.now());
+
     // If there is any content, ensure it is written to storage before transitioning
     if (messages.length > 0) {
       try {
         const title = (messages[0]?.content || '').slice(0, 24) || t('quickChat');
-        const currentId =
-          activeSessionIdRef.current || loadCurrentSessionId() || ('session-' + Date.now());
         activeSessionIdRef.current = currentId;
         const allSessions = loadSessions();
         const existingIdx = allSessions.findIndex((s) => s.id === currentId);
@@ -1184,6 +1304,8 @@ export const SpotlightView: React.FC = () => {
       } catch (e) {
         console.error('Failed to sync before open in main:', e);
       }
+    } else if (currentId) {
+      saveCurrentSessionId(currentId);
     }
 
     // @ts-expect-error WebKit bridge
@@ -1235,16 +1357,82 @@ export const SpotlightView: React.FC = () => {
     }
   };
 
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragCounterRef = useRef(0);
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes('Files')) {
+      dragCounterRef.current++;
+      setIsDragOver(true);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes('Files')) {
+      e.dataTransfer.dropEffect = 'copy';
+      setIsDragOver(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current--;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current = 0;
+    setIsDragOver(false);
+
+    const droppedFiles = Array.from(e.dataTransfer.files).filter(isImageFile);
+    if (droppedFiles.length > 0) {
+      try {
+        const urls = await Promise.all(droppedFiles.map(fileToDataURL));
+        setImages((prev) => [...prev, ...urls]);
+      } catch (err) {
+        console.error('Failed to process dropped images in spotlight:', err);
+      }
+    }
+  };
+
+  const handleRemoveDraftImage = (index: number) => {
+    const removedUrl = images[index];
+    setImages((prev) => prev.filter((_, i) => i !== index));
+    if (removedUrl) {
+      const all = loadSessions();
+      deleteUnreferencedMedia([removedUrl], all);
+    }
+  };
+
   /* ========================================================================= */
   /* STATE 1: INITIAL COMPACT INPUT CAPSULE (Clean flat surface, NO shadows)   */
   /* ========================================================================= */
   if (!hasMessages) {
     return (
-      <div className="w-full h-full select-none bg-transparent">
+      <div
+        className="w-full h-full select-none bg-transparent relative"
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {isDragOver && (
+          <div className="absolute inset-0 z-50 bg-blue-500/20 dark:bg-blue-400/20 backdrop-blur-[2px] border-2 border-dashed border-blue-500 dark:border-blue-400 rounded-[22px] flex items-center justify-center pointer-events-none">
+            <span className="text-xs font-semibold text-blue-600 dark:text-blue-300 bg-white/95 dark:bg-[#1f2024]/95 px-3 py-1 rounded-full shadow-md border border-blue-500/30">
+              {t('dropImagesHere')}
+            </span>
+          </div>
+        )}
         {/* Outer frame: gray background matching expanded bottom (bg-[#f8f9fb] / dark:bg-[#17181c])
-            max-h 钉住胶囊高度 88px：打开知识库面板时原生窗口会被撑高，
+            max-h 钉住胶囊高度（无图 88px，有图 138px）：打开知识库面板时原生窗口会被撑高，
             胶囊本身不该跟着拉伸（面板是覆盖型抽屉，不参与胶囊布局） */}
-        <div className="w-full h-full max-h-[88px] bg-[#f8f9fb] dark:bg-[#17181c] border border-black/10 dark:border-white/10 rounded-[22px] p-2 overflow-hidden flex flex-col justify-center">
+        <div className={`w-full h-full ${images.length > 0 ? 'max-h-[138px]' : 'max-h-[88px]'} bg-[#f8f9fb] dark:bg-[#17181c] border border-black/10 dark:border-white/10 rounded-[22px] p-2 overflow-hidden flex flex-col justify-center`}>
           {/* Hidden file input */}
           <input
             ref={fileInputRef}
@@ -1283,17 +1471,23 @@ export const SpotlightView: React.FC = () => {
               />
             </div>
 
-            {/* Image preview pills if pasted */}
+            {/* Image preview pills if pasted / dropped */}
             {images.length > 0 && (
-              <div className="flex gap-1.5 px-0.5 py-0.5">
+              <div className="flex items-center gap-2.5 px-1 pt-2.5 pb-1 overflow-x-auto no-scrollbar">
                 {images.map((img, idx) => (
-                  <div key={idx} className="relative group">
-                    <img src={img} alt="thumb" className="w-6 h-6 rounded-md object-cover border border-black/10 dark:border-white/20" />
+                  <div key={idx} className="relative group flex-shrink-0 mt-0.5 mr-1">
+                    <img
+                      src={img}
+                      alt={`draft-${idx}`}
+                      className="w-8 h-8 rounded-lg object-cover border border-black/10 dark:border-white/20 bg-zinc-100 dark:bg-zinc-800"
+                    />
                     <button
-                      onClick={() => setImages((prev) => prev.filter((_, i) => i !== idx))}
-                      className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full text-[8px] text-white flex items-center justify-center"
+                      type="button"
+                      onClick={() => handleRemoveDraftImage(idx)}
+                      className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-black/70 hover:bg-red-500 text-white rounded-full flex items-center justify-center transition-colors shadow-xs cursor-pointer z-10"
+                      title={t('removeImage')}
                     >
-                      ×
+                      <X className="w-2.5 h-2.5 stroke-[2.5]" />
                     </button>
                   </div>
                 ))}
@@ -1400,7 +1594,20 @@ export const SpotlightView: React.FC = () => {
   /* STATE 2: EXPANDED CONVERSATION CARD (Clean flat surface, NO shadows)      */
   /* ========================================================================= */
   return (
-    <div className="w-full h-full select-none bg-transparent">
+    <div
+      className="w-full h-full select-none bg-transparent relative"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {isDragOver && (
+        <div className="absolute inset-0 z-50 bg-blue-500/20 dark:bg-blue-400/20 backdrop-blur-[2px] border-2 border-dashed border-blue-500 dark:border-blue-400 rounded-[22px] flex items-center justify-center pointer-events-none">
+          <span className="text-xs font-semibold text-blue-600 dark:text-blue-300 bg-white/95 dark:bg-[#1f2024]/95 px-3 py-1 rounded-full shadow-md border border-blue-500/30">
+            {t('dropImagesHere')}
+          </span>
+        </div>
+      )}
       <div className="w-full h-full flex flex-col bg-white dark:bg-[#1c1d22] border border-black/10 dark:border-white/10 rounded-[22px] overflow-hidden text-[#1f2328] dark:text-[#f1f3f7] select-none">
         {/* Top Header Row */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/5 cursor-grab active:cursor-grabbing select-none">
@@ -1633,25 +1840,27 @@ export const SpotlightView: React.FC = () => {
 
         {/* Bottom Input Capsule */}
         <div className="p-2.5 bg-[#f8f9fb] dark:bg-[#17181c] border-t border-black/5 dark:border-white/5">
-          <ImageAttachment
-            images={images}
-            onRemove={(idx) => setImages((prev) => prev.filter((_, i) => i !== idx))}
-          />
-
-          <div className="bg-white dark:bg-[#25262c] border border-black/10 dark:border-white/10 rounded-[16px] p-2 flex flex-col justify-between">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  handleSend();
-                }
-              }}
-              placeholder={t('spotlightInputPlaceholder')}
-              className="w-full bg-transparent text-sm text-[#1f2328] dark:text-[#f1f3f7] placeholder-zinc-400 dark:placeholder-zinc-500 px-2 py-1 focus:outline-none"
+          <div className="bg-white dark:bg-[#25262c] border border-black/10 dark:border-white/10 rounded-[16px] overflow-hidden flex flex-col justify-between">
+            <ImageAttachment
+              images={images}
+              onRemove={handleRemoveDraftImage}
             />
+
+            <div className="p-2 flex flex-col justify-between">
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleSend();
+                  }
+                }}
+                onPaste={handlePaste}
+                placeholder={t('spotlightInputPlaceholder')}
+                className="w-full bg-transparent text-sm text-[#1f2328] dark:text-[#f1f3f7] placeholder-zinc-400 dark:placeholder-zinc-500 px-2 py-1 focus:outline-none"
+              />
 
             <div className="flex items-center justify-between pt-1">
               {/* Left: Attachment + Dual Mode Thinking + Offline Wiki */}
@@ -1747,6 +1956,7 @@ export const SpotlightView: React.FC = () => {
             </div>
           </div>
         </div>
+      </div>
       </div>
 
       {/* Wikipedia Offline Article Reader Drawer */}

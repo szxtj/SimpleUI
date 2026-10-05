@@ -16,9 +16,11 @@ class SpotlightPanel: NSPanel {
 /// clicks on the ✖ button (left) and action buttons (right) through to WKWebView.
 class SpotlightDragView: NSView {
     var onDidDrag: ((NSPoint) -> Void)?
-    private var initialMouseLocation: NSPoint = .zero
-    private var initialWindowOrigin: NSPoint = .zero
-    private var isDragging: Bool = false
+    private(set) var isDragging: Bool = false
+
+    override var mouseDownCanMoveWindow: Bool {
+        return true
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden, frame.contains(point) else { return nil }
@@ -51,31 +53,9 @@ class SpotlightDragView: NSView {
     override func mouseDown(with event: NSEvent) {
         guard let window = self.window else { return }
         isDragging = true
-        initialMouseLocation = NSEvent.mouseLocation
-        initialWindowOrigin = window.frame.origin
-        window.invalidateCursorRects(for: self)
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard isDragging, let window = self.window else { return }
-        let currentMouseLocation = NSEvent.mouseLocation
-        let deltaX = currentMouseLocation.x - initialMouseLocation.x
-        let deltaY = currentMouseLocation.y - initialMouseLocation.y
-        let newOrigin = NSPoint(
-            x: initialWindowOrigin.x + deltaX,
-            y: initialWindowOrigin.y + deltaY
-        )
-        window.setFrameOrigin(newOrigin)
-        onDidDrag?(newOrigin)
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        guard isDragging else { return }
+        window.performDrag(with: event)
         isDragging = false
-        if let window = self.window {
-            window.invalidateCursorRects(for: self)
-            onDidDrag?(window.frame.origin)
-        }
+        onDidDrag?(window.frame.origin)
     }
 
     override func resetCursorRects() {
@@ -263,7 +243,19 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
 
     func handleResizePanel(width: CGFloat, height: CGFloat, isExpanding: Bool) {
         guard let panel = window else { return }
+
+        // If the user is actively dragging the window with mouse, never interrupt or jitter!
+        if dragView?.isDragging == true {
+            return
+        }
+
         self.isExpanded = isExpanding
+
+        // If the panel is already at requested size and state, do NOT trigger redundant animations
+        if abs(panel.frame.width - width) < 1.0 && abs(panel.frame.height - height) < 1.0 {
+            dragView.isHidden = !isExpanding
+            return
+        }
 
         let screen = currentScreen()
         let screenRect = screen.visibleFrame
@@ -304,6 +296,12 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
 
     private func animateTo(newFrame: NSRect) {
         guard let panel = window else { return }
+        if abs(panel.frame.minX - newFrame.minX) < 1.0 &&
+           abs(panel.frame.minY - newFrame.minY) < 1.0 &&
+           abs(panel.frame.width - newFrame.width) < 1.0 &&
+           abs(panel.frame.height - newFrame.height) < 1.0 {
+            return
+        }
         isProgrammaticAnimating = true
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.22
