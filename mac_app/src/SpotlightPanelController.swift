@@ -160,6 +160,28 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             name: NSWindow.didMoveNotification,
             object: panel
         )
+        // 语音转写结果要插入本 App 自身的输入框（WKWebView 内 AX 判定不到），经前端桥写入光标处
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onVoiceInsertText(_:)),
+            name: VoiceInputManager.insertTextNotification,
+            object: nil
+        )
+    }
+
+    @objc private func onVoiceInsertText(_ note: Notification) {
+        guard let text = note.object as? String, !text.isEmpty else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            guard let panel = self.window, panel.isVisible else { return }
+            // 只有当主窗口不是 key 窗口（即用户焦点在 Spotlight 浮窗）时，才插入到浮窗
+            if NSApp.windows.contains(where: { !($0 is NSPanel) && $0.isVisible && $0.isKeyWindow }) {
+                return
+            }
+            guard let data = try? JSONSerialization.data(withJSONObject: ["t": text]),
+                  let json = String(data: data, encoding: .utf8) else { return }
+            self.webView.evaluateJavaScript("window.__insertVoiceText && window.__insertVoiceText((\(json)).t)") { _, _ in }
+        }
     }
 
     @objc private func handleWindowDidMove(_ notification: Notification) {

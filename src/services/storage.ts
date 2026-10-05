@@ -116,17 +116,28 @@ export function loadSessions(): ChatSession[] {
       return [initial];
     }
     // Guarantee loaded history messages never remain in an active thinking/spinning state
-    const mapped = list.map((session) => ({
-      ...session,
-      enableThinking: session?.enableThinking ?? false,
-      enableWikiSearch: session?.enableWikiSearch ?? false,
-      messages: Array.isArray(session?.messages)
-        ? session.messages.map((m: any) => ({
-            ...m,
-            isThinking: false,
-          }))
-        : [],
-    }));
+    const mapped = list.map((session) => {
+      let title = session?.title;
+      if (
+        (!title || title === '新对话' || title === 'New Chat') &&
+        Array.isArray(session?.messages) &&
+        session.messages.length > 0
+      ) {
+        title = deriveSessionTitleFromMessages(session.messages, title || '新对话');
+      }
+      return {
+        ...session,
+        title: title || '新对话',
+        enableThinking: session?.enableThinking ?? false,
+        enableWikiSearch: session?.enableWikiSearch ?? false,
+        messages: Array.isArray(session?.messages)
+          ? session.messages.map((m: any) => ({
+              ...m,
+              isThinking: false,
+            }))
+          : [],
+      };
+    });
 
     const hasLegacyImages = mapped.some((s) =>
       s.messages?.some((m: ChatMessage) => m.images?.some((img: string) => img.startsWith('data:')))
@@ -417,4 +428,41 @@ export function getOrCreateEmptySession(
   notifySessionUpdate(newSession.id, source);
   return { session: newSession, isNew: true, allSessions: nextSessions };
 }
+
+/**
+ * 根据发送消息的文本与图片生成会话标题。
+ * 规则：
+ * 1. 取文字部分（换行转空格，截取前 24 字符）；
+ * 2. 如果只有图片（文字为空但图片数量 > 0），标题为 '[picture]'；
+ * 3. 否则回退为默认标题（如 '新对话' 或 'New Chat'）。
+ */
+export function generateSessionTitle(
+  text: string,
+  hasImages: boolean = false,
+  fallbackTitle: string = '新对话'
+): string {
+  const singleLineText = (text || '').replace(/\r?\n/g, ' ').trim();
+  if (singleLineText) {
+    return singleLineText.slice(0, 24);
+  }
+  if (hasImages) {
+    return '[picture]';
+  }
+  return fallbackTitle;
+}
+
+/**
+ * 从消息列表中提取首条用户消息并生成会话标题。
+ */
+export function deriveSessionTitleFromMessages(
+  messages: ChatMessage[],
+  fallbackTitle: string = '新对话'
+): string {
+  if (!Array.isArray(messages)) return fallbackTitle;
+  const firstUser = messages.find((m) => m.role === 'user');
+  if (!firstUser) return fallbackTitle;
+  const hasImages = Array.isArray(firstUser.images) && firstUser.images.length > 0;
+  return generateSessionTitle(firstUser.content, hasImages, fallbackTitle);
+}
+
 

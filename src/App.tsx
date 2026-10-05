@@ -29,6 +29,8 @@ import {
   notifySessionUpdate,
   syncChannel,
   hydrateSessionImages,
+  generateSessionTitle,
+  deriveSessionTitleFromMessages,
 } from './services/storage';
 import { TurboFieldfareAPI, WikiAPI, ASRServiceAPI, ModelServiceAPI } from './services/api';
 import type { ModelServiceStatus } from './services/api';
@@ -114,7 +116,8 @@ export const App: React.FC = () => {
       const start = input.selectionStart ?? input.value.length;
       const end = input.selectionEnd ?? start;
       const next = input.value.slice(0, start) + text + input.value.slice(end);
-      const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value');
+      const proto = field.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+      const desc = Object.getOwnPropertyDescriptor(proto, 'value') || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value');
       if (desc?.set) desc.set.call(input, next);
       else input.value = next;
       input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -829,9 +832,13 @@ export const App: React.FC = () => {
 
     // Update session title on first message
     const isFirstUserMessage = historyMessages.length === 0;
+    const defaultTitle = activeLang === 'en' ? 'New Chat' : '新对话';
+    const computedTitle = generateSessionTitle(textToSend, currentImages.length > 0, defaultTitle);
     const sessionTitle = isFirstUserMessage
-      ? textToSend.slice(0, 24) || (activeLang === 'en' ? 'Image Analysis' : '图文分析')
-      : targetSession.title || (activeLang === 'en' ? 'New Chat' : '新对话');
+      ? computedTitle
+      : (!targetSession.title || targetSession.title === '新对话' || targetSession.title === 'New Chat')
+      ? (historyMessages.length > 0 ? deriveSessionTitleFromMessages(historyMessages, defaultTitle) : computedTitle)
+      : targetSession.title;
 
     const updatedMessages = [...historyMessages, userMessage, assistantMessage];
 

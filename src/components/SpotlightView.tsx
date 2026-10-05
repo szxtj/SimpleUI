@@ -19,6 +19,8 @@ import {
   notifySessionUpdate,
   syncChannel,
   hydrateSessionImages,
+  generateSessionTitle,
+  deriveSessionTitleFromMessages,
 } from '../services/storage';
 import { TurboFieldfareAPI, WikiAPI } from '../services/api';
 import {
@@ -118,6 +120,7 @@ export const SpotlightView: React.FC = () => {
   const [enableWikiSearch, setEnableWikiSearch] = useState(false);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const cursorPositionRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const generatingSessionIdRef = useRef<string | null>(null);
@@ -161,6 +164,8 @@ export const SpotlightView: React.FC = () => {
   }, []);
 
   const hasMessages = messages.length > 0;
+  const isMultiline = input.includes('\n');
+  const isExpanded = hasMessages || isMultiline;
 
   /**
    * 消息流容器的「跟随底部 / 保位」行为 —— 与主窗口**共用同一份 hook**（`useFollowBottom`），
@@ -306,11 +311,29 @@ export const SpotlightView: React.FC = () => {
     initEmptySession();
   }, [initEmptySession]);
 
+  // Auto-resize textarea in Spotlight
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      const scrollHeight = textareaRef.current.scrollHeight;
+      textareaRef.current.style.height = `${Math.min(Math.max(scrollHeight, 24), 160)}px`;
+    }
+  }, [input, isExpanded]);
+
+  // Retain focus and cursor position when transitioning between capsule and expanded card
+  useEffect(() => {
+    if (textareaRef.current && messages.length === 0) {
+      textareaRef.current.focus();
+      const pos = cursorPositionRef.current !== null ? cursorPositionRef.current : input.length;
+      textareaRef.current.setSelectionRange(pos, pos);
+    }
+  }, [isExpanded]);
+
   useEffect(() => {
     if (!isWikiPanelOpen) {
-      notifyResize(hasMessages, images.length > 0);
+      notifyResize(isExpanded, images.length > 0);
     }
-  }, [hasMessages, images.length, isWikiPanelOpen]);
+  }, [isExpanded, images.length, isWikiPanelOpen]);
 
   /* ========================================================================= */
   /* 输入框「搜索」按钮 → 小窗口内的知识库面板                                   */
@@ -325,7 +348,7 @@ export const SpotlightView: React.FC = () => {
   /* ========================================================================= */
   const openWikiPanel = () => {
     setIsWikiPanelOpen(true);
-    if (!hasMessages) notifyResize(true);
+    if (!isExpanded) notifyResize(true);
   };
 
   const closeWikiPanel = () => {
@@ -333,7 +356,7 @@ export const SpotlightView: React.FC = () => {
     setActiveWikiArticle(null);
     setActiveWikiContext(null);
     // 胶囊态打开过 → 面板关闭后窗口收回输入胶囊尺寸
-    if (!hasMessages) notifyResize(false, images.length > 0);
+    if (!isExpanded) notifyResize(false, images.length > 0);
   };
 
   /**
@@ -813,13 +836,22 @@ export const SpotlightView: React.FC = () => {
       console.error('[Spotlight] stage broadcast failed:', e);
     }
 
-    const title = (historyMessages[0]?.content || userMessage.content).slice(0, 24) || t('quickChat');
+    const isFirstUserMessage = historyMessages.length === 0;
+    const defaultTitle = lang === 'en' ? 'New Chat' : '新对话';
+    const computedTitle = generateSessionTitle(textToSend, currentImages.length > 0, defaultTitle);
+
     try {
       const allSessions = loadSessions();
       const existingIdx = allSessions.findIndex((s) => s.id === currentSessionId);
       if (existingIdx >= 0) {
+        const currentTitle = allSessions[existingIdx].title;
+        const nextTitle =
+          isFirstUserMessage || !currentTitle || currentTitle === '新对话' || currentTitle === 'New Chat'
+            ? computedTitle
+            : currentTitle;
         allSessions[existingIdx] = {
           ...allSessions[existingIdx],
+          title: nextTitle,
           messages: nextMessages,
           enableThinking,
           enableWikiSearch,
@@ -830,7 +862,7 @@ export const SpotlightView: React.FC = () => {
         const cleanSessions = allSessions.filter((s) => s.messages && s.messages.length > 0);
         cleanSessions.unshift({
           id: currentSessionId,
-          title,
+          title: computedTitle,
           messages: nextMessages,
           createdAt: Date.now(),
           updatedAt: Date.now(),
@@ -963,8 +995,14 @@ export const SpotlightView: React.FC = () => {
             citations: foundCitations.length > 0 ? foundCitations : undefined,
             error: err?.message,
           };
+          const currentTitle = all[idx].title;
+          const resolvedTitle =
+            isFirstUserMessage || !currentTitle || currentTitle === '新对话' || currentTitle === 'New Chat'
+              ? computedTitle
+              : currentTitle;
           all[idx] = {
             ...all[idx],
+            title: resolvedTitle,
             messages: [...historyMessages, userMessage, asstMsg],
             contextUsed: metrics?.contextUsed ?? all[idx].contextUsed,
             updatedAt: Date.now(),
@@ -1283,13 +1321,20 @@ export const SpotlightView: React.FC = () => {
     // If there is any content, ensure it is written to storage before transitioning
     if (messages.length > 0) {
       try {
-        const title = (messages[0]?.content || '').slice(0, 24) || t('quickChat');
+        const defaultTitle = lang === 'en' ? 'New Chat' : '新对话';
+        const derivedTitle = deriveSessionTitleFromMessages(messages, defaultTitle);
         activeSessionIdRef.current = currentId;
         const allSessions = loadSessions();
         const existingIdx = allSessions.findIndex((s) => s.id === currentId);
         if (existingIdx >= 0) {
+          const currentTitle = allSessions[existingIdx].title;
+          const nextTitle =
+            !currentTitle || currentTitle === '新对话' || currentTitle === 'New Chat'
+              ? derivedTitle
+              : currentTitle;
           allSessions[existingIdx] = {
             ...allSessions[existingIdx],
+            title: nextTitle,
             messages,
             contextUsed: usedTokens,
             enableThinking,
@@ -1299,7 +1344,7 @@ export const SpotlightView: React.FC = () => {
         } else {
           allSessions.unshift({
             id: currentId,
-            title,
+            title: derivedTitle,
             messages,
             createdAt: Date.now(),
             updatedAt: Date.now(),
@@ -1423,7 +1468,7 @@ export const SpotlightView: React.FC = () => {
   /* ========================================================================= */
   /* STATE 1: INITIAL COMPACT INPUT CAPSULE (Clean flat surface, NO shadows)   */
   /* ========================================================================= */
-  if (!hasMessages) {
+  if (!isExpanded) {
     return (
       <div
         className="w-full h-full select-none bg-transparent relative"
@@ -1463,21 +1508,28 @@ export const SpotlightView: React.FC = () => {
           <div className="w-full h-full bg-white dark:bg-[#25262c] border border-black/10 dark:border-white/10 rounded-[14px] px-3 py-1 flex flex-col justify-between">
             {/* Top text input row */}
             <div className="px-0.5 pt-0.5">
-              <input
-                ref={textareaRef as unknown as React.RefObject<HTMLInputElement>}
-                type="text"
+              <textarea
+                ref={textareaRef}
+                rows={1}
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={(e) => {
+                  setInput(e.target.value);
+                  cursorPositionRef.current = e.target.selectionStart;
+                }}
+                onSelect={(e) => {
+                  cursorPositionRef.current = (e.target as HTMLTextAreaElement).selectionStart;
+                }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
+                  if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     handleSend();
                   }
                 }}
                 onPaste={handlePaste}
                 placeholder={t('placeholderInitial')}
+                data-chat-input="true"
                 autoFocus
-                className="w-full bg-transparent text-[14px] text-[#1f2328] dark:text-[#f1f3f7] placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none font-normal"
+                className="w-full bg-transparent text-[14px] text-[#1f2328] dark:text-[#f1f3f7] placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none font-normal resize-none leading-relaxed min-h-[22px] max-h-[160px] [overflow-anchor:none]"
               />
             </div>
 
@@ -1868,19 +1920,28 @@ export const SpotlightView: React.FC = () => {
             />
 
             <div className="p-2 flex flex-col justify-between">
-              <input
-                type="text"
+              <textarea
+                ref={textareaRef}
+                rows={1}
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={(e) => {
+                  setInput(e.target.value);
+                  cursorPositionRef.current = e.target.selectionStart;
+                }}
+                onSelect={(e) => {
+                  cursorPositionRef.current = (e.target as HTMLTextAreaElement).selectionStart;
+                }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
+                  if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     handleSend();
                   }
                 }}
                 onPaste={handlePaste}
-                placeholder={t('spotlightInputPlaceholder')}
-                className="w-full bg-transparent text-sm text-[#1f2328] dark:text-[#f1f3f7] placeholder-zinc-400 dark:placeholder-zinc-500 px-2 py-1 focus:outline-none"
+                placeholder={hasMessages ? t('spotlightInputPlaceholder') : t('placeholderInitial')}
+                data-chat-input="true"
+                autoFocus
+                className="w-full bg-transparent text-sm text-[#1f2328] dark:text-[#f1f3f7] placeholder-zinc-400 dark:placeholder-zinc-500 px-2 py-1 focus:outline-none resize-none leading-relaxed min-h-[26px] max-h-[160px] [overflow-anchor:none]"
               />
 
             <div className="flex items-center justify-between pt-1">
