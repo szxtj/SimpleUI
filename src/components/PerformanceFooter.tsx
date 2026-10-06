@@ -46,6 +46,7 @@ export const PerformanceFooter: React.FC<PerformanceFooterProps> = ({
         <Cpu className="w-3.5 h-3.5 text-purple-400/80" />
         <span>
           {t('remainingTokens')} {formatTokens(metrics.contextRemaining)} / {formatTokens(metrics.maxContext)} tokens
+          {metrics.cachedTokens !== undefined && metrics.cachedTokens > 0 ? ` · ${t('cacheHit')} ${formatTokens(metrics.cachedTokens)}` : ''}
           {turnCount > 0 ? ` · ${turnCount} ${t('turnCount')}` : ''}
         </span>
       </div>

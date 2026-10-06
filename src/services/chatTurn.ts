@@ -10,6 +10,7 @@
 
 import { WikiAPI } from './api';
 import { AppSettings, ChatMessage, WikiCitation } from '../types/chat';
+import { estimateHistoryTokens, applyTokenCalibration, CalibrationProvider } from '../utils/token';
 
 export type RagLang = 'zh' | 'en';
 
@@ -146,18 +147,105 @@ export function buildTurnMessages(opts: {
   };
 }
 
+export interface SlidingWindowOptions {
+  systemPrompt?: string;
+  maxContext?: number;
+  maxTokens?: number;
+  provider?: CalibrationProvider;
+}
+
+/**
+ * 获取活跃上下文消息窗口（滑动窗口安全修剪）：
+ * - 当上下文总用量接近上限时，按 (user, assistant) 成对批量回退修剪早期历史；
+ * - 批量修剪至 70% 水位，多留出 30% 安全缓冲对抗分词误差，并避免每轮摩擦破坏 DeepSeek 缓存；
+ * - 永久保留最新对话，System Prompt 无论如何不参与裁剪；
+ * - 存储层保留完整历史，此函数仅用于计算发送给模型或展示层活跃的上下文窗口。
+ */
+export function getActiveContextMessages(
+  messages: ChatMessage[],
+  opts?: SlidingWindowOptions
+): ChatMessage[] {
+  if (!messages || messages.length <= 2 || !opts?.maxContext) {
+    return messages;
+  }
+
+  const { systemPrompt, maxContext, maxTokens = 8192, provider = 'local' } = opts;
+  const availablePromptBudget = Math.max(1024, maxContext - maxTokens);
+  // 85% 预警触发线
+  const triggerThreshold = Math.floor(availablePromptBudget * 0.85);
+  // 70% 目标水位（多裁切一点：批量释放并保留前缀稳定）
+  const targetThreshold = Math.floor(availablePromptBudget * 0.70);
+
+  let candidate = [...messages];
+  let currentTokens = applyTokenCalibration(
+    estimateHistoryTokens(candidate, systemPrompt, provider),
+    provider
+  );
+
+  if (currentTokens <= triggerThreshold) {
+    return candidate;
+  }
+
+  // 必须成对 (user, assistant) 批量剔除最早的历史轮次
+  while (candidate.length > 2 && currentTokens > targetThreshold) {
+    const removeCount = (candidate[0]?.role === 'user' && candidate[1]?.role === 'assistant') ? 2 : 1;
+    candidate = candidate.slice(removeCount);
+    currentTokens = applyTokenCalibration(
+      estimateHistoryTokens(candidate, systemPrompt, provider),
+      provider
+    );
+  }
+
+  return candidate;
+}
+
 /**
  * 构造本轮实际发给推理引擎的 wire 消息数组：
  * 历史 + 用户消息（内容替换为含 Grounding Prompt 的 promptToSend）。
+ * 支持滑动窗口安全防溢出修剪（多裁切保护前缀稳定与估算误差）。
  * 注意：持久化到会话历史里的用户消息内容始终是原始提问（textToSend），
- * Grounding Prompt 只存在于本次请求，绝不落盘。
+ * Grounding Prompt 与修剪逻辑只存在于本次请求，绝不污染真实会话历史。
  */
 export function buildWireMessages(
   historyMessages: ChatMessage[],
   userMessage: ChatMessage,
-  promptToSend: string
+  promptToSend: string,
+  opts?: SlidingWindowOptions
 ): ChatMessage[] {
-  return [...historyMessages, { ...userMessage, content: promptToSend }];
+  const currentTurnUser: ChatMessage = { ...userMessage, content: promptToSend };
+
+  if (!opts?.maxContext) {
+    return [...historyMessages, currentTurnUser];
+  }
+
+  const { systemPrompt, maxContext, maxTokens = 8192, provider = 'local' } = opts;
+  const availablePromptBudget = Math.max(1024, maxContext - maxTokens);
+  const triggerThreshold = Math.floor(availablePromptBudget * 0.85);
+  const targetThreshold = Math.floor(availablePromptBudget * 0.70);
+
+  let candidateHistory = [...historyMessages];
+  let fullCandidate = [...candidateHistory, currentTurnUser];
+  let currentTokens = applyTokenCalibration(
+    estimateHistoryTokens(fullCandidate, systemPrompt, provider),
+    provider
+  );
+
+  if (currentTokens <= triggerThreshold) {
+    return fullCandidate;
+  }
+
+  // 触发滑动窗口：批量成对丢弃最早的历史对话轮次
+  while (candidateHistory.length >= 2 && currentTokens > targetThreshold) {
+    const removeCount = (candidateHistory[0]?.role === 'user' && candidateHistory[1]?.role === 'assistant') ? 2 : 1;
+    candidateHistory = candidateHistory.slice(removeCount);
+    fullCandidate = [...candidateHistory, currentTurnUser];
+    currentTokens = applyTokenCalibration(
+      estimateHistoryTokens(fullCandidate, systemPrompt, provider),
+      provider
+    );
+  }
+
+  return fullCandidate;
 }
 
 /** 会话级参数装配：把会话级的思考 / 知识库开关覆盖到全局设置上。 */

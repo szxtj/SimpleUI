@@ -8,6 +8,8 @@ interface UsagePayload {
   completion_tokens?: number;
   total_tokens?: number;
   cached_tokens?: number;
+  prompt_cache_hit_tokens?: number;
+  prompt_cache_miss_tokens?: number;
   prompt_tokens_details?: { cached_tokens?: number };
   completion_tokens_details?: { reasoning_tokens?: number };
 }
@@ -348,7 +350,7 @@ export class TurboFieldfareAPI {
       }
     }
 
-    const initialPromptTokens = estimateHistoryTokens(messages, settings.systemPrompt);
+    const initialPromptTokens = estimateHistoryTokens(messages, settings.systemPrompt, settings.apiProvider);
     let lastReportedMilestone = 0;
 
     const startTime = performance.now();
@@ -540,7 +542,7 @@ export class TurboFieldfareAPI {
 
     // 用「真实 prompt_tokens ÷ 同一批消息的原始估算」校准展示层估算（见 utils/token.ts）
     if (finalUsage?.prompt_tokens) {
-      setTokenCalibration(finalUsage.prompt_tokens, initialPromptTokens);
+      setTokenCalibration(finalUsage.prompt_tokens, initialPromptTokens, isDeepSeek ? 'deepseek' : 'local');
     }
 
     const endTime = performance.now();
@@ -561,7 +563,7 @@ export class TurboFieldfareAPI {
       promptTokens,
       completionTokens,
       totalTokens,
-      cachedTokens: finalUsage?.prompt_tokens_details?.cached_tokens ?? finalUsage?.cached_tokens,
+      cachedTokens: finalUsage?.prompt_cache_hit_tokens ?? finalUsage?.prompt_tokens_details?.cached_tokens ?? finalUsage?.cached_tokens,
       reasoningTokens: finalUsage?.completion_tokens_details?.reasoning_tokens,
       contextUsed: totalTokens,
       maxContext,

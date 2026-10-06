@@ -41,6 +41,7 @@ import {
   buildTurnMessages,
   buildWireMessages,
   buildSessionSettings,
+  getActiveContextMessages,
 } from './services/chatTurn';
 import { SpotlightView } from './components/SpotlightView';
 import { VoiceOverlay } from './components/VoiceOverlay';
@@ -425,7 +426,7 @@ export const App: React.FC = () => {
                       }
                     : m
                 );
-                const cleanHistoryTokens = estimateHistoryTokens(updatedMsgs, settings.systemPrompt);
+                const cleanHistoryTokens = estimateHistoryTokens(updatedMsgs, settings.systemPrompt, settings.apiProvider);
                 return {
                   ...s,
                   contextUsed: cleanHistoryTokens,
@@ -734,9 +735,18 @@ export const App: React.FC = () => {
   // Persistent conversation history baseline tokens (excluding temporary RAG prompts & reasoning tokens)
   const persistentHistoryTokens = useMemo(() => {
     if (!messages || messages.length === 0) return 0;
+    const activeMessages = getActiveContextMessages(messages, {
+      systemPrompt: settings.systemPrompt,
+      maxContext: settings.maxContext,
+      maxTokens: settings.maxTokens,
+      provider: settings.apiProvider,
+    });
     // 展示层施加校准系数（系数由上一轮真实 usage.prompt_tokens 反推）
-    return applyTokenCalibration(estimateHistoryTokens(messages, settings.systemPrompt));
-  }, [messages, settings.systemPrompt]);
+    return applyTokenCalibration(
+      estimateHistoryTokens(activeMessages, settings.systemPrompt, settings.apiProvider),
+      settings.apiProvider
+    );
+  }, [messages, settings.systemPrompt, settings.maxContext, settings.maxTokens, settings.apiProvider]);
 
   const currentLiveTokens = currentSessionId ? liveStreamingTokens[currentSessionId] : undefined;
   const usedTokens = (isGenerating && currentLiveTokens !== undefined) ? currentLiveTokens : persistentHistoryTokens;
@@ -979,10 +989,16 @@ export const App: React.FC = () => {
     });
 
     const sessionSettings = buildSessionSettings(settings, sessionEnableThinking, sessionEnableWiki);
-    const wireMessages = buildWireMessages(historyMessages, userMessage, promptToSend);
+    const wireMessages = buildWireMessages(historyMessages, userMessage, promptToSend, {
+      systemPrompt: settings.systemPrompt,
+      maxContext: settings.maxContext,
+      maxTokens: settings.maxTokens,
+      provider: settings.apiProvider,
+    });
 
     const promptTokensEstimate = applyTokenCalibration(
-      estimateHistoryTokens(wireMessages, settings.systemPrompt)
+      estimateHistoryTokens(wireMessages, settings.systemPrompt, settings.apiProvider),
+      settings.apiProvider
     );
     setLiveStreamingTokens((prev) => ({ ...prev, [targetSessionId]: promptTokensEstimate }));
 
@@ -1131,7 +1147,8 @@ export const App: React.FC = () => {
                 content: accumulatedContent,
               },
             ],
-            settings.systemPrompt
+            settings.systemPrompt,
+            settings.apiProvider
           );
 
           syncChannel?.postMessage({

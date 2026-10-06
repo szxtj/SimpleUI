@@ -28,6 +28,7 @@ import {
   buildTurnMessages,
   buildWireMessages,
   buildSessionSettings,
+  getActiveContextMessages,
 } from '../services/chatTurn';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ThinkingAccordion } from './ThinkingAccordion';
@@ -91,9 +92,18 @@ export const SpotlightView: React.FC = () => {
   // Clean persistent conversation history tokens (user text + assistant text only)
   const persistentHistoryTokens = React.useMemo(() => {
     if (!messages || messages.length === 0) return 0;
+    const activeMessages = getActiveContextMessages(messages, {
+      systemPrompt: settings.systemPrompt,
+      maxContext: settings.maxContext,
+      maxTokens: settings.maxTokens,
+      provider: settings.apiProvider,
+    });
     // 展示层施加校准系数（与主窗口同一套系数）
-    return applyTokenCalibration(estimateHistoryTokens(messages, settings.systemPrompt));
-  }, [messages, settings.systemPrompt]);
+    return applyTokenCalibration(
+      estimateHistoryTokens(activeMessages, settings.systemPrompt, settings.apiProvider),
+      settings.apiProvider
+    );
+  }, [messages, settings.systemPrompt, settings.maxContext, settings.maxTokens, settings.apiProvider]);
 
   const displayTokens = (isGenerating && liveStreamingTokens !== null) ? liveStreamingTokens : persistentHistoryTokens;
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
@@ -452,7 +462,7 @@ export const SpotlightView: React.FC = () => {
     if (target) {
       activeSessionIdRef.current = sessionId;
       setMessages(target.messages || []);
-      const cleanTokens = estimateHistoryTokens(target.messages || [], settings.systemPrompt);
+      const cleanTokens = estimateHistoryTokens(target.messages || [], settings.systemPrompt, settings.apiProvider);
       setUsedTokens(cleanTokens);
       setLiveStreamingTokens(null);
       setEnableThinking(target.enableThinking ?? false);
@@ -500,7 +510,7 @@ export const SpotlightView: React.FC = () => {
           if (data.session && Array.isArray(data.session.messages)) {
             activeSessionIdRef.current = data.sessionId;
             setMessages(data.session.messages);
-            const cleanTokens = estimateHistoryTokens(data.session.messages, settings.systemPrompt);
+            const cleanTokens = estimateHistoryTokens(data.session.messages, settings.systemPrompt, settings.apiProvider);
             setUsedTokens(cleanTokens);
             setLiveStreamingTokens(null);
             setEnableThinking(data.session.enableThinking ?? false);
@@ -636,7 +646,7 @@ export const SpotlightView: React.FC = () => {
                       }
                     : m
                 );
-                const cleanTokens = estimateHistoryTokens(updated, settings.systemPrompt);
+                const cleanTokens = estimateHistoryTokens(updated, settings.systemPrompt, settings.apiProvider);
                 setUsedTokens(cleanTokens);
                 return updated;
               }
@@ -1026,11 +1036,17 @@ export const SpotlightView: React.FC = () => {
       }
     };
 
-    const messagesWithPrompt: ChatMessage[] = buildWireMessages(historyMessages, userMessage, promptToSend);
+    const messagesWithPrompt: ChatMessage[] = buildWireMessages(historyMessages, userMessage, promptToSend, {
+      systemPrompt: settings.systemPrompt,
+      maxContext: settings.maxContext,
+      maxTokens: settings.maxTokens,
+      provider: settings.apiProvider,
+    });
     const sessionSettings = buildSessionSettings(settings, enableThinking, enableWikiSearch);
 
     const promptTokensEstimate = applyTokenCalibration(
-      estimateHistoryTokens(messagesWithPrompt, settings.systemPrompt)
+      estimateHistoryTokens(messagesWithPrompt, settings.systemPrompt, settings.apiProvider),
+      settings.apiProvider
     );
     setLiveStreamingTokens(promptTokensEstimate);
 
@@ -1147,7 +1163,8 @@ export const SpotlightView: React.FC = () => {
 
           const cleanHistoryTokens = estimateHistoryTokens(
             [...historyMessages, userMessage, finalAsstMessage],
-            settings.systemPrompt
+            settings.systemPrompt,
+            settings.apiProvider
           );
           setUsedTokens(cleanHistoryTokens);
 
@@ -1176,7 +1193,8 @@ export const SpotlightView: React.FC = () => {
 
           const cleanHistoryTokens = estimateHistoryTokens(
             [...historyMessages, userMessage],
-            settings.systemPrompt
+            settings.systemPrompt,
+            settings.apiProvider
           );
           setUsedTokens(cleanHistoryTokens);
 

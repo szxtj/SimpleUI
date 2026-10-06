@@ -96,6 +96,7 @@ export const translations = {
     shortcutHint: 'Enter 发送，Shift + Enter 换行 · 支持粘贴截图 (Cmd + V) 或拖入图片',
     generation: '生成',
     remainingTokens: '剩余',
+    cacheHit: '缓存命中',
     contextTokens: 'tokens 上下文',
     turnCount: '轮对话',
 
@@ -429,6 +430,7 @@ export const translations = {
     shortcutHint: 'Enter to send, Shift + Enter for new line · Supports screenshot paste (Cmd + V) or image drag & drop',
     generation: 'generation',
     remainingTokens: 'Remaining',
+    cacheHit: 'Cache hit',
     contextTokens: 'tokens context',
     turnCount: 'turns',
 
