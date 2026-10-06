@@ -38,6 +38,7 @@ import { ContextRing } from './ContextRing';
 import { WikiDrawer } from './WikiDrawer';
 import { extractImagesFromPaste, fileToDataURL, isImageFile } from '../utils/image';
 import { deleteUnreferencedMedia } from '../services/mediaCleanup';
+import { useImeInput } from '../hooks/useImeInput';
 import {
   ArrowUp,
   Square,
@@ -1282,6 +1283,12 @@ export const SpotlightView: React.FC = () => {
     await executeSend(textToSend, currentImages, messages);
   };
 
+  const { imeBindings: inputImeBindings } = useImeInput<HTMLTextAreaElement>({
+    onEnter: () => {
+      handleSend();
+    },
+  });
+
   const handleRetry = async (assistantMessageId: string) => {
     if (isGenerating) {
       handleStop();
@@ -1589,12 +1596,7 @@ export const SpotlightView: React.FC = () => {
                 onSelect={(e) => {
                   cursorPositionRef.current = (e.target as HTMLTextAreaElement).selectionStart;
                 }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSend();
-                  }
-                }}
+                {...inputImeBindings}
                 onPaste={handlePaste}
                 placeholder={t('placeholderInitial')}
                 data-chat-input="true"
@@ -2019,12 +2021,7 @@ export const SpotlightView: React.FC = () => {
                 onSelect={(e) => {
                   cursorPositionRef.current = (e.target as HTMLTextAreaElement).selectionStart;
                 }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSend();
-                  }
-                }}
+                {...inputImeBindings}
                 onPaste={handlePaste}
                 placeholder={hasMessages ? t('spotlightInputPlaceholder') : t('placeholderInitial')}
                 data-chat-input="true"

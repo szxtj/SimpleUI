@@ -4,6 +4,7 @@ import { useI18n } from '../i18n';
 import { WikiAPI } from '../services/api';
 import { buildWikiExternalUrl } from '../utils/wikiFrame';
 import { WikiContextView } from './WikiContextView';
+import { useImeInput } from '../hooks/useImeInput';
 
 /**
  * 知识库面板的唯一实现——主窗口（docked 停靠侧栏）与 Spotlight 浮窗（overlay 覆盖抽屉）
@@ -142,6 +143,12 @@ export const WikiPanel: React.FC<WikiPanelProps> = ({
     }
   };
 
+  const { imeBindings: searchImeBindings } = useImeInput<HTMLInputElement>({
+    onEnter: () => {
+      handleSearch();
+    },
+  });
+
   const openResult = async (r: SearchResult) => {
     if (!kbReady) return; // 服务不可用：不发起请求
     setActiveTitle(r.title);
@@ -261,9 +268,7 @@ export const WikiPanel: React.FC<WikiPanelProps> = ({
             <input
               value={searchQ}
               onChange={(e) => setSearchQ(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleSearch();
-              }}
+              {...searchImeBindings}
               placeholder={t('wikiSearchPlaceholder')}
               className="w-full pl-8 pr-3 py-1.5 rounded-lg text-xs bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 text-[#1f2328] dark:text-[#f1f3f7] placeholder-zinc-400 focus:outline-none focus:border-emerald-500/50"
             />

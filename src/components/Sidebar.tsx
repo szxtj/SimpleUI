@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ChatSession, WikiStatusInfo, AsrServiceStatus } from '../types/chat';
 import { ModelServiceStatus } from '../services/api';
 import { useI18n, formatArticleCount } from '../i18n';
+import { useImeInput } from '../hooks/useImeInput';
 import {
   SERVICE_STATE_DOT_CLASS,
   SERVICE_STATE_LABEL_KEY,
@@ -111,6 +112,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
     e.stopPropagation();
     setEditingId(null);
   };
+
+  const {
+    handleKeyDown: handleRenameKeyDown,
+    handleCompositionStart: handleRenameCompStart,
+    handleCompositionEnd: handleRenameCompEnd,
+  } = useImeInput<HTMLInputElement>({
+    onEnter: (e) => {
+      if (editingId) {
+        confirmRename(editingId, e as unknown as React.MouseEvent);
+      }
+    },
+    onKeyDown: (e) => {
+      if (e.key === 'Escape') {
+        cancelRename(e as unknown as React.MouseEvent);
+      }
+    },
+  });
 
   const query = searchQuery.trim().toLowerCase();
   const filteredSessions = query
@@ -246,12 +264,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       value={editingTitle}
                       onChange={(e) => setEditingTitle(e.target.value)}
                       onClick={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter')
-                          confirmRename(session.id, e as unknown as React.MouseEvent);
-                        if (e.key === 'Escape')
-                          cancelRename(e as unknown as React.MouseEvent);
-                      }}
+                      onKeyDown={handleRenameKeyDown}
+                      onCompositionStart={handleRenameCompStart}
+                      onCompositionEnd={handleRenameCompEnd}
                       autoFocus
                       className="w-full bg-white dark:bg-[#1b1c20] text-zinc-900 dark:text-white px-2 py-0.5 rounded-lg border border-blue-500/80 focus:outline-none"
                     />

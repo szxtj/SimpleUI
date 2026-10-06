@@ -6,6 +6,7 @@ import { ImageAttachment } from './ImageAttachment';
 import { extractImagesFromPaste, fileToDataURL } from '../utils/image';
 import { deleteUnreferencedMedia } from '../services/mediaCleanup';
 import { loadSessions } from '../services/storage';
+import { useImeInput } from '../hooks/useImeInput';
 
 interface ChatInputProps {
   input: string;
@@ -61,14 +62,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
   }, [input]);
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
+  const { imeBindings } = useImeInput<HTMLTextAreaElement>({
+    onEnter: () => {
       if (!isGenerating && (input.trim() || images.length > 0)) {
         onSend();
       }
-    }
-  };
+    },
+  });
 
   const handlePaste = async (e: React.ClipboardEvent) => {
     const files = extractImagesFromPaste(e);
@@ -127,7 +127,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           data-chat-input="true"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
+          {...imeBindings}
           onPaste={handlePaste}
           placeholder={hasMessages ? t('placeholderFollowUp') : t('placeholderInitial')}
           rows={1}
