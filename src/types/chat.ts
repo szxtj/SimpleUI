@@ -77,14 +77,57 @@ export interface ChatSession {
   enableWikiSearch?: boolean; // Conversation-level independent offline wiki toggle (default false)
 }
 
+export type ApiProvider = 'local' | 'deepseek';
+
+/** 本地引擎独立设置 */
+export interface LocalProviderConfig {
+  apiPort: number;              // Local server port, default 1235
+  apiBaseUrl?: string;          // Optional custom base URL
+  modelId: string;              // e.g. "gemma-4-26b-a4b-it"
+  maxContext: number;           // e.g. 16384 (16K)
+  maxTokens: number;            // Linked half of maxContext
+  temperature: number;          // 0.0 - 2.0 (default 1.0)
+  topP: number;                 // 0.01 - 1.0 (default 0.95)
+  topK: number;                 // 1 - 256 (default 64)
+  repetitionPenalty: number;    // > 0 (default 1.0)
+  seed?: number;                // UInt64 seed
+  stopStrings: string[];        // Stop sequence array
+  systemPrompt: string;         // System instructions
+}
+
+/** DeepSeek 官方 API 独立设置 */
+export interface DeepSeekProviderConfig {
+  apiKey: string;               // DeepSeek official API key
+  baseUrl: string;              // Default: "https://api.deepseek.com"
+  modelId: string;              // e.g. "deepseek-flash", "deepseek-v4-pro"
+  maxContext: number;           // e.g. 131072 (128K)
+  maxTokens: number;            // Default 8192
+  temperature: number;          // 官网默认 1.0 (思考 0.6 / 代码 0.0 / 翻译 1.3 / 创意 1.5)
+  topP: number;                 // 官网默认 1.0 (思考模式 0.95 - 1.0)
+  reasoningEffort: 'low' | 'high' | 'max'; // 深度思考推理深度
+  seed?: number;                // UInt64 seed
+  stopStrings: string[];        // Stop sequence array
+  systemPrompt: string;         // System instructions
+}
+
 export interface AppSettings {
+  apiProvider?: ApiProvider;    // 'local' (default) or 'deepseek'
+
+  // 两套独立存储的配置
+  localConfig?: LocalProviderConfig;
+  deepseekConfig?: DeepSeekProviderConfig;
+
+  // 扁平/激活状态字段（自动与当前活跃的 apiProvider 同步，保持全工程调用兼容）
   apiPort: number;              // Local server port, default 1235 (Ollama: 11434, vLLM: 8000, llama.cpp: 8080)
   apiBaseUrl?: string;          // Optional custom base URL if needed
   modelId: string;              // e.g. "gemma-4-26b-a4b-it"
-  maxContext: number;           // e.g. 32768 or 16384
+  deepseekApiKey?: string;      // DeepSeek official API key
+  deepseekModelId?: string;     // e.g. "deepseek-flash" (default), "deepseek-v4-pro"
+  deepseekBaseUrl?: string;     // Default: "https://api.deepseek.com"
+  maxContext: number;           // e.g. 32768 or 16384 or 131072
   enableThinking: boolean;      // Thinking switch (🧠)
-  reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'default';
-  temperature: number;          // 0.0 - 2.0 (default 0.2)
+  reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'max' | 'default';
+  temperature: number;          // 0.0 - 2.0 (default 0.2 / 1.0)
   topP: number;                 // 0.01 - 1.0 (default 0.95)
   topK: number;                 // 1 - 256 (default 64)
   repetitionPenalty: number;    // > 0 (default 1.0)

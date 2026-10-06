@@ -56,6 +56,7 @@ interface ChatViewProps {
   onRetry?: (messageId: string) => void;
   onDelete?: (messageId: string) => void;
   onShrinkToSpotlight?: () => void;
+  isDeepSeek?: boolean;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -88,6 +89,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onDelete,
   onShrinkToSpotlight,
   onStagesChange,
+  isDeepSeek = false,
   ownsTurn,
 }) => {
   const { t } = useI18n();
@@ -285,9 +287,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
           {!wikiPanelOpen && (
             <button
               type="button"
-              onClick={onToggleWikiPanel}
-              className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors cursor-pointer flex-shrink-0"
-              title={t('expandWikiPanel')}
+              onClick={isDeepSeek ? undefined : onToggleWikiPanel}
+              disabled={isDeepSeek}
+              className={`p-1.5 rounded-lg transition-colors flex-shrink-0 ${
+                isDeepSeek
+                  ? 'opacity-40 cursor-not-allowed text-zinc-400 dark:text-zinc-500'
+                  : 'text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 cursor-pointer'
+              }`}
+              title={isDeepSeek ? t('wikiDisabledInDeepSeek') : t('expandWikiPanel')}
             >
               <PanelRightOpen className="w-4 h-4" />
             </button>
@@ -406,6 +413,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             setEnableWikiSearch={setEnableWikiSearch}
             wikiConnected={wikiConnected}
             wikiEnabled={wikiEnabled}
+            isDeepSeek={isDeepSeek}
           />
 
           {/* Qianwen Style Disclaimer below input box */}

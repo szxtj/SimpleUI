@@ -1,5 +1,6 @@
 import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus } from '../types/chat';
 import { estimateHistoryTokens, setTokenCalibration } from '../utils/token';
+import { getImageFromDB } from './imageStore';
 
 /** 服务端 usage 的实际形状（TTF 会给出 cached / reasoning 明细） */
 interface UsagePayload {
@@ -36,6 +37,13 @@ export interface StreamCallbacks {
 
 export class TurboFieldfareAPI {
   public static getBaseUrl(settings: AppSettings): string {
+    if (settings.apiProvider === 'deepseek') {
+      const url = settings.deepseekBaseUrl?.trim();
+      if (url && url.startsWith('http')) {
+        return url.replace(/\/+$/, '');
+      }
+      return 'https://api.deepseek.com';
+    }
     if (settings.apiBaseUrl?.trim() && settings.apiBaseUrl.startsWith('http')) {
       return settings.apiBaseUrl.trim().replace(/\/+$/, '');
     }
@@ -43,6 +51,14 @@ export class TurboFieldfareAPI {
   }
 
   private static getHeaders(settings: AppSettings, extra?: Record<string, string>): Record<string, string> {
+    if (settings.apiProvider === 'deepseek') {
+      const apiKey = settings.deepseekApiKey?.trim() || '';
+      return {
+        'Accept': 'application/json',
+        ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}),
+        ...(extra || {}),
+      };
+    }
     const port = settings.apiPort || 1235;
     return {
       'Accept': 'application/json',
@@ -52,6 +68,39 @@ export class TurboFieldfareAPI {
   }
 
   static async checkHealth(settings: AppSettings): Promise<ServerHealthInfo> {
+    if (settings.apiProvider === 'deepseek') {
+      const apiKey = settings.deepseekApiKey?.trim();
+      if (!apiKey) {
+        return {
+          status: 'missing_key',
+          vision: 'unsupported',
+          online: false,
+        };
+      }
+      const baseUrl = this.getBaseUrl(settings);
+      try {
+        const res = await fetch(`${baseUrl}/models`, {
+          method: 'GET',
+          headers: this.getHeaders(settings),
+        }).catch(() => null);
+
+        if (res && res.ok) {
+          return {
+            status: 'ok',
+            vision: 'ready', // DeepSeek-Flash natively supports multimodal image understanding
+            modelId: settings.deepseekModelId || 'deepseek-flash',
+            online: true,
+          };
+        }
+        if (res && res.status === 401) {
+          return { status: 'auth_error', vision: 'unsupported', online: false };
+        }
+        return { status: 'offline', vision: 'unsupported', online: false };
+      } catch {
+        return { status: 'offline', vision: 'unsupported', online: false };
+      }
+    }
+
     const baseUrl = this.getBaseUrl(settings);
     try {
       // 1. Try /health (TurboFieldfare or compatible health check)
@@ -94,6 +143,36 @@ export class TurboFieldfareAPI {
   }
 
   static async fetchModels(settings: AppSettings): Promise<string[]> {
+    if (settings.apiProvider === 'deepseek') {
+      const defaultModels = ['deepseek-flash', 'deepseek-v4-pro'];
+      const apiKey = settings.deepseekApiKey?.trim();
+      if (!apiKey) return defaultModels;
+      const baseUrl = this.getBaseUrl(settings);
+      try {
+        const res = await fetch(`${baseUrl}/models`, {
+          method: 'GET',
+          headers: this.getHeaders(settings),
+        });
+        if (!res.ok) return defaultModels;
+        const data = await res.json();
+        if (Array.isArray(data.data) && data.data.length > 0) {
+          const ids: string[] = data.data.map((m: { id: string }) => m.id);
+          // Prioritize deepseek-flash and deepseek-v4-pro
+          ids.sort((a, b) => {
+            if (a === 'deepseek-flash') return -1;
+            if (b === 'deepseek-flash') return 1;
+            if (a === 'deepseek-v4-pro') return -1;
+            if (b === 'deepseek-v4-pro') return 1;
+            return a.localeCompare(b);
+          });
+          return ids;
+        }
+        return defaultModels;
+      } catch {
+        return defaultModels;
+      }
+    }
+
     const baseUrl = this.getBaseUrl(settings);
     try {
       const res = await fetch(`${baseUrl}/v1/models`, {
@@ -117,8 +196,17 @@ export class TurboFieldfareAPI {
     callbacks: StreamCallbacks,
     signal?: AbortSignal
   ): Promise<void> {
+    const isDeepSeek = settings.apiProvider === 'deepseek';
+    if (isDeepSeek && !settings.deepseekApiKey?.trim()) {
+      callbacks.onError?.(new Error('请在设置中配置 DeepSeek API Key'));
+      return;
+    }
+
     const baseUrl = this.getBaseUrl(settings);
-    const endpoint = `${baseUrl}/v1/chat/completions`;
+    const cleanBase = baseUrl.replace(/\/chat\/completions\/?$/, '').replace(/\/+$/, '');
+    const endpoint = isDeepSeek
+      ? `${cleanBase}/chat/completions`
+      : `${cleanBase}/v1/chat/completions`;
 
     // 1. Build strictly compliant message array
     const wireMessages: Array<{
@@ -134,20 +222,33 @@ export class TurboFieldfareAPI {
       });
     }
 
-    const isExternalApi = Boolean(baseUrl && !baseUrl.includes('127.0.0.1:31235') && !baseUrl.includes('localhost:31235'));
+    const isExternalApi = isDeepSeek || Boolean(baseUrl && !baseUrl.includes('127.0.0.1:31235') && !baseUrl.includes('localhost:31235'));
 
     for (const msg of messages) {
       if (msg.role === 'user') {
         if (msg.images && msg.images.length > 0) {
           const parts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }> = [];
-          if (msg.content) {
-            parts.push({ type: 'text', text: msg.content });
+          if (msg.content && msg.content.trim()) {
+            parts.push({ type: 'text', text: msg.content.trim() });
+          } else {
+            // 只有发单图片无字符的时候，默认带上简单的提示词
+            parts.push({ type: 'text', text: '请描述图片内容。' });
           }
           for (const imgUrl of msg.images) {
             let finalUrl = imgUrl;
-            if (isExternalApi && (imgUrl.startsWith('/api/media/') || imgUrl.includes('/api/media/'))) {
+            // 1. Hydrate if it's an IndexedDB offloaded pointer
+            if (finalUrl.startsWith('__idb__:')) {
               try {
-                const resp = await fetch(imgUrl);
+                const idbData = await getImageFromDB(finalUrl);
+                if (idbData) finalUrl = idbData;
+              } catch (e) {
+                console.warn('[api] Failed to hydrate image from IndexedDB:', e);
+              }
+            }
+            // 2. Convert /api/media/... or blob:... to Data URL for external API
+            if (isExternalApi && (finalUrl.startsWith('/api/media/') || finalUrl.includes('/api/media/') || finalUrl.startsWith('blob:'))) {
+              try {
+                const resp = await fetch(finalUrl);
                 if (resp.ok) {
                   const blob = await resp.blob();
                   finalUrl = await new Promise<string>((resolve, reject) => {
@@ -185,34 +286,66 @@ export class TurboFieldfareAPI {
     }
 
     // 2. Build strictly sanitized payload
-    // TurboFieldfareServer's OpenAIModels strictly rejects unrecognized fields!
-    const payload: Record<string, unknown> = {
-      model: settings.modelId || 'gemma-4-26b-a4b-it',
-      messages: wireMessages,
-      stream: true,
-      stream_options: { include_usage: true },
-      temperature: settings.temperature,
-      top_p: settings.topP,
-      top_k: settings.topK,
-      repetition_penalty: settings.repetitionPenalty,
-      max_tokens: settings.maxTokens,
-    };
+    let payload: Record<string, unknown>;
 
-    // Thinking controls
-    if (settings.enableThinking) {
-      payload.chat_template_kwargs = { enable_thinking: true };
-      payload.reasoning_effort = settings.reasoningEffort || 'high';
+    if (isDeepSeek) {
+      payload = {
+        model: settings.deepseekModelId || 'deepseek-flash',
+        messages: wireMessages,
+        stream: true,
+        stream_options: { include_usage: true },
+        max_tokens: settings.maxTokens,
+      };
+
+      if (settings.enableThinking) {
+        payload.thinking = { type: 'enabled' };
+        const effort = settings.reasoningEffort;
+        payload.reasoning_effort = (effort === 'low' || effort === 'high' || effort === 'max') ? effort : 'high';
+        if (settings.topP !== undefined) {
+          payload.top_p = Math.max(0.95, settings.topP);
+        }
+      } else {
+        payload.thinking = { type: 'disabled' };
+        if (settings.temperature !== undefined) {
+          payload.temperature = settings.temperature;
+        }
+        if (settings.topP !== undefined) {
+          payload.top_p = settings.topP;
+        }
+      }
+
+      if (settings.stopStrings && settings.stopStrings.length > 0) {
+        payload.stop = settings.stopStrings;
+      }
     } else {
-      payload.chat_template_kwargs = { enable_thinking: false };
-      payload.reasoning_effort = 'none';
-    }
+      payload = {
+        model: settings.modelId || 'gemma-4-26b-a4b-it',
+        messages: wireMessages,
+        stream: true,
+        stream_options: { include_usage: true },
+        temperature: settings.temperature,
+        top_p: settings.topP,
+        top_k: settings.topK,
+        repetition_penalty: settings.repetitionPenalty,
+        max_tokens: settings.maxTokens,
+      };
 
-    if (settings.seed !== undefined && settings.seed !== null && !isNaN(settings.seed)) {
-      payload.seed = settings.seed;
-    }
+      // Thinking controls for TTF
+      if (settings.enableThinking) {
+        payload.chat_template_kwargs = { enable_thinking: true };
+        payload.reasoning_effort = settings.reasoningEffort || 'high';
+      } else {
+        payload.chat_template_kwargs = { enable_thinking: false };
+        payload.reasoning_effort = 'none';
+      }
 
-    if (settings.stopStrings && settings.stopStrings.length > 0) {
-      payload.stop = settings.stopStrings;
+      if (settings.seed !== undefined && settings.seed !== null && !isNaN(settings.seed)) {
+        payload.seed = settings.seed;
+      }
+
+      if (settings.stopStrings && settings.stopStrings.length > 0) {
+        payload.stop = settings.stopStrings;
+      }
     }
 
     const initialPromptTokens = estimateHistoryTokens(messages, settings.systemPrompt);
@@ -341,7 +474,7 @@ export class TurboFieldfareAPI {
               }
 
               // 首个 chunk 携带 chatcmpl id：用它去服务端日志取真实 prompt token 数
-              if (parsed.id && !probeStarted) {
+              if (parsed.id && !probeStarted && !isDeepSeek) {
                 probeStarted = true;
                 probeRealPromptTokens(String(parsed.id));
               }

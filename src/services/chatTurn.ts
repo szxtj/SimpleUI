@@ -73,12 +73,14 @@ export async function buildPromptWithWiki(opts: {
   wikiMasterEnabled: boolean;
   sessionEnableWiki: boolean;
   wikiConnected: boolean;
+  isDeepSeek?: boolean;
   /** 用户点"停止"时的中止信号：会中止检索请求，并沿服务端管线中止所有相关模型调用 */
   signal?: AbortSignal;
 }): Promise<WikiPromptResult> {
-  const { textToSend, lang, wikiMasterEnabled, sessionEnableWiki, wikiConnected, signal } = opts;
+  const { textToSend, lang, wikiMasterEnabled, sessionEnableWiki, wikiConnected, isDeepSeek, signal } = opts;
 
-  if (!(wikiMasterEnabled && sessionEnableWiki && wikiConnected && textToSend)) {
+  // 选用 DeepSeek 官方 API 时不使用知识库
+  if (isDeepSeek || !(wikiMasterEnabled && sessionEnableWiki && wikiConnected && textToSend)) {
     return { promptToSend: textToSend, citations: [] };
   }
 
@@ -105,10 +107,11 @@ export function buildTurnMessages(opts: {
   textToSend: string;
   images: string[];
   enableThinking: boolean;
+  isDeepSeek?: boolean;
 }): { userMessage: ChatMessage; assistantMessage: ChatMessage; nextMessages: ChatMessage[] } {
   // enableThinking 仍在 opts 中（调用方传入），但占位消息不再据此置 isThinking：
   // prefill 阶段不算思考中，首个思考 token 到达后由调用方置 true。
-  const { historyMessages, textToSend, images } = opts;
+  const { historyMessages, textToSend, images, isDeepSeek } = opts;
   const now = Date.now();
 
   const userMessage: ChatMessage = {
@@ -130,9 +133,9 @@ export function buildTurnMessages(opts: {
     // prefill 阶段标记：占位消息尚未收到任何 token。首个 token 到达时由
     // 调用方（App.tsx / SpotlightView.tsx 的 onFirstToken）置回 false。
     pending: true,
-    // 回合阶段机：占位消息先进入知识库检索阶段；RAG 解析完成、即将请求推理引擎时
-    // 由调用方切到 'prefill'。任何时刻只显示一个阶段指示器。
-    stage: 'rag',
+    // 回合阶段机：DeepSeek 模式直接进入 prefill；本地模式先进入知识库检索阶段
+    stage: isDeepSeek ? 'prefill' : 'rag',
+    prefillStartedAt: isDeepSeek ? now : undefined,
     timestamp: now + 1,
   };
 

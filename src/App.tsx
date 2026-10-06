@@ -21,6 +21,8 @@ import {
   saveCurrentSessionId,
   loadSettings,
   saveSettings,
+  DEFAULT_LOCAL_CONFIG,
+  DEFAULT_DEEPSEEK_CONFIG,
   createNewSession,
   getOrCreateEmptySession,
   clearStalePending,
@@ -532,6 +534,7 @@ export const App: React.FC = () => {
 
   // Poll server health & fetch models
   useEffect(() => {
+    const isDeepSeek = settings.apiProvider === 'deepseek';
     const checkServer = async () => {
       const info = await TurboFieldfareAPI.checkHealth(settings);
       setHealthInfo(info);
@@ -539,22 +542,52 @@ export const App: React.FC = () => {
         const models = await TurboFieldfareAPI.fetchModels(settings);
         if (models.length > 0) {
           setAvailableModels(models);
-          const activeModel = info.modelId || (models.includes(settings.modelId) ? settings.modelId : models[0]);
-          if (activeModel && activeModel !== settings.modelId && !models.includes(settings.modelId)) {
-            setSettings((prev) => {
-              const updated = { ...prev, modelId: activeModel };
-              saveSettings(updated);
-              return updated;
-            });
+          if (isDeepSeek) {
+            const currentModel = settings.deepseekModelId || 'deepseek-flash';
+            if (!models.includes(currentModel)) {
+              const activeModel = models[0];
+              setSettings((prev) => {
+                const nextDs = { ...(prev.deepseekConfig || DEFAULT_DEEPSEEK_CONFIG), modelId: activeModel };
+                const updated = { ...prev, deepseekModelId: activeModel, deepseekConfig: nextDs };
+                saveSettings(updated);
+                return updated;
+              });
+            }
+          } else {
+            const activeModel = info.modelId || (models.includes(settings.modelId) ? settings.modelId : models[0]);
+            if (activeModel && activeModel !== settings.modelId && !models.includes(settings.modelId)) {
+              setSettings((prev) => {
+                const nextLocal = { ...(prev.localConfig || DEFAULT_LOCAL_CONFIG), modelId: activeModel };
+                const updated = { ...prev, modelId: activeModel, localConfig: nextLocal };
+                saveSettings(updated);
+                return updated;
+              });
+            }
           }
         }
+      } else if (isDeepSeek) {
+        setAvailableModels(['deepseek-flash', 'deepseek-v4-pro']);
       }
     };
 
     checkServer();
     const timer = setInterval(checkServer, 10000);
     return () => clearInterval(timer);
-  }, [settings.apiPort, settings.modelId]);
+  }, [
+    settings.apiProvider,
+    settings.apiPort,
+    settings.modelId,
+    settings.deepseekApiKey,
+    settings.deepseekModelId,
+    settings.deepseekBaseUrl,
+  ]);
+
+  // DeepSeek 模式下自动关闭知识库面板
+  useEffect(() => {
+    if (settings.apiProvider === 'deepseek' && isWikiPanelOpen) {
+      setIsWikiPanelOpen(false);
+    }
+  }, [settings.apiProvider, isWikiPanelOpen]);
 
   // Poll local offline Wiki status
   useEffect(() => {
@@ -795,7 +828,8 @@ export const App: React.FC = () => {
    */
   const handleServiceApiPortChange = (port: number) => {
     setSettings((prev) => {
-      const updated = { ...prev, apiPort: port };
+      const nextLocal = { ...(prev.localConfig || DEFAULT_LOCAL_CONFIG), apiPort: port };
+      const updated = { ...prev, apiPort: port, localConfig: nextLocal };
       saveSettings(updated);
       return updated;
     });
@@ -816,17 +850,18 @@ export const App: React.FC = () => {
     stagesRef.current = []; // 新一轮：清空阶段快照
     setGeneratingSessionIds((prev) => (prev.includes(targetSessionId) ? prev : [...prev, targetSessionId]));
 
-    // 会话级开关（默认关闭）
-    const sessionEnableWiki = targetSession.enableWikiSearch ?? false;
+    // 会话级开关（DeepSeek模式下禁用知识库）
+    const isDeepSeek = settings.apiProvider === 'deepseek';
+    const sessionEnableWiki = isDeepSeek ? false : (targetSession.enableWikiSearch ?? false);
     const sessionEnableThinking = targetSession.enableThinking ?? false;
 
-    // 占位消息**先于知识库检索**创建（stage='rag'）：检索/消歧/路由期间界面不再空转，
-    // 由 StageLadder 按打点逐行固化各阶段。
+    // 占位消息：DeepSeek模式直接进入prefill；本地模式先进入stage='rag'
     const { userMessage, assistantMessage } = buildTurnMessages({
       historyMessages,
       textToSend,
       images: currentImages,
       enableThinking: sessionEnableThinking,
+      isDeepSeek,
     });
     const assistantMsgId = assistantMessage.id;
 
@@ -856,10 +891,7 @@ export const App: React.FC = () => {
       })
     );
 
-    // 离线维基 RAG：检索 + Grounding Prompt 包装。
-    // 与 Spotlight 浮窗共用 services/chatTurn 的同一实现（提示词逐字一致），且不再有上下文预算。
-    // abortController.signal 传入后：用户点"停止"不仅撤下占位消息，
-    // 还会沿服务端管线中止正在进行的检索与全部主力模型调用（规划/义项/路由）。
+    // 离线维基 RAG：检索 + Grounding Prompt 包装（DeepSeek 模式自动跳过）。
     let ragResult: { promptToSend: string; citations: WikiCitation[] };
     try {
       ragResult = await buildPromptWithWiki({
@@ -868,6 +900,7 @@ export const App: React.FC = () => {
         wikiMasterEnabled: wikiStatus.enabled,
         sessionEnableWiki,
         wikiConnected: wikiStatus.connected,
+        isDeepSeek,
         signal: abortController.signal,
       });
     } catch (e) {
@@ -1391,12 +1424,31 @@ export const App: React.FC = () => {
             // 立即广播，保证 Spotlight 浮窗同步到同一会话的同名开关
             notifySessionUpdate(currentSessionId, 'MAIN');
           }}
-          modelId={settings.modelId}
+          modelId={settings.apiProvider === 'deepseek' ? (settings.deepseekModelId || 'deepseek-flash') : settings.modelId}
           availableModels={availableModels}
           onSelectModel={(m) => {
-            setSettings((prev) => ({ ...prev, modelId: m }));
-            saveSettings({ ...settings, modelId: m });
+            if (settings.apiProvider === 'deepseek') {
+              const nextDs = { ...(settings.deepseekConfig || DEFAULT_DEEPSEEK_CONFIG), modelId: m };
+              const updated = {
+                ...settings,
+                deepseekModelId: m,
+                modelId: m,
+                deepseekConfig: nextDs,
+              };
+              setSettings(updated);
+              saveSettings(updated);
+            } else {
+              const nextLocal = { ...(settings.localConfig || DEFAULT_LOCAL_CONFIG), modelId: m };
+              const updated = {
+                ...settings,
+                modelId: m,
+                localConfig: nextLocal,
+              };
+              setSettings(updated);
+              saveSettings(updated);
+            }
           }}
+          isDeepSeek={settings.apiProvider === 'deepseek'}
           visionReady={healthInfo.vision === 'ready'}
           lastMetrics={lastMetrics}
           onOpenSettings={() => setIsSettingsOpen(true)}

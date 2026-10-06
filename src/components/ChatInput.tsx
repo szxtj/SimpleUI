@@ -25,6 +25,7 @@ interface ChatInputProps {
   setEnableWikiSearch?: (val: boolean) => void;
   wikiConnected?: boolean;
   wikiEnabled?: boolean;
+  isDeepSeek?: boolean;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = ({
@@ -45,6 +46,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   setEnableWikiSearch,
   wikiConnected = false,
   wikiEnabled = true,
+  isDeepSeek = false,
 }) => {
   const { t } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -175,27 +177,29 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             )}
           </button>
 
-          {/* Offline Wiki Knowledge Toggle Button — 服务总开关关闭时完全不渲染 */}
+          {/* Offline Wiki Knowledge Toggle Button — 服务总开关关闭时完全不渲染，DeepSeek模式下显示不可用 */}
           {wikiEnabled && (<button
             type="button"
-            onClick={() => wikiConnected && setEnableWikiSearch?.(!enableWikiSearch)}
-            disabled={!wikiConnected}
+            onClick={() => !isDeepSeek && wikiConnected && setEnableWikiSearch?.(!enableWikiSearch)}
+            disabled={isDeepSeek || !wikiConnected}
             className={`flex items-center gap-1.5 px-2 cq-md:px-3 py-1.5 rounded-full text-xs font-medium transition-all active:scale-95 border flex-shrink-0 ${
-              !wikiConnected
+              isDeepSeek || !wikiConnected
                 ? 'opacity-40 cursor-not-allowed bg-black/5 text-zinc-400 dark:bg-white/5 dark:text-zinc-500 border-transparent'
                 : enableWikiSearch
                 ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border-emerald-500/40 dark:hover:bg-emerald-900/80 shadow-sm'
                 : 'bg-black/5 text-zinc-600 border-black/5 hover:bg-black/10 hover:text-black dark:bg-white/5 dark:text-zinc-300 dark:border-white/5 dark:hover:bg-white/10 dark:hover:text-white'
             }`}
             title={
-              !wikiConnected
+              isDeepSeek
+                ? t('wikiDisabledInDeepSeek')
+                : !wikiConnected
                 ? t('wikiDisconnectedTooltip')
                 : enableWikiSearch
                 ? t('wikiSearchOnTooltip')
                 : t('wikiSearchOffTooltip')
             }
           >
-            <BookOpen className={`w-3.5 h-3.5 ${enableWikiSearch && wikiConnected ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
+            <BookOpen className={`w-3.5 h-3.5 ${!isDeepSeek && enableWikiSearch && wikiConnected ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
             <span className="hidden cq-md:inline">{t('offlineWiki')}</span>
           </button>)}
         </div>

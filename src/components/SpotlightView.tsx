@@ -386,22 +386,35 @@ export const SpotlightView: React.FC = () => {
     />
   );
 
+  const isDeepSeek = settings.apiProvider === 'deepseek';
+
   /** 输入框发送按钮左侧的「搜索」小按钮（胶囊态 / 展开态共用同一份外观）
    *  尺寸与右侧发送按钮完全一致：w-7 h-7 圆 + w-3.5 h-3.5 图标（发送是 ArrowUp 同尺寸）。
    *  仅配色更轻（浅底幽灵按钮），避免抢发送这个主操作的视觉权重。
    *
-   *  **不做服务可用性门禁**：与主窗口头部那个「展开知识库面板」开关保持一致——服务未开启 /
-   *  未就绪时照样能打开面板，由面板内部给出同风格提醒（说明为什么用不了），而不是按钮直接消失。 */
+   *  DeepSeek 模式下设为不可用；本地模式下未开启时照样能打开面板查看提醒。 */
   const wikiSearchButton = (
     <button
       type="button"
-      onClick={openWikiPanel}
-      className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 transition-colors bg-black/5 hover:bg-black/10 text-zinc-600 hover:text-black dark:bg-white/5 dark:hover:bg-white/10 dark:text-zinc-300 dark:hover:text-white"
-      title={t('expandWikiPanel')}
+      onClick={isDeepSeek ? undefined : openWikiPanel}
+      disabled={isDeepSeek}
+      className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
+        isDeepSeek
+          ? 'opacity-40 cursor-not-allowed bg-black/5 text-zinc-400 dark:bg-white/5 dark:text-zinc-500'
+          : 'bg-black/5 hover:bg-black/10 text-zinc-600 hover:text-black dark:bg-white/5 dark:hover:bg-white/10 dark:text-zinc-300 dark:hover:text-white cursor-pointer'
+      }`}
+      title={isDeepSeek ? t('wikiDisabledInDeepSeek') : t('expandWikiPanel')}
     >
       <Search className="w-3.5 h-3.5 stroke-[2.5]" />
     </button>
   );
+
+  // DeepSeek 模式下自动关闭知识库面板
+  useEffect(() => {
+    if (isDeepSeek && isWikiPanelOpen) {
+      closeWikiPanel();
+    }
+  }, [isDeepSeek, isWikiPanelOpen]);
 
   useEffect(() => {
     const isNewMessage = messages.length > prevMessagesLengthRef.current;
@@ -786,12 +799,16 @@ export const SpotlightView: React.FC = () => {
     currentImages: string[],
     historyMessages: ChatMessage[]
   ) => {
+    const isDeepSeek = settings.apiProvider === 'deepseek';
+    const effectiveEnableWiki = isDeepSeek ? false : enableWikiSearch;
+
     // 与主窗口共用同一套消息构造（形状与 ID 规则一致）
     const { userMessage, assistantMessage: initialAsstMessage, nextMessages } = buildTurnMessages({
       historyMessages,
       textToSend,
       images: currentImages,
       enableThinking,
+      isDeepSeek,
     });
     const asstMessageId = initialAsstMessage.id;
     currentAsstMsgIdRef.current = asstMessageId;
@@ -807,13 +824,7 @@ export const SpotlightView: React.FC = () => {
     }
     generatingSessionIdRef.current = currentSessionId;
 
-    // 向主窗口广播回合阶段（stage='rag' → 'prefill'）：主窗口据此把发送按钮切成"停止"、
-    // 并在其镜像的回合上显示同一套阶段指示器（否则浮窗生成期间主窗口毫无感知）。
-    // ⚠️ 必须在 currentSessionId 确定之后广播——早于它会把旧/空会话 ID 发给主窗口，
-    // 污染其 generatingSessionIds 并触发错误的会话重载（实测导致主窗口视图错乱）。
-    // ⚠️ citations 由参数传入：foundCitations 在 RAG 块之后才声明（let），
-    //    此处直接引用会触发 TDZ（实测压缩后报「Cannot access '$' before initialization」，
-    //    广播抛异常 → executeSend 同步段中断 → 整轮静默死亡：无阶段显示 + 假停止按钮）。
+    // 向主窗口广播回合阶段（DeepSeek 模式直接 prefill，本地模式先 stage='rag'）
     const broadcastStage = (stage: 'rag' | 'prefill', pending: boolean, citations?: WikiCitation[]) => {
       syncChannel?.postMessage({
         type: 'STREAM_CHUNK',
@@ -830,7 +841,7 @@ export const SpotlightView: React.FC = () => {
       });
     };
     try {
-      broadcastStage('rag', true);
+      broadcastStage(isDeepSeek ? 'prefill' : 'rag', true);
     } catch (e) {
       // 广播失败不中止本轮：主窗口的阶段同步会缺席，但生成流程继续
       console.error('[Spotlight] stage broadcast failed:', e);
@@ -854,7 +865,7 @@ export const SpotlightView: React.FC = () => {
           title: nextTitle,
           messages: nextMessages,
           enableThinking,
-          enableWikiSearch,
+          enableWikiSearch: effectiveEnableWiki,
           updatedAt: Date.now(),
         };
         saveSessions(allSessions);
@@ -868,7 +879,7 @@ export const SpotlightView: React.FC = () => {
           updatedAt: Date.now(),
           contextUsed: usedTokens,
           enableThinking,
-          enableWikiSearch,
+          enableWikiSearch: effectiveEnableWiki,
         });
         saveSessions(cleanSessions);
       }
@@ -878,8 +889,7 @@ export const SpotlightView: React.FC = () => {
       console.error('Failed to immediately sync session to main window:', e);
     }
 
-    // 2. 离线维基 RAG：与主窗口共用 services/chatTurn 的同一实现（提示词逐字一致），且不再有上下文预算。
-    // AbortController 先建：停止按钮在检索阶段同样生效（中止检索与所有相关模型调用）。
+    // 2. 离线维基 RAG：与主窗口共用 services/chatTurn 的同一实现（DeepSeek 模式自动跳过）。
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
     stagesRef.current = []; // 新一轮：清空阶段快照
@@ -893,8 +903,9 @@ export const SpotlightView: React.FC = () => {
         textToSend,
         lang,
         wikiMasterEnabled: wikiStatus.enabled,
-        sessionEnableWiki: enableWikiSearch,
+        sessionEnableWiki: effectiveEnableWiki,
         wikiConnected: wikiStatus.connected,
+        isDeepSeek,
         signal: abortController.signal,
       });
       promptToSend = rag.promptToSend;
@@ -1597,27 +1608,29 @@ export const SpotlightView: React.FC = () => {
                   )}
                 </button>
 
-                {/* Offline Wiki Knowledge Toggle Button — 服务总开关关闭时完全不渲染 */}
+                {/* Offline Wiki Knowledge Toggle Button — 服务总开关关闭时完全不渲染，DeepSeek模式下显示不可用 */}
                 {wikiStatus.enabled && (<button
                   type="button"
-                  onClick={() => wikiStatus.connected && toggleWiki(!enableWikiSearch)}
-                  disabled={!wikiStatus.connected}
+                  onClick={() => !isDeepSeek && wikiStatus.connected && toggleWiki(!enableWikiSearch)}
+                  disabled={isDeepSeek || !wikiStatus.connected}
                   className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all active:scale-95 border ${
-                    !wikiStatus.connected
+                    isDeepSeek || !wikiStatus.connected
                       ? 'opacity-40 cursor-not-allowed bg-black/5 text-zinc-400 dark:bg-white/5 dark:text-zinc-500 border-transparent'
                       : enableWikiSearch
                       ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border-emerald-500/40 dark:hover:bg-emerald-900/80'
                       : 'bg-black/5 text-zinc-600 border-black/5 hover:bg-black/10 hover:text-black dark:bg-white/5 dark:text-zinc-300 dark:border-white/5 dark:hover:bg-white/10 dark:hover:text-white'
                   }`}
                   title={
-                    !wikiStatus.connected
+                    isDeepSeek
+                      ? t('wikiDisabledInDeepSeek')
+                      : !wikiStatus.connected
                       ? t('wikiDisconnectedTooltip')
                       : enableWikiSearch
                       ? t('wikiSearchOnTooltip')
                       : t('wikiSearchOffTooltip')
                   }
                 >
-                  <BookOpen className={`w-3.5 h-3.5 ${enableWikiSearch && wikiStatus.connected ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
+                  <BookOpen className={`w-3.5 h-3.5 ${!isDeepSeek && enableWikiSearch && wikiStatus.connected ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
                   <span>{t('offlineWiki')}</span>
                 </button>)}
               </div>
@@ -1979,27 +1992,29 @@ export const SpotlightView: React.FC = () => {
                   )}
                 </button>
 
-                {/* Offline Wiki Knowledge Toggle Button — 服务总开关关闭时完全不渲染 */}
+                {/* Offline Wiki Knowledge Toggle Button — 服务总开关关闭时完全不渲染，DeepSeek模式下显示不可用 */}
                 {wikiStatus.enabled && (<button
                   type="button"
-                  onClick={() => wikiStatus.connected && toggleWiki(!enableWikiSearch)}
-                  disabled={!wikiStatus.connected}
+                  onClick={() => !isDeepSeek && wikiStatus.connected && toggleWiki(!enableWikiSearch)}
+                  disabled={isDeepSeek || !wikiStatus.connected}
                   className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all active:scale-95 border ${
-                    !wikiStatus.connected
+                    isDeepSeek || !wikiStatus.connected
                       ? 'opacity-40 cursor-not-allowed bg-black/5 text-zinc-400 dark:bg-white/5 dark:text-zinc-500 border-transparent'
                       : enableWikiSearch
                       ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border-emerald-500/40 dark:hover:bg-emerald-900/80'
                       : 'bg-black/5 text-zinc-600 border-black/5 hover:bg-black/10 hover:text-black dark:bg-white/5 dark:text-zinc-300 dark:border-white/5 dark:hover:bg-white/10 dark:hover:text-white'
                   }`}
                   title={
-                    !wikiStatus.connected
+                    isDeepSeek
+                      ? t('wikiDisabledInDeepSeek')
+                      : !wikiStatus.connected
                       ? t('wikiDisconnectedTooltip')
                       : enableWikiSearch
                       ? t('wikiSearchOnTooltip')
                       : t('wikiSearchOffTooltip')
                   }
                 >
-                  <BookOpen className={`w-3.5 h-3.5 ${enableWikiSearch && wikiStatus.connected ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
+                  <BookOpen className={`w-3.5 h-3.5 ${!isDeepSeek && enableWikiSearch && wikiStatus.connected ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
                   <span>{t('offlineWiki')}</span>
                 </button>)}
               </div>

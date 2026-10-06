@@ -499,6 +499,11 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
         <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
           {/* Knowledge Base Configuration Card */}
           <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
+            {settings.apiProvider === 'deepseek' && (
+              <div className="mb-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-[11px] leading-relaxed">
+                {t('wikiDisabledInDeepSeek')}
+              </div>
+            )}
             <div className="flex items-center justify-between mb-2.5">
               <div className="flex items-center gap-2">
                 <BookOpen className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />

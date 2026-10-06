@@ -1,10 +1,11 @@
-import { ChatSession, AppSettings, ChatMessage } from '../types/chat';
+import { ChatSession, AppSettings, ChatMessage, LocalProviderConfig, DeepSeekProviderConfig, ApiProvider } from '../types/chat';
 import { saveImageToDB, getImagesFromDB } from './imageStore';
 import { uploadDataUrl } from '../utils/image';
 
 const SESSIONS_KEY = 'tff_chat_sessions_v1';
 const CURRENT_ID_KEY = 'tff_chat_current_id_v1';
 const SETTINGS_KEY = 'tff_chat_settings_v1';
+const DEEPSEEK_API_KEY_KEY = 'tff_deepseek_api_key_v1';
 
 // Cross-window BroadcastChannel for instant real-time sync between Main and Spotlight windows
 export const syncChannel =
@@ -28,20 +29,60 @@ export function notifySettingsUpdate(): void {
   }
 }
 
-export const DEFAULT_SETTINGS: AppSettings = {
+/** 本地引擎默认独立配置 */
+export const DEFAULT_LOCAL_CONFIG: LocalProviderConfig = {
   apiPort: 1235,
   apiBaseUrl: '',
   modelId: 'gemma-4-26b-a4b-it',
   maxContext: 16384, // 16K default
-  enableThinking: false, // Default OFF
-  reasoningEffort: 'high',
+  maxTokens: 8192, // Linked: half of maxContext (16384 / 2)
   temperature: 1.0, // Gemma 4 26B-A4B official recommended default
   topP: 0.95,
   topK: 64,
   repetitionPenalty: 1.0,
-  maxTokens: 8192, // Linked: half of maxContext (16384 / 2)
+  seed: undefined,
   stopStrings: [],
-  systemPrompt: 'You are a helpful assistant.', // Google Gemma official canonical prompt
+  systemPrompt: 'You are a helpful assistant.',
+};
+
+/** DeepSeek 官方 API 默认独立配置（依照官网推荐参数） */
+export const DEFAULT_DEEPSEEK_CONFIG: DeepSeekProviderConfig = {
+  apiKey: '',
+  baseUrl: 'https://api.deepseek.com',
+  modelId: 'deepseek-flash', // 最新主力推荐模型
+  maxContext: 131072, // 128K 推荐上下文
+  maxTokens: 8192, // DeepSeek 官方单次补全上限/推荐默认 8K
+  temperature: 1.0, // 官网默认值 1.0（思考建议 0.6 / 代码 0.0 / 翻译 1.3 / 创意 1.5）
+  topP: 1.0, // 官网默认值 1.0（思考模式有效范围 0.95 - 1.0）
+  reasoningEffort: 'high', // 深度思考推荐默认 high
+  seed: undefined,
+  stopStrings: [],
+  systemPrompt: '', // 官方推荐零样本直接提问，默认空提示词
+};
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  apiProvider: 'local',
+  localConfig: { ...DEFAULT_LOCAL_CONFIG },
+  deepseekConfig: { ...DEFAULT_DEEPSEEK_CONFIG },
+
+  // 活跃状态扁平字段（默认与本地引擎一致）
+  apiPort: DEFAULT_LOCAL_CONFIG.apiPort,
+  apiBaseUrl: DEFAULT_LOCAL_CONFIG.apiBaseUrl,
+  modelId: DEFAULT_LOCAL_CONFIG.modelId,
+  deepseekApiKey: DEFAULT_DEEPSEEK_CONFIG.apiKey,
+  deepseekModelId: DEFAULT_DEEPSEEK_CONFIG.modelId,
+  deepseekBaseUrl: DEFAULT_DEEPSEEK_CONFIG.baseUrl,
+  maxContext: DEFAULT_LOCAL_CONFIG.maxContext,
+  enableThinking: false, // Default OFF
+  reasoningEffort: 'high',
+  temperature: DEFAULT_LOCAL_CONFIG.temperature,
+  topP: DEFAULT_LOCAL_CONFIG.topP,
+  topK: DEFAULT_LOCAL_CONFIG.topK,
+  repetitionPenalty: DEFAULT_LOCAL_CONFIG.repetitionPenalty,
+  maxTokens: DEFAULT_LOCAL_CONFIG.maxTokens,
+  seed: undefined,
+  stopStrings: [],
+  systemPrompt: DEFAULT_LOCAL_CONFIG.systemPrompt,
   language: 'system',
   theme: 'system',
   enableWikiSearch: false, // Default OFF
@@ -51,23 +92,101 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
 export function loadSettings(): AppSettings {
   try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(SETTINGS_KEY) : null;
     if (!raw) return DEFAULT_SETTINGS;
     const parsed = JSON.parse(raw);
-    const maxContext = parsed?.maxContext || DEFAULT_SETTINGS.maxContext;
+    const provider: ApiProvider = parsed?.apiProvider === 'deepseek' ? 'deepseek' : 'local';
+
+    // 1. 恢复或迁移 localConfig
+    const rawLocal = parsed?.localConfig || {};
+    const localMaxContext = Number(rawLocal.maxContext || (parsed.apiProvider === 'local' ? parsed.maxContext : undefined) || DEFAULT_LOCAL_CONFIG.maxContext);
+    const localConfig: LocalProviderConfig = {
+      ...DEFAULT_LOCAL_CONFIG,
+      ...rawLocal,
+      apiPort: rawLocal.apiPort || parsed.apiPort || DEFAULT_LOCAL_CONFIG.apiPort,
+      apiBaseUrl: rawLocal.apiBaseUrl ?? parsed.apiBaseUrl ?? DEFAULT_LOCAL_CONFIG.apiBaseUrl,
+      modelId: rawLocal.modelId || (parsed.apiProvider === 'local' ? parsed.modelId : undefined) || DEFAULT_LOCAL_CONFIG.modelId,
+      maxContext: localMaxContext,
+      maxTokens: Math.floor(localMaxContext / 2),
+      temperature: rawLocal.temperature !== undefined ? Number(rawLocal.temperature) : (parsed.apiProvider === 'local' && parsed.temperature !== undefined ? Number(parsed.temperature) : DEFAULT_LOCAL_CONFIG.temperature),
+      topP: rawLocal.topP !== undefined ? Number(rawLocal.topP) : (parsed.apiProvider === 'local' && parsed.topP !== undefined ? Number(parsed.topP) : DEFAULT_LOCAL_CONFIG.topP),
+      topK: rawLocal.topK !== undefined ? Number(rawLocal.topK) : (parsed.topK !== undefined ? Number(parsed.topK) : DEFAULT_LOCAL_CONFIG.topK),
+      repetitionPenalty: rawLocal.repetitionPenalty !== undefined ? Number(rawLocal.repetitionPenalty) : (parsed.repetitionPenalty !== undefined ? Number(parsed.repetitionPenalty) : DEFAULT_LOCAL_CONFIG.repetitionPenalty),
+      seed: rawLocal.seed !== undefined ? Number(rawLocal.seed) : (parsed.apiProvider === 'local' && parsed.seed !== undefined ? Number(parsed.seed) : undefined),
+      stopStrings: Array.isArray(rawLocal.stopStrings) ? rawLocal.stopStrings : (parsed.apiProvider === 'local' && Array.isArray(parsed.stopStrings) ? parsed.stopStrings : []),
+      systemPrompt: rawLocal.systemPrompt !== undefined ? rawLocal.systemPrompt : (parsed.apiProvider === 'local' && parsed.systemPrompt !== undefined ? parsed.systemPrompt : DEFAULT_LOCAL_CONFIG.systemPrompt),
+    };
+
+    // 2. 恢复或迁移 deepseekConfig
+    const rawDs = parsed?.deepseekConfig || {};
+    const dsMaxContext = Number(rawDs.maxContext || (parsed.apiProvider === 'deepseek' ? parsed.maxContext : undefined) || DEFAULT_DEEPSEEK_CONFIG.maxContext);
+    const storedApiKey = typeof localStorage !== 'undefined' ? localStorage.getItem(DEEPSEEK_API_KEY_KEY) : null;
+    const resolvedApiKey = (
+      rawDs.apiKey ||
+      parsed.deepseekApiKey ||
+      storedApiKey ||
+      DEFAULT_DEEPSEEK_CONFIG.apiKey
+    ).trim();
+
+    if (resolvedApiKey && typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem(DEEPSEEK_API_KEY_KEY, resolvedApiKey);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const deepseekConfig: DeepSeekProviderConfig = {
+      ...DEFAULT_DEEPSEEK_CONFIG,
+      ...rawDs,
+      apiKey: resolvedApiKey,
+      baseUrl: rawDs.baseUrl || parsed.deepseekBaseUrl || DEFAULT_DEEPSEEK_CONFIG.baseUrl,
+      modelId: rawDs.modelId || (parsed.apiProvider === 'deepseek' ? parsed.deepseekModelId || parsed.modelId : undefined) || DEFAULT_DEEPSEEK_CONFIG.modelId,
+      maxContext: dsMaxContext,
+      maxTokens: rawDs.maxTokens || DEFAULT_DEEPSEEK_CONFIG.maxTokens,
+      temperature: rawDs.temperature !== undefined ? Number(rawDs.temperature) : (parsed.apiProvider === 'deepseek' && parsed.temperature !== undefined ? Number(parsed.temperature) : DEFAULT_DEEPSEEK_CONFIG.temperature),
+      topP: rawDs.topP !== undefined ? Number(rawDs.topP) : (parsed.apiProvider === 'deepseek' && parsed.topP !== undefined ? Number(parsed.topP) : DEFAULT_DEEPSEEK_CONFIG.topP),
+      reasoningEffort: rawDs.reasoningEffort || (parsed.apiProvider === 'deepseek' ? parsed.reasoningEffort : undefined) || DEFAULT_DEEPSEEK_CONFIG.reasoningEffort,
+      seed: rawDs.seed !== undefined ? Number(rawDs.seed) : (parsed.apiProvider === 'deepseek' && parsed.seed !== undefined ? Number(parsed.seed) : undefined),
+      stopStrings: Array.isArray(rawDs.stopStrings) ? rawDs.stopStrings : (parsed.apiProvider === 'deepseek' && Array.isArray(parsed.stopStrings) ? parsed.stopStrings : []),
+      systemPrompt: rawDs.systemPrompt !== undefined ? rawDs.systemPrompt : (parsed.apiProvider === 'deepseek' && parsed.systemPrompt !== undefined ? parsed.systemPrompt : DEFAULT_DEEPSEEK_CONFIG.systemPrompt),
+    };
+
+    // 3. 活跃提供商配置投影到扁平字段
+    const active = provider === 'deepseek' ? deepseekConfig : localConfig;
+
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      apiProvider: provider,
+      localConfig,
+      deepseekConfig,
+
+      // 投影活跃配置
+      apiPort: localConfig.apiPort,
+      apiBaseUrl: localConfig.apiBaseUrl,
+      deepseekApiKey: resolvedApiKey,
+      deepseekModelId: deepseekConfig.modelId,
+      deepseekBaseUrl: deepseekConfig.baseUrl,
+
+      modelId: active.modelId,
+      maxContext: active.maxContext,
+      maxTokens: active.maxTokens,
+      temperature: active.temperature,
+      topP: active.topP,
+      topK: localConfig.topK,
+      repetitionPenalty: localConfig.repetitionPenalty,
+      reasoningEffort: provider === 'deepseek' ? deepseekConfig.reasoningEffort : (parsed.reasoningEffort || 'high'),
+      seed: active.seed,
+      stopStrings: active.stopStrings,
+      systemPrompt: active.systemPrompt,
+
       language: parsed?.language || 'system',
       theme: parsed?.theme || 'system',
       enableThinking: parsed?.enableThinking !== undefined ? parsed.enableThinking : false,
       enableWikiSearch: parsed?.enableWikiSearch !== undefined ? parsed.enableWikiSearch : false,
       customWikiDir: parsed?.customWikiDir || '',
       spotlightResetMinutes: parsed?.spotlightResetMinutes !== undefined ? Number(parsed.spotlightResetMinutes) : 15,
-      apiPort: parsed?.apiPort || 1235,
-      maxContext,
-      maxTokens: Math.floor(maxContext / 2),
-      stopStrings: Array.isArray(parsed?.stopStrings) ? parsed.stopStrings : [],
     };
   } catch (e) {
     console.error('Failed to load settings from localStorage:', e);
@@ -77,21 +196,127 @@ export function loadSettings(): AppSettings {
 
 export function saveSettings(settings: AppSettings): void {
   try {
-    const maxContext = settings?.maxContext || DEFAULT_SETTINGS.maxContext;
+    const provider: ApiProvider = settings.apiProvider === 'deepseek' ? 'deepseek' : 'local';
+
+    // 1. 读取已有存储，确保无论当前是哪个 provider，另一套配置与 API Key 永不丢失
+    const rawExisting = typeof localStorage !== 'undefined' ? localStorage.getItem(SETTINGS_KEY) : null;
+    const existing = rawExisting ? JSON.parse(rawExisting) : {};
+    const existingLocal = existing.localConfig || {};
+    const existingDs = existing.deepseekConfig || {};
+    const storedApiKey = typeof localStorage !== 'undefined' ? localStorage.getItem(DEEPSEEK_API_KEY_KEY) : null;
+
+    // API Key 必须固定保留：
+    // 1. 用户若传入了非空 Key，采用新 Key 并持久化；
+    // 2. 若传入为空（例如点击恢复默认、修改端口、轮询触发的保存），必须固定保留已保存的有效 Key，绝不被置空覆盖！
+    const incomingKey = (
+      settings.deepseekConfig?.apiKey?.trim() ||
+      settings.deepseekApiKey?.trim() ||
+      ''
+    );
+
+    const effectiveApiKey = (
+      incomingKey ||
+      existingDs.apiKey ||
+      existing.deepseekApiKey ||
+      storedApiKey ||
+      ''
+    ).trim();
+
+    if (effectiveApiKey && typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem(DEEPSEEK_API_KEY_KEY, effectiveApiKey);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    // 2. 组装 localConfig
+    let localConfig: LocalProviderConfig = {
+      ...DEFAULT_LOCAL_CONFIG,
+      ...existingLocal,
+      ...(settings.localConfig || {}),
+    };
+    if (settings.apiPort !== undefined) localConfig.apiPort = settings.apiPort;
+    if (settings.apiBaseUrl !== undefined) localConfig.apiBaseUrl = settings.apiBaseUrl;
+
+    // 3. 组装 deepseekConfig
+    let deepseekConfig: DeepSeekProviderConfig = {
+      ...DEFAULT_DEEPSEEK_CONFIG,
+      ...existingDs,
+      ...(settings.deepseekConfig || {}),
+      apiKey: effectiveApiKey,
+    };
+    if (settings.deepseekBaseUrl !== undefined) deepseekConfig.baseUrl = settings.deepseekBaseUrl;
+    if (settings.deepseekModelId !== undefined) deepseekConfig.modelId = settings.deepseekModelId;
+
+    // 4. 同步活跃提供商的扁平修改
+    if (provider === 'local') {
+      const mc = settings.maxContext ?? localConfig.maxContext;
+      localConfig = {
+        ...localConfig,
+        modelId: settings.modelId ?? localConfig.modelId,
+        maxContext: mc,
+        maxTokens: Math.floor(mc / 2),
+        temperature: settings.temperature ?? localConfig.temperature,
+        topP: settings.topP ?? localConfig.topP,
+        topK: settings.topK ?? localConfig.topK,
+        repetitionPenalty: settings.repetitionPenalty ?? localConfig.repetitionPenalty,
+        seed: settings.seed !== undefined ? settings.seed : localConfig.seed,
+        stopStrings: Array.isArray(settings.stopStrings) ? settings.stopStrings : localConfig.stopStrings,
+        systemPrompt: settings.systemPrompt !== undefined ? settings.systemPrompt : localConfig.systemPrompt,
+      };
+    } else {
+      const mc = settings.maxContext ?? deepseekConfig.maxContext;
+      deepseekConfig = {
+        ...deepseekConfig,
+        modelId: settings.deepseekModelId ?? settings.modelId ?? deepseekConfig.modelId,
+        maxContext: mc,
+        maxTokens: settings.maxTokens ?? deepseekConfig.maxTokens,
+        temperature: settings.temperature ?? deepseekConfig.temperature,
+        topP: settings.topP ?? deepseekConfig.topP,
+        reasoningEffort: (settings.reasoningEffort as any) ?? deepseekConfig.reasoningEffort,
+        seed: settings.seed !== undefined ? settings.seed : deepseekConfig.seed,
+        stopStrings: Array.isArray(settings.stopStrings) ? settings.stopStrings : deepseekConfig.stopStrings,
+        systemPrompt: settings.systemPrompt !== undefined ? settings.systemPrompt : deepseekConfig.systemPrompt,
+      };
+    }
+
+    const active = provider === 'deepseek' ? deepseekConfig : localConfig;
+
     const sanitized: AppSettings = {
       ...DEFAULT_SETTINGS,
       ...settings,
+      apiProvider: provider,
+      localConfig,
+      deepseekConfig,
+
+      // 投影活跃配置
+      apiPort: localConfig.apiPort,
+      apiBaseUrl: localConfig.apiBaseUrl,
+      deepseekApiKey: effectiveApiKey,
+      deepseekModelId: deepseekConfig.modelId,
+      deepseekBaseUrl: deepseekConfig.baseUrl,
+
+      modelId: active.modelId,
+      maxContext: active.maxContext,
+      maxTokens: active.maxTokens,
+      temperature: active.temperature,
+      topP: active.topP,
+      topK: localConfig.topK,
+      repetitionPenalty: localConfig.repetitionPenalty,
+      reasoningEffort: provider === 'deepseek' ? deepseekConfig.reasoningEffort : (settings.reasoningEffort || 'high'),
+      seed: active.seed,
+      stopStrings: active.stopStrings,
+      systemPrompt: active.systemPrompt,
+
       language: settings?.language || 'system',
       theme: settings?.theme || 'system',
       enableThinking: settings?.enableThinking !== undefined ? settings.enableThinking : false,
       enableWikiSearch: settings?.enableWikiSearch !== undefined ? settings.enableWikiSearch : false,
       customWikiDir: settings?.customWikiDir || '',
       spotlightResetMinutes: settings?.spotlightResetMinutes !== undefined ? Number(settings.spotlightResetMinutes) : 15,
-      apiPort: settings?.apiPort || 1235,
-      maxContext,
-      maxTokens: Math.floor(maxContext / 2),
-      stopStrings: Array.isArray(settings?.stopStrings) ? settings.stopStrings : [],
     };
+
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(sanitized));
     notifySettingsUpdate();
   } catch (e) {
