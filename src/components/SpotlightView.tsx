@@ -177,19 +177,26 @@ export const SpotlightView: React.FC = () => {
   const isMultiline = input.includes('\n');
   const isExpanded = hasMessages || isMultiline;
 
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const userScrolledSinceSwitchRef = useRef(false);
+
   /**
-   * 消息流容器的「跟随底部 / 保位」行为 —— 与主窗口**共用同一份 hook**（`useFollowBottom`），
-   * 两窗口表现逐字一致。跟随只到"正文开始生成"为止：检索/载入/思考阶段跟随底部
-   * （否则思考框被顶出视野），正文一流式就进入保位期——完全不自动滚动，但由 hook
-   * 守住阅读位置（流式 Markdown 重排/思考条收起会把 scrollTop 钳向上方，即"往顶上跳"）。
+   * 消息流容器的「思考期跟随」行为 —— 与主窗口共用同一份 hook（useFollowBottom）。
+   * 仅在思考/阶段载入中跟随底部；用户一旦手动滚动，立刻永久停止跟随。
+   * 正文开始流式输出或生成结束后完全不干预，彻底移除回正逻辑。
    */
   const lastMsg = messages[messages.length - 1];
   const answerStreaming = !!lastMsg && lastMsg.role === 'assistant' && !!lastMsg.content;
+  const isThinkingPhase = isGenerating && !answerStreaming;
   const { containerProps: streamProps, markProgrammatic } = useFollowBottom(
-    isGenerating && !answerStreaming,
+    isThinkingPhase,
     isGenerating ? lastMsg?.id : undefined,
-    isGenerating
+    scrollContainerRef
   );
+
+  const handleUserScrollAction = useCallback(() => {
+    userScrolledSinceSwitchRef.current = true;
+  }, []);
 
   // Track latest state in refs for listeners and intervals
   useEffect(() => {
@@ -432,10 +439,44 @@ export const SpotlightView: React.FC = () => {
     prevMessagesLengthRef.current = messages.length;
     prevFirstMsgIdRef.current = messages[0]?.id;
 
-    if (isDifferentSession || isNewMessage) {
-      // 新回合/换会话：这次平滑滚动是程序化的，别被当成"用户滚动了"
-      markProgrammatic(700);
-      scrollEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = scrollContainerRef.current;
+    if (!el) return;
+
+    if (isDifferentSession) {
+      userScrolledSinceSwitchRef.current = false;
+      markProgrammatic(400);
+      el.scrollTop = el.scrollHeight;
+
+      requestAnimationFrame(() => {
+        if (!userScrolledSinceSwitchRef.current && el) {
+          el.scrollTop = el.scrollHeight;
+        }
+        requestAnimationFrame(() => {
+          if (!userScrolledSinceSwitchRef.current && el) {
+            el.scrollTop = el.scrollHeight;
+          }
+        });
+      });
+
+      const t1 = setTimeout(() => {
+        if (!userScrolledSinceSwitchRef.current && el) {
+          el.scrollTop = el.scrollHeight;
+        }
+      }, 120);
+
+      const t2 = setTimeout(() => {
+        if (!userScrolledSinceSwitchRef.current && el) {
+          el.scrollTop = el.scrollHeight;
+        }
+      }, 350);
+
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    } else if (isNewMessage) {
+      markProgrammatic(300);
+      el.scrollTop = el.scrollHeight;
     }
   }, [messages, markProgrammatic]);
 
@@ -1744,10 +1785,26 @@ export const SpotlightView: React.FC = () => {
           </div>
         </div>
 
-        {/* Message Scroll Area（跟随/保位由 useFollowBottom 接管，与主窗口一致） */}
+        {/* Message Scroll Area（仅在思考期由 useFollowBottom 钉底，用户一动即释放，与主窗口一致） */}
         <div
           {...streamProps}
-          className="flex-1 overflow-y-auto p-4 space-y-4 text-sm [overflow-anchor:none]"
+          onWheel={(e) => {
+            handleUserScrollAction();
+            streamProps.onWheel?.(e);
+          }}
+          onTouchMove={(e) => {
+            handleUserScrollAction();
+            streamProps.onTouchMove?.(e);
+          }}
+          onMouseDown={(e) => {
+            handleUserScrollAction();
+            streamProps.onMouseDown?.(e);
+          }}
+          onKeyDown={(e) => {
+            handleUserScrollAction();
+            streamProps.onKeyDown?.(e);
+          }}
+          className="flex-1 min-h-0 overflow-y-auto p-4 pb-6 space-y-4 text-sm overscroll-y-contain [overflow-anchor:none]"
         >
           {messages.map((msg) => {
             if (msg.role === 'user') {
@@ -1939,7 +1996,7 @@ export const SpotlightView: React.FC = () => {
               </div>
             );
           })}
-          <div ref={scrollEndRef} />
+          <div ref={scrollEndRef} className="h-6 flex-shrink-0" />
         </div>
 
         {/* Bottom Input Capsule */}

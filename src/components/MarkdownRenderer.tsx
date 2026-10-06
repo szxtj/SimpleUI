@@ -54,8 +54,56 @@ function trimInnerSpacesInBold(content: string): string {
   return trimmed.replace(/__PROTECTED_BLOCK_(\d+)__/g, (_, idx) => tokens[parseInt(idx, 10)]);
 }
 
+/**
+ * 标准化 LaTeX 公式定界符：
+ * DeepSeek / OpenAI 等模型官方默认输出标准的 LaTeX 定界符：
+ *   - 行内公式：\( ... \)
+ *   - 块级公式：\[ ... \]
+ * 而 remark-math 默认只识别 $...$ 与 $$...$$。
+ * 若不作转换，CommonMark 解析器会将 \( 与 \[ 中的反斜杠当成转义符吃掉，
+ * 渲染成普通括号 (x) 与 [x]，导致公式完全失效且内容混乱。
+ *
+ * 转换规则：
+ * 1. 保护代码块（```...``` 与 `...`），绝不改动代码中的反斜杠与括号；
+ * 2. 块级公式 \[ ... \] 转换为 $$ ... $$；
+ * 3. 行内公式 \( ... \) 转换为 $ ... $，并去除内部首尾空白（避免 remark-math 无法识别包含首尾空格的 $）；
+ * 4. 还原被保护的代码块。
+ */
+function normalizeLatexDelimiters(content: string): string {
+  if (!content) return '';
+
+  const tokens: string[] = [];
+  const placeholder = (idx: number) => `__LATEX_CODE_BLOCK_${idx}__`;
+
+  // Protect code blocks and inline code
+  const protectedContent = content.replace(
+    /(```[\s\S]*?```|`[^`\n]+`)/g,
+    (match) => {
+      tokens.push(match);
+      return placeholder(tokens.length - 1);
+    }
+  );
+
+  // Convert block math \[ ... \] to \n\n$$ ... $$\n\n
+  let normalized = protectedContent.replace(
+    /\\\[([\s\S]*?)\\\]/g,
+    (_, math) => `\n\n$$${math.trim()}$$\n\n`
+  );
+
+  // Convert inline math \( ... \) to $ ... $
+  normalized = normalized.replace(
+    /\\\(([\s\S]*?)\\\)/g,
+    (_, math) => `$${math.trim()}$`
+  );
+
+  // Restore protected blocks
+  return normalized.replace(/__LATEX_CODE_BLOCK_(\d+)__/g, (_, idx) => tokens[parseInt(idx, 10)]);
+}
+
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, className }) => {
-  const normalizedContent = useMemo(() => trimInnerSpacesInBold(content), [content]);
+  const normalizedContent = useMemo(() => {
+    return trimInnerSpacesInBold(normalizeLatexDelimiters(content));
+  }, [content]);
 
   return (
     <div className={`markdown-body ${className || 'text-[#e0e1e4] leading-relaxed'}`}>

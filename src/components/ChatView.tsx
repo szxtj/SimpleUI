@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { ChatMessage, TurnMetrics, TurnStageRecord } from '../types/chat';
 import { useI18n } from '../i18n';
 import { useFollowBottom } from '../hooks/useFollowBottom';
@@ -93,40 +93,79 @@ export const ChatView: React.FC<ChatViewProps> = ({
   ownsTurn,
 }) => {
   const { t } = useI18n();
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const prevMessagesLengthRef = useRef(messages.length);
   const prevFirstMsgIdRef = useRef(messages[0]?.id);
+  const userScrolledSinceSwitchRef = useRef(false);
   const [showModelMenu, setShowModelMenu] = useState(false);
 
   /**
-   * 消息流容器的「跟随底部 / 保位」行为（与浮窗共用同一份 hook，两窗口完全一致）。
-   *
-   * 跟随范围**只到"正文开始生成"为止**：检索 / 载入上下文 / 思考阶段跟随底部
-   * （否则思考框会被顶出视野，看不到最新一行）；**一旦正文开始流式输出就进入保位期**
-   * （keepPosition）：完全不自动滚动，但守住用户阅读位置——流式 Markdown 重排、
-   * 思考条收起会把 scrollTop 钳向上方（表现为"不停往顶上跳"），由 hook 拉回。
-   * 用户中途滚动滚轮 → 本轮彻底停止跟随（单向闩锁，见 hook）；turnKey = 本轮助手消息 id。
+   * 消息流容器的「思考期跟随」行为（与浮窗共用同一份 hook）。
+   * 仅在思考/阶段载入中跟随底部；用户一旦手动滚动，立刻永久停止跟随。
+   * 正文开始流式输出或生成结束后完全不干预，彻底移除回正逻辑。
    */
   const lastMsg = messages[messages.length - 1];
   const answerStreaming = !!lastMsg && lastMsg.role === 'assistant' && !!lastMsg.content;
+  const isThinkingPhase = isGenerating && !answerStreaming;
   const { containerProps: streamProps, markProgrammatic } = useFollowBottom(
-    isGenerating && !answerStreaming,
+    isThinkingPhase,
     isGenerating ? lastMsg?.id : undefined,
-    isGenerating
+    scrollContainerRef
   );
 
-  // Auto-scroll to bottom only when a new message turn is added or session changes
-  // Do NOT force focus on the line being generated so content flows naturally
+  const handleUserScrollAction = useCallback(() => {
+    userScrolledSinceSwitchRef.current = true;
+  }, []);
+
+  // 容器直接置底，彻底废弃 WebKit 异步 smooth scrollIntoView
+  // （WebKit 的平滑滚动会在 KaTeX/图片异步排版时锁定偏上的中间坐标，并在用户下拉时强行拉回）
   useEffect(() => {
     const isNewMessage = messages.length > prevMessagesLengthRef.current;
     const isDifferentSession = messages[0]?.id !== prevFirstMsgIdRef.current;
     prevMessagesLengthRef.current = messages.length;
     prevFirstMsgIdRef.current = messages[0]?.id;
 
-    if (isDifferentSession || isNewMessage) {
-      // 新回合/换会话：这次的平滑滚动是程序化的，别被当成"用户滚动了"
-      markProgrammatic(700);
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = scrollContainerRef.current;
+    if (!el) return;
+
+    if (isDifferentSession) {
+      userScrolledSinceSwitchRef.current = false;
+      markProgrammatic(400);
+      el.scrollTop = el.scrollHeight;
+
+      // 应对 KaTeX 公式与媒体图片异步渲染撑高布局，在多帧与短定时器内安全校准。
+      // 若用户在这几百毫秒内已主动滚轮/拖拽滚动条，则绝不再强行干预。
+      requestAnimationFrame(() => {
+        if (!userScrolledSinceSwitchRef.current && el) {
+          el.scrollTop = el.scrollHeight;
+        }
+        requestAnimationFrame(() => {
+          if (!userScrolledSinceSwitchRef.current && el) {
+            el.scrollTop = el.scrollHeight;
+          }
+        });
+      });
+
+      const t1 = setTimeout(() => {
+        if (!userScrolledSinceSwitchRef.current && el) {
+          el.scrollTop = el.scrollHeight;
+        }
+      }, 120);
+
+      const t2 = setTimeout(() => {
+        if (!userScrolledSinceSwitchRef.current && el) {
+          el.scrollTop = el.scrollHeight;
+        }
+      }, 350);
+
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    } else if (isNewMessage) {
+      markProgrammatic(300);
+      el.scrollTop = el.scrollHeight;
     }
   }, [messages, markProgrammatic]);
 
@@ -311,13 +350,27 @@ export const ChatView: React.FC<ChatViewProps> = ({
       </div>
 
       {/* Messages Stream Scroll Area
-          生成中由 useFollowBottom 分两段接管：思考期每帧钉底；正文流式期进入保位期
-          （不自动滚，但把重排钳制拽走的视野拉回）。用户一滚即交还控制权（本轮不再自动跟随）。
-          `[overflow-anchor:none]`：关掉浏览器滚动锚定——流式追加内容时它会把视口钉在旧位置，
-          与跟随互相打架，也是"用户滚到最后一行却被拽回去"的元凶。 */}
+          仅在思考期由 useFollowBottom 钉底；用户一动即交还控制权。
+          正文流式阶段与生成结束后完全不干预，彻底移除回正逻辑。 */}
       <div
         {...streamProps}
-        className="flex-1 overflow-y-auto px-3 cq-md:px-6 cq-lg:px-8 py-3 cq-md:py-6 [overflow-anchor:none]"
+        onWheel={(e) => {
+          handleUserScrollAction();
+          streamProps.onWheel?.(e);
+        }}
+        onTouchMove={(e) => {
+          handleUserScrollAction();
+          streamProps.onTouchMove?.(e);
+        }}
+        onMouseDown={(e) => {
+          handleUserScrollAction();
+          streamProps.onMouseDown?.(e);
+        }}
+        onKeyDown={(e) => {
+          handleUserScrollAction();
+          streamProps.onKeyDown?.(e);
+        }}
+        className="flex-1 min-h-0 overflow-y-auto px-3 cq-md:px-6 cq-lg:px-8 py-3 cq-md:py-6 pb-6 cq-md:pb-8 overscroll-y-contain [overflow-anchor:none]"
       >
         <div className="max-w-4xl mx-auto min-h-full flex flex-col justify-start">
           {messages.length === 0 ? (
@@ -385,7 +438,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   }
                 />
               ))}
-              <div ref={messagesEndRef} className="h-4" />
+              <div ref={messagesEndRef} className="h-8 flex-shrink-0" />
             </div>
           )}
         </div>

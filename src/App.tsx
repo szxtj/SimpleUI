@@ -1177,6 +1177,8 @@ export const App: React.FC = () => {
                     isThinking: false,
                     thinkingDuration: thinkingDuration,
                     metrics,
+                    pending: false,
+                    stage: undefined,
                   };
                 }),
               };
@@ -1214,6 +1216,8 @@ export const App: React.FC = () => {
                     ...m,
                     isThinking: false,
                     error: err.message,
+                    pending: false,
+                    stage: undefined,
                   };
                 }),
               };
@@ -1353,7 +1357,9 @@ export const App: React.FC = () => {
         return {
           ...s,
           messages: s.messages.map((m) =>
-            m.pending || m.isThinking ? { ...m, pending: false, isThinking: false } : m
+            m.pending || m.isThinking || m.stage
+              ? { ...m, pending: false, isThinking: false, stage: undefined }
+              : m
           ),
         };
       })
