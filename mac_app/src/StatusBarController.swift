@@ -22,6 +22,14 @@ class StatusBarController: NSObject, NSMenuDelegate {
     private var pollTimer: Timer?
     private var pinAttempts = 0
 
+    // 服务当前开启状态（对应服务控制面板里的各服务开关）与防重点击锁
+    private var kbEnabled = false
+    private var modelEnabled = true
+    private var asrEnabled = true
+    private var kbBusy = false
+    private var modelBusy = false
+    private var asrBusy = false
+
     // 状态缓存（菜单打开前最后一次轮询的结果；异步刷新会直接改已显示的标题）
     private struct ServiceView {
         var dot: NSColor
@@ -38,9 +46,14 @@ class StatusBarController: NSObject, NSMenuDelegate {
     private var lblReady: String { zh ? "就绪" : "Ready" }
     private var lblOffline: String { zh ? "离线" : "Offline" }
     private var lblStarting: String { zh ? "启动中" : "Starting" }
+    private var lblStopping: String { zh ? "停止中" : "Stopping" }
     private var lblOpenMain: String { zh ? "打开主界面" : "Open Main Window" }
     private var lblOpenSpotlight: String { zh ? "打开小窗口" : "Open Mini Window" }
     private var lblQuit: String { zh ? "退出并停止所有服务" : "Quit & Stop All Services" }
+
+    private var tipKB: String { zh ? "点击开启或关闭知识库服务" : "Click to toggle Knowledge Base service" }
+    private var tipSvc: String { zh ? "点击开启或关闭基础模型服务" : "Click to toggle Base Model service" }
+    private var tipAsr: String { zh ? "点击开启或关闭语音识别服务" : "Click to toggle Speech Recognition service" }
 
     // ----------------------------- 生命周期 -----------------------------
 
@@ -55,16 +68,22 @@ class StatusBarController: NSObject, NSMenuDelegate {
         menu.delegate = self
         menu.autoenablesItems = false
 
-        kbStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        kbStatusItem.isEnabled = false
+        kbStatusItem = NSMenuItem(title: "", action: #selector(toggleKB), keyEquivalent: "")
+        kbStatusItem.target = self
+        kbStatusItem.isEnabled = true
+        kbStatusItem.toolTip = tipKB
         menu.addItem(kbStatusItem)
 
-        svcStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        svcStatusItem.isEnabled = false
+        svcStatusItem = NSMenuItem(title: "", action: #selector(toggleModel), keyEquivalent: "")
+        svcStatusItem.target = self
+        svcStatusItem.isEnabled = true
+        svcStatusItem.toolTip = tipSvc
         menu.addItem(svcStatusItem)
 
-        asrStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        asrStatusItem.isEnabled = false
+        asrStatusItem = NSMenuItem(title: "", action: #selector(toggleASR), keyEquivalent: "")
+        asrStatusItem.target = self
+        asrStatusItem.isEnabled = true
+        asrStatusItem.toolTip = tipAsr
         menu.addItem(asrStatusItem)
 
         menu.addItem(NSMenuItem.separator())
@@ -104,6 +123,73 @@ class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     // ----------------------------- 菜单动作 -----------------------------
+
+    // ---- 快速启停受管服务（对齐设置页服务管理控制面板的开关逻辑） ----
+
+    @objc private func toggleKB() {
+        guard !kbBusy else { return }
+        kbBusy = true
+        let next = !kbEnabled
+        kbEnabled = next
+
+        let tempView = ServiceView(
+            dot: .systemOrange,
+            text: next ? lblStarting : lblStopping
+        )
+        kbStatusItem.attributedTitle = statusLine(label: lblKB, view: tempView)
+
+        postJSON("/api/wiki/config", body: ["enabled": next]) { [weak self] in
+            guard let self = self else { return }
+            self.kbBusy = false
+            self.refreshStatuses()
+        }
+    }
+
+    @objc private func toggleModel() {
+        guard !modelBusy else { return }
+        modelBusy = true
+        let next = !modelEnabled
+        modelEnabled = next
+
+        let tempView = ServiceView(
+            dot: .systemOrange,
+            text: next ? lblStarting : lblStopping
+        )
+        svcStatusItem.attributedTitle = statusLine(label: lblSvc, view: tempView)
+
+        postJSON("/api/model/config", body: ["enabled": next]) { [weak self] in
+            guard let self = self else { return }
+            let action = next ? "start" : "stop"
+            self.postJSON("/api/model/\(action)") { [weak self] in
+                guard let self = self else { return }
+                self.modelBusy = false
+                self.refreshStatuses()
+            }
+        }
+    }
+
+    @objc private func toggleASR() {
+        guard !asrBusy else { return }
+        asrBusy = true
+        let next = !asrEnabled
+        asrEnabled = next
+
+        let tempView = ServiceView(
+            dot: .systemOrange,
+            text: next ? lblStarting : lblStopping
+        )
+        asrStatusItem.attributedTitle = statusLine(label: lblAsr, view: tempView)
+
+        postJSON("/api/asr/config", body: ["enabled": next]) { [weak self] in
+            guard let self = self else { return }
+            let action = next ? "start" : "stop"
+            self.postJSON("/api/asr/\(action)") { [weak self] in
+                guard let self = self else { return }
+                self.asrBusy = false
+                self.refreshStatuses()
+            }
+        }
+    }
 
     @objc private func openMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
@@ -148,13 +234,28 @@ class StatusBarController: NSObject, NSMenuDelegate {
         }.resume()
     }
 
-    /// 统一三态：与主界面左下角逐字一致。
+    private func postJSON(_ path: String, body: [String: Any]? = nil, completion: (() -> Void)? = nil) {
+        guard let url = URL(string: "\(ProcessManager.baseURLString)\(path)") else {
+            completion?()
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15.0
+        if let body = body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        }
+        URLSession.shared.dataTask(with: request) { _, _, _ in
+            DispatchQueue.main.async {
+                completion?()
+            }
+        }.resume()
+    }
+
+    /// 统一状态：与主界面左下角逐字一致。
     ///
-    ///   绿灯「就绪」 / 红灯「离线」 / 黄灯「启动中」
-    ///
-    /// 三个服务的 /status 都返回 status 字段（知识库为 running|starting|stopped，
-    /// 模型 / 语音还多出 loading|stopping|restart），统一在这里收敛，
-    /// 避免三个服务各写一套判断而出现「同一状态两处不同灯色」。
+    ///   绿灯「就绪」 / 红灯「离线」 / 黄灯「启动中」 / 黄灯「停止中」
     private func view(forStatus status: String?) -> ServiceView {
         switch status {
         case "running":
@@ -163,8 +264,10 @@ class StatusBarController: NSObject, NSMenuDelegate {
         // 启动动作进行中时 status 直接就是这两个词，漏掉会把「正在启动」误判成离线。
         case "loading", "starting", "start", "restart":
             return ServiceView(dot: .systemOrange, text: lblStarting)
+        case "stopping", "stop":
+            return ServiceView(dot: .systemOrange, text: lblStopping)
         default:
-            // stopped / stopping / stop 以及「接口不可达」：一律离线
+            // stopped 以及「接口不可达」：一律离线
             return ServiceView(dot: .systemRed, text: lblOffline)
         }
     }
@@ -173,24 +276,39 @@ class StatusBarController: NSObject, NSMenuDelegate {
         // 三项服务始终显示，状态同源同文案（与主界面左下角一致）
         fetchJSON("/api/wiki/status") { [weak self] json in
             guard let self = self else { return }
-            let view = self.view(forStatus: json?["status"] as? String)
-            self.kbStatusItem.attributedTitle = self.statusLine(label: self.lblKB, view: view)
+            if let enabled = json?["enabled"] as? Bool {
+                self.kbEnabled = enabled
+            }
+            if !self.kbBusy {
+                let view = self.view(forStatus: json?["status"] as? String)
+                self.kbStatusItem.attributedTitle = self.statusLine(label: self.lblKB, view: view)
+            }
         }
 
         fetchJSON("/api/model/status") { [weak self] json in
             guard let self = self else { return }
-            let view = self.view(forStatus: json?["status"] as? String)
-            self.svcStatusItem.attributedTitle = self.statusLine(label: self.lblSvc, view: view)
+            if let enabled = json?["enabled"] as? Bool {
+                self.modelEnabled = enabled
+            }
+            if !self.modelBusy {
+                let view = self.view(forStatus: json?["status"] as? String)
+                self.svcStatusItem.attributedTitle = self.statusLine(label: self.lblSvc, view: view)
+            }
         }
 
         fetchJSON("/api/asr/status") { [weak self] json in
             guard let self = self else { return }
-            let view = self.view(forStatus: json?["status"] as? String)
-            self.asrStatusItem.attributedTitle = self.statusLine(label: self.lblAsr, view: view)
+            if let enabled = json?["enabled"] as? Bool {
+                self.asrEnabled = enabled
+            }
+            if !self.asrBusy {
+                let view = self.view(forStatus: json?["status"] as? String)
+                self.asrStatusItem.attributedTitle = self.statusLine(label: self.lblAsr, view: view)
+            }
         }
     }
 
-    // 与设置页同款红绿样式：彩色圆点 + 「服务名 · 状态」，状态行不可点击（纯展示）
+    // 彩色圆点 + 「服务名 · 状态」，菜单项高亮与常规态均能自适应颜色
     private func statusLine(label: String, view: ServiceView) -> NSAttributedString {
         let dot = NSAttributedString(
             string: "● ",
@@ -199,8 +317,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
         let body = NSAttributedString(
             string: "\(label)  ·  \(view.text)",
             attributes: [
-                .foregroundColor: NSColor.labelColor,
-                .font: NSFont.systemFont(ofSize: 13),
+                .font: NSFont.menuFont(ofSize: 13),
             ]
         )
         let result = NSMutableAttributedString()
