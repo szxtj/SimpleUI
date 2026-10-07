@@ -7,102 +7,16 @@ import remarkCjkFriendly from 'remark-cjk-friendly';
 import { Check, Copy } from 'lucide-react';
 import { useI18n } from '../i18n';
 
+import { preprocessMarkdown } from '../utils/markdownPipeline';
+
 interface MarkdownRendererProps {
   content: string;
   className?: string;
 }
 
-/**
- * 唯一保留的一处预处理：**定界符内侧带空格**的写法（`** 加粗 **`）。
- * CommonMark 规定定界符串不能以空白开头或结尾，所以这种写法在解析层**根本不成强调**，
- * 插件也无从修复 —— 只能先把这两侧空白摘掉再交给解析器。
- *
- * 代码块 / 行内代码 / LaTeX 里的 `** x **` 是**内容**，先摘出来占位、事后原样放回。
- *
- * 其余中文标点的加粗问题（`**自动语音识别（ASR）**模型`、`**【中文】**`、`**注意：**不要`……）
- * 已改为由 `remark-cjk-friendly` 在**解析层**按 CJK 友好规范处理：定界符的 flanking 规则
- * 按中文语境放宽，括号/引号**连同文字一起**加粗，与模型本意一致。
- * （旧实现用正则把括号、标点挪到加粗范围之外，等于改写语义；且跨行加粗一律失效，已删。）
- */
-function trimInnerSpacesInBold(content: string): string {
-  if (!content) return '';
-
-  const tokens: string[] = [];
-  const placeholder = (idx: number) => `__PROTECTED_BLOCK_${idx}__`;
-
-  // Protect code blocks, inline code, and LaTeX math ($$ and $)
-  const protectedContent = content.replace(
-    /(```[\s\S]*?```|`[^`\n]+`|\$\$[\s\S]*?\$\$|\$[^\$\n]+\$)/g,
-    (match) => {
-      tokens.push(match);
-      return placeholder(tokens.length - 1);
-    }
-  );
-
-  /*
-   * 一次匹配一对定界符，同时吃掉两侧空白：`**$2**`。
-   * 正文（$2）不允许包含 `*` 或换行 —— 这样绝不会跨过一对正常的 `**…**`
-   * 去跟后面那对配对（旧实现的两个独立替换就会：`**a** 文本 **b**` 里的空格被吃掉）。
-   * 正文全为空白（`** **`）时原样返回，不制造一个空强调。
-   */
-  const trimmed = protectedContent.replace(
-    /\*\*([ \t]*)([^\*\n]*?)([ \t]*)\*\*/g,
-    (match, _lead: string, body: string) => (body.trim() ? `**${body}**` : match)
-  );
-
-  // Restore protected blocks
-  return trimmed.replace(/__PROTECTED_BLOCK_(\d+)__/g, (_, idx) => tokens[parseInt(idx, 10)]);
-}
-
-/**
- * 标准化 LaTeX 公式定界符：
- * DeepSeek / OpenAI 等模型官方默认输出标准的 LaTeX 定界符：
- *   - 行内公式：\( ... \)
- *   - 块级公式：\[ ... \]
- * 而 remark-math 默认只识别 $...$ 与 $$...$$。
- * 若不作转换，CommonMark 解析器会将 \( 与 \[ 中的反斜杠当成转义符吃掉，
- * 渲染成普通括号 (x) 与 [x]，导致公式完全失效且内容混乱。
- *
- * 转换规则：
- * 1. 保护代码块（```...``` 与 `...`），绝不改动代码中的反斜杠与括号；
- * 2. 块级公式 \[ ... \] 转换为 $$ ... $$；
- * 3. 行内公式 \( ... \) 转换为 $ ... $，并去除内部首尾空白（避免 remark-math 无法识别包含首尾空格的 $）；
- * 4. 还原被保护的代码块。
- */
-function normalizeLatexDelimiters(content: string): string {
-  if (!content) return '';
-
-  const tokens: string[] = [];
-  const placeholder = (idx: number) => `__LATEX_CODE_BLOCK_${idx}__`;
-
-  // Protect code blocks and inline code
-  const protectedContent = content.replace(
-    /(```[\s\S]*?```|`[^`\n]+`)/g,
-    (match) => {
-      tokens.push(match);
-      return placeholder(tokens.length - 1);
-    }
-  );
-
-  // Convert block math \[ ... \] to \n\n$$ ... $$\n\n
-  let normalized = protectedContent.replace(
-    /\\\[([\s\S]*?)\\\]/g,
-    (_, math) => `\n\n$$${math.trim()}$$\n\n`
-  );
-
-  // Convert inline math \( ... \) to $ ... $
-  normalized = normalized.replace(
-    /\\\(([\s\S]*?)\\\)/g,
-    (_, math) => `$${math.trim()}$`
-  );
-
-  // Restore protected blocks
-  return normalized.replace(/__LATEX_CODE_BLOCK_(\d+)__/g, (_, idx) => tokens[parseInt(idx, 10)]);
-}
-
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, className }) => {
   const normalizedContent = useMemo(() => {
-    return trimInnerSpacesInBold(normalizeLatexDelimiters(content));
+    return preprocessMarkdown(content);
   }, [content]);
 
   return (

@@ -42,7 +42,7 @@ interface SidebarProps {
 /**
  * 左下角服务状态行。
  *
- * 三项服务（基础模型 / 知识库 / 语音识别）共用本组件，**始终显示**，
+ * 三项服务（知识库 / 基础模型 / 语音识别）共用本组件，**始终显示**，
  * 状态统一收敛为三态（见 utils/serviceState.ts），与状态栏图标菜单逐字一致：
  *   绿灯「就绪」 / 红灯「离线」 / 黄灯「启动中」
  * 额外信息（如知识库条目数）只放进 hover 提示，不污染状态文案。
@@ -345,7 +345,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="p-2.5 border-t border-black/5 dark:border-white/5 bg-[#eaecef] dark:bg-[#17181c] flex items-center justify-between gap-1.5">
         {/* 三项服务始终显示（不再随总开关隐藏），状态与状态栏菜单同源同文案 */}
         <div className="flex flex-col gap-1.5 px-1 min-w-0 flex-1">
-          <ServiceRow label={t('modelService')} status={modelStatus?.status} />
           <ServiceRow
             label={t('kbService')}
             status={wikiStatus?.status}
@@ -355,6 +354,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 : undefined
             }
           />
+          <ServiceRow label={t('modelService')} status={modelStatus?.status} />
           <ServiceRow label={t('asrService')} status={asrStatus?.status} />
         </div>
 

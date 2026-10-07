@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test": "node --experimental-strip-types scripts/test_markdown_pipeline.js",
     "preview": "vite preview",
     "start": "node server/proxy.js",
     "build:app": "./build_mac_app.sh",
