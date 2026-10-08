@@ -181,14 +181,16 @@ export class TurboFieldfareAPI {
         method: 'GET',
         headers: this.getHeaders(settings),
       });
-      if (!res.ok) return [settings.modelId || 'gemma-4-26b-a4b-it'];
+      const fallbackDefault = settings.apiPort === 1241 ? 'qwen3.6-35b-a3b' : 'gemma-4-26b-a4b-it';
+      if (!res.ok) return [settings.modelId || fallbackDefault];
       const data = await res.json();
       if (Array.isArray(data.data) && data.data.length > 0) {
         return data.data.map((m: { id: string }) => m.id);
       }
-      return [settings.modelId || 'gemma-4-26b-a4b-it'];
+      return [settings.modelId || fallbackDefault];
     } catch {
-      return [settings.modelId || 'gemma-4-26b-a4b-it'];
+      const fallbackDefault = settings.apiPort === 1241 ? 'qwen3.6-35b-a3b' : 'gemma-4-26b-a4b-it';
+      return [settings.modelId || fallbackDefault];
     }
   }
 
@@ -332,10 +334,29 @@ export class TurboFieldfareAPI {
         max_tokens: settings.maxTokens,
       };
 
-      // Thinking controls for TTF
-      if (settings.enableThinking) {
+      // 判断是否连接 Mference（provider 为 mference，或端口 1241，或 modelId 包含 qwen）
+      const isMference = (settings.apiProvider === 'mference') ||
+        (settings.apiPort === 1241) ||
+        (typeof settings.modelId === 'string' && settings.modelId.toLowerCase().includes('qwen'));
+
+      // Thinking controls (针对 TTF、Mference 与自定义引擎做协议适配)
+      if (settings.apiProvider === 'custom') {
+        if (settings.enableThinking) {
+          payload.chat_template_kwargs = { enable_thinking: true };
+          if (settings.reasoningEffort && settings.reasoningEffort !== 'default') {
+            payload.reasoning_effort = settings.reasoningEffort;
+          }
+        }
+      } else if (settings.enableThinking) {
         payload.chat_template_kwargs = { enable_thinking: true };
-        payload.reasoning_effort = settings.reasoningEffort || 'high';
+        if (isMference) {
+          // Mference 仅接受 xhigh, medium, low, none；将界面的 high/max 映射为 xhigh
+          const effort = settings.reasoningEffort;
+          payload.reasoning_effort = (effort === 'low' || effort === 'medium') ? effort : 'xhigh';
+        } else {
+          // TurboFieldfare 接受 high, medium, low, default, none
+          payload.reasoning_effort = settings.reasoningEffort || 'high';
+        }
       } else {
         payload.chat_template_kwargs = { enable_thinking: false };
         payload.reasoning_effort = 'none';
@@ -343,6 +364,14 @@ export class TurboFieldfareAPI {
 
       if (settings.seed !== undefined && settings.seed !== null && !isNaN(settings.seed)) {
         payload.seed = settings.seed;
+      }
+
+      if (settings.minP !== undefined && settings.minP !== null && !isNaN(settings.minP)) {
+        payload.min_p = settings.minP;
+      }
+
+      if (settings.presencePenalty !== undefined && settings.presencePenalty !== null && !isNaN(settings.presencePenalty)) {
+        payload.presence_penalty = settings.presencePenalty;
       }
 
       if (settings.stopStrings && settings.stopStrings.length > 0) {
@@ -738,24 +767,49 @@ export class WikiAPI {
   }
 }
 
-/** 模型服务（TurboFieldfare）聚合状态：与后端 ttf_service.js getStatus 对应 */
-export interface ModelServiceStatus {
+export type ModelEngine = 'turbo-fieldfare' | 'mference';
+
+export interface SingleEngineStatus {
+  engine: ModelEngine;
+  status: 'running' | 'loading' | 'stopped' | 'starting' | 'stopping' | 'restart';
+  port: number;
+  pid: number | null;
   enabled: boolean;
+  checks: { repo: boolean; binary: boolean; model: boolean; vision?: boolean };
+  projectDir: string;
+  modelPath: string;
+  projectUrl: string;
+}
+
+/** 模型服务聚合状态：与后端 ttf_service.js getStatus 对应 */
+export interface ModelServiceStatus {
+  activeEngine?: ModelEngine;
+  enabled: boolean;
+  engine: ModelEngine;
   status: 'running' | 'loading' | 'stopped' | 'starting' | 'stopping' | 'restart';
   pid: number | null;
   port: number;
   projectDir: string;
   modelPath: string;
-  /** 本体项目主页：安装（克隆本体 / 编译 / 准备模型权重）交给用户按项目文档完成 */
+  /** 本体项目主页：安装交给用户按项目文档完成 */
   projectUrl: string;
   checks: { repo: boolean; binary: boolean; model: boolean; vision: boolean };
   lastActionAt?: number;
   lastActionLog?: string;
+  config?: ModelServiceConfig;
+  /** 独立的双引擎状态块 */
+  ttf: SingleEngineStatus;
+  mference: SingleEngineStatus;
 }
 
 /** 模型服务运行配置：与后端 model_config.json 对应 */
 export interface ModelServiceConfig {
   enabled: boolean;
+  engine?: ModelEngine;
+  ttfEnabled?: boolean;
+  mferenceEnabled?: boolean;
+
+  // TurboFieldfare 运行参数
   projectDir: string;
   port: number;
   maxContext: number;
@@ -768,6 +822,18 @@ export interface ModelServiceConfig {
   thinking: 'default' | 'on' | 'off';
   rdadvise: 'adaptive' | 'bounded' | 'default' | 'off';
   allowUnbackedContext: boolean;
+
+  // Mference 运行参数
+  mferenceProjectDir?: string;
+  mferencePort?: number;
+  mferenceMaxContext?: number;
+  mferencePromptCacheMode?: 'single-prefix' | 'off';
+  mferenceShadowBudget?: number;
+  mferenceVerify?: 'auto' | 'full-sha256' | 'trusted-receipt';
+  mferenceQueueLimit?: number;
+  mferencePrefillChunk?: string;
+
+  // 极低负载闲置保护
   idleAutoResetMinutes: number;
 }
 
@@ -811,10 +877,15 @@ export class ModelServiceAPI {
   }
 
   static async control(
-    action: 'start' | 'stop' | 'restart'
+    action: 'start' | 'stop' | 'restart',
+    engine?: ModelEngine
   ): Promise<{ accepted: boolean; status?: string; reason?: string }> {
     try {
-      const res = await fetch(`/api/model/${action}`, { method: 'POST' });
+      const res = await fetch(`/api/model/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ engine }),
+      });
       if (res.ok) return await res.json();
     } catch (e) {
       console.error(`ModelService ${action} failed:`, e);
@@ -822,9 +893,14 @@ export class ModelServiceAPI {
     return { accepted: false };
   }
 
-  static async getLogs(lines = 200): Promise<{ found: boolean; lines: string[] } | null> {
+  static async getLogs(
+    lines = 200,
+    engine?: ModelEngine
+  ): Promise<{ found: boolean; lines: string[] } | null> {
     try {
-      const res = await fetch(`/api/model/logs?lines=${lines}`);
+      const qs = new URLSearchParams({ lines: String(lines) });
+      if (engine) qs.set('engine', engine);
+      const res = await fetch(`/api/model/logs?${qs.toString()}`);
       if (res.ok) return await res.json();
     } catch (e) {
       console.error('ModelService getLogs failed:', e);

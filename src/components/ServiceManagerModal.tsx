@@ -23,9 +23,10 @@ const KB_DEFAULT_ZIM_PATH = '/Volumes/JustinSSD/wikipedia/wikipedia_zh_all_maxi_
 const KB_DEFAULT_PORT = 31236;
 // 基础模型服务卡片默认值（与后端 ttf_service.js DEFAULT_MODEL_CONFIG 保持一致）
 const SVC_DEFAULT_PROJECT_DIR = '~/turbo-fieldfare';
-const SVC_CARD_DEFAULTS: Partial<ModelServiceConfig> = {
+const SVC_DEFAULT_MFERENCE_DIR = '~/Mference';
+const SVC_CARD_DEFAULTS_TTF: Partial<ModelServiceConfig> = {
+  projectDir: SVC_DEFAULT_PROJECT_DIR,
   port: 1235,
-  // 上下文容量与专家缓存槽位按用户实际运行配置（16K / 32 槽）作为默认
   maxContext: 16384,
   expertCacheSlots: 32,
   expertCachePolicy: 'lfu',
@@ -36,6 +37,18 @@ const SVC_CARD_DEFAULTS: Partial<ModelServiceConfig> = {
   thinking: 'default',
   rdadvise: 'adaptive',
   allowUnbackedContext: false,
+  idleAutoResetMinutes: 15,
+};
+
+const SVC_CARD_DEFAULTS_MFERENCE: Partial<ModelServiceConfig> = {
+  mferenceProjectDir: SVC_DEFAULT_MFERENCE_DIR,
+  mferencePort: 1241,
+  mferenceMaxContext: 16384,
+  mferencePromptCacheMode: 'single-prefix',
+  mferenceShadowBudget: 4,
+  mferenceVerify: 'auto',
+  mferenceQueueLimit: 4,
+  mferencePrefillChunk: '2048',
   idleAutoResetMinutes: 15,
 };
 
@@ -114,15 +127,23 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
   const [isApplyingPath, setIsApplyingPath] = useState(false);
   const [pathMessage, setPathMessage] = useState<{ text: string; isError: boolean } | null>(null);
 
-  // ---- 基础模型服务（SimpleUI 作为 TTF 服务唯一管理方）----
+  // ---- 基础模型服务（支持 TurboFieldfare / Mference 双引擎切换）----
   const [svcStatus, setSvcStatus] = useState<ModelServiceStatus | null>(null);
   const [svcForm, setSvcForm] = useState<Partial<ModelServiceConfig>>({});
+  const [selectedEngine, setSelectedEngine] = useState<'turbo-fieldfare' | 'mference'>('turbo-fieldfare');
   const [svcProjectDir, setSvcProjectDir] = useState('');
+  const [svcMferenceProjectDir, setSvcMferenceProjectDir] = useState('');
   const [svcBusy, setSvcBusy] = useState<string | null>(null);
   const [svcMsg, setSvcMsg] = useState<{ text: string; isError: boolean } | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [logLines, setLogLines] = useState<string[] | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 轮询与后台引用的同步 Ref（避免将高频交互状态放入 useEffect 依赖导致意外重触发/覆写）
+  const selectedEngineRef = useRef(selectedEngine);
+  selectedEngineRef.current = selectedEngine;
+  const logsOpenRef = useRef(logsOpen);
+  logsOpenRef.current = logsOpen;
 
   // ---- 语音识别服务（SenseVoice / audio.cpp）----
   const [asrStatus, setAsrStatus] = useState<AsrServiceStatus | null>(null);
@@ -131,6 +152,8 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
   const [asrMsg, setAsrMsg] = useState<{ text: string; isError: boolean } | null>(null);
   const [asrLogsOpen, setAsrLogsOpen] = useState(false);
   const [asrLogLines, setAsrLogLines] = useState<string[] | null>(null);
+  const asrLogsOpenRef = useRef(asrLogsOpen);
+  asrLogsOpenRef.current = asrLogsOpen;
   /** 原生侧回推的三件套权限快照（浏览器调试模式下为 null） */
   const [voicePerm, setVoicePerm] = useState<VoicePermissionStatus | null>(null);
 
@@ -199,7 +222,9 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
       ModelServiceAPI.getConfig().then((cfg) => {
         if (cfg) {
           setSvcForm(cfg);
-          setSvcProjectDir(cfg.projectDir || '');
+          setSelectedEngine(cfg.engine || 'turbo-fieldfare');
+          setSvcProjectDir(cfg.projectDir || SVC_DEFAULT_PROJECT_DIR);
+          setSvcMferenceProjectDir(cfg.mferenceProjectDir || SVC_DEFAULT_MFERENCE_DIR);
         }
       });
 
@@ -216,10 +241,10 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
       pollTimerRef.current = setInterval(() => {
         refreshSvcStatus();
         refreshAsrStatus();
-        if (logsOpen) {
-          ModelServiceAPI.getLogs(200).then((d) => setLogLines(d?.lines ?? null));
+        if (logsOpenRef.current) {
+          ModelServiceAPI.getLogs(200, selectedEngineRef.current).then((d) => setLogLines(d?.lines ?? null));
         }
-        if (asrLogsOpen) {
+        if (asrLogsOpenRef.current) {
           ASRServiceAPI.getLogs(200).then((d) => setAsrLogLines(d?.lines ?? null));
         }
       }, 3000);
@@ -229,9 +254,11 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
         pollTimerRef.current = null;
       }
       setLogsOpen(false);
+      logsOpenRef.current = false;
       setLogLines(null);
       setSvcMsg(null);
       setAsrLogsOpen(false);
+      asrLogsOpenRef.current = false;
       setAsrLogLines(null);
       setAsrMsg(null);
     }
@@ -242,15 +269,32 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, settings.customWikiDir, logsOpen, asrLogsOpen]);
+  }, [isOpen, settings.customWikiDir]);
 
-  // 开关即总控（与知识库服务开关同逻辑）：开 = 立即启动并随 App 自动启停；关 = 立即停止且不再自启
-  const handleSvcToggle = async (next: boolean) => {
-    setSvcBusy('toggle');
+  // 切换基础模型引擎（TTF 与 Mference）：立即切换选项卡并异步持久化，无闪烁回退
+  const handleSwitchEngine = (engine: 'turbo-fieldfare' | 'mference') => {
+    if (selectedEngine === engine) return;
+    setSelectedEngine(engine);
+    selectedEngineRef.current = engine;
+    setSvcForm((prev) => ({ ...prev, engine }));
+    ModelServiceAPI.updateConfig({ engine }, false).catch((err) => {
+      console.error('Failed to update engine selection:', err);
+    });
+    if (logsOpenRef.current) {
+      ModelServiceAPI.getLogs(200, engine).then((d) => setLogLines(d?.lines ?? null));
+    }
+  };
+
+  // 独立引擎启停开关：按当前选中的引擎分别控制，互相解耦
+  const handleEngineToggle = async (engine: 'turbo-fieldfare' | 'mference', next: boolean) => {
+    setSvcBusy(`toggle-${engine}`);
     try {
-      await ModelServiceAPI.updateConfig({ enabled: next });
-      // 后端 init()/watchdog 均以 enabled 为准，这里立即执行启停给出即时反馈
-      await ModelServiceAPI.control(next ? 'start' : 'stop');
+      if (engine === 'mference') {
+        await ModelServiceAPI.updateConfig({ mferenceEnabled: next, engine: next ? 'mference' : selectedEngine }, false);
+      } else {
+        await ModelServiceAPI.updateConfig({ ttfEnabled: next, engine: next ? 'turbo-fieldfare' : selectedEngine }, false);
+      }
+      await ModelServiceAPI.control(next ? 'start' : 'stop', engine);
       await refreshSvcStatus();
     } finally {
       setSvcBusy(null);
@@ -258,12 +302,16 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
   };
 
   const handleSvcPathApply = async () => {
-    if (!svcProjectDir.trim()) return;
+    const isMference = selectedEngine === 'mference';
+    const targetDir = isMference ? svcMferenceProjectDir.trim() : svcProjectDir.trim();
+    if (!targetDir) return;
     setSvcBusy('path');
     setSvcMsg(null);
     try {
-      // 路径变更需重启服务才能生效：运行中则热重启（对齐知识库「保存并连接」的行为）
-      const r = await ModelServiceAPI.updateConfig({ projectDir: svcProjectDir.trim() }, true);
+      const partial: Partial<ModelServiceConfig> = isMference
+        ? { engine: selectedEngine, mferenceProjectDir: targetDir }
+        : { engine: selectedEngine, projectDir: targetDir };
+      const r = await ModelServiceAPI.updateConfig(partial, true);
       if (r.success) {
         setSvcMsg({ text: t('modelServicePathApplied'), isError: false });
       } else {
@@ -279,12 +327,23 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     setSvcBusy('apply');
     setSvcMsg(null);
     try {
-      // 端口以本卡片「服务监听端口」输入为准；应用成功后回传给上层，
-      // 同步「模型设置」卡片里的请求端口，保证改端口后对话请求（x-target-port）仍可达
-      const newPort = Number(svcForm.port) || 1235;
-      const r = await ModelServiceAPI.updateConfig({ ...svcForm, port: newPort }, true);
+      const isMference = selectedEngine === 'mference';
+      const targetPort = isMference
+        ? (Number(svcForm.mferencePort) || 1241)
+        : (Number(svcForm.port) || 1235);
+
+      const payload: Partial<ModelServiceConfig> = {
+        ...svcForm,
+        engine: selectedEngine,
+        projectDir: svcProjectDir.trim() || SVC_DEFAULT_PROJECT_DIR,
+        mferenceProjectDir: svcMferenceProjectDir.trim() || SVC_DEFAULT_MFERENCE_DIR,
+        port: Number(svcForm.port) || 1235,
+        mferencePort: Number(svcForm.mferencePort) || 1241,
+      };
+
+      const r = await ModelServiceAPI.updateConfig(payload, true);
       if (r.success) {
-        onApiPortChange?.(newPort);
+        onApiPortChange?.(targetPort);
         setSvcMsg({
           text: r.restarted ? t('modelServiceApplyDone') : t('modelServiceApplySaved'),
           isError: false,
@@ -302,7 +361,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     const next = !logsOpen;
     setLogsOpen(next);
     if (next) {
-      const d = await ModelServiceAPI.getLogs(200);
+      const d = await ModelServiceAPI.getLogs(200, selectedEngine);
       setLogLines(d?.lines ?? null);
     }
   };
@@ -371,8 +430,19 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
   };
 
   const handleSvcCardReset = () => {
-    setSvcForm((prev) => ({ ...prev, ...SVC_CARD_DEFAULTS }));
-    setSvcProjectDir(SVC_DEFAULT_PROJECT_DIR);
+    if (selectedEngine === 'mference') {
+      setSvcForm((prev) => ({
+        ...prev,
+        ...SVC_CARD_DEFAULTS_MFERENCE,
+      }));
+      setSvcMferenceProjectDir(SVC_DEFAULT_MFERENCE_DIR);
+    } else {
+      setSvcForm((prev) => ({
+        ...prev,
+        ...SVC_CARD_DEFAULTS_TTF,
+      }));
+      setSvcProjectDir(SVC_DEFAULT_PROJECT_DIR);
+    }
     setSvcMsg(null);
   };
 
@@ -471,6 +541,15 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
+
+  const isMference = selectedEngine === 'mference';
+  const currentEngineStatus = svcStatus ? (isMference ? svcStatus.mference : svcStatus.ttf) : null;
+  const currentEnginePort = currentEngineStatus?.port ?? (isMference ? (svcForm.mferencePort ?? 1241) : (svcForm.port ?? 1235));
+  const isCurrentEngineActive =
+    currentEngineStatus?.status === 'running' ||
+    currentEngineStatus?.status === 'loading' ||
+    currentEngineStatus?.status === 'starting' ||
+    currentEngineStatus?.status === 'restart';
 
   if (!isOpen) return null;
 
@@ -647,10 +726,9 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
             )}
           </div>
 
-          {/* 模型服务卡片（SimpleUI 作为 TTF 服务唯一管理方：随 App 自动启动、退出一并终止）
-              ——独立于下方「模型设置」卡片，置于其上方 */}
+          {/* 基础模型服务卡片（支持 TurboFieldfare 与 Mference 双引擎自由切换与管理） */}
           <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
-            {/* 头部：标题 + 状态灯/端口（与知识库卡片头部同布局） */}
+            {/* 头部：标题 + 状态灯/端口（精确展示当前选中引擎的运行状态与端口） */}
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
                 <Server className="w-4 h-4 text-amber-600 dark:text-amber-400" />
@@ -661,50 +739,100 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
               <div className="flex items-center gap-1.5 text-[11px]">
                 <span
                   className={`w-2 h-2 rounded-full ${
-                    SERVICE_STATE_CARD_DOT_CLASS[toServiceState(svcStatus?.status)]
+                    SERVICE_STATE_CARD_DOT_CLASS[toServiceState(currentEngineStatus?.status)]
                   }`}
                 />
-                <span className={SERVICE_STATE_CARD_TEXT_CLASS[toServiceState(svcStatus?.status)]}>
-                  {/* 与左下角、状态栏菜单同一套三态：就绪（带端口）/ 启动中 / 离线。
-                      loading / starting / start / restart 一律归「启动中」；
-                      stopping / stop / stopped 归「离线」（往下走不是启动）。 */}
-                  {toServiceState(svcStatus?.status) === 'online'
-                    ? `${t('modelServiceStatusRunning')}${svcStatus?.port}`
-                    : t(SERVICE_STATE_LABEL_KEY[toServiceState(svcStatus?.status)])}
+                <span className={SERVICE_STATE_CARD_TEXT_CLASS[toServiceState(currentEngineStatus?.status)]}>
+                  {toServiceState(currentEngineStatus?.status) === 'online'
+                    ? `${t('modelServiceStatusRunning')}${currentEnginePort}`
+                    : t(SERVICE_STATE_LABEL_KEY[toServiceState(currentEngineStatus?.status)])}
                 </span>
               </div>
             </div>
 
-            {/* 服务总开关（与知识库服务开关同逻辑）：开 = 立即启动 + 随 App 自动启停；关 = 立即停止 + 不再自启 */}
+            {/* Base Model 引擎切换选择器 (Segmented Control)：每个选项直观显示各自的状态灯与独立端口 */}
+            <div className="mb-3">
+              <label className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-1.5">
+                {t('modelEngineLabel')}
+              </label>
+              <div className="grid grid-cols-2 gap-2 p-1 bg-black/5 dark:bg-white/5 rounded-xl border border-black/5 dark:border-white/5">
+                <button
+                  type="button"
+                  onClick={() => handleSwitchEngine('turbo-fieldfare')}
+                  className={`py-1.5 px-2.5 rounded-lg text-xs font-medium transition-all flex items-center justify-between cursor-pointer ${
+                    selectedEngine === 'turbo-fieldfare'
+                      ? 'bg-white dark:bg-[#202127] text-amber-700 dark:text-amber-400 shadow-sm font-semibold'
+                      : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        SERVICE_STATE_CARD_DOT_CLASS[toServiceState(svcStatus?.ttf?.status)]
+                      }`}
+                    />
+                    <span>{t('modelEngineTTF')}</span>
+                  </div>
+                  <span className="text-[10px] font-mono opacity-60">
+                    :{svcStatus?.ttf?.port ?? 1235}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSwitchEngine('mference')}
+                  className={`py-1.5 px-2.5 rounded-lg text-xs font-medium transition-all flex items-center justify-between cursor-pointer ${
+                    selectedEngine === 'mference'
+                      ? 'bg-white dark:bg-[#202127] text-amber-700 dark:text-amber-400 shadow-sm font-semibold'
+                      : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        SERVICE_STATE_CARD_DOT_CLASS[toServiceState(svcStatus?.mference?.status)]
+                      }`}
+                    />
+                    <span>{t('modelEngineMference')}</span>
+                  </div>
+                  <span className="text-[10px] font-mono opacity-60">
+                    :{svcStatus?.mference?.port ?? 1241}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* 独立服务启停开关：解耦控制，各引擎拥有独立启停状态与文案 */}
             <div className="flex items-center justify-between gap-3 pb-3 mb-3 border-b border-black/5 dark:border-white/5">
               <button
                 type="button"
-                onClick={() => handleSvcToggle(!(svcStatus?.enabled ?? true))}
+                onClick={() => handleEngineToggle(selectedEngine, !isCurrentEngineActive)}
                 disabled={svcBusy !== null}
                 className="flex-1 min-w-0 text-left cursor-pointer disabled:cursor-not-allowed"
               >
                 <div className="font-medium text-zinc-700 dark:text-zinc-200">
-                  {t('modelServiceAutoStart')}
+                  {isMference ? t('mferenceServiceAutoStart') : t('ttfServiceAutoStart')}
                 </div>
                 <div className="text-[10px] text-zinc-500 dark:text-zinc-400">
-                  {t('modelServiceAutoStartDesc')}
+                  {isMference
+                    ? t('mferenceServiceAutoStartDesc')
+                    : t('ttfServiceAutoStartDesc')}
                 </div>
               </button>
               <button
                 type="button"
                 role="switch"
-                aria-checked={svcStatus?.enabled ?? true}
+                aria-checked={isCurrentEngineActive}
                 disabled={svcBusy !== null}
-                onClick={() => handleSvcToggle(!(svcStatus?.enabled ?? true))}
+                onClick={() => handleEngineToggle(selectedEngine, !isCurrentEngineActive)}
                 className={`relative w-10 h-[22px] rounded-full transition-colors flex-shrink-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none ${
-                  svcStatus?.enabled ?? true
+                  isCurrentEngineActive
                     ? 'bg-amber-600'
                     : 'bg-zinc-300 dark:bg-zinc-600'
                 }`}
               >
                 <span
                   className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] rounded-full bg-white shadow transition-transform duration-200 ${
-                    svcStatus?.enabled ?? true ? 'translate-x-[18px]' : 'translate-x-0'
+                    isCurrentEngineActive ? 'translate-x-[18px]' : 'translate-x-0'
                   }`}
                 />
               </button>
@@ -717,22 +845,28 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
             <div className="flex gap-2 mb-1.5">
               <input
                 type="text"
-                value={svcProjectDir}
-                onChange={(e) => setSvcProjectDir(e.target.value)}
-                placeholder="/Users/xxx/turbo-fieldfare"
+                value={selectedEngine === 'mference' ? svcMferenceProjectDir : svcProjectDir}
+                onChange={(e) => {
+                  if (selectedEngine === 'mference') {
+                    setSvcMferenceProjectDir(e.target.value);
+                  } else {
+                    setSvcProjectDir(e.target.value);
+                  }
+                }}
+                placeholder={selectedEngine === 'mference' ? '~/Mference' : '~/turbo-fieldfare'}
                 className="flex-1 bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-[#1f2328] dark:text-[#f1f3f7] font-mono focus:outline-none focus:border-amber-500"
               />
               <button
                 type="button"
                 onClick={handleSvcPathApply}
-                disabled={svcBusy !== null || !svcProjectDir.trim()}
+                disabled={svcBusy !== null || !(selectedEngine === 'mference' ? svcMferenceProjectDir.trim() : svcProjectDir.trim())}
                 className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 active:scale-95 disabled:opacity-50 text-white text-xs font-medium transition-all flex-shrink-0"
               >
                 {svcBusy === 'path' ? t('modelServicePathApplying') : t('modelServicePathApply')}
               </button>
             </div>
 
-            {/* 服务监听端口（默认 1235；「保存并应用」后生效，并自动同步下方模型设置的请求端口） */}
+            {/* 服务监听端口 */}
             <div className="mb-1.5">
               <label className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-1">
                 {t('svcPortLabel')}
@@ -741,28 +875,32 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                 type="number"
                 min={1024}
                 max={65535}
-                value={svcForm.port ?? 1235}
-                onChange={(e) => setSvcForm({ ...svcForm, port: Number(e.target.value) || 1235 })}
+                value={selectedEngine === 'mference' ? (svcForm.mferencePort ?? 1241) : (svcForm.port ?? 1235)}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  if (selectedEngine === 'mference') {
+                    setSvcForm({ ...svcForm, mferencePort: val || 1241 });
+                  } else {
+                    setSvcForm({ ...svcForm, port: val || 1235 });
+                  }
+                }}
                 className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-[#1f2328] dark:text-[#f1f3f7] font-mono focus:outline-none focus:border-amber-500"
               />
             </div>
 
-            {/* 前置条件未满足时的引导。
-                TurboFieldfare 是实验性、面向开发者的项目，克隆本体 / 编译 / 准备模型权重
-                都交给用户按项目文档完成 —— App 只做检测，并给一个入口用默认浏览器打开项目主页，
-                不再代劳克隆或下载。 */}
-            {svcStatus && (!svcStatus.checks.repo || !svcStatus.checks.binary || !svcStatus.checks.model) && (
+            {/* 前置条件检测引导 */}
+            {currentEngineStatus && (!currentEngineStatus.checks.repo || !currentEngineStatus.checks.binary || !currentEngineStatus.checks.model) && (
               <div className="mt-1 rounded-lg border border-black/10 dark:border-white/10 bg-[#f6f8fa] dark:bg-[#18191c] px-2.5 py-2">
                 <div className="text-[10px] text-zinc-500 dark:text-zinc-400 mb-1.5">
-                  {!svcStatus.checks.repo
+                  {!currentEngineStatus.checks.repo
                     ? t('modelServiceCheckRepo')
-                    : !svcStatus.checks.binary
+                    : !currentEngineStatus.checks.binary
                     ? t('modelServiceCheckBinary')
                     : t('modelServiceCheckModel')}
                 </div>
                 <button
                   type="button"
-                  onClick={() => openExternalUrl(svcStatus.projectUrl)}
+                  onClick={() => openExternalUrl(currentEngineStatus.projectUrl)}
                   className="flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
                 >
                   <ExternalLink className="w-3 h-3" />
@@ -780,151 +918,255 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
               </div>
             )}
 
-            {/* 运行参数（保存时若服务在运行则自动热重启；端口复用下方「模型设置」卡片的服务端口输入） */}
+            {/* 运行参数区 */}
             <div className="mt-3">
               <div className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-1.5">
                 {t('modelServiceParamsTitle')}
               </div>
-              <div className="grid grid-cols-2 gap-2.5">
-                <div>
-                  <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcMaxContextLabel')}</label>
-                  <select
-                    value={svcForm.maxContext ?? 16384}
-                    onChange={(e) => setSvcForm({ ...svcForm, maxContext: Number(e.target.value) })}
-                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
-                  >
-                    {[4096, 8192, 16384, 32768, 65536, 98304, 131072, 196608, 262144].map((v) => (
-                      <option key={v} value={v}>
-                        {v >= 1024 ? `${v / 1024}K` : v}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcExpertSlotsLabel')}</label>
-                  <select
-                    value={svcForm.expertCacheSlots ?? 32}
-                    onChange={(e) => setSvcForm({ ...svcForm, expertCacheSlots: Number(e.target.value) })}
-                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
-                  >
-                    {[8, 16, 24, 32].map((v) => (
-                      <option key={v} value={v}>{v}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcExpertPolicyLabel')}</label>
-                  <select
-                    value={svcForm.expertCachePolicy ?? 'lfu'}
-                    onChange={(e) => setSvcForm({ ...svcForm, expertCachePolicy: e.target.value as 'lfu' | 'lru' })}
-                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
-                  >
-                    <option value="lfu">LFU</option>
-                    <option value="lru">LRU</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcPrefillLabel')}</label>
-                  <select
-                    value={svcForm.prefill ?? 'on'}
-                    onChange={(e) => setSvcForm({ ...svcForm, prefill: e.target.value as ModelServiceConfig['prefill'] })}
-                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
-                  >
-                    <option value="on">{t('svcToggleOn')}</option>
-                    <option value="off">{t('svcToggleOff')}</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcPrefillChunkLabel')}</label>
-                  <select
-                    value={svcForm.prefillChunkTokens ?? 'auto'}
-                    onChange={(e) => setSvcForm({ ...svcForm, prefillChunkTokens: e.target.value as ModelServiceConfig['prefillChunkTokens'] })}
-                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
-                  >
-                    <option value="auto">auto</option>
-                    <option value="256">256</option>
-                    <option value="128">128</option>
-                    <option value="64">64</option>
-                    <option value="32">32</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcVisionLabel')}</label>
-                  <select
-                    value={svcForm.visionResidency ?? 'on-demand'}
-                    onChange={(e) => setSvcForm({ ...svcForm, visionResidency: e.target.value as ModelServiceConfig['visionResidency'] })}
-                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
-                  >
-                    <option value="on-demand">on-demand</option>
-                    <option value="keep-ready">keep-ready</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcPromptCacheLabel')}</label>
-                  <select
-                    value={svcForm.promptCacheMode ?? 'single-prefix'}
-                    onChange={(e) => setSvcForm({ ...svcForm, promptCacheMode: e.target.value as ModelServiceConfig['promptCacheMode'] })}
-                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
-                  >
-                    <option value="single-prefix">single-prefix</option>
-                    <option value="off">off</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcThinkingLabel')}</label>
-                  <select
-                    value={svcForm.thinking ?? 'default'}
-                    onChange={(e) => setSvcForm({ ...svcForm, thinking: e.target.value as ModelServiceConfig['thinking'] })}
-                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
-                  >
-                    <option value="default">default</option>
-                    <option value="on">on</option>
-                    <option value="off">off</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcRdadviseLabel')}</label>
-                  <select
-                    value={svcForm.rdadvise ?? 'adaptive'}
-                    onChange={(e) => setSvcForm({ ...svcForm, rdadvise: e.target.value as ModelServiceConfig['rdadvise'] })}
-                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
-                  >
-                    <option value="adaptive">adaptive</option>
-                    <option value="bounded">bounded</option>
-                    <option value="default">default</option>
-                    <option value="off">off</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcIdleResetLabel')}</label>
-                  <select
-                    value={svcForm.idleAutoResetMinutes ?? 15}
-                    onChange={(e) => setSvcForm({ ...svcForm, idleAutoResetMinutes: Number(e.target.value) })}
-                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
-                  >
-                    <option value={0}>{t('svcIdleResetDisabled')}</option>
-                    {[5, 10, 15, 30, 60, 120].map((v) => (
-                      <option key={v} value={v}>{v} {t('svcMinutesUnit')}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
 
-              {/* 显存预算保护（与 manager 同款 checkbox：允许超出物理显存预算强制启动 128K/256K） */}
-              <label className="mt-2.5 flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={svcForm.allowUnbackedContext ?? false}
-                  onChange={(e) => setSvcForm({ ...svcForm, allowUnbackedContext: e.target.checked })}
-                  className="w-3.5 h-3.5 accent-amber-600 cursor-pointer"
-                />
-                <span className="text-[11px] text-zinc-600 dark:text-zinc-300">{t('svcAllowUnbackedLabel')}</span>
-              </label>
+              {selectedEngine === 'mference' ? (
+                /* Mference 运行参数 */
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcMaxContextLabel')}</label>
+                    <select
+                      value={svcForm.mferenceMaxContext ?? 16384}
+                      onChange={(e) => setSvcForm({ ...svcForm, mferenceMaxContext: Number(e.target.value) })}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                    >
+                      {[4096, 8192, 16384, 32768, 65536, 128000].map((v) => (
+                        <option key={v} value={v}>
+                          {v >= 1024 ? `${v / 1024}K` : v}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcShadowBudgetLabel')}</label>
+                    <select
+                      value={svcForm.mferenceShadowBudget ?? 4}
+                      onChange={(e) => setSvcForm({ ...svcForm, mferenceShadowBudget: Number(e.target.value) })}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                    >
+                      <option value={0}>{t('svcShadowOff')}</option>
+                      <option value={1}>1</option>
+                      <option value={2}>2</option>
+                      <option value={3}>3</option>
+                      <option value={4}>{t('svcShadowRecommended')}</option>
+                      <option value={6}>6</option>
+                      <option value={8}>{t('svcShadowMax')}</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcPromptCacheLabel')}</label>
+                    <select
+                      value={svcForm.mferencePromptCacheMode ?? 'single-prefix'}
+                      onChange={(e) => setSvcForm({ ...svcForm, mferencePromptCacheMode: e.target.value as any })}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                    >
+                      <option value="single-prefix">{t('svcPromptCacheSingle')}</option>
+                      <option value="off">{t('svcPromptCacheOff')}</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcVerifyLabel')}</label>
+                    <select
+                      value={svcForm.mferenceVerify ?? 'auto'}
+                      onChange={(e) => setSvcForm({ ...svcForm, mferenceVerify: e.target.value as any })}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                    >
+                      <option value="auto">{t('svcVerifyAuto')}</option>
+                      <option value="full-sha256">{t('svcVerifyFull')}</option>
+                      <option value="trusted-receipt">{t('svcVerifyTrusted')}</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcPrefillChunkMferenceLabel')}</label>
+                    <select
+                      value={svcForm.mferencePrefillChunk ?? '2048'}
+                      onChange={(e) => setSvcForm({ ...svcForm, mferencePrefillChunk: e.target.value })}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                    >
+                      <option value="512">512</option>
+                      <option value="1024">1024</option>
+                      <option value="2048">{t('svcPrefillChunkRecommended')}</option>
+                      <option value="4096">4096</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcQueueLimitLabel')}</label>
+                    <select
+                      value={svcForm.mferenceQueueLimit ?? 4}
+                      onChange={(e) => setSvcForm({ ...svcForm, mferenceQueueLimit: Number(e.target.value) })}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                    >
+                      <option value={1}>{t('svcQueueSingle')}</option>
+                      <option value={2}>2</option>
+                      <option value={4}>{t('svcQueueDefault')}</option>
+                      <option value={8}>8</option>
+                      <option value={16}>16</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcIdleResetLabel')}</label>
+                    <select
+                      value={svcForm.idleAutoResetMinutes ?? 15}
+                      onChange={(e) => setSvcForm({ ...svcForm, idleAutoResetMinutes: Number(e.target.value) })}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                    >
+                      <option value={0}>{t('svcIdleResetDisabled')}</option>
+                      {[5, 10, 15, 30, 60, 120].map((v) => (
+                        <option key={v} value={v}>{v} {t('svcMinutesUnit')}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              ) : (
+                /* TurboFieldfare 运行参数 */
+                <>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcMaxContextLabel')}</label>
+                      <select
+                        value={svcForm.maxContext ?? 16384}
+                        onChange={(e) => setSvcForm({ ...svcForm, maxContext: Number(e.target.value) })}
+                        className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                      >
+                        {[4096, 8192, 16384, 32768, 65536, 98304, 131072, 196608, 262144].map((v) => (
+                          <option key={v} value={v}>
+                            {v >= 1024 ? `${v / 1024}K` : v}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcExpertSlotsLabel')}</label>
+                      <select
+                        value={svcForm.expertCacheSlots ?? 32}
+                        onChange={(e) => setSvcForm({ ...svcForm, expertCacheSlots: Number(e.target.value) })}
+                        className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                      >
+                        {[8, 16, 24, 32].map((v) => (
+                          <option key={v} value={v}>{v}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcExpertPolicyLabel')}</label>
+                      <select
+                        value={svcForm.expertCachePolicy ?? 'lfu'}
+                        onChange={(e) => setSvcForm({ ...svcForm, expertCachePolicy: e.target.value as 'lfu' | 'lru' })}
+                        className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                      >
+                        <option value="lfu">LFU</option>
+                        <option value="lru">LRU</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcPrefillLabel')}</label>
+                      <select
+                        value={svcForm.prefill ?? 'on'}
+                        onChange={(e) => setSvcForm({ ...svcForm, prefill: e.target.value as ModelServiceConfig['prefill'] })}
+                        className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                      >
+                        <option value="on">{t('svcToggleOn')}</option>
+                        <option value="off">{t('svcToggleOff')}</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcPrefillChunkLabel')}</label>
+                      <select
+                        value={svcForm.prefillChunkTokens ?? 'auto'}
+                        onChange={(e) => setSvcForm({ ...svcForm, prefillChunkTokens: e.target.value as ModelServiceConfig['prefillChunkTokens'] })}
+                        className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                      >
+                        <option value="auto">auto</option>
+                        <option value="256">256</option>
+                        <option value="128">128</option>
+                        <option value="64">64</option>
+                        <option value="32">32</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcVisionLabel')}</label>
+                      <select
+                        value={svcForm.visionResidency ?? 'on-demand'}
+                        onChange={(e) => setSvcForm({ ...svcForm, visionResidency: e.target.value as ModelServiceConfig['visionResidency'] })}
+                        className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                      >
+                        <option value="on-demand">on-demand</option>
+                        <option value="keep-ready">keep-ready</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcPromptCacheLabel')}</label>
+                      <select
+                        value={svcForm.promptCacheMode ?? 'single-prefix'}
+                        onChange={(e) => setSvcForm({ ...svcForm, promptCacheMode: e.target.value as ModelServiceConfig['promptCacheMode'] })}
+                        className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                      >
+                        <option value="single-prefix">single-prefix</option>
+                        <option value="off">off</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcThinkingLabel')}</label>
+                      <select
+                        value={svcForm.thinking ?? 'default'}
+                        onChange={(e) => setSvcForm({ ...svcForm, thinking: e.target.value as ModelServiceConfig['thinking'] })}
+                        className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                      >
+                        <option value="default">default</option>
+                        <option value="on">on</option>
+                        <option value="off">off</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcRdadviseLabel')}</label>
+                      <select
+                        value={svcForm.rdadvise ?? 'adaptive'}
+                        onChange={(e) => setSvcForm({ ...svcForm, rdadvise: e.target.value as ModelServiceConfig['rdadvise'] })}
+                        className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                      >
+                        <option value="adaptive">adaptive</option>
+                        <option value="bounded">bounded</option>
+                        <option value="default">default</option>
+                        <option value="off">off</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcIdleResetLabel')}</label>
+                      <select
+                        value={svcForm.idleAutoResetMinutes ?? 15}
+                        onChange={(e) => setSvcForm({ ...svcForm, idleAutoResetMinutes: Number(e.target.value) })}
+                        className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                      >
+                        <option value={0}>{t('svcIdleResetDisabled')}</option>
+                        {[5, 10, 15, 30, 60, 120].map((v) => (
+                          <option key={v} value={v}>{v} {t('svcMinutesUnit')}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* 显存预算保护（允许超出物理显存预算强制启动 128K/256K） */}
+                  <label className="mt-2.5 flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={svcForm.allowUnbackedContext ?? false}
+                      onChange={(e) => setSvcForm({ ...svcForm, allowUnbackedContext: e.target.checked })}
+                      className="w-3.5 h-3.5 accent-amber-600 cursor-pointer"
+                    />
+                    <span className="text-[11px] text-zinc-600 dark:text-zinc-300">{t('svcAllowUnbackedLabel')}</span>
+                  </label>
+                </>
+              )}
+
               <button
                 type="button"
                 onClick={handleSvcApplyParams}
                 disabled={svcBusy !== null}
-                className="mt-2.5 w-full px-2 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 active:scale-[0.98] disabled:opacity-50 text-white text-xs font-medium transition-all"
+                className="mt-2.5 w-full px-2 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 active:scale-[0.98] disabled:opacity-50 text-white text-xs font-medium transition-all cursor-pointer"
               >
                 {svcBusy === 'apply' ? t('modelServiceApplying') : t('modelServiceApplyRestart')}
               </button>

@@ -1,8 +1,21 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { AppSettings, LocalProviderConfig, DeepSeekProviderConfig, ApiProvider } from '../types/chat';
-import { DEFAULT_SETTINGS, DEFAULT_LOCAL_CONFIG, DEFAULT_DEEPSEEK_CONFIG } from '../services/storage';
+import {
+  AppSettings,
+  DeepSeekProviderConfig,
+  ApiProvider,
+  TtfProviderConfig,
+  MferenceProviderConfig,
+  CustomProviderConfig,
+} from '../types/chat';
+import {
+  DEFAULT_SETTINGS,
+  DEFAULT_DEEPSEEK_CONFIG,
+  DEFAULT_TTF_CONFIG,
+  DEFAULT_MFERENCE_CONFIG,
+  DEFAULT_CUSTOM_CONFIG,
+} from '../services/storage';
 import { resolveLanguage, translations, Language, TranslationKeys } from '../i18n';
-import { X, RotateCcw, Check, AppWindow, SlidersHorizontal, Eye, EyeOff, Sparkles } from 'lucide-react';
+import { X, RotateCcw, Check, AppWindow, SlidersHorizontal, Eye, EyeOff, Sparkles, Terminal } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -18,21 +31,40 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onSave,
 }) => {
   // 1. 通用应用外观设置
-  const [apiProvider, setApiProvider] = useState<ApiProvider>(() => settings?.apiProvider || 'local');
+  const [apiProvider, setApiProvider] = useState<ApiProvider>(() => {
+    const p = settings?.apiProvider || 'ttf';
+    return p === 'local' ? 'ttf' : p;
+  });
   const [theme, setTheme] = useState<'system' | 'light' | 'dark'>(() => settings?.theme || 'system');
   const [language, setLanguage] = useState<'system' | 'zh' | 'en'>(() => settings?.language || 'system');
   const [spotlightResetMinutes, setSpotlightResetMinutes] = useState<number>(() => settings?.spotlightResetMinutes ?? 15);
 
-  // 2. 本地引擎独立设置
-  const [localConfig, setLocalConfig] = useState<LocalProviderConfig>(() => ({
-    ...DEFAULT_LOCAL_CONFIG,
-    ...(settings?.localConfig || {}),
+  // 2. 四套独立模型配置
+  // TTF (TurboFieldfare / Gemma 4)
+  const [ttfConfig, setTtfConfig] = useState<TtfProviderConfig>(() => ({
+    ...DEFAULT_TTF_CONFIG,
+    ...(settings?.ttfConfig || settings?.localConfig || {}),
   }));
-  const [localStopInput, setLocalStopInput] = useState<string>(() =>
-    (settings?.localConfig?.stopStrings || settings?.stopStrings || []).join(', ')
+  const [ttfStopInput, setTtfStopInput] = useState<string>(() =>
+    (settings?.ttfConfig?.stopStrings || settings?.localConfig?.stopStrings || settings?.stopStrings || []).join(', ')
   );
 
-  // 3. DeepSeek 官方 API 独立设置
+  // Mference (Qwen 3.6 35B-A3B)
+  const [mferenceConfig, setMferenceConfig] = useState<MferenceProviderConfig>(() => ({
+    ...DEFAULT_MFERENCE_CONFIG,
+    ...(settings?.mferenceConfig || {}),
+  }));
+  const [mferenceStopInput, setMferenceStopInput] = useState<string>(() =>
+    (settings?.mferenceConfig?.stopStrings || []).join(', ')
+  );
+
+  // Custom (自定义 / OpenAI 兼容极简模式)
+  const [customConfig, setCustomConfig] = useState<CustomProviderConfig>(() => ({
+    ...DEFAULT_CUSTOM_CONFIG,
+    ...(settings?.customConfig || {}),
+  }));
+
+  // DeepSeek 官方 API
   const [deepseekConfig, setDeepseekConfig] = useState<DeepSeekProviderConfig>(() => ({
     ...DEFAULT_DEEPSEEK_CONFIG,
     ...(settings?.deepseekConfig || {}),
@@ -56,20 +88,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   }, [activeLang]);
 
   // 仅在弹窗打开的一瞬间（从 false 变为 true）从外部同步最新设置
-  // 弹窗打开编辑期间，外部的 settings 变动（如窗口聚焦刷新、后台轮询等）绝不覆盖用户正在输入的配置！
   useEffect(() => {
     if (isOpen && !prevIsOpenRef.current) {
-      setApiProvider(settings?.apiProvider || 'local');
+      const p = settings?.apiProvider || 'ttf';
+      setApiProvider(p === 'local' ? 'ttf' : p);
       setTheme(settings?.theme || 'system');
       setLanguage(settings?.language || 'system');
       setSpotlightResetMinutes(settings?.spotlightResetMinutes ?? 15);
 
-      const lCfg: LocalProviderConfig = {
-        ...DEFAULT_LOCAL_CONFIG,
-        ...(settings?.localConfig || {}),
+      const tCfg: TtfProviderConfig = {
+        ...DEFAULT_TTF_CONFIG,
+        ...(settings?.ttfConfig || settings?.localConfig || {}),
       };
-      setLocalConfig(lCfg);
-      setLocalStopInput((lCfg.stopStrings || []).join(', '));
+      setTtfConfig(tCfg);
+      setTtfStopInput((tCfg.stopStrings || []).join(', '));
+
+      const mCfg: MferenceProviderConfig = {
+        ...DEFAULT_MFERENCE_CONFIG,
+        ...(settings?.mferenceConfig || {}),
+      };
+      setMferenceConfig(mCfg);
+      setMferenceStopInput((mCfg.stopStrings || []).join(', '));
+
+      const cCfg: CustomProviderConfig = {
+        ...DEFAULT_CUSTOM_CONFIG,
+        ...(settings?.customConfig || {}),
+      };
+      setCustomConfig(cCfg);
 
       const storedApiKey = typeof localStorage !== 'undefined' ? localStorage.getItem('tff_deepseek_api_key_v1') || '' : '';
       const resolvedApiKey = (
@@ -110,17 +155,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setSpotlightResetMinutes(DEFAULT_SETTINGS.spotlightResetMinutes ?? 15);
   };
 
+  /** 模型卡片恢复默认：严格根据当前激活的提供商进行独立恢复，互不干扰 */
   const handleModelCardReset = () => {
-    if (apiProvider === 'deepseek') {
+    if (apiProvider === 'ttf' || apiProvider === 'local') {
+      setTtfConfig({ ...DEFAULT_TTF_CONFIG });
+      setTtfStopInput(DEFAULT_TTF_CONFIG.stopStrings.join(', '));
+    } else if (apiProvider === 'mference') {
+      setMferenceConfig({ ...DEFAULT_MFERENCE_CONFIG });
+      setMferenceStopInput((DEFAULT_MFERENCE_CONFIG.stopStrings || []).join(', '));
+    } else if (apiProvider === 'custom') {
+      setCustomConfig({ ...DEFAULT_CUSTOM_CONFIG });
+    } else if (apiProvider === 'deepseek') {
       const storedApiKey = typeof localStorage !== 'undefined' ? localStorage.getItem('tff_deepseek_api_key_v1') || '' : '';
       setDeepseekConfig((prev) => ({
         ...DEFAULT_DEEPSEEK_CONFIG,
         apiKey: prev.apiKey || storedApiKey, // API Key 固定保留，恢复默认时不重置
       }));
       setDeepseekStopInput('');
-    } else {
-      setLocalConfig({ ...DEFAULT_LOCAL_CONFIG });
-      setLocalStopInput(DEFAULT_LOCAL_CONFIG.stopStrings.join(', '));
     }
   };
 
@@ -143,18 +194,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setTheme(DEFAULT_SETTINGS.theme || 'system');
     setLanguage(DEFAULT_SETTINGS.language || 'system');
     setSpotlightResetMinutes(DEFAULT_SETTINGS.spotlightResetMinutes ?? 15);
-    setApiProvider('local');
-    setLocalConfig({ ...DEFAULT_LOCAL_CONFIG });
-    setLocalStopInput(DEFAULT_LOCAL_CONFIG.stopStrings.join(', '));
+    setApiProvider('ttf');
+    setTtfConfig({ ...DEFAULT_TTF_CONFIG });
+    setTtfStopInput(DEFAULT_TTF_CONFIG.stopStrings.join(', '));
+    setMferenceConfig({ ...DEFAULT_MFERENCE_CONFIG });
+    setMferenceStopInput((DEFAULT_MFERENCE_CONFIG.stopStrings || []).join(', '));
+    setCustomConfig({ ...DEFAULT_CUSTOM_CONFIG });
     setDeepseekConfig((prev) => ({
       ...DEFAULT_DEEPSEEK_CONFIG,
-      apiKey: prev.apiKey || storedApiKey, // API Key 固定保留，恢复默认时不重置
+      apiKey: prev.apiKey || storedApiKey,
     }));
     setDeepseekStopInput('');
   };
 
   const handleSave = () => {
-    const localStops = localStopInput
+    const ttfStops = ttfStopInput
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const mferenceStops = mferenceStopInput
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
@@ -174,9 +232,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       }
     }
 
-    const finalLocal: LocalProviderConfig = {
-      ...localConfig,
-      stopStrings: localStops,
+    const finalTtf: TtfProviderConfig = {
+      ...ttfConfig,
+      stopStrings: ttfStops,
+    };
+    const finalMference: MferenceProviderConfig = {
+      ...mferenceConfig,
+      stopStrings: mferenceStops,
+    };
+    const finalCustom: CustomProviderConfig = {
+      ...customConfig,
     };
     const finalDs: DeepSeekProviderConfig = {
       ...deepseekConfig,
@@ -184,7 +249,67 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       stopStrings: dsStops,
     };
 
-    const activeConfig = apiProvider === 'deepseek' ? finalDs : finalLocal;
+    // 活跃配置投影
+    let activePort = finalTtf.apiPort;
+    let activeBaseUrl = finalTtf.apiBaseUrl || '';
+    let activeModel = finalTtf.modelId;
+    let activeMaxContext = finalTtf.maxContext;
+    let activeMaxTokens = finalTtf.maxTokens;
+    let activeTemp = finalTtf.temperature;
+    let activeTopP = finalTtf.topP;
+    let activeTopK: number | undefined = finalTtf.topK;
+    let activeMinP: number | undefined = undefined;
+    let activePresencePenalty: number | undefined = undefined;
+    let activeRepPenalty: number | undefined = finalTtf.repetitionPenalty;
+    let activeReasoning = finalTtf.reasoningEffort || 'default';
+    let activeSeed: number | undefined = finalTtf.seed;
+    let activeStopStrings: string[] = finalTtf.stopStrings;
+    let activeSystemPrompt = finalTtf.systemPrompt;
+
+    if (apiProvider === 'mference') {
+      activePort = finalMference.apiPort;
+      activeBaseUrl = finalMference.apiBaseUrl || '';
+      activeModel = finalMference.modelId;
+      activeMaxContext = finalMference.maxContext;
+      activeMaxTokens = finalMference.maxTokens;
+      activeTemp = finalMference.temperature;
+      activeTopP = finalMference.topP;
+      activeTopK = finalMference.topK;
+      activeMinP = finalMference.minP;
+      activePresencePenalty = finalMference.presencePenalty;
+      activeRepPenalty = finalMference.repetitionPenalty;
+      activeReasoning = finalMference.reasoningEffort || 'low';
+      activeSeed = finalMference.seed;
+      activeStopStrings = finalMference.stopStrings || [];
+      activeSystemPrompt = finalMference.systemPrompt;
+    } else if (apiProvider === 'custom') {
+      activePort = finalCustom.apiPort;
+      activeBaseUrl = finalCustom.apiBaseUrl || '';
+      activeModel = finalCustom.modelId;
+      activeMaxContext = finalCustom.maxContext;
+      activeMaxTokens = finalCustom.maxTokens;
+      activeTemp = finalCustom.temperature;
+      activeTopP = 1.0;
+      activeReasoning = 'high';
+      activeSystemPrompt = finalCustom.systemPrompt;
+      activeTopK = undefined;
+      activeRepPenalty = undefined;
+      activeSeed = undefined;
+      activeStopStrings = [];
+    } else if (apiProvider === 'deepseek') {
+      activeBaseUrl = finalDs.baseUrl;
+      activeModel = finalDs.modelId;
+      activeMaxContext = finalDs.maxContext;
+      activeMaxTokens = finalDs.maxTokens;
+      activeTemp = finalDs.temperature;
+      activeTopP = finalDs.topP;
+      activeReasoning = finalDs.reasoningEffort;
+      activeSeed = finalDs.seed;
+      activeStopStrings = finalDs.stopStrings;
+      activeSystemPrompt = finalDs.systemPrompt;
+      activeTopK = undefined;
+      activeRepPenalty = undefined;
+    }
 
     onSave({
       ...settings,
@@ -192,27 +317,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       language,
       spotlightResetMinutes,
       apiProvider,
-      localConfig: finalLocal,
+      ttfConfig: finalTtf,
+      mferenceConfig: finalMference,
+      customConfig: finalCustom,
       deepseekConfig: finalDs,
+      localConfig: finalTtf as any,
 
       // 同步当前活跃提供商的扁平字段
-      apiPort: finalLocal.apiPort,
-      apiBaseUrl: finalLocal.apiBaseUrl,
+      apiPort: activePort,
+      apiBaseUrl: activeBaseUrl,
       deepseekApiKey: cleanApiKey,
       deepseekModelId: finalDs.modelId,
       deepseekBaseUrl: finalDs.baseUrl,
 
-      modelId: activeConfig.modelId,
-      maxContext: activeConfig.maxContext,
-      maxTokens: activeConfig.maxTokens,
-      temperature: activeConfig.temperature,
-      topP: activeConfig.topP,
-      topK: finalLocal.topK,
-      repetitionPenalty: finalLocal.repetitionPenalty,
-      reasoningEffort: apiProvider === 'deepseek' ? finalDs.reasoningEffort : (settings.reasoningEffort || 'high'),
-      seed: activeConfig.seed,
-      stopStrings: activeConfig.stopStrings,
-      systemPrompt: activeConfig.systemPrompt,
+      modelId: activeModel,
+      maxContext: activeMaxContext,
+      maxTokens: activeMaxTokens,
+      temperature: activeTemp,
+      topP: activeTopP,
+      topK: activeTopK,
+      minP: activeMinP,
+      presencePenalty: activePresencePenalty,
+      repetitionPenalty: activeRepPenalty,
+      reasoningEffort: activeReasoning,
+      seed: activeSeed,
+      stopStrings: activeStopStrings,
+      systemPrompt: activeSystemPrompt,
     });
     onClose();
   };
@@ -316,7 +446,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </span>
             </div>
 
-            {/* Provider Switcher */}
+            {/* Provider Switcher: 4 大独立模型接入模块 */}
             <div className="mb-3.5">
               <label className="block font-medium mb-1.5 text-zinc-600 dark:text-[#9aa0ac]">
                 {t('apiProviderLabel')}
@@ -324,15 +454,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={() => setApiProvider('local')}
+                  onClick={() => setApiProvider('ttf')}
                   className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg border text-xs font-medium transition-all ${
-                    apiProvider === 'local'
+                    apiProvider === 'ttf' || apiProvider === 'local'
                       ? 'bg-amber-500/10 border-amber-500/40 text-amber-700 dark:text-amber-400 font-semibold shadow-sm'
                       : 'bg-[#f6f8fa] dark:bg-[#18191c] border-black/10 dark:border-[#343740] text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
                   }`}
                 >
                   <SlidersHorizontal className="w-3.5 h-3.5" />
-                  <span>{t('providerLocal')}</span>
+                  <span>{t('providerTTFShort')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setApiProvider('mference')}
+                  className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg border text-xs font-medium transition-all ${
+                    apiProvider === 'mference'
+                      ? 'bg-amber-500/10 border-amber-500/40 text-amber-700 dark:text-amber-400 font-semibold shadow-sm'
+                      : 'bg-[#f6f8fa] dark:bg-[#18191c] border-black/10 dark:border-[#343740] text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
+                  }`}
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  <span>{t('providerMferenceShort')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setApiProvider('custom')}
+                  className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg border text-xs font-medium transition-all ${
+                    apiProvider === 'custom'
+                      ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-700 dark:text-emerald-400 font-semibold shadow-sm'
+                      : 'bg-[#f6f8fa] dark:bg-[#18191c] border-black/10 dark:border-[#343740] text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
+                  }`}
+                >
+                  <Terminal className="w-3.5 h-3.5" />
+                  <span>{t('providerCustomShort')}</span>
                 </button>
                 <button
                   type="button"
@@ -344,7 +498,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   }`}
                 >
                   <Sparkles className="w-3.5 h-3.5" />
-                  <span>{t('providerDeepSeek')}</span>
+                  <span>{t('providerDeepSeekShort')}</span>
                 </button>
               </div>
             </div>
@@ -676,26 +830,309 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
                 {cardResetButton(handleModelCardReset)}
               </div>
-            ) : (
-              /* Local Provider Specific Settings */
+            ) : apiProvider === 'mference' ? (
+              /* Mference (Qwen 3.6 35B-A3B) 专属设置 */
               <div className="space-y-3 pt-1">
-                {/* Local Service Port Selection */}
+                {/* Notice Banner */}
+                <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-[11px] leading-relaxed flex items-start gap-2">
+                  <SlidersHorizontal className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                  <span>{t('mferenceServiceAutoStartDesc')}</span>
+                </div>
+
+                {/* Service Port & Base URL */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('servicePortLabel')}
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="65535"
+                      value={mferenceConfig.apiPort ?? 1241}
+                      onChange={(e) => setMferenceConfig({ ...mferenceConfig, apiPort: Number(e.target.value) || 1241 })}
+                      placeholder="1241"
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('customBaseUrlLabel')}
+                    </label>
+                    <input
+                      type="text"
+                      value={mferenceConfig.apiBaseUrl ?? ''}
+                      onChange={(e) => setMferenceConfig({ ...mferenceConfig, apiBaseUrl: e.target.value })}
+                      placeholder="http://127.0.0.1:1241"
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono text-[11px]"
+                    />
+                  </div>
+                </div>
+
+                {/* Model ID & Max Context */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('modelLabel')}
+                    </label>
+                    <input
+                      type="text"
+                      value={mferenceConfig.modelId ?? 'qwen3.6-35b-a3b'}
+                      onChange={(e) => setMferenceConfig({ ...mferenceConfig, modelId: e.target.value })}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('maxContextLabel')}
+                    </label>
+                    <select
+                      value={mferenceConfig.maxContext ?? 16384}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setMferenceConfig({
+                          ...mferenceConfig,
+                          maxContext: val,
+                          maxTokens: Math.floor(val / 2),
+                        });
+                      }}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                    >
+                      <option value={8192}>8,192 (8K)</option>
+                      <option value={16384}>16,384 (16K)</option>
+                      <option value={32768}>32,768 (32K)</option>
+                      <option value={65536}>65,536 (64K)</option>
+                      <option value={128000}>128,000 (128K)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Reasoning Effort (深度思考推理深度) */}
+                <div>
+                  <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                    {t('reasoningEffortLabel')}
+                  </label>
+                  <select
+                    value={mferenceConfig.reasoningEffort ?? 'low'}
+                    onChange={(e) => setMferenceConfig({ ...mferenceConfig, reasoningEffort: e.target.value as any })}
+                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                  >
+                    <option value="low">{t('reasoningEffortLow')}</option>
+                    <option value="medium">{t('reasoningEffortMed')}</option>
+                    <option value="high">{t('reasoningEffortHigh')}</option>
+                    <option value="none">{t('reasoningEffortNone')}</option>
+                  </select>
+                </div>
+
+                {/* Sampling Parameters: Temperature & Top-P */}
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      <span>{t('temperatureLabel')}</span>
+                      <span className="font-mono text-amber-500 dark:text-amber-400">{mferenceConfig.temperature ?? 1.0}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="2"
+                      step="0.05"
+                      value={mferenceConfig.temperature ?? 1.0}
+                      onChange={(e) => setMferenceConfig({ ...mferenceConfig, temperature: Number(e.target.value) })}
+                      className="w-full accent-amber-500"
+                    />
+                    <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('temperatureTip')}</span>
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      <span>{t('topPLabel')}</span>
+                      <span className="font-mono text-amber-500 dark:text-amber-400">{mferenceConfig.topP ?? 0.95}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.01"
+                      max="1.0"
+                      step="0.01"
+                      value={mferenceConfig.topP ?? 0.95}
+                      onChange={(e) => setMferenceConfig({ ...mferenceConfig, topP: Number(e.target.value) })}
+                      className="w-full accent-amber-500"
+                    />
+                    <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('topPTip')}</span>
+                  </div>
+                </div>
+
+                {/* Top-K & Min-P */}
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      <span>{t('topKLabel')}</span>
+                      <span className="font-mono text-amber-500 dark:text-amber-400">{mferenceConfig.topK ?? 20}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="1"
+                      max="256"
+                      step="1"
+                      value={mferenceConfig.topK ?? 20}
+                      onChange={(e) => setMferenceConfig({ ...mferenceConfig, topK: Number(e.target.value) })}
+                      className="w-full accent-amber-500"
+                    />
+                    <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('topKTip')}</span>
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      <span>{t('minPLabel')}</span>
+                      <span className="font-mono text-amber-500 dark:text-amber-400">{mferenceConfig.minP ?? 0.0}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.0"
+                      max="1.0"
+                      step="0.01"
+                      value={mferenceConfig.minP ?? 0.0}
+                      onChange={(e) => setMferenceConfig({ ...mferenceConfig, minP: Number(e.target.value) })}
+                      className="w-full accent-amber-500"
+                    />
+                    <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('minPTip')}</span>
+                  </div>
+                </div>
+
+                {/* Presence Penalty & Repetition Penalty */}
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      <span>{t('presencePenaltyLabel')}</span>
+                      <span className="font-mono text-amber-500 dark:text-amber-400">{mferenceConfig.presencePenalty ?? 1.5}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="-2.0"
+                      max="2.0"
+                      step="0.05"
+                      value={mferenceConfig.presencePenalty ?? 1.5}
+                      onChange={(e) => setMferenceConfig({ ...mferenceConfig, presencePenalty: Number(e.target.value) })}
+                      className="w-full accent-amber-500"
+                    />
+                    <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('presencePenaltyTip')}</span>
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      <span>{t('repetitionPenaltyLabel')}</span>
+                      <span className="font-mono text-amber-500 dark:text-amber-400">{mferenceConfig.repetitionPenalty ?? 1.0}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="2.0"
+                      step="0.05"
+                      value={mferenceConfig.repetitionPenalty ?? 1.0}
+                      onChange={(e) => setMferenceConfig({ ...mferenceConfig, repetitionPenalty: Number(e.target.value) })}
+                      className="w-full accent-amber-500"
+                    />
+                    <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('repetitionPenaltyTip')}</span>
+                  </div>
+                </div>
+
+                {/* Max Completion Tokens & Seed */}
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="font-medium text-zinc-600 dark:text-[#9aa0ac]">
+                        {t('maxTokensLabel')}
+                      </label>
+                      <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium bg-amber-500/10 px-1.5 py-0.5 rounded">
+                        {t('linkedHalf')}
+                      </span>
+                    </div>
+                    <input
+                      type="text"
+                      readOnly
+                      value={`${mferenceConfig.maxTokens || Math.floor((mferenceConfig.maxContext || 16384) / 2)} tokens (${Math.round((mferenceConfig.maxTokens || Math.floor((mferenceConfig.maxContext || 16384) / 2)) / 1024)}K)`}
+                      className="w-full bg-zinc-100 dark:bg-[#151619] border border-black/10 dark:border-[#2d3038] rounded-lg px-3 py-2 text-zinc-600 dark:text-[#abb0bc] cursor-not-allowed font-mono select-none"
+                    />
+                    <span className="text-[10px] text-zinc-500 dark:text-[#6f7582] mt-1 block">{t('maxTokensTip')}</span>
+                  </div>
+
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('seedLabel')}
+                    </label>
+                    <input
+                      type="number"
+                      value={mferenceConfig.seed ?? ''}
+                      onChange={(e) =>
+                        setMferenceConfig({
+                          ...mferenceConfig,
+                          seed: e.target.value ? Number(e.target.value) : undefined,
+                        })
+                      }
+                      placeholder={t('seedPlaceholder')}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                </div>
+
+                {/* Stop Sequences */}
+                <div>
+                  <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                    {t('stopLabel')}
+                  </label>
+                  <input
+                    type="text"
+                    value={mferenceStopInput}
+                    onChange={(e) => setMferenceStopInput(e.target.value)}
+                    placeholder={t('stopPlaceholder')}
+                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                  />
+                </div>
+
+                {/* System Prompt */}
+                <div>
+                  <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                    {t('systemPromptLabel')}
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={mferenceConfig.systemPrompt ?? ''}
+                    onChange={(e) => setMferenceConfig({ ...mferenceConfig, systemPrompt: e.target.value })}
+                    placeholder={t('systemPromptPlaceholderMference')}
+                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none resize-none leading-relaxed"
+                  />
+                  <span className="text-[10px] text-zinc-500 dark:text-[#6f7582] mt-1 block">
+                    {t('mferenceSystemPromptTip')}
+                  </span>
+                </div>
+
+                {cardResetButton(handleModelCardReset)}
+              </div>
+            ) : apiProvider === 'custom' ? (
+              /* 自定义 (Custom / OpenAI 兼容极简模式) */
+              <div className="space-y-3 pt-1">
+                {/* Notice Banner */}
+                <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-800 dark:text-emerald-300 text-[11px] leading-relaxed flex items-start gap-2">
+                  <Terminal className="w-4 h-4 flex-shrink-0 mt-0.5 text-emerald-600 dark:text-emerald-400" />
+                  <span>{t('customNotice')}</span>
+                </div>
+
+                {/* Service Port Selection */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
                       {t('servicePortLabel')}
                     </label>
                     <select
-                      value={[1235, 11434, 8000, 8080, 1234, 5000].includes(localConfig.apiPort) ? localConfig.apiPort : 'custom'}
+                      value={[11434, 8000, 8080, 1234, 5000].includes(customConfig.apiPort) ? customConfig.apiPort : 'custom'}
                       onChange={(e) => {
                         const val = e.target.value;
                         if (val !== 'custom') {
-                          setLocalConfig({ ...localConfig, apiPort: Number(val) });
+                          setCustomConfig({ ...customConfig, apiPort: Number(val) });
                         }
                       }}
-                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none"
                     >
-                      <option value={1235}>{t('portOptionTTF')}</option>
                       <option value={11434}>{t('portOptionOllama')}</option>
                       <option value={8000}>{t('portOptionVLLM')}</option>
                       <option value={8080}>{t('portOptionLlamaCpp')}</option>
@@ -713,10 +1150,155 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       type="number"
                       min="1"
                       max="65535"
-                      value={localConfig.apiPort ?? 1235}
-                      onChange={(e) => setLocalConfig({ ...localConfig, apiPort: Number(e.target.value) || 1235 })}
+                      value={customConfig.apiPort ?? 11434}
+                      onChange={(e) => setCustomConfig({ ...customConfig, apiPort: Number(e.target.value) || 11434 })}
+                      placeholder="11434"
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                </div>
+
+                {/* Base URL (Optional) */}
+                <div>
+                  <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                    {t('customBaseUrlLabel')}
+                  </label>
+                  <input
+                    type="text"
+                    value={customConfig.apiBaseUrl ?? ''}
+                    onChange={(e) => setCustomConfig({ ...customConfig, apiBaseUrl: e.target.value })}
+                    placeholder={t('customBaseUrlPlaceholder')}
+                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none font-mono text-[11px]"
+                  />
+                </div>
+
+                {/* Model ID & Max Context */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('customModelLabel')}
+                    </label>
+                    <input
+                      type="text"
+                      value={customConfig.modelId ?? 'llama3'}
+                      onChange={(e) => setCustomConfig({ ...customConfig, modelId: e.target.value })}
+                      placeholder={t('customModelPlaceholder')}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('maxContextLabel')}
+                    </label>
+                    <select
+                      value={customConfig.maxContext ?? 8192}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setCustomConfig({
+                          ...customConfig,
+                          maxContext: val,
+                          maxTokens: Math.min(customConfig.maxTokens || 4096, Math.floor(val / 2)),
+                        });
+                      }}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none"
+                    >
+                      <option value={4096}>4,096 (4K)</option>
+                      <option value={8192}>8,192 (8K)</option>
+                      <option value={16384}>16,384 (16K)</option>
+                      <option value={32768}>32,768 (32K)</option>
+                      <option value={65536}>65,536 (64K)</option>
+                      <option value={131072}>131,072 (128K)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Max Tokens & Temperature (最基础参数) */}
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('maxTokensLabel')}
+                    </label>
+                    <input
+                      type="number"
+                      min="256"
+                      max={customConfig.maxContext ?? 8192}
+                      step="256"
+                      value={customConfig.maxTokens ?? 4096}
+                      onChange={(e) => setCustomConfig({ ...customConfig, maxTokens: Number(e.target.value) || 4096 })}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      <span>{t('temperatureLabel')}</span>
+                      <span className="font-mono text-emerald-500 dark:text-emerald-400">{customConfig.temperature ?? 0.7}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="2"
+                      step="0.05"
+                      value={customConfig.temperature ?? 0.7}
+                      onChange={(e) => setCustomConfig({ ...customConfig, temperature: Number(e.target.value) })}
+                      className="w-full accent-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                {/* System Prompt */}
+                <div>
+                  <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                    {t('systemPromptLabel')}
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={customConfig.systemPrompt ?? ''}
+                    onChange={(e) => setCustomConfig({ ...customConfig, systemPrompt: e.target.value })}
+                    placeholder={t('systemPromptPlaceholderLocal')}
+                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none resize-none leading-relaxed"
+                  />
+                </div>
+
+                {cardResetButton(handleModelCardReset)}
+              </div>
+            ) : (
+              /* TTF (TurboFieldfare / Gemma 4) 专属设置 */
+              <div className="space-y-3 pt-1">
+                {/* Notice Banner */}
+                <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-[11px] leading-relaxed flex items-start gap-2">
+                  <SlidersHorizontal className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                  <span>{t('ttfServiceAutoStartDesc')}</span>
+                </div>
+
+                {/* Service Port & Base URL */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('servicePortLabel')}
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="65535"
+                      value={ttfConfig.apiPort ?? 1235}
+                      onChange={(e) => setTtfConfig({ ...ttfConfig, apiPort: Number(e.target.value) || 1235 })}
                       placeholder="1235"
                       className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('customBaseUrlLabel')}
+                    </label>
+                    <input
+                      type="text"
+                      value={ttfConfig.apiBaseUrl ?? ''}
+                      onChange={(e) => setTtfConfig({ ...ttfConfig, apiBaseUrl: e.target.value })}
+                      placeholder="http://127.0.0.1:1235"
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono text-[11px]"
                     />
                   </div>
                 </div>
@@ -729,8 +1311,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </label>
                     <input
                       type="text"
-                      value={localConfig.modelId ?? 'gemma-4-26b-a4b-it'}
-                      onChange={(e) => setLocalConfig({ ...localConfig, modelId: e.target.value })}
+                      value={ttfConfig.modelId ?? 'gemma-4-26b-a4b-it'}
+                      onChange={(e) => setTtfConfig({ ...ttfConfig, modelId: e.target.value })}
                       className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
                     />
                   </div>
@@ -740,11 +1322,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       {t('maxContextLabel')}
                     </label>
                     <select
-                      value={localConfig.maxContext ?? 16384}
+                      value={ttfConfig.maxContext ?? 16384}
                       onChange={(e) => {
                         const val = Number(e.target.value);
-                        setLocalConfig({
-                          ...localConfig,
+                        setTtfConfig({
+                          ...ttfConfig,
                           maxContext: val,
                           maxTokens: Math.floor(val / 2),
                         });
@@ -766,15 +1348,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div>
                     <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
                       <span>{t('temperatureLabel')}</span>
-                      <span className="font-mono text-amber-500 dark:text-amber-400">{localConfig.temperature ?? 1.0}</span>
+                      <span className="font-mono text-amber-500 dark:text-amber-400">{ttfConfig.temperature ?? 1.0}</span>
                     </div>
                     <input
                       type="range"
                       min="0"
                       max="2"
                       step="0.05"
-                      value={localConfig.temperature ?? 1.0}
-                      onChange={(e) => setLocalConfig({ ...localConfig, temperature: Number(e.target.value) })}
+                      value={ttfConfig.temperature ?? 1.0}
+                      onChange={(e) => setTtfConfig({ ...ttfConfig, temperature: Number(e.target.value) })}
                       className="w-full accent-amber-500"
                     />
                     <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('temperatureTip')}</span>
@@ -783,35 +1365,35 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div>
                     <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
                       <span>{t('topPLabel')}</span>
-                      <span className="font-mono text-amber-500 dark:text-amber-400">{localConfig.topP ?? 0.95}</span>
+                      <span className="font-mono text-amber-500 dark:text-amber-400">{ttfConfig.topP ?? 0.95}</span>
                     </div>
                     <input
                       type="range"
                       min="0.01"
                       max="1.0"
                       step="0.01"
-                      value={localConfig.topP ?? 0.95}
-                      onChange={(e) => setLocalConfig({ ...localConfig, topP: Number(e.target.value) })}
+                      value={ttfConfig.topP ?? 0.95}
+                      onChange={(e) => setTtfConfig({ ...ttfConfig, topP: Number(e.target.value) })}
                       className="w-full accent-amber-500"
                     />
                     <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('topPTip')}</span>
                   </div>
                 </div>
 
-                {/* Top-K & Repetition Penalty (Only active for local) */}
+                {/* Top-K & Repetition Penalty */}
                 <div className="grid grid-cols-2 gap-3 pt-1">
                   <div>
                     <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
                       <span>{t('topKLabel')}</span>
-                      <span className="font-mono text-amber-500 dark:text-amber-400">{localConfig.topK ?? 64}</span>
+                      <span className="font-mono text-amber-500 dark:text-amber-400">{ttfConfig.topK ?? 64}</span>
                     </div>
                     <input
                       type="range"
                       min="1"
                       max="256"
                       step="1"
-                      value={localConfig.topK ?? 64}
-                      onChange={(e) => setLocalConfig({ ...localConfig, topK: Number(e.target.value) })}
+                      value={ttfConfig.topK ?? 64}
+                      onChange={(e) => setTtfConfig({ ...ttfConfig, topK: Number(e.target.value) })}
                       className="w-full accent-amber-500"
                     />
                     <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('topKTip')}</span>
@@ -820,15 +1402,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div>
                     <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
                       <span>{t('repetitionPenaltyLabel')}</span>
-                      <span className="font-mono text-amber-500 dark:text-amber-400">{localConfig.repetitionPenalty ?? 1.0}</span>
+                      <span className="font-mono text-amber-500 dark:text-amber-400">{ttfConfig.repetitionPenalty ?? 1.0}</span>
                     </div>
                     <input
                       type="range"
                       min="0.5"
                       max="2.0"
                       step="0.05"
-                      value={localConfig.repetitionPenalty ?? 1.0}
-                      onChange={(e) => setLocalConfig({ ...localConfig, repetitionPenalty: Number(e.target.value) })}
+                      value={ttfConfig.repetitionPenalty ?? 1.0}
+                      onChange={(e) => setTtfConfig({ ...ttfConfig, repetitionPenalty: Number(e.target.value) })}
                       className="w-full accent-amber-500"
                     />
                     <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('repetitionPenaltyTip')}</span>
@@ -849,7 +1431,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <input
                       type="text"
                       readOnly
-                      value={`${localConfig.maxTokens || Math.floor((localConfig.maxContext || 16384) / 2)} tokens (${Math.round((localConfig.maxTokens || Math.floor((localConfig.maxContext || 16384) / 2)) / 1024)}K)`}
+                      value={`${ttfConfig.maxTokens || Math.floor((ttfConfig.maxContext || 16384) / 2)} tokens (${Math.round((ttfConfig.maxTokens || Math.floor((ttfConfig.maxContext || 16384) / 2)) / 1024)}K)`}
                       className="w-full bg-zinc-100 dark:bg-[#151619] border border-black/10 dark:border-[#2d3038] rounded-lg px-3 py-2 text-zinc-600 dark:text-[#abb0bc] cursor-not-allowed font-mono select-none"
                     />
                     <span className="text-[10px] text-zinc-500 dark:text-[#6f7582] mt-1 block">{t('maxTokensTip')}</span>
@@ -861,10 +1443,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </label>
                     <input
                       type="number"
-                      value={localConfig.seed ?? ''}
+                      value={ttfConfig.seed ?? ''}
                       onChange={(e) =>
-                        setLocalConfig({
-                          ...localConfig,
+                        setTtfConfig({
+                          ...ttfConfig,
                           seed: e.target.value ? Number(e.target.value) : undefined,
                         })
                       }
@@ -881,8 +1463,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </label>
                   <input
                     type="text"
-                    value={localStopInput}
-                    onChange={(e) => setLocalStopInput(e.target.value)}
+                    value={ttfStopInput}
+                    onChange={(e) => setTtfStopInput(e.target.value)}
                     placeholder={t('stopPlaceholder')}
                     className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
                   />
@@ -895,8 +1477,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </label>
                   <textarea
                     rows={3}
-                    value={localConfig.systemPrompt ?? ''}
-                    onChange={(e) => setLocalConfig({ ...localConfig, systemPrompt: e.target.value })}
+                    value={ttfConfig.systemPrompt ?? ''}
+                    onChange={(e) => setTtfConfig({ ...ttfConfig, systemPrompt: e.target.value })}
                     placeholder={t('systemPromptPlaceholderLocal')}
                     className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none resize-none leading-relaxed"
                   />

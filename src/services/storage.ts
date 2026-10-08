@@ -1,4 +1,14 @@
-import { ChatSession, AppSettings, ChatMessage, LocalProviderConfig, DeepSeekProviderConfig, ApiProvider } from '../types/chat';
+import {
+  ChatSession,
+  AppSettings,
+  ChatMessage,
+  LocalProviderConfig,
+  DeepSeekProviderConfig,
+  ApiProvider,
+  TtfProviderConfig,
+  MferenceProviderConfig,
+  CustomProviderConfig,
+} from '../types/chat';
 import { saveImageToDB, getImagesFromDB } from './imageStore';
 import { uploadDataUrl } from '../utils/image';
 
@@ -29,14 +39,61 @@ export function notifySettingsUpdate(): void {
   }
 }
 
-/** 本地引擎默认独立配置 */
-export const DEFAULT_LOCAL_CONFIG: LocalProviderConfig = {
+/** TTF (TurboFieldfare / Gemma 4) 专属默认独立配置 */
+export const DEFAULT_TTF_CONFIG: TtfProviderConfig = {
   apiPort: 1235,
   apiBaseUrl: '',
   modelId: 'gemma-4-26b-a4b-it',
   maxContext: 16384, // 16K default
   maxTokens: 8192, // Linked: half of maxContext (16384 / 2)
   temperature: 1.0, // Gemma 4 26B-A4B official recommended default
+  topP: 0.95,
+  topK: 64,
+  repetitionPenalty: 1.0,
+  reasoningEffort: 'default',
+  seed: undefined,
+  stopStrings: [],
+  systemPrompt: 'You are a helpful assistant.',
+};
+
+/** Mference (Qwen 3.6 35B-A3B) 专属默认独立配置（依照官方推荐参数） */
+export const DEFAULT_MFERENCE_CONFIG: MferenceProviderConfig = {
+  apiPort: 1241,
+  apiBaseUrl: '',
+  modelId: 'qwen3.6-35b-a3b',
+  maxContext: 16384, // 16K default
+  maxTokens: 8192, // Linked: half of maxContext
+  temperature: 1.0, // 官方推荐 1.0
+  topP: 0.95, // 官方推荐 0.95
+  topK: 20, // 官方推荐 20
+  minP: 0.0, // 官方推荐 0.0
+  presencePenalty: 1.5, // 官方推荐 1.5
+  repetitionPenalty: 1.0, // 官方推荐 1.0
+  reasoningEffort: 'low', // 本地运行默认 low，兼顾质量与生成耗时
+  seed: undefined,
+  stopStrings: [],
+  systemPrompt: '', // 官方推荐置空
+};
+
+/** 自定义 (Custom / OpenAI 兼容) 极简默认独立配置 */
+export const DEFAULT_CUSTOM_CONFIG: CustomProviderConfig = {
+  apiPort: 11434, // Ollama 默认
+  apiBaseUrl: '',
+  modelId: 'llama3',
+  maxContext: 8192,
+  maxTokens: 4096,
+  temperature: 0.7,
+  systemPrompt: 'You are a helpful assistant.',
+};
+
+/** 本地引擎默认独立配置 (向后兼容保留) */
+export const DEFAULT_LOCAL_CONFIG: LocalProviderConfig = {
+  apiPort: 1235,
+  apiBaseUrl: '',
+  modelId: 'gemma-4-26b-a4b-it',
+  maxContext: 16384,
+  maxTokens: 8192,
+  temperature: 1.0,
   topP: 0.95,
   topK: 64,
   repetitionPenalty: 1.0,
@@ -61,28 +118,31 @@ export const DEFAULT_DEEPSEEK_CONFIG: DeepSeekProviderConfig = {
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  apiProvider: 'local',
+  apiProvider: 'ttf',
+  ttfConfig: { ...DEFAULT_TTF_CONFIG },
+  mferenceConfig: { ...DEFAULT_MFERENCE_CONFIG },
+  customConfig: { ...DEFAULT_CUSTOM_CONFIG },
   localConfig: { ...DEFAULT_LOCAL_CONFIG },
   deepseekConfig: { ...DEFAULT_DEEPSEEK_CONFIG },
 
-  // 活跃状态扁平字段（默认与本地引擎一致）
-  apiPort: DEFAULT_LOCAL_CONFIG.apiPort,
-  apiBaseUrl: DEFAULT_LOCAL_CONFIG.apiBaseUrl,
-  modelId: DEFAULT_LOCAL_CONFIG.modelId,
+  // 活跃状态扁平字段（默认与 TTF 引擎一致）
+  apiPort: DEFAULT_TTF_CONFIG.apiPort,
+  apiBaseUrl: DEFAULT_TTF_CONFIG.apiBaseUrl,
+  modelId: DEFAULT_TTF_CONFIG.modelId,
   deepseekApiKey: DEFAULT_DEEPSEEK_CONFIG.apiKey,
   deepseekModelId: DEFAULT_DEEPSEEK_CONFIG.modelId,
   deepseekBaseUrl: DEFAULT_DEEPSEEK_CONFIG.baseUrl,
-  maxContext: DEFAULT_LOCAL_CONFIG.maxContext,
+  maxContext: DEFAULT_TTF_CONFIG.maxContext,
   enableThinking: false, // Default OFF
   reasoningEffort: 'high',
-  temperature: DEFAULT_LOCAL_CONFIG.temperature,
-  topP: DEFAULT_LOCAL_CONFIG.topP,
-  topK: DEFAULT_LOCAL_CONFIG.topK,
-  repetitionPenalty: DEFAULT_LOCAL_CONFIG.repetitionPenalty,
-  maxTokens: DEFAULT_LOCAL_CONFIG.maxTokens,
+  temperature: DEFAULT_TTF_CONFIG.temperature,
+  topP: DEFAULT_TTF_CONFIG.topP,
+  topK: DEFAULT_TTF_CONFIG.topK,
+  repetitionPenalty: DEFAULT_TTF_CONFIG.repetitionPenalty,
+  maxTokens: DEFAULT_TTF_CONFIG.maxTokens,
   seed: undefined,
   stopStrings: [],
-  systemPrompt: DEFAULT_LOCAL_CONFIG.systemPrompt,
+  systemPrompt: DEFAULT_TTF_CONFIG.systemPrompt,
   language: 'system',
   theme: 'system',
   enableWikiSearch: false, // Default OFF
@@ -95,31 +155,87 @@ export function loadSettings(): AppSettings {
     const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(SETTINGS_KEY) : null;
     if (!raw) return DEFAULT_SETTINGS;
     const parsed = JSON.parse(raw);
-    const provider: ApiProvider = parsed?.apiProvider === 'deepseek' ? 'deepseek' : 'local';
 
-    // 1. 恢复或迁移 localConfig
-    const rawLocal = parsed?.localConfig || {};
-    const localMaxContext = Number(rawLocal.maxContext || (parsed.apiProvider === 'local' ? parsed.maxContext : undefined) || DEFAULT_LOCAL_CONFIG.maxContext);
-    const localConfig: LocalProviderConfig = {
-      ...DEFAULT_LOCAL_CONFIG,
-      ...rawLocal,
-      apiPort: rawLocal.apiPort || parsed.apiPort || DEFAULT_LOCAL_CONFIG.apiPort,
-      apiBaseUrl: rawLocal.apiBaseUrl ?? parsed.apiBaseUrl ?? DEFAULT_LOCAL_CONFIG.apiBaseUrl,
-      modelId: rawLocal.modelId || (parsed.apiProvider === 'local' ? parsed.modelId : undefined) || DEFAULT_LOCAL_CONFIG.modelId,
-      maxContext: localMaxContext,
-      maxTokens: Math.floor(localMaxContext / 2),
-      temperature: rawLocal.temperature !== undefined ? Number(rawLocal.temperature) : (parsed.apiProvider === 'local' && parsed.temperature !== undefined ? Number(parsed.temperature) : DEFAULT_LOCAL_CONFIG.temperature),
-      topP: rawLocal.topP !== undefined ? Number(rawLocal.topP) : (parsed.apiProvider === 'local' && parsed.topP !== undefined ? Number(parsed.topP) : DEFAULT_LOCAL_CONFIG.topP),
-      topK: rawLocal.topK !== undefined ? Number(rawLocal.topK) : (parsed.topK !== undefined ? Number(parsed.topK) : DEFAULT_LOCAL_CONFIG.topK),
-      repetitionPenalty: rawLocal.repetitionPenalty !== undefined ? Number(rawLocal.repetitionPenalty) : (parsed.repetitionPenalty !== undefined ? Number(parsed.repetitionPenalty) : DEFAULT_LOCAL_CONFIG.repetitionPenalty),
-      seed: rawLocal.seed !== undefined ? Number(rawLocal.seed) : (parsed.apiProvider === 'local' && parsed.seed !== undefined ? Number(parsed.seed) : undefined),
-      stopStrings: Array.isArray(rawLocal.stopStrings) ? rawLocal.stopStrings : (parsed.apiProvider === 'local' && Array.isArray(parsed.stopStrings) ? parsed.stopStrings : []),
-      systemPrompt: rawLocal.systemPrompt !== undefined ? rawLocal.systemPrompt : (parsed.apiProvider === 'local' && parsed.systemPrompt !== undefined ? parsed.systemPrompt : DEFAULT_LOCAL_CONFIG.systemPrompt),
+    // 确定 provider
+    let provider: ApiProvider = parsed?.apiProvider || 'ttf';
+    if (provider === 'local') provider = 'ttf';
+    if (!['ttf', 'mference', 'custom', 'deepseek'].includes(provider)) {
+      provider = 'ttf';
+    }
+
+    // 1. TTF 配置 (优先读取 ttfConfig，平滑兼容旧 localConfig)
+    const rawTtf = parsed?.ttfConfig || parsed?.localConfig || {};
+    const ttfMaxContext = Number(
+      rawTtf.maxContext ||
+      (provider === 'ttf' ? parsed.maxContext : undefined) ||
+      DEFAULT_TTF_CONFIG.maxContext
+    );
+    const ttfConfig: TtfProviderConfig = {
+      ...DEFAULT_TTF_CONFIG,
+      ...rawTtf,
+      apiPort: rawTtf.apiPort || (parsed.apiPort && parsed.apiPort !== 1241 ? parsed.apiPort : DEFAULT_TTF_CONFIG.apiPort),
+      apiBaseUrl: rawTtf.apiBaseUrl ?? DEFAULT_TTF_CONFIG.apiBaseUrl,
+      modelId: rawTtf.modelId || (provider === 'ttf' ? parsed.modelId : undefined) || DEFAULT_TTF_CONFIG.modelId,
+      maxContext: ttfMaxContext,
+      maxTokens: Math.floor(ttfMaxContext / 2),
+      temperature: rawTtf.temperature !== undefined ? Number(rawTtf.temperature) : DEFAULT_TTF_CONFIG.temperature,
+      topP: rawTtf.topP !== undefined ? Number(rawTtf.topP) : DEFAULT_TTF_CONFIG.topP,
+      topK: rawTtf.topK !== undefined ? Number(rawTtf.topK) : DEFAULT_TTF_CONFIG.topK,
+      repetitionPenalty: rawTtf.repetitionPenalty !== undefined ? Number(rawTtf.repetitionPenalty) : DEFAULT_TTF_CONFIG.repetitionPenalty,
+      reasoningEffort: rawTtf.reasoningEffort || 'default',
+      seed: rawTtf.seed !== undefined ? Number(rawTtf.seed) : undefined,
+      stopStrings: Array.isArray(rawTtf.stopStrings) ? rawTtf.stopStrings : [],
+      systemPrompt: rawTtf.systemPrompt !== undefined ? rawTtf.systemPrompt : DEFAULT_TTF_CONFIG.systemPrompt,
     };
 
-    // 2. 恢复或迁移 deepseekConfig
+    // 2. Mference 配置
+    const rawMference = parsed?.mferenceConfig || {};
+    const mferenceMaxContext = Number(
+      rawMference.maxContext ||
+      (provider === 'mference' ? parsed.maxContext : undefined) ||
+      DEFAULT_MFERENCE_CONFIG.maxContext
+    );
+    const mferenceConfig: MferenceProviderConfig = {
+      ...DEFAULT_MFERENCE_CONFIG,
+      ...rawMference,
+      apiPort: rawMference.apiPort || (parsed.apiPort === 1241 ? 1241 : DEFAULT_MFERENCE_CONFIG.apiPort),
+      apiBaseUrl: rawMference.apiBaseUrl ?? DEFAULT_MFERENCE_CONFIG.apiBaseUrl,
+      modelId: rawMference.modelId || (provider === 'mference' ? parsed.modelId : undefined) || DEFAULT_MFERENCE_CONFIG.modelId,
+      maxContext: mferenceMaxContext,
+      maxTokens: Math.floor(mferenceMaxContext / 2),
+      temperature: rawMference.temperature !== undefined ? Number(rawMference.temperature) : DEFAULT_MFERENCE_CONFIG.temperature,
+      topP: rawMference.topP !== undefined ? Number(rawMference.topP) : DEFAULT_MFERENCE_CONFIG.topP,
+      topK: rawMference.topK !== undefined ? Number(rawMference.topK) : DEFAULT_MFERENCE_CONFIG.topK,
+      minP: rawMference.minP !== undefined ? Number(rawMference.minP) : DEFAULT_MFERENCE_CONFIG.minP,
+      presencePenalty: rawMference.presencePenalty !== undefined ? Number(rawMference.presencePenalty) : DEFAULT_MFERENCE_CONFIG.presencePenalty,
+      repetitionPenalty: rawMference.repetitionPenalty !== undefined ? Number(rawMference.repetitionPenalty) : DEFAULT_MFERENCE_CONFIG.repetitionPenalty,
+      reasoningEffort: rawMference.reasoningEffort || 'low',
+      seed: rawMference.seed !== undefined ? Number(rawMference.seed) : undefined,
+      stopStrings: Array.isArray(rawMference.stopStrings) ? rawMference.stopStrings : [],
+      systemPrompt: rawMference.systemPrompt !== undefined ? rawMference.systemPrompt : DEFAULT_MFERENCE_CONFIG.systemPrompt,
+    };
+
+    // 3. Custom 配置
+    const rawCustom = parsed?.customConfig || {};
+    const customConfig: CustomProviderConfig = {
+      ...DEFAULT_CUSTOM_CONFIG,
+      ...rawCustom,
+      apiPort: rawCustom.apiPort || (provider === 'custom' && parsed.apiPort ? parsed.apiPort : DEFAULT_CUSTOM_CONFIG.apiPort),
+      apiBaseUrl: rawCustom.apiBaseUrl ?? (provider === 'custom' ? parsed.apiBaseUrl : DEFAULT_CUSTOM_CONFIG.apiBaseUrl),
+      modelId: rawCustom.modelId || (provider === 'custom' ? parsed.modelId : undefined) || DEFAULT_CUSTOM_CONFIG.modelId,
+      maxContext: Number(rawCustom.maxContext || (provider === 'custom' ? parsed.maxContext : undefined) || DEFAULT_CUSTOM_CONFIG.maxContext),
+      maxTokens: Number(rawCustom.maxTokens || (provider === 'custom' ? parsed.maxTokens : undefined) || DEFAULT_CUSTOM_CONFIG.maxTokens),
+      temperature: rawCustom.temperature !== undefined ? Number(rawCustom.temperature) : DEFAULT_CUSTOM_CONFIG.temperature,
+      systemPrompt: rawCustom.systemPrompt !== undefined ? rawCustom.systemPrompt : DEFAULT_CUSTOM_CONFIG.systemPrompt,
+    };
+
+    // 4. DeepSeek 配置
     const rawDs = parsed?.deepseekConfig || {};
-    const dsMaxContext = Number(rawDs.maxContext || (parsed.apiProvider === 'deepseek' ? parsed.maxContext : undefined) || DEFAULT_DEEPSEEK_CONFIG.maxContext);
+    const dsMaxContext = Number(
+      rawDs.maxContext ||
+      (provider === 'deepseek' ? parsed.maxContext : undefined) ||
+      DEFAULT_DEEPSEEK_CONFIG.maxContext
+    );
     const storedApiKey = typeof localStorage !== 'undefined' ? localStorage.getItem(DEEPSEEK_API_KEY_KEY) : null;
     const resolvedApiKey = (
       rawDs.apiKey ||
@@ -141,45 +257,109 @@ export function loadSettings(): AppSettings {
       ...rawDs,
       apiKey: resolvedApiKey,
       baseUrl: rawDs.baseUrl || parsed.deepseekBaseUrl || DEFAULT_DEEPSEEK_CONFIG.baseUrl,
-      modelId: rawDs.modelId || (parsed.apiProvider === 'deepseek' ? parsed.deepseekModelId || parsed.modelId : undefined) || DEFAULT_DEEPSEEK_CONFIG.modelId,
+      modelId: rawDs.modelId || (provider === 'deepseek' ? parsed.deepseekModelId || parsed.modelId : undefined) || DEFAULT_DEEPSEEK_CONFIG.modelId,
       maxContext: dsMaxContext,
       maxTokens: rawDs.maxTokens || DEFAULT_DEEPSEEK_CONFIG.maxTokens,
-      temperature: rawDs.temperature !== undefined ? Number(rawDs.temperature) : (parsed.apiProvider === 'deepseek' && parsed.temperature !== undefined ? Number(parsed.temperature) : DEFAULT_DEEPSEEK_CONFIG.temperature),
-      topP: rawDs.topP !== undefined ? Number(rawDs.topP) : (parsed.apiProvider === 'deepseek' && parsed.topP !== undefined ? Number(parsed.topP) : DEFAULT_DEEPSEEK_CONFIG.topP),
-      reasoningEffort: rawDs.reasoningEffort || (parsed.apiProvider === 'deepseek' ? parsed.reasoningEffort : undefined) || DEFAULT_DEEPSEEK_CONFIG.reasoningEffort,
-      seed: rawDs.seed !== undefined ? Number(rawDs.seed) : (parsed.apiProvider === 'deepseek' && parsed.seed !== undefined ? Number(parsed.seed) : undefined),
-      stopStrings: Array.isArray(rawDs.stopStrings) ? rawDs.stopStrings : (parsed.apiProvider === 'deepseek' && Array.isArray(parsed.stopStrings) ? parsed.stopStrings : []),
-      systemPrompt: rawDs.systemPrompt !== undefined ? rawDs.systemPrompt : (parsed.apiProvider === 'deepseek' && parsed.systemPrompt !== undefined ? parsed.systemPrompt : DEFAULT_DEEPSEEK_CONFIG.systemPrompt),
+      temperature: rawDs.temperature !== undefined ? Number(rawDs.temperature) : DEFAULT_DEEPSEEK_CONFIG.temperature,
+      topP: rawDs.topP !== undefined ? Number(rawDs.topP) : DEFAULT_DEEPSEEK_CONFIG.topP,
+      reasoningEffort: rawDs.reasoningEffort || (provider === 'deepseek' ? parsed.reasoningEffort : undefined) || DEFAULT_DEEPSEEK_CONFIG.reasoningEffort,
+      seed: rawDs.seed !== undefined ? Number(rawDs.seed) : undefined,
+      stopStrings: Array.isArray(rawDs.stopStrings) ? rawDs.stopStrings : [],
+      systemPrompt: rawDs.systemPrompt !== undefined ? rawDs.systemPrompt : DEFAULT_DEEPSEEK_CONFIG.systemPrompt,
     };
 
-    // 3. 活跃提供商配置投影到扁平字段
-    const active = provider === 'deepseek' ? deepseekConfig : localConfig;
+    // 5. 投影活跃配置到扁平字段
+    let activePort = ttfConfig.apiPort;
+    let activeBaseUrl = ttfConfig.apiBaseUrl || '';
+    let activeModel = ttfConfig.modelId;
+    let activeMaxContext = ttfConfig.maxContext;
+    let activeMaxTokens = ttfConfig.maxTokens;
+    let activeTemp = ttfConfig.temperature;
+    let activeTopP = ttfConfig.topP;
+    let activeTopK: number | undefined = ttfConfig.topK;
+    let activeMinP: number | undefined = undefined;
+    let activePresencePenalty: number | undefined = undefined;
+    let activeRepPenalty: number | undefined = ttfConfig.repetitionPenalty;
+    let activeReasoning = ttfConfig.reasoningEffort || 'default';
+    let activeSeed: number | undefined = ttfConfig.seed;
+    let activeStopStrings = ttfConfig.stopStrings;
+    let activeSystemPrompt = ttfConfig.systemPrompt;
+
+    if (provider === 'mference') {
+      activePort = mferenceConfig.apiPort;
+      activeBaseUrl = mferenceConfig.apiBaseUrl || '';
+      activeModel = mferenceConfig.modelId;
+      activeMaxContext = mferenceConfig.maxContext;
+      activeMaxTokens = mferenceConfig.maxTokens;
+      activeTemp = mferenceConfig.temperature;
+      activeTopP = mferenceConfig.topP;
+      activeTopK = mferenceConfig.topK;
+      activeMinP = mferenceConfig.minP;
+      activePresencePenalty = mferenceConfig.presencePenalty;
+      activeRepPenalty = mferenceConfig.repetitionPenalty;
+      activeReasoning = mferenceConfig.reasoningEffort || 'low';
+      activeSeed = mferenceConfig.seed;
+      activeStopStrings = mferenceConfig.stopStrings || [];
+      activeSystemPrompt = mferenceConfig.systemPrompt;
+    } else if (provider === 'custom') {
+      activePort = customConfig.apiPort;
+      activeBaseUrl = customConfig.apiBaseUrl || '';
+      activeModel = customConfig.modelId;
+      activeMaxContext = customConfig.maxContext;
+      activeMaxTokens = customConfig.maxTokens;
+      activeTemp = customConfig.temperature;
+      activeTopP = 1.0;
+      activeReasoning = 'high';
+      activeSystemPrompt = customConfig.systemPrompt;
+      activeTopK = undefined;
+      activeRepPenalty = undefined;
+      activeSeed = undefined;
+      activeStopStrings = [];
+    } else if (provider === 'deepseek') {
+      activeBaseUrl = deepseekConfig.baseUrl;
+      activeModel = deepseekConfig.modelId;
+      activeMaxContext = deepseekConfig.maxContext;
+      activeMaxTokens = deepseekConfig.maxTokens;
+      activeTemp = deepseekConfig.temperature;
+      activeTopP = deepseekConfig.topP;
+      activeReasoning = deepseekConfig.reasoningEffort;
+      activeSeed = deepseekConfig.seed;
+      activeStopStrings = deepseekConfig.stopStrings;
+      activeSystemPrompt = deepseekConfig.systemPrompt;
+      activeTopK = undefined;
+      activeRepPenalty = undefined;
+    }
 
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
       apiProvider: provider,
-      localConfig,
+      ttfConfig,
+      mferenceConfig,
+      customConfig,
       deepseekConfig,
+      localConfig: ttfConfig as any, // 兼容旧代码
 
       // 投影活跃配置
-      apiPort: localConfig.apiPort,
-      apiBaseUrl: localConfig.apiBaseUrl,
+      apiPort: activePort,
+      apiBaseUrl: activeBaseUrl,
       deepseekApiKey: resolvedApiKey,
       deepseekModelId: deepseekConfig.modelId,
       deepseekBaseUrl: deepseekConfig.baseUrl,
 
-      modelId: active.modelId,
-      maxContext: active.maxContext,
-      maxTokens: active.maxTokens,
-      temperature: active.temperature,
-      topP: active.topP,
-      topK: localConfig.topK,
-      repetitionPenalty: localConfig.repetitionPenalty,
-      reasoningEffort: provider === 'deepseek' ? deepseekConfig.reasoningEffort : (parsed.reasoningEffort || 'high'),
-      seed: active.seed,
-      stopStrings: active.stopStrings,
-      systemPrompt: active.systemPrompt,
+      modelId: activeModel,
+      maxContext: activeMaxContext,
+      maxTokens: activeMaxTokens,
+      temperature: activeTemp,
+      topP: activeTopP,
+      topK: activeTopK,
+      minP: activeMinP,
+      presencePenalty: activePresencePenalty,
+      repetitionPenalty: activeRepPenalty,
+      reasoningEffort: activeReasoning,
+      seed: activeSeed,
+      stopStrings: activeStopStrings,
+      systemPrompt: activeSystemPrompt,
 
       language: parsed?.language || 'system',
       theme: parsed?.theme || 'system',
@@ -196,18 +376,21 @@ export function loadSettings(): AppSettings {
 
 export function saveSettings(settings: AppSettings): void {
   try {
-    const provider: ApiProvider = settings.apiProvider === 'deepseek' ? 'deepseek' : 'local';
+    let provider: ApiProvider = settings.apiProvider || 'ttf';
+    if (provider === 'local') provider = 'ttf';
+    if (!['ttf', 'mference', 'custom', 'deepseek'].includes(provider)) {
+      provider = 'ttf';
+    }
 
-    // 1. 读取已有存储，确保无论当前是哪个 provider，另一套配置与 API Key 永不丢失
+    // 1. 读取已有存储，确保无论当前是哪个 provider，各套配置与 API Key 永不丢失
     const rawExisting = typeof localStorage !== 'undefined' ? localStorage.getItem(SETTINGS_KEY) : null;
     const existing = rawExisting ? JSON.parse(rawExisting) : {};
-    const existingLocal = existing.localConfig || {};
+    const existingTtf = existing.ttfConfig || existing.localConfig || {};
+    const existingMference = existing.mferenceConfig || {};
+    const existingCustom = existing.customConfig || {};
     const existingDs = existing.deepseekConfig || {};
     const storedApiKey = typeof localStorage !== 'undefined' ? localStorage.getItem(DEEPSEEK_API_KEY_KEY) : null;
 
-    // API Key 必须固定保留：
-    // 1. 用户若传入了非空 Key，采用新 Key 并持久化；
-    // 2. 若传入为空（例如点击恢复默认、修改端口、轮询触发的保存），必须固定保留已保存的有效 Key，绝不被置空覆盖！
     const incomingKey = (
       settings.deepseekConfig?.apiKey?.trim() ||
       settings.deepseekApiKey?.trim() ||
@@ -230,17 +413,26 @@ export function saveSettings(settings: AppSettings): void {
       }
     }
 
-    // 2. 组装 localConfig
-    let localConfig: LocalProviderConfig = {
-      ...DEFAULT_LOCAL_CONFIG,
-      ...existingLocal,
-      ...(settings.localConfig || {}),
+    // 2. 组装各套独立配置
+    const ttfConfig: TtfProviderConfig = {
+      ...DEFAULT_TTF_CONFIG,
+      ...existingTtf,
+      ...(settings.ttfConfig || {}),
     };
-    if (settings.apiPort !== undefined) localConfig.apiPort = settings.apiPort;
-    if (settings.apiBaseUrl !== undefined) localConfig.apiBaseUrl = settings.apiBaseUrl;
 
-    // 3. 组装 deepseekConfig
-    let deepseekConfig: DeepSeekProviderConfig = {
+    const mferenceConfig: MferenceProviderConfig = {
+      ...DEFAULT_MFERENCE_CONFIG,
+      ...existingMference,
+      ...(settings.mferenceConfig || {}),
+    };
+
+    const customConfig: CustomProviderConfig = {
+      ...DEFAULT_CUSTOM_CONFIG,
+      ...existingCustom,
+      ...(settings.customConfig || {}),
+    };
+
+    const deepseekConfig: DeepSeekProviderConfig = {
       ...DEFAULT_DEEPSEEK_CONFIG,
       ...existingDs,
       ...(settings.deepseekConfig || {}),
@@ -249,65 +441,152 @@ export function saveSettings(settings: AppSettings): void {
     if (settings.deepseekBaseUrl !== undefined) deepseekConfig.baseUrl = settings.deepseekBaseUrl;
     if (settings.deepseekModelId !== undefined) deepseekConfig.modelId = settings.deepseekModelId;
 
-    // 4. 同步活跃提供商的扁平修改
-    if (provider === 'local') {
-      const mc = settings.maxContext ?? localConfig.maxContext;
-      localConfig = {
-        ...localConfig,
-        modelId: settings.modelId ?? localConfig.modelId,
-        maxContext: mc,
-        maxTokens: Math.floor(mc / 2),
-        temperature: settings.temperature ?? localConfig.temperature,
-        topP: settings.topP ?? localConfig.topP,
-        topK: settings.topK ?? localConfig.topK,
-        repetitionPenalty: settings.repetitionPenalty ?? localConfig.repetitionPenalty,
-        seed: settings.seed !== undefined ? settings.seed : localConfig.seed,
-        stopStrings: Array.isArray(settings.stopStrings) ? settings.stopStrings : localConfig.stopStrings,
-        systemPrompt: settings.systemPrompt !== undefined ? settings.systemPrompt : localConfig.systemPrompt,
-      };
-    } else {
-      const mc = settings.maxContext ?? deepseekConfig.maxContext;
-      deepseekConfig = {
-        ...deepseekConfig,
-        modelId: settings.deepseekModelId ?? settings.modelId ?? deepseekConfig.modelId,
-        maxContext: mc,
-        maxTokens: settings.maxTokens ?? deepseekConfig.maxTokens,
-        temperature: settings.temperature ?? deepseekConfig.temperature,
-        topP: settings.topP ?? deepseekConfig.topP,
-        reasoningEffort: (settings.reasoningEffort as any) ?? deepseekConfig.reasoningEffort,
-        seed: settings.seed !== undefined ? settings.seed : deepseekConfig.seed,
-        stopStrings: Array.isArray(settings.stopStrings) ? settings.stopStrings : deepseekConfig.stopStrings,
-        systemPrompt: settings.systemPrompt !== undefined ? settings.systemPrompt : deepseekConfig.systemPrompt,
-      };
+    // 3. 活跃提供商的扁平值回写
+    if (provider === 'ttf') {
+      if (settings.apiPort !== undefined) ttfConfig.apiPort = settings.apiPort;
+      if (settings.apiBaseUrl !== undefined) ttfConfig.apiBaseUrl = settings.apiBaseUrl;
+      if (settings.modelId !== undefined) ttfConfig.modelId = settings.modelId;
+      if (settings.maxContext !== undefined) {
+        ttfConfig.maxContext = settings.maxContext;
+        ttfConfig.maxTokens = Math.floor(settings.maxContext / 2);
+      }
+      if (settings.temperature !== undefined) ttfConfig.temperature = settings.temperature;
+      if (settings.topP !== undefined) ttfConfig.topP = settings.topP;
+      if (settings.topK !== undefined) ttfConfig.topK = settings.topK;
+      if (settings.repetitionPenalty !== undefined) ttfConfig.repetitionPenalty = settings.repetitionPenalty;
+      if (settings.reasoningEffort !== undefined) ttfConfig.reasoningEffort = settings.reasoningEffort as any;
+      if (settings.seed !== undefined) ttfConfig.seed = settings.seed;
+      if (Array.isArray(settings.stopStrings)) ttfConfig.stopStrings = settings.stopStrings;
+      if (settings.systemPrompt !== undefined) ttfConfig.systemPrompt = settings.systemPrompt;
+    } else if (provider === 'mference') {
+      if (settings.apiPort !== undefined) mferenceConfig.apiPort = settings.apiPort;
+      if (settings.apiBaseUrl !== undefined) mferenceConfig.apiBaseUrl = settings.apiBaseUrl;
+      if (settings.modelId !== undefined) mferenceConfig.modelId = settings.modelId;
+      if (settings.maxContext !== undefined) {
+        mferenceConfig.maxContext = settings.maxContext;
+        mferenceConfig.maxTokens = Math.floor(settings.maxContext / 2);
+      }
+      if (settings.temperature !== undefined) mferenceConfig.temperature = settings.temperature;
+      if (settings.topP !== undefined) mferenceConfig.topP = settings.topP;
+      if (settings.topK !== undefined) mferenceConfig.topK = settings.topK;
+      if (settings.minP !== undefined) mferenceConfig.minP = settings.minP;
+      if (settings.presencePenalty !== undefined) mferenceConfig.presencePenalty = settings.presencePenalty;
+      if (settings.repetitionPenalty !== undefined) mferenceConfig.repetitionPenalty = settings.repetitionPenalty;
+      if (settings.reasoningEffort !== undefined) mferenceConfig.reasoningEffort = settings.reasoningEffort as any;
+      if (settings.seed !== undefined) mferenceConfig.seed = settings.seed;
+      if (Array.isArray(settings.stopStrings)) mferenceConfig.stopStrings = settings.stopStrings;
+      if (settings.systemPrompt !== undefined) mferenceConfig.systemPrompt = settings.systemPrompt;
+    } else if (provider === 'custom') {
+      if (settings.apiPort !== undefined) customConfig.apiPort = settings.apiPort;
+      if (settings.apiBaseUrl !== undefined) customConfig.apiBaseUrl = settings.apiBaseUrl;
+      if (settings.modelId !== undefined) customConfig.modelId = settings.modelId;
+      if (settings.maxContext !== undefined) customConfig.maxContext = settings.maxContext;
+      if (settings.maxTokens !== undefined) customConfig.maxTokens = settings.maxTokens;
+      if (settings.temperature !== undefined) customConfig.temperature = settings.temperature;
+      if (settings.systemPrompt !== undefined) customConfig.systemPrompt = settings.systemPrompt;
+    } else if (provider === 'deepseek') {
+      if (settings.maxContext !== undefined) deepseekConfig.maxContext = settings.maxContext;
+      if (settings.maxTokens !== undefined) deepseekConfig.maxTokens = settings.maxTokens;
+      if (settings.temperature !== undefined) deepseekConfig.temperature = settings.temperature;
+      if (settings.topP !== undefined) deepseekConfig.topP = settings.topP;
+      if (settings.reasoningEffort !== undefined) deepseekConfig.reasoningEffort = settings.reasoningEffort as any;
+      if (settings.seed !== undefined) deepseekConfig.seed = settings.seed;
+      if (Array.isArray(settings.stopStrings)) deepseekConfig.stopStrings = settings.stopStrings;
+      if (settings.systemPrompt !== undefined) deepseekConfig.systemPrompt = settings.systemPrompt;
     }
 
-    const active = provider === 'deepseek' ? deepseekConfig : localConfig;
+    // 4. 计算当前活跃扁平值
+    let activePort = ttfConfig.apiPort;
+    let activeBaseUrl = ttfConfig.apiBaseUrl || '';
+    let activeModel = ttfConfig.modelId;
+    let activeMaxContext = ttfConfig.maxContext;
+    let activeMaxTokens = ttfConfig.maxTokens;
+    let activeTemp = ttfConfig.temperature;
+    let activeTopP = ttfConfig.topP;
+    let activeTopK: number | undefined = ttfConfig.topK;
+    let activeMinP: number | undefined = undefined;
+    let activePresencePenalty: number | undefined = undefined;
+    let activeRepPenalty: number | undefined = ttfConfig.repetitionPenalty;
+    let activeReasoning = ttfConfig.reasoningEffort || 'default';
+    let activeSeed: number | undefined = ttfConfig.seed;
+    let activeStopStrings: string[] = ttfConfig.stopStrings;
+    let activeSystemPrompt = ttfConfig.systemPrompt;
+
+    if (provider === 'mference') {
+      activePort = mferenceConfig.apiPort;
+      activeBaseUrl = mferenceConfig.apiBaseUrl || '';
+      activeModel = mferenceConfig.modelId;
+      activeMaxContext = mferenceConfig.maxContext;
+      activeMaxTokens = mferenceConfig.maxTokens;
+      activeTemp = mferenceConfig.temperature;
+      activeTopP = mferenceConfig.topP;
+      activeTopK = mferenceConfig.topK;
+      activeMinP = mferenceConfig.minP;
+      activePresencePenalty = mferenceConfig.presencePenalty;
+      activeRepPenalty = mferenceConfig.repetitionPenalty;
+      activeReasoning = mferenceConfig.reasoningEffort || 'low';
+      activeSeed = mferenceConfig.seed;
+      activeStopStrings = mferenceConfig.stopStrings || [];
+      activeSystemPrompt = mferenceConfig.systemPrompt;
+    } else if (provider === 'custom') {
+      activePort = customConfig.apiPort;
+      activeBaseUrl = customConfig.apiBaseUrl || '';
+      activeModel = customConfig.modelId;
+      activeMaxContext = customConfig.maxContext;
+      activeMaxTokens = customConfig.maxTokens;
+      activeTemp = customConfig.temperature;
+      activeTopP = 1.0;
+      activeReasoning = 'high';
+      activeSystemPrompt = customConfig.systemPrompt;
+      activeTopK = undefined;
+      activeRepPenalty = undefined;
+      activeSeed = undefined;
+      activeStopStrings = [];
+    } else if (provider === 'deepseek') {
+      activeBaseUrl = deepseekConfig.baseUrl;
+      activeModel = deepseekConfig.modelId;
+      activeMaxContext = deepseekConfig.maxContext;
+      activeMaxTokens = deepseekConfig.maxTokens;
+      activeTemp = deepseekConfig.temperature;
+      activeTopP = deepseekConfig.topP;
+      activeReasoning = deepseekConfig.reasoningEffort;
+      activeSeed = deepseekConfig.seed;
+      activeStopStrings = deepseekConfig.stopStrings;
+      activeSystemPrompt = deepseekConfig.systemPrompt;
+      activeTopK = undefined;
+      activeRepPenalty = undefined;
+    }
 
     const sanitized: AppSettings = {
       ...DEFAULT_SETTINGS,
       ...settings,
       apiProvider: provider,
-      localConfig,
+      ttfConfig,
+      mferenceConfig,
+      customConfig,
       deepseekConfig,
+      localConfig: ttfConfig as any,
 
       // 投影活跃配置
-      apiPort: localConfig.apiPort,
-      apiBaseUrl: localConfig.apiBaseUrl,
+      apiPort: activePort,
+      apiBaseUrl: activeBaseUrl,
       deepseekApiKey: effectiveApiKey,
       deepseekModelId: deepseekConfig.modelId,
       deepseekBaseUrl: deepseekConfig.baseUrl,
 
-      modelId: active.modelId,
-      maxContext: active.maxContext,
-      maxTokens: active.maxTokens,
-      temperature: active.temperature,
-      topP: active.topP,
-      topK: localConfig.topK,
-      repetitionPenalty: localConfig.repetitionPenalty,
-      reasoningEffort: provider === 'deepseek' ? deepseekConfig.reasoningEffort : (settings.reasoningEffort || 'high'),
-      seed: active.seed,
-      stopStrings: active.stopStrings,
-      systemPrompt: active.systemPrompt,
+      modelId: activeModel,
+      maxContext: activeMaxContext,
+      maxTokens: activeMaxTokens,
+      temperature: activeTemp,
+      topP: activeTopP,
+      topK: activeTopK,
+      minP: activeMinP,
+      presencePenalty: activePresencePenalty,
+      repetitionPenalty: activeRepPenalty,
+      reasoningEffort: activeReasoning,
+      seed: activeSeed,
+      stopStrings: activeStopStrings,
+      systemPrompt: activeSystemPrompt,
 
       language: settings?.language || 'system',
       theme: settings?.theme || 'system',

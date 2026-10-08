@@ -1107,9 +1107,16 @@ export const SpotlightView: React.FC = () => {
         },
         onFirstToken: () => {
           if (asstMessageId !== currentAsstMsgIdRef.current) return; // 过期流：已被重试取代
-          // 首个 token 到达：prefill 结束，撤下"载入上下文"指示
+          // 首个 token 到达：prefill 结束，撤下"载入上下文"指示并闭合阶段打点
+          const tEnd = Date.now();
+          const closedStages = (stagesRef.current ?? []).map((st) =>
+            st.endedAt === undefined
+              ? { ...st, endedAt: tEnd, durationMs: Math.max(0, tEnd - st.startedAt) }
+              : st
+          );
+          stagesRef.current = closedStages;
           setMessages((prev) =>
-            prev.map((m) => (m.id === asstMessageId ? { ...m, pending: false } : m))
+            prev.map((m) => (m.id === asstMessageId ? { ...m, pending: false, stages: closedStages } : m))
           );
         },
         onThought: (delta) => {
@@ -1201,6 +1208,11 @@ export const SpotlightView: React.FC = () => {
             timestamp: Date.now(),
             metrics,
             citations: foundCitations.length > 0 ? foundCitations : undefined,
+            stages: (stagesRef.current ?? []).map((st) =>
+              st.endedAt === undefined
+                ? { ...st, endedAt: Date.now(), durationMs: Math.max(0, Date.now() - st.startedAt) }
+                : st
+            ),
           };
 
           const cleanHistoryTokens = estimateHistoryTokens(

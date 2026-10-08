@@ -1016,15 +1016,23 @@ export const App: React.FC = () => {
           });
         },
         onFirstToken: () => {
-          // 首个 token 到达：prefill 结束，撤下"载入上下文"指示
+          // 首个 token 到达：prefill 结束，撤下"载入上下文"指示，并闭合阶段打点
+          const tEnd = Date.now();
           setSessions((prev) =>
             prev.map((s) =>
               s.id === targetSessionId
                 ? {
                     ...s,
-                    messages: s.messages.map((m) =>
-                      m.id === assistantMsgId ? { ...m, pending: false } : m
-                    ),
+                    messages: s.messages.map((m) => {
+                      if (m.id !== assistantMsgId) return m;
+                      const closedStages = (m.stages ?? stagesRef.current ?? []).map((st) =>
+                        st.endedAt === undefined
+                          ? { ...st, endedAt: tEnd, durationMs: Math.max(0, tEnd - st.startedAt) }
+                          : st
+                      );
+                      stagesRef.current = closedStages;
+                      return { ...m, pending: false, stages: closedStages };
+                    }),
                   }
                 : s
             )
@@ -1170,6 +1178,12 @@ export const App: React.FC = () => {
                 contextUsed: cleanHistoryTokens,
                 messages: s.messages.map((m) => {
                   if (m.id !== assistantMsgId) return m;
+                  const tEnd = Date.now();
+                  const closedStages = (m.stages ?? stagesRef.current ?? []).map((st) =>
+                    st.endedAt === undefined
+                      ? { ...st, endedAt: tEnd, durationMs: Math.max(0, tEnd - st.startedAt) }
+                      : st
+                  );
                   return {
                     ...m,
                     reasoningContent: accumulatedReasoning,
@@ -1179,6 +1193,7 @@ export const App: React.FC = () => {
                     metrics,
                     pending: false,
                     stage: undefined,
+                    stages: closedStages,
                   };
                 }),
               };

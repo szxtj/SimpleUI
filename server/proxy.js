@@ -277,10 +277,10 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Forward API calls（默认目标跟随基础模型服务配置的端口，改端口无需重启代理）
+  // Forward API calls（默认目标跟随当前基础模型服务激活引擎的端口，改端口无需重启代理）
   if (req.url.startsWith('/v1/') || req.url === '/health' || req.url.startsWith('/health?')) {
     const customPort = req.headers['x-target-port'];
-    const defaultPort = ttfService?.config?.port || 1235;
+    const defaultPort = ttfService?.getActivePort ? ttfService.getActivePort() : (ttfService?.config?.port || 1235);
     const targetUrl = customPort ? `http://127.0.0.1:${customPort}` : `http://127.0.0.1:${defaultPort}`;
     proxyRequest(req, res, targetUrl);
     return;

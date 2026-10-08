@@ -135,14 +135,22 @@ export const StageLadder: React.FC<StageLadderProps> = ({
   const { t } = useI18n();
   const [live, setLive] = useState<TurnStageRecord[]>(() => {
     const init = records ?? [];
-    if (turnStage === 'prefill' && !init.some((r) => r.kind === 'prefill')) {
+    let cur = init;
+    if (turnStage === 'prefill' && !cur.some((r) => r.kind === 'prefill')) {
       const t0 = prefillStartedAt ?? Date.now();
-      const closed = init.map((r) =>
+      const closed = cur.map((r) =>
         r.endedAt === undefined ? { ...r, endedAt: t0, durationMs: t0 - r.startedAt } : r
       );
-      return [...closed, { kind: 'prefill', startedAt: t0 }];
+      cur = [...closed, { kind: 'prefill', startedAt: t0 }];
     }
-    return init;
+    if (!phasesActive) {
+      cur = cur.map((r) =>
+        r.endedAt === undefined
+          ? { ...r, endedAt: r.startedAt + (r.durationMs ?? 0), durationMs: r.durationMs ?? 0 }
+          : r
+      );
+    }
+    return cur;
   });
   const [now, setNow] = useState<number>(() => Date.now());
   /** 逐块记录用户的展开/收起选择（未点过时按 phasesActive 取默认） */
@@ -179,25 +187,22 @@ export const StageLadder: React.FC<StageLadderProps> = ({
     return () => window.clearInterval(timer);
   }, [phasesActive]);
 
-  // 当 phasesActive 从 true 变为 false（首个 token 到达 / 停止 / 出错）：
-  // 确保所有尚未结束的行都正确打上 endedAt 和 durationMs 并回写
-  const prevPhasesActiveRef = useRef(phasesActive);
+  // 当 phasesActive 为 false 时，确保所有尚未结束的行都打上 endedAt 和 durationMs 并回写
   useEffect(() => {
-    if (prevPhasesActiveRef.current && !phasesActive) {
+    if (!phasesActive) {
       const tEnd = Date.now();
       const cur = liveRef.current;
       const hasUnclosed = cur.some((r) => r.endedAt === undefined);
       if (hasUnclosed) {
         const finalized = cur.map((r) =>
           r.endedAt === undefined
-            ? { ...r, endedAt: tEnd, durationMs: tEnd - r.startedAt }
+            ? { ...r, endedAt: tEnd, durationMs: Math.max(0, tEnd - r.startedAt) }
             : r
         );
         setLive(finalized);
         onRecordsChangeRef.current?.(messageId, finalized);
       }
     }
-    prevPhasesActiveRef.current = phasesActive;
   }, [phasesActive, messageId]);
 
   /**
@@ -301,12 +306,24 @@ export const StageLadder: React.FC<StageLadderProps> = ({
   if (list.length === 0) return null;
 
   /** 每行的耗时：已结束取记录值，进行中实时算 */
-  const elapsed = (r: TurnStageRecord, isActive?: boolean) =>
-    isActive || r.endedAt === undefined
-      ? Math.max(0, now - r.startedAt)
-      : r.durationMs ?? Math.max(0, (r.endedAt ?? now) - r.startedAt);
+  const elapsed = (r: TurnStageRecord, isActive?: boolean) => {
+    if (isActive) return Math.max(0, now - r.startedAt);
+    if (r.durationMs !== undefined) return r.durationMs;
+    if (r.endedAt !== undefined) return Math.max(0, r.endedAt - r.startedAt);
+    return 0;
+  };
   const totalOf = (rows: TurnStageRecord[]) =>
-    rows.reduce((acc, r) => acc + (r.endedAt !== undefined ? r.durationMs ?? 0 : Math.max(0, now - r.startedAt)), 0);
+    rows.reduce(
+      (acc, r) =>
+        acc +
+        (r.durationMs ??
+          (r.endedAt !== undefined
+            ? Math.max(0, r.endedAt - r.startedAt)
+            : phasesActive
+            ? Math.max(0, now - r.startedAt)
+            : 0)),
+      0
+    );
   const rowText = (r: TurnStageRecord) => {
     const label = t(KIND_LABEL_KEY[r.kind]);
     return r.detail ? `${label} · ${r.detail}` : label;
@@ -329,6 +346,7 @@ export const StageLadder: React.FC<StageLadderProps> = ({
           const r = rows[0];
           // 如果 phasesActive 为 true，且本块还在进行中（或最后一项），则为活动状态（持续转圈）
           const isRowActive = phasesActive && (r.endedAt === undefined || turnStage === key);
+          const isRowDone = !phasesActive || (!isRowActive && r.endedAt !== undefined);
           return (
             <div
               key={key}
@@ -338,7 +356,7 @@ export const StageLadder: React.FC<StageLadderProps> = ({
               <LadderRow
                 text={rowText(r)}
                 ms={elapsed(r, isRowActive)}
-                done={!isRowActive && r.endedAt !== undefined}
+                done={isRowDone}
                 active={isRowActive}
                 headline
               />
@@ -348,6 +366,7 @@ export const StageLadder: React.FC<StageLadderProps> = ({
 
         const open = userOpen[key] ?? phasesActive; // 进行中默认展开；结束后默认折叠成一行汇总
         const isBlockActive = phasesActive && (turnStage === key || rows.some((r) => r.endedAt === undefined));
+        const isBlockDone = !phasesActive || !isBlockActive;
         const totalMs = totalOf(rows);
         /*
          * 汇总文案按**实际发生过的阶段**取：只有检索阶段时才写「知识库检索 · N 步 · X.Xs」，
@@ -365,7 +384,7 @@ export const StageLadder: React.FC<StageLadderProps> = ({
               <LadderRow
                 text={summaryText}
                 ms={totalMs}
-                done={!isBlockActive}
+                done={isBlockDone}
                 active={isBlockActive}
                 headline
                 expandable
@@ -378,6 +397,7 @@ export const StageLadder: React.FC<StageLadderProps> = ({
               <div className="mt-1.5 mb-1 ml-[7px] pl-3.5 border-l-2 border-black/[0.07] dark:border-white/[0.09] space-y-1 select-text">
                 {rows.map((r, i) => {
                   const isCurrentStep = isBlockActive && (i === rows.length - 1 || r.endedAt === undefined);
+                  const isStepDone = !phasesActive || (!isCurrentStep && r.endedAt !== undefined);
                   return (
                     <div
                       key={`${r.kind}-${i}`}
@@ -387,7 +407,7 @@ export const StageLadder: React.FC<StageLadderProps> = ({
                       <LadderRow
                         text={rowText(r)}
                         ms={elapsed(r, isCurrentStep)}
-                        done={!isCurrentStep && r.endedAt !== undefined}
+                        done={isStepDone}
                         active={isCurrentStep}
                       />
                     </div>

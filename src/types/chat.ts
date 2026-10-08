@@ -77,9 +77,9 @@ export interface ChatSession {
   enableWikiSearch?: boolean; // Conversation-level independent offline wiki toggle (default false)
 }
 
-export type ApiProvider = 'local' | 'deepseek';
+export type ApiProvider = 'ttf' | 'mference' | 'custom' | 'deepseek' | 'local';
 
-/** 本地引擎独立设置 */
+/** 本地引擎独立设置 (兼容保留) */
 export interface LocalProviderConfig {
   apiPort: number;              // Local server port, default 1235
   apiBaseUrl?: string;          // Optional custom base URL
@@ -93,6 +93,53 @@ export interface LocalProviderConfig {
   seed?: number;                // UInt64 seed
   stopStrings: string[];        // Stop sequence array
   systemPrompt: string;         // System instructions
+}
+
+/** TTF (TurboFieldfare / Gemma 4) 专属设置 */
+export interface TtfProviderConfig {
+  apiPort: number;              // 默认 1235
+  apiBaseUrl?: string;
+  modelId: string;              // 默认 "gemma-4-26b-a4b-it"
+  maxContext: number;           // 默认 16384 (16K)
+  maxTokens: number;            // 联动 50%
+  temperature: number;          // 默认 1.0
+  topP: number;                 // 默认 0.95
+  topK: number;                 // 默认 64
+  repetitionPenalty: number;    // 默认 1.0
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'max' | 'default';
+  seed?: number;
+  stopStrings: string[];
+  systemPrompt: string;
+}
+
+/** Mference (Qwen 3.6) 专属设置 */
+export interface MferenceProviderConfig {
+  apiPort: number;              // 默认 1241
+  apiBaseUrl?: string;
+  modelId: string;              // 默认 "qwen3.6-35b-a3b"
+  maxContext: number;           // 默认 16384 (16K)
+  maxTokens: number;            // 联动 50%
+  temperature: number;          // 默认 1.0
+  topP: number;                 // 默认 0.95
+  topK?: number;                // 默认 20
+  minP?: number;                // 默认 0.0
+  presencePenalty?: number;     // 默认 1.5
+  repetitionPenalty?: number;   // 默认 1.0
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
+  seed?: number;
+  stopStrings?: string[];
+  systemPrompt: string;
+}
+
+/** 自定义 (Custom / OpenAI 兼容) 极简设置 */
+export interface CustomProviderConfig {
+  apiPort: number;              // 默认 11434 (Ollama)
+  apiBaseUrl?: string;          // 默认可留空，或填完整 URL 如 "http://127.0.0.1:11434"
+  modelId: string;              // 默认 "llama3"
+  maxContext: number;           // 默认 8192
+  maxTokens: number;            // 默认 4096
+  temperature: number;          // 默认 0.7
+  systemPrompt: string;
 }
 
 /** DeepSeek 官方 API 独立设置 */
@@ -111,9 +158,12 @@ export interface DeepSeekProviderConfig {
 }
 
 export interface AppSettings {
-  apiProvider?: ApiProvider;    // 'local' (default) or 'deepseek'
+  apiProvider?: ApiProvider;    // 'ttf' | 'mference' | 'custom' | 'deepseek' | 'local'
 
-  // 两套独立存储的配置
+  // 四套独立存储的模型配置
+  ttfConfig?: TtfProviderConfig;
+  mferenceConfig?: MferenceProviderConfig;
+  customConfig?: CustomProviderConfig;
   localConfig?: LocalProviderConfig;
   deepseekConfig?: DeepSeekProviderConfig;
 
@@ -129,8 +179,10 @@ export interface AppSettings {
   reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'max' | 'default';
   temperature: number;          // 0.0 - 2.0 (default 0.2 / 1.0)
   topP: number;                 // 0.01 - 1.0 (default 0.95)
-  topK: number;                 // 1 - 256 (default 64)
-  repetitionPenalty: number;    // > 0 (default 1.0)
+  topK?: number;                // 1 - 256 (default 64)
+  minP?: number;                // 0.0 - 1.0 (default 0.0)
+  presencePenalty?: number;     // -2.0 - 2.0 (default 1.5)
+  repetitionPenalty?: number;   // > 0 (default 1.0)
   maxTokens: number;            // 128 - 32768 (default 4096)
   seed?: number;                // UInt64 seed
   stopStrings: string[];        // Stop sequence array
