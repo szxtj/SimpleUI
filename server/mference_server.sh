@@ -70,6 +70,7 @@ fi
 
 PROJECT_DIR="$MFERENCE_DIR"
 MODEL_PATH="${MFERENCE_MODEL_PATH:-$PROJECT_DIR/scratch/qwen36.gturbo}"
+MODEL_ID="${MFERENCE_MODEL_ID:-qwen3.6-35b-a3b}"
 LOG_FILE="$HOME/Library/Logs/mference.log"
 PID_FILE="/tmp/mference_server.pid"
 BINARY="$PROJECT_DIR/.build/release/MferenceServer"
@@ -139,6 +140,7 @@ start() {
 
     nohup "$BINARY" \
         --model "$MODEL_PATH" \
+        --model-id "$MODEL_ID" \
         --port "$PORT" \
         --bind loopback \
         --max-context "$MAX_CONTEXT" \

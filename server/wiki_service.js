@@ -5,16 +5,61 @@ import http from 'http';
 import { fileURLToPath } from 'url';
 import { parse as parseHtml } from 'node-html-parser';
 import * as OpenCC from 'opencc-js';
+import { ttfService } from './ttf_service.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const DEFAULT_KIWIX_PORT = 31236;
 
-// 主力模型（TurboFieldfare）。承担实体规划、长文目录路由与最终答案生成。
-// 注意：TTF 不支持多路并发，禁止在并行分支里调用。
+// 主力模型（支持 TurboFieldfare 1235 与 Mference 1241 双引擎自适应）。承担实体规划、长文目录路由等辅助任务。
+// 注意：本地引擎不支持多路并发，禁止在并行分支里调用。
 export const MAIN_API_URL = process.env.MAIN_API_URL || 'http://127.0.0.1:1235';
 export const MAIN_MODEL = process.env.MAIN_MODEL || 'gemma-4-26b-a4b-it';
+
+let cachedModelInfo = { port: 0, model: '', fetchedAt: 0 };
+
+export async function getMainModelTarget() {
+  if (process.env.MAIN_API_URL) {
+    return {
+      apiUrl: process.env.MAIN_API_URL,
+      model: process.env.MAIN_MODEL || 'gemma-4-26b-a4b-it',
+    };
+  }
+
+  let port = 1235;
+  let defaultModel = 'gemma-4-26b-a4b-it';
+  try {
+    if (ttfService) {
+      port = ttfService.getActivePort ? ttfService.getActivePort() : 1235;
+      const isMference = ttfService.getActiveEngine && ttfService.getActiveEngine() === 'mference';
+      defaultModel = isMference ? 'qwen3.6-35b-a3b' : 'gemma-4-26b-a4b-it';
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  const now = Date.now();
+  if (cachedModelInfo.port === port && cachedModelInfo.model && (now - cachedModelInfo.fetchedAt < 10000)) {
+    return { apiUrl: `http://127.0.0.1:${port}`, model: cachedModelInfo.model };
+  }
+
+  let resolvedModel = defaultModel;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/models`, { signal: AbortSignal.timeout(1000) });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.data) && data.data.length > 0 && data.data[0].id) {
+        resolvedModel = data.data[0].id;
+        cachedModelInfo = { port, model: resolvedModel, fetchedAt: now };
+      }
+    }
+  } catch (e) {
+    // fallback
+  }
+
+  return { apiUrl: `http://127.0.0.1:${port}`, model: resolvedModel };
+}
 
 const userConfigDir = path.join(
   process.env.HOME || '',
@@ -827,12 +872,13 @@ export async function callMainModel(
   messages.push({ role: 'user', content: prompt });
 
   try {
-    const res = await fetch(`${MAIN_API_URL}/v1/chat/completions`, {
+    const { apiUrl, model: targetModel } = await getMainModelTarget();
+    const res = await fetch(`${apiUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
       signal: controller.signal,
       body: JSON.stringify({
-        model: MAIN_MODEL,
+        model: targetModel,
         messages,
         stream: true,
         stream_options: { include_usage: true },

@@ -114,7 +114,7 @@ function proxyRequest(req, res, targetUrl) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           error: {
-            message: `Failed to connect to TurboFieldfare server at ${TARGET_API}. Please ensure it is running.`,
+            message: `Failed to connect to model server at ${targetUrl}. Please ensure it is running.`,
             code: 'upstream_unavailable',
           },
         }));

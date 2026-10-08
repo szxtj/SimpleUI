@@ -306,6 +306,7 @@ class TtfService {
         MFERENCE_VERIFY: this.config.mferenceVerify || 'auto',
         MFERENCE_QUEUE_LIMIT: String(this.config.mferenceQueueLimit || 4),
         MFERENCE_PREFILL_CHUNK: String(this.config.mferencePrefillChunk || '2048'),
+        MFERENCE_MODEL_ID: 'qwen3.6-35b-a3b',
       };
     }
 
