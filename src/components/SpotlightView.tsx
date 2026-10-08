@@ -405,6 +405,14 @@ export const SpotlightView: React.FC = () => {
   );
 
   const isDeepSeek = settings.apiProvider === 'deepseek';
+  const isMference = settings.apiProvider === 'mference';
+
+  // Clear unsendable image attachments if Mference is selected
+  useEffect(() => {
+    if (isMference && images.length > 0) {
+      setImages([]);
+    }
+  }, [isMference, images.length]);
 
   /** 输入框发送按钮左侧的「搜索」小按钮（胶囊态 / 展开态共用同一份外观）
    *  尺寸与右侧发送按钮完全一致：w-7 h-7 圆 + w-3.5 h-3.5 图标（发送是 ArrowUp 同尺寸）。
@@ -735,11 +743,44 @@ export const SpotlightView: React.FC = () => {
           });
         }
       } else if (data.type === 'SESSIONS_CHANGED') {
+        if (data.source === 'SPOTLIGHT') return;
         if (!isGeneratingRef.current && activeSessionIdRef.current && (!data.sessionId || data.sessionId === activeSessionIdRef.current)) {
           const all = loadSessions();
           const target = all.find((s) => s.id === activeSessionIdRef.current);
           if (target) {
-            setMessages(target.messages || []);
+            setMessages((prevMsgs) => {
+              const currentList = prevMsgs.length > 0 ? prevMsgs : (messagesRef.current || []);
+              if (!target.messages || target.messages.length === 0) return currentList;
+
+              const merged = target.messages.map((diskMsg) => {
+                const memMsg = currentList.find((m) => m.id === diskMsg.id);
+                if (!memMsg) return diskMsg;
+                return {
+                  ...diskMsg,
+                  content:
+                    memMsg.content && memMsg.content.length > (diskMsg.content?.length || 0)
+                      ? memMsg.content
+                      : diskMsg.content,
+                  reasoningContent:
+                    memMsg.reasoningContent && memMsg.reasoningContent.length > (diskMsg.reasoningContent?.length || 0)
+                      ? memMsg.reasoningContent
+                      : diskMsg.reasoningContent,
+                  metrics: diskMsg.metrics || memMsg.metrics,
+                  citations: diskMsg.citations && diskMsg.citations.length > 0 ? diskMsg.citations : memMsg.citations,
+                  stages: diskMsg.stages && diskMsg.stages.length > 0 ? diskMsg.stages : memMsg.stages,
+                  thinkingDuration: diskMsg.thinkingDuration || memMsg.thinkingDuration,
+                  isThinking: diskMsg.isThinking ?? memMsg.isThinking,
+                  pending: diskMsg.pending ?? memMsg.pending,
+                };
+              });
+
+              for (const m of currentList) {
+                if (!merged.some((d) => d.id === m.id)) {
+                  merged.push(m);
+                }
+              }
+              return merged;
+            });
             setEnableThinking(target.enableThinking ?? false);
             setEnableWikiSearch(target.enableWikiSearch ?? false);
             if (!target.messages || target.messages.length === 0) {
@@ -828,8 +869,7 @@ export const SpotlightView: React.FC = () => {
           enableWikiSearch: wiki,
           updatedAt: Date.now(),
         };
-        saveSessions(all);
-        notifySessionUpdate(currentId, 'SPOTLIGHT');
+        saveSessions(all, currentId, 'SPOTLIGHT');
       }
     } catch (e) {
       // ignore
@@ -920,7 +960,7 @@ export const SpotlightView: React.FC = () => {
           enableWikiSearch: effectiveEnableWiki,
           updatedAt: Date.now(),
         };
-        saveSessions(allSessions);
+        saveSessions(allSessions, currentSessionId, 'SPOTLIGHT');
       } else {
         const cleanSessions = allSessions.filter((s) => s.messages && s.messages.length > 0);
         cleanSessions.unshift({
@@ -933,10 +973,9 @@ export const SpotlightView: React.FC = () => {
           enableThinking,
           enableWikiSearch: effectiveEnableWiki,
         });
-        saveSessions(cleanSessions);
+        saveSessions(cleanSessions, currentSessionId, 'SPOTLIGHT');
       }
       saveCurrentSessionId(currentSessionId);
-      notifySessionUpdate(currentSessionId, 'SPOTLIGHT');
     } catch (e) {
       console.error('Failed to immediately sync session to main window:', e);
     }
@@ -1044,6 +1083,13 @@ export const SpotlightView: React.FC = () => {
           // pending **不能**照抄旧值：中止/出错后若落盘仍是 pending:true，
           // 一次同步就会把"永远在转圈的僵尸回合"带回到两个窗口。
           const prevAsst = all[idx].messages.find((m) => m.id === asstMessageId);
+          const closedStages = isFinal
+            ? (stagesRef.current ?? []).map((st) =>
+                st.endedAt === undefined
+                  ? { ...st, endedAt: Date.now(), durationMs: Math.max(0, Date.now() - st.startedAt) }
+                  : st
+              )
+            : (stagesRef.current ?? prevAsst?.stages);
           const asstMsg: ChatMessage = {
             ...(prevAsst ?? {}),
             id: asstMessageId,
@@ -1056,6 +1102,7 @@ export const SpotlightView: React.FC = () => {
             timestamp: Date.now(),
             metrics,
             citations: foundCitations.length > 0 ? foundCitations : undefined,
+            stages: closedStages,
             error: err?.message,
           };
           const currentTitle = all[idx].title;
@@ -1070,8 +1117,7 @@ export const SpotlightView: React.FC = () => {
             contextUsed: metrics?.contextUsed ?? all[idx].contextUsed,
             updatedAt: Date.now(),
           };
-          saveSessions(all);
-          notifySessionUpdate(currentId, 'SPOTLIGHT');
+          saveSessions(all, currentId, 'SPOTLIGHT');
         }
       } catch (e) {
         // ignore
@@ -1234,6 +1280,8 @@ export const SpotlightView: React.FC = () => {
             content: accumulatedContent,
             thinkingDuration: finalThinkingDuration,
             metrics: { ...metrics, contextUsed: cleanHistoryTokens },
+            stages: finalAsstMessage.stages,
+            citations: foundCitations.length > 0 ? foundCitations : undefined,
             source: 'SPOTLIGHT',
           });
         },
@@ -1444,7 +1492,6 @@ export const SpotlightView: React.FC = () => {
         }
         saveSessions(allSessions, currentId, 'SPOTLIGHT');
         saveCurrentSessionId(currentId);
-        notifySessionUpdate(currentId, 'SPOTLIGHT');
       } catch (e) {
         console.error('Failed to sync before open in main:', e);
       }
@@ -1489,6 +1536,7 @@ export const SpotlightView: React.FC = () => {
   };
 
   const handlePaste = async (e: React.ClipboardEvent) => {
+    if (isMference) return;
     const files = extractImagesFromPaste(e);
     if (files.length > 0) {
       e.preventDefault();
@@ -1506,6 +1554,7 @@ export const SpotlightView: React.FC = () => {
 
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
+    if (isMference) return;
     if (e.dataTransfer.types.includes('Files')) {
       dragCounterRef.current++;
       setIsDragOver(true);
@@ -1514,6 +1563,7 @@ export const SpotlightView: React.FC = () => {
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
+    if (isMference) return;
     if (e.dataTransfer.types.includes('Files')) {
       e.dataTransfer.dropEffect = 'copy';
       setIsDragOver(true);
@@ -1533,6 +1583,7 @@ export const SpotlightView: React.FC = () => {
     e.preventDefault();
     dragCounterRef.current = 0;
     setIsDragOver(false);
+    if (isMference) return;
 
     const droppedFiles = Array.from(e.dataTransfer.files).filter(isImageFile);
     if (droppedFiles.length > 0) {
@@ -1585,6 +1636,7 @@ export const SpotlightView: React.FC = () => {
             multiple
             className="hidden"
             onChange={async (e) => {
+              if (isMference) return;
               const files = Array.from(e.target.files || []);
               if (files.length > 0) {
                 const urls = await Promise.all(files.map(fileToDataURL));
@@ -1646,13 +1698,16 @@ export const SpotlightView: React.FC = () => {
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
-                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isMference}
+                  onClick={isMference ? undefined : () => fileInputRef.current?.click()}
                   className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${
-                    images.length > 0
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-black/5 hover:bg-black/10 text-zinc-600 hover:text-black dark:bg-white/5 dark:hover:bg-white/10 dark:text-zinc-300 dark:hover:text-white'
+                    isMference
+                      ? 'opacity-40 text-zinc-400 dark:text-zinc-600 bg-black/5 dark:bg-white/5 cursor-not-allowed'
+                      : images.length > 0
+                      ? 'bg-blue-600 text-white cursor-pointer'
+                      : 'bg-black/5 hover:bg-black/10 text-zinc-600 hover:text-black dark:bg-white/5 dark:hover:bg-white/10 dark:text-zinc-300 dark:hover:text-white cursor-pointer'
                   }`}
-                  title={t('attachImage')}
+                  title={isMference ? t('visionDisabledMference') : t('attachImage')}
                 >
                   <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
                 </button>
@@ -2046,9 +2101,14 @@ export const SpotlightView: React.FC = () => {
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="w-6 h-6 rounded-full flex items-center justify-center bg-black/5 hover:bg-black/10 text-zinc-600 hover:text-black dark:bg-white/5 dark:hover:bg-white/10 dark:text-zinc-300 dark:hover:text-white transition-colors"
-                  title={t('spotlightAddImage')}
+                  disabled={isMference}
+                  onClick={isMference ? undefined : () => fileInputRef.current?.click()}
+                  className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${
+                    isMference
+                      ? 'opacity-40 text-zinc-400 dark:text-zinc-600 bg-black/5 dark:bg-white/5 cursor-not-allowed'
+                      : 'bg-black/5 hover:bg-black/10 text-zinc-600 hover:text-black dark:bg-white/5 dark:hover:bg-white/10 dark:text-zinc-300 dark:hover:text-white cursor-pointer'
+                  }`}
+                  title={isMference ? t('visionDisabledMference') : t('spotlightAddImage')}
                 >
                   <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
                 </button>

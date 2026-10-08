@@ -84,17 +84,25 @@ export function useFollowBottom(
       }
     },
     onMouseDown: (e: React.MouseEvent) => {
-      // 命中右侧滚动条（约 16px 宽）
+      // 命中右侧滚动条（约 20px 宽）
       const el = ref.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
-      if (e.clientX > rect.right - 16) {
+      if (e.clientX >= rect.right - 24) {
         releaseToUser();
       }
     },
     onScroll: () => {
       // 仅在思考期有效；若当前不是自己触发的滚动，则视为用户滚动，立刻交出控制权
       if (!active) return;
+      const el = ref.current;
+      if (!el) return;
+      const bottom = el.scrollHeight - el.clientHeight;
+      // 用户往上滚动（偏离底部 > 15px），必定是用户主动操作，立即释放控制权
+      if (bottom - el.scrollTop > 15) {
+        releaseToUser();
+        return;
+      }
       if (Date.now() < programmaticUntilRef.current) return;
       releaseToUser();
     },

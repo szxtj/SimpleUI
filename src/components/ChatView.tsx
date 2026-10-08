@@ -57,6 +57,7 @@ interface ChatViewProps {
   onDelete?: (messageId: string) => void;
   onShrinkToSpotlight?: () => void;
   isDeepSeek?: boolean;
+  isMference?: boolean;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -90,6 +91,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onShrinkToSpotlight,
   onStagesChange,
   isDeepSeek = false,
+  isMference = false,
   ownsTurn,
 }) => {
   const { t } = useI18n();
@@ -195,6 +197,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
+    if (isMference) return;
     if (e.dataTransfer.types.includes('Files')) {
       dragCounterRef.current++;
       setIsDragOver(true);
@@ -203,6 +206,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
+    if (isMference) return;
     if (e.dataTransfer.types.includes('Files')) {
       e.dataTransfer.dropEffect = 'copy';
       setIsDragOver(true);
@@ -222,6 +226,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     e.preventDefault();
     dragCounterRef.current = 0;
     setIsDragOver(false);
+    if (isMference) return;
 
     const droppedFiles = Array.from(e.dataTransfer.files).filter(isImageFile);
     if (droppedFiles.length > 0) {
@@ -372,8 +377,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
         }}
         className="flex-1 min-h-0 overflow-y-auto px-3 cq-md:px-6 cq-lg:px-8 py-3 cq-md:py-6 pb-6 cq-md:pb-8 overscroll-y-contain [overflow-anchor:none]"
       >
-        <div className="max-w-4xl mx-auto min-h-full flex flex-col justify-start">
-          {messages.length === 0 ? (
+        {messages.length === 0 ? (
+          <div className="max-w-4xl mx-auto min-h-full flex flex-col justify-center">
             <div className="my-auto py-4 cq-md:py-8 cq-lg:py-10 flex flex-col items-center text-center w-full max-w-lg mx-auto">
               {/* App 图标。用 192px 的版本（`public/icon-192.png`）而不是 1024px 的源图：
                   页面最大只显示 48px（Retina 下 96 物理像素），192 已留足余量，
@@ -419,29 +424,29 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 ))}
               </div>
             </div>
-          ) : (
-            <div className="space-y-4">
-              {messages.map((message, idx) => (
-                <MessageItem
-                  key={message.id}
-                  message={message}
-                  onOpenWiki={onOpenWiki}
-                  onRetry={onRetry}
-                  onDelete={onDelete}
-                  turnRecording={ownsTurn}
-                  onStagesChange={onStagesChange}
-                  // 用户气泡的重试目标：紧随其后的助手回复 id（与浮窗的用户气泡重试一致）
-                  retryTargetId={
-                    message.role === 'user' && messages[idx + 1]?.role === 'assistant'
-                      ? messages[idx + 1].id
-                      : undefined
-                  }
-                />
-              ))}
-              <div ref={messagesEndRef} className="h-8 flex-shrink-0" />
-            </div>
-          )}
-        </div>
+          </div>
+        ) : (
+          <div className="max-w-4xl mx-auto space-y-4 text-sm pb-2">
+            {messages.map((message, idx) => (
+              <MessageItem
+                key={message.id}
+                message={message}
+                onOpenWiki={onOpenWiki}
+                onRetry={onRetry}
+                onDelete={onDelete}
+                turnRecording={ownsTurn}
+                onStagesChange={onStagesChange}
+                // 用户气泡的重试目标：紧随其后的助手回复 id（与浮窗的用户气泡重试一致）
+                retryTargetId={
+                  message.role === 'user' && messages[idx + 1]?.role === 'assistant'
+                    ? messages[idx + 1].id
+                    : undefined
+                }
+              />
+            ))}
+            <div ref={messagesEndRef} className="h-6 flex-shrink-0" />
+          </div>
+        )}
       </div>
 
       {/* Input Area (Bottom capsule + Disclaimer) */}
@@ -467,6 +472,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             wikiConnected={wikiConnected}
             wikiEnabled={wikiEnabled}
             isDeepSeek={isDeepSeek}
+            isMference={isMference}
           />
 
           {/* Qianwen Style Disclaimer below input box */}

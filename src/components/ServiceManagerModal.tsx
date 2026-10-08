@@ -544,7 +544,6 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
 
   const isMference = selectedEngine === 'mference';
   const currentEngineStatus = svcStatus ? (isMference ? svcStatus.mference : svcStatus.ttf) : null;
-  const currentEnginePort = currentEngineStatus?.port ?? (isMference ? (svcForm.mferencePort ?? 1241) : (svcForm.port ?? 1235));
   const isCurrentEngineActive =
     currentEngineStatus?.status === 'running' ||
     currentEngineStatus?.status === 'loading' ||
@@ -739,13 +738,13 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
               <div className="flex items-center gap-1.5 text-[11px]">
                 <span
                   className={`w-2 h-2 rounded-full ${
-                    SERVICE_STATE_CARD_DOT_CLASS[toServiceState(currentEngineStatus?.status)]
+                    SERVICE_STATE_CARD_DOT_CLASS[toServiceState(svcStatus?.status)]
                   }`}
                 />
-                <span className={SERVICE_STATE_CARD_TEXT_CLASS[toServiceState(currentEngineStatus?.status)]}>
-                  {toServiceState(currentEngineStatus?.status) === 'online'
-                    ? `${t('modelServiceStatusRunning')}${currentEnginePort}`
-                    : t(SERVICE_STATE_LABEL_KEY[toServiceState(currentEngineStatus?.status)])}
+                <span className={SERVICE_STATE_CARD_TEXT_CLASS[toServiceState(svcStatus?.status)]}>
+                  {toServiceState(svcStatus?.status) === 'online'
+                    ? `${t('modelServiceStatusRunning')} :${svcStatus?.port ?? 1235}`
+                    : t(SERVICE_STATE_LABEL_KEY[toServiceState(svcStatus?.status)])}
                 </span>
               </div>
             </div>

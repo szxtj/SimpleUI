@@ -279,19 +279,46 @@ export const App: React.FC = () => {
 
     const safeLoaded = loaded.length > 0 ? loaded : [createNewSession()];
 
-    // Merge: for any session that is actively generating, preserve its latest in-memory messages
-    // so incoming live stream chunks are never rolled back or lost.
+    // Merge: for any session that is actively generating or has newer in-memory messages,
+    // preserve its latest in-memory content and metrics so live stream / completed turns
+    // are never rolled back or lost due to delayed disk saves.
     const mergedSessions = safeLoaded.map((s) => {
+      const inMem = sessionsRef.current.find((m) => m.id === s.id);
+      if (!inMem || !inMem.messages || inMem.messages.length === 0) return s;
+
       if (generatingSessionIdsRef.current.includes(s.id)) {
-        const inMem = sessionsRef.current.find((m) => m.id === s.id);
-        if (inMem && inMem.messages.length > 0) {
-          return {
-            ...s,
-            messages: inMem.messages,
-          };
-        }
+        return {
+          ...s,
+          messages: inMem.messages,
+        };
       }
-      return s;
+
+      // 即使不在生成中，也智能比对消息：防止刚生成完毕的回合被陈旧落盘快照冲刷
+      const mergedMsgs = s.messages.map((diskMsg) => {
+        const memMsg = inMem.messages.find((m) => m.id === diskMsg.id);
+        if (!memMsg) return diskMsg;
+        return {
+          ...diskMsg,
+          content:
+            memMsg.content && memMsg.content.length > (diskMsg.content?.length || 0)
+              ? memMsg.content
+              : diskMsg.content,
+          reasoningContent:
+            memMsg.reasoningContent && memMsg.reasoningContent.length > (diskMsg.reasoningContent?.length || 0)
+              ? memMsg.reasoningContent
+              : diskMsg.reasoningContent,
+          metrics: diskMsg.metrics || memMsg.metrics,
+          stages: diskMsg.stages && diskMsg.stages.length > 0 ? diskMsg.stages : memMsg.stages,
+          citations: diskMsg.citations && diskMsg.citations.length > 0 ? diskMsg.citations : memMsg.citations,
+          thinkingDuration: diskMsg.thinkingDuration || memMsg.thinkingDuration,
+        };
+      });
+
+      return {
+        ...s,
+        messages: mergedMsgs,
+        contextUsed: s.contextUsed || inMem.contextUsed,
+      };
     });
 
     // Also include any generating session that might exist in memory but not yet flushed to disk
@@ -331,6 +358,7 @@ export const App: React.FC = () => {
         if (!data) return;
 
         if (data.type === 'SESSIONS_CHANGED') {
+          if (data.source === 'MAIN') return;
           reloadFromStorage();
         } else if (data.type === 'SETTINGS_CHANGED') {
           setSettings(loadSettings());
@@ -341,6 +369,10 @@ export const App: React.FC = () => {
         } else if (data.type === 'STREAM_CHUNK') {
           if (data.source !== 'MAIN') {
             const { sessionId, messageId, reasoningContent, content, isThinking, thinkingDuration, stage, pending, citations, stages: incomingStages } = data;
+            isSyncingRef.current = true;
+            setTimeout(() => {
+              isSyncingRef.current = false;
+            }, 60);
             setGeneratingSessionIds((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
             setSessions((prev) => {
               const sessionIdx = prev.findIndex((s) => s.id === sessionId);
@@ -369,10 +401,22 @@ export const App: React.FC = () => {
                       : m
                   );
                 } else {
-                  const all = loadSessions();
-                  const sFromDisk = all.find((s) => s.id === sessionId);
-                  if (sFromDisk) return all;
-                  return prev;
+                  updatedMsgs = [
+                    ...targetSession.messages,
+                    {
+                      id: messageId,
+                      role: 'assistant',
+                      content,
+                      reasoningContent,
+                      isThinking,
+                      thinkingDuration,
+                      timestamp: Date.now(),
+                      ...(stage !== undefined ? { stage } : {}),
+                      ...(pending !== undefined ? { pending } : {}),
+                      ...(citations !== undefined ? { citations } : {}),
+                      ...(incomingStages !== undefined ? { stages: incomingStages } : {}),
+                    },
+                  ];
                 }
                 const updatedSessions = [...prev];
                 updatedSessions[sessionIdx] = {
@@ -402,7 +446,15 @@ export const App: React.FC = () => {
           }
         } else if (data.type === 'STREAM_DONE') {
           if (data.source !== 'MAIN') {
-            const { sessionId, messageId, reasoningContent, content, thinkingDuration, metrics } = data;
+            const { sessionId, messageId, reasoningContent, content, thinkingDuration, metrics, stages: incomingStages, citations: incomingCitations } = data;
+            if (saveTimeoutRef.current) {
+              clearTimeout(saveTimeoutRef.current);
+              saveTimeoutRef.current = null;
+            }
+            isSyncingRef.current = true;
+            setTimeout(() => {
+              isSyncingRef.current = false;
+            }, 100);
             setGeneratingSessionIds((prev) => prev.filter((id) => id !== sessionId));
             setLiveStreamingTokens((prev) => {
               const next = { ...prev };
@@ -412,20 +464,40 @@ export const App: React.FC = () => {
             setSessions((prev) =>
               prev.map((s) => {
                 if (s.id !== sessionId) return s;
-                const updatedMsgs = s.messages.map((m) =>
-                  m.id === messageId
-                    ? {
-                        ...m,
-                        reasoningContent,
-                        content,
-                        isThinking: false,
-                        thinkingDuration,
-                        metrics,
-                        // 生成结束：prefill 指示器必须撤下（兜底）
-                        pending: false,
-                      }
-                    : m
-                );
+                let foundMsg = false;
+                const updatedMsgs = s.messages.map((m) => {
+                  if (m.id === messageId) {
+                    foundMsg = true;
+                    return {
+                      ...m,
+                      reasoningContent,
+                      content,
+                      isThinking: false,
+                      thinkingDuration,
+                      metrics,
+                      // 生成结束：prefill 指示器必须撤下（兜底）
+                      pending: false,
+                      ...(incomingStages ? { stages: incomingStages } : {}),
+                      ...(incomingCitations ? { citations: incomingCitations } : {}),
+                    };
+                  }
+                  return m;
+                });
+                if (!foundMsg) {
+                  updatedMsgs.push({
+                    id: messageId,
+                    role: 'assistant',
+                    content,
+                    reasoningContent,
+                    isThinking: false,
+                    thinkingDuration,
+                    metrics,
+                    pending: false,
+                    timestamp: Date.now(),
+                    ...(incomingStages ? { stages: incomingStages } : {}),
+                    ...(incomingCitations ? { citations: incomingCitations } : {}),
+                  });
+                }
                 const cleanHistoryTokens = estimateHistoryTokens(updatedMsgs, settings.systemPrompt, settings.apiProvider);
                 return {
                   ...s,
@@ -671,8 +743,12 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (sessions.length === 0 || isSyncingRef.current) return;
 
+    // Only throttle/save during generation if MAIN WINDOW itself owns an active stream!
+    // When mirroring a stream generated by Spotlight, Main Window must NOT write to disk!
+    const isLocalGenerating = abortControllersRef.current.size > 0;
     const isGeneratingNow = generatingSessionIdsRef.current.length > 0;
-    if (isGeneratingNow) {
+
+    if (isLocalGenerating) {
       const now = Date.now();
       if (now - lastSaveTimeRef.current < 300) {
         if (!saveTimeoutRef.current) {
@@ -686,7 +762,7 @@ export const App: React.FC = () => {
       }
       lastSaveTimeRef.current = now;
       saveSessions(sessions, currentSessionIdRef.current || undefined, 'MAIN');
-    } else {
+    } else if (!isGeneratingNow) {
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
         saveTimeoutRef.current = null;
@@ -767,6 +843,13 @@ export const App: React.FC = () => {
       });
     }
   }, [currentSessionId]);
+
+  // Clear unsendable image attachments if Mference is selected
+  useEffect(() => {
+    if (settings.apiProvider === 'mference' && images.length > 0) {
+      setImages([]);
+    }
+  }, [settings.apiProvider, images.length]);
 
   // Session management handlers
   const handleNewSession = () => {
@@ -1132,6 +1215,10 @@ export const App: React.FC = () => {
           );
         },
         onDone: (metrics) => {
+          if (saveTimeoutRef.current) {
+            clearTimeout(saveTimeoutRef.current);
+            saveTimeoutRef.current = null;
+          }
           abortControllersRef.current.delete(targetSessionId);
           activeStreamsRef.current.delete(targetSessionId);
           setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetSessionId));
@@ -1487,6 +1574,7 @@ export const App: React.FC = () => {
             }
           }}
           isDeepSeek={settings.apiProvider === 'deepseek'}
+          isMference={settings.apiProvider === 'mference'}
           visionReady={healthInfo.vision === 'ready'}
           lastMetrics={lastMetrics}
           onOpenSettings={() => setIsSettingsOpen(true)}

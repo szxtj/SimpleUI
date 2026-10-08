@@ -56,7 +56,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   };
 
   return (
-    <div className={`py-3 w-full flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+    <div className={`w-full ${isUser ? 'flex justify-end' : ''}`}>
       {isUser ? (
         /* User Message: Rounded pill bubble on the right with icon-only copy button below */
         <div className="flex flex-col items-end max-w-[90%] cq-md:max-w-[85%] cq-lg:max-w-[75%] group">
@@ -105,7 +105,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         </div>
       ) : (
         /* Assistant Message: Clean full-width flow on the left (Qianwen Style) */
-        <div className="w-full text-[#1f2328] dark:text-[#ecedf1]">
+        <div className="space-y-2 w-full text-[#1f2328] dark:text-[#ecedf1]">
           {/* 知识库 / 引擎阶段阶梯（一层一层往下固化，带各阶段耗时）——
               渲染在思考条**上方**，思考条始终在最下面（用户要求）。两窗口共用本组件。 */}
           <StageLadder
@@ -128,11 +128,11 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
           {/* Assistant Text / Markdown / KaTeX
               （思考中且尚无正文时不再额外渲染"Thinking..."——折叠条头部已表达同样状态） */}
-          <div className="text-[15px] leading-relaxed">
-            {message.content ? (
+          {message.content ? (
+            <div className="text-[15px] leading-relaxed">
               <MarkdownRenderer content={message.content} />
-            ) : null}
-          </div>
+            </div>
+          ) : null}
 
           {/* Error Message notice if any */}
           {message.error && (

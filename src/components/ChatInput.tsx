@@ -27,6 +27,7 @@ interface ChatInputProps {
   wikiConnected?: boolean;
   wikiEnabled?: boolean;
   isDeepSeek?: boolean;
+  isMference?: boolean;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = ({
@@ -48,6 +49,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   wikiConnected = false,
   wikiEnabled = true,
   isDeepSeek = false,
+  isMference = false,
 }) => {
   const { t } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -71,6 +73,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   });
 
   const handlePaste = async (e: React.ClipboardEvent) => {
+    if (isMference) return;
     const files = extractImagesFromPaste(e);
     if (files.length > 0) {
       e.preventDefault();
@@ -84,6 +87,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isMference) return;
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
     try {
@@ -142,13 +146,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           {/* Add Attachment Button */}
           <button
             type="button"
-            onClick={() => fileInputRef.current?.click()}
+            disabled={isMference}
+            onClick={isMference ? undefined : () => fileInputRef.current?.click()}
             className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors flex-shrink-0 ${
-              images.length > 0
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'bg-black/5 hover:bg-black/10 text-zinc-600 hover:text-black dark:bg-white/5 dark:hover:bg-white/10 dark:text-zinc-300 dark:hover:text-white'
+              isMference
+                ? 'opacity-40 text-zinc-400 dark:text-zinc-600 bg-black/5 dark:bg-white/5 cursor-not-allowed'
+                : images.length > 0
+                ? 'bg-blue-600 text-white shadow-sm cursor-pointer'
+                : 'bg-black/5 hover:bg-black/10 text-zinc-600 hover:text-black dark:bg-white/5 dark:hover:bg-white/10 dark:text-zinc-300 dark:hover:text-white cursor-pointer'
             }`}
-            title={visionReady ? t('attachImage') : t('attachImageReady')}
+            title={isMference ? t('visionDisabledMference') : (visionReady ? t('attachImage') : t('attachImageReady'))}
           >
             <Plus className="w-4 h-4 stroke-[2.5]" />
           </button>
