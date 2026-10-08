@@ -1,5 +1,5 @@
 import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus } from '../types/chat';
-import { estimateHistoryTokens, setTokenCalibration } from '../utils/token';
+import { estimateHistoryTokens, setTokenCalibration, CalibrationProvider } from '../utils/token';
 import { getImageFromDB } from './imageStore';
 
 /** 服务端 usage 的实际形状（TTF 会给出 cached / reasoning 明细） */
@@ -571,7 +571,10 @@ export class TurboFieldfareAPI {
 
     // 用「真实 prompt_tokens ÷ 同一批消息的原始估算」校准展示层估算（见 utils/token.ts）
     if (finalUsage?.prompt_tokens) {
-      setTokenCalibration(finalUsage.prompt_tokens, initialPromptTokens, isDeepSeek ? 'deepseek' : 'local');
+      const calibProvider: CalibrationProvider = isDeepSeek
+        ? 'deepseek'
+        : (settings.apiProvider as CalibrationProvider) || 'local';
+      setTokenCalibration(finalUsage.prompt_tokens, initialPromptTokens, calibProvider);
     }
 
     const endTime = performance.now();

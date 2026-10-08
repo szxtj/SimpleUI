@@ -32,7 +32,11 @@ export function setTokenCalibration(
   if (!(realTokens > 0) || !(rawEstimatedTokens > 0)) return;
   const ratio = realTokens / rawEstimatedTokens;
   // 限幅，避免极端样本（超短提示、异常 usage）把系数带偏
-  calibrationFactors[provider] = Math.min(2.5, Math.max(0.5, ratio));
+  const clamped = Math.min(2.5, Math.max(0.5, ratio));
+  calibrationFactors[provider] = clamped;
+  if (provider === 'ttf' || provider === 'mference') {
+    calibrationFactors['local'] = clamped;
+  }
 }
 
 export function getTokenCalibration(provider: CalibrationProvider = 'local'): number {
@@ -44,7 +48,7 @@ export function applyTokenCalibration(
   tokens: number,
   provider: CalibrationProvider = 'local'
 ): number {
-  const factor = calibrationFactors[provider] || 1.0;
+  const factor = calibrationFactors[provider] || calibrationFactors['local'] || 1.0;
   return Math.max(0, Math.round(tokens * factor));
 }
 
@@ -65,6 +69,11 @@ export function estimateTextTokens(
     // DeepSeek 采用 100K Byte-level BPE 分词器，中文二字词与常见词合并率高，约 0.6 tokens/字
     const cjkTokens = Math.ceil(cjkCount * 0.6);
     const nonCjkTokens = Math.ceil(nonCjkLength / 3.5);
+    return Math.max(1, cjkTokens + nonCjkTokens);
+  } else if (provider === 'mference') {
+    // Qwen 采用 152K tiktoken / BPE 分词器，中文压缩率高，约 0.62 tokens/字
+    const cjkTokens = Math.ceil(cjkCount * 0.62);
+    const nonCjkTokens = Math.ceil(nonCjkLength / 3.6);
     return Math.max(1, cjkTokens + nonCjkTokens);
   } else {
     // 本地引擎（如 Gemma 4 采用 256K SentencePiece），中文单字约 0.75 tokens/字
