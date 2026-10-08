@@ -221,6 +221,8 @@ export const App: React.FC = () => {
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
   /** 本轮阶段阶梯记录的最新快照：随流式广播带给镜像窗口（浮窗），使它也能实时长出阶梯行 */
   const stagesRef = useRef<TurnStageRecord[]>([]);
+  /** 已完成回合保护缓存：锁定包含真实 metrics 与终态内容的消息，严禁被任何后至的同步降级或截断 */
+  const completedTurnsRef = useRef<Map<string, ChatMessage>>(new Map());
   const activeStreamsRef = useRef<Map<string, {
     messageId: string;
     reasoningContent: string;
@@ -279,40 +281,73 @@ export const App: React.FC = () => {
 
     const safeLoaded = loaded.length > 0 ? loaded : [createNewSession()];
 
-    // Merge: for any session that is actively generating or has newer in-memory messages,
-    // preserve its latest in-memory content and metrics so live stream / completed turns
-    // are never rolled back or lost due to delayed disk saves.
+    // Merge: intelligent non-downgrading merge protecting completed turns and metrics
     const mergedSessions = safeLoaded.map((s) => {
       const inMem = sessionsRef.current.find((m) => m.id === s.id);
-      if (!inMem || !inMem.messages || inMem.messages.length === 0) return s;
-
-      if (generatingSessionIdsRef.current.includes(s.id)) {
-        return {
-          ...s,
-          messages: inMem.messages,
-        };
+      if (!inMem || !inMem.messages || inMem.messages.length === 0) {
+        s.messages?.forEach((m) => {
+          if (m.metrics) completedTurnsRef.current.set(m.id, m);
+        });
+        return s;
       }
 
-      // 即使不在生成中，也智能比对消息：防止刚生成完毕的回合被陈旧落盘快照冲刷
+      const isLocallyGenerating = abortControllersRef.current.has(s.id);
+
       const mergedMsgs = s.messages.map((diskMsg) => {
         const memMsg = inMem.messages.find((m) => m.id === diskMsg.id);
-        if (!memMsg) return diskMsg;
-        return {
+        const protectedMsg = completedTurnsRef.current.get(diskMsg.id);
+        const bestSource = protectedMsg || memMsg;
+        if (!bestSource) {
+          if (diskMsg.metrics) completedTurnsRef.current.set(diskMsg.id, diskMsg);
+          return diskMsg;
+        }
+
+        const hasMetrics = diskMsg.metrics || bestSource.metrics;
+        const finalMetrics = diskMsg.metrics || bestSource.metrics;
+
+        const memLen = bestSource.content?.length || 0;
+        const diskLen = diskMsg.content?.length || 0;
+        const bestContent = isLocallyGenerating
+          ? (bestSource.content || diskMsg.content)
+          : (memLen >= diskLen ? bestSource.content : diskMsg.content);
+
+        const memReasonLen = bestSource.reasoningContent?.length || 0;
+        const diskReasonLen = diskMsg.reasoningContent?.length || 0;
+        const bestReasoning = isLocallyGenerating
+          ? (bestSource.reasoningContent || diskMsg.reasoningContent)
+          : (memReasonLen >= diskReasonLen ? bestSource.reasoningContent : diskMsg.reasoningContent);
+
+        const isDone = !!hasMetrics || (!bestSource.pending && !diskMsg.pending);
+
+        const mergedMsg: ChatMessage = {
           ...diskMsg,
-          content:
-            memMsg.content && memMsg.content.length > (diskMsg.content?.length || 0)
-              ? memMsg.content
-              : diskMsg.content,
-          reasoningContent:
-            memMsg.reasoningContent && memMsg.reasoningContent.length > (diskMsg.reasoningContent?.length || 0)
-              ? memMsg.reasoningContent
-              : diskMsg.reasoningContent,
-          metrics: diskMsg.metrics || memMsg.metrics,
-          stages: diskMsg.stages && diskMsg.stages.length > 0 ? diskMsg.stages : memMsg.stages,
-          citations: diskMsg.citations && diskMsg.citations.length > 0 ? diskMsg.citations : memMsg.citations,
-          thinkingDuration: diskMsg.thinkingDuration || memMsg.thinkingDuration,
+          content: bestContent,
+          reasoningContent: bestReasoning,
+          metrics: finalMetrics,
+          stages: (diskMsg.stages && diskMsg.stages.length > 0) ? diskMsg.stages : bestSource.stages,
+          citations: (diskMsg.citations && diskMsg.citations.length > 0) ? diskMsg.citations : bestSource.citations,
+          thinkingDuration: diskMsg.thinkingDuration || bestSource.thinkingDuration,
+          isThinking: isDone ? false : (isLocallyGenerating ? bestSource.isThinking : (diskMsg.isThinking ?? bestSource.isThinking)),
+          pending: isDone ? false : (isLocallyGenerating ? bestSource.pending : (diskMsg.pending ?? bestSource.pending)),
+          stage: isDone ? undefined : (isLocallyGenerating ? bestSource.stage : (diskMsg.stage ?? bestSource.stage)),
         };
+
+        if (finalMetrics) {
+          completedTurnsRef.current.set(diskMsg.id, mergedMsg);
+        }
+        return mergedMsg;
       });
+
+      for (const m of inMem.messages) {
+        if (!mergedMsgs.some((d) => d.id === m.id)) {
+          mergedMsgs.push(m);
+        }
+      }
+
+      const allAsstDone = mergedMsgs.filter((m) => m.role === 'assistant').every((m) => !m.pending && (m.metrics || m.content));
+      if (allAsstDone && !isLocallyGenerating && generatingSessionIdsRef.current.includes(s.id)) {
+        setGeneratingSessionIds((prev) => prev.filter((id) => id !== s.id));
+      }
 
       return {
         ...s,
@@ -454,7 +489,7 @@ export const App: React.FC = () => {
             isSyncingRef.current = true;
             setTimeout(() => {
               isSyncingRef.current = false;
-            }, 100);
+            }, 300);
             setGeneratingSessionIds((prev) => prev.filter((id) => id !== sessionId));
             setLiveStreamingTokens((prev) => {
               const next = { ...prev };
@@ -468,23 +503,26 @@ export const App: React.FC = () => {
                 const updatedMsgs = s.messages.map((m) => {
                   if (m.id === messageId) {
                     foundMsg = true;
-                    return {
+                    const finalMsg: ChatMessage = {
                       ...m,
                       reasoningContent,
                       content,
                       isThinking: false,
                       thinkingDuration,
                       metrics,
-                      // 生成结束：prefill 指示器必须撤下（兜底）
+                      // 生成结束：prefill 指示器与阶段必须撤下
                       pending: false,
+                      stage: undefined,
                       ...(incomingStages ? { stages: incomingStages } : {}),
                       ...(incomingCitations ? { citations: incomingCitations } : {}),
                     };
+                    completedTurnsRef.current.set(messageId, finalMsg);
+                    return finalMsg;
                   }
                   return m;
                 });
                 if (!foundMsg) {
-                  updatedMsgs.push({
+                  const finalMsg: ChatMessage = {
                     id: messageId,
                     role: 'assistant',
                     content,
@@ -493,10 +531,13 @@ export const App: React.FC = () => {
                     thinkingDuration,
                     metrics,
                     pending: false,
+                    stage: undefined,
                     timestamp: Date.now(),
                     ...(incomingStages ? { stages: incomingStages } : {}),
                     ...(incomingCitations ? { citations: incomingCitations } : {}),
-                  });
+                  };
+                  completedTurnsRef.current.set(messageId, finalMsg);
+                  updatedMsgs.push(finalMsg);
                 }
                 const cleanHistoryTokens = estimateHistoryTokens(updatedMsgs, settings.systemPrompt, settings.apiProvider);
                 return {
@@ -715,25 +756,21 @@ export const App: React.FC = () => {
       // 广播失败不影响本窗口
     }
     setSessions((prev) =>
-      prev.map((s) =>
-        s.id !== sid
-          ? s
-          : { ...s, messages: s.messages.map((m) => (m.id === messageId ? { ...m, stages } : m)) }
-      )
-    );
-    try {
-      const all = loadSessions();
-      const idx = all.findIndex((s) => s.id === sid);
-      if (idx >= 0) {
-        all[idx] = {
-          ...all[idx],
-          messages: all[idx].messages.map((m) => (m.id === messageId ? { ...m, stages } : m)),
+      prev.map((s) => {
+        if (s.id !== sid) return s;
+        return {
+          ...s,
+          messages: s.messages.map((m) => {
+            if (m.id === messageId) {
+              const updated = { ...m, stages };
+              if (updated.metrics) completedTurnsRef.current.set(messageId, updated);
+              return updated;
+            }
+            return m;
+          }),
         };
-        saveSessions(all, sid, 'MAIN');
-      }
-    } catch {
-      // 落盘失败不影响本窗口显示
-    }
+      })
+    );
   }, []);
 
   const lastSaveTimeRef = useRef(0);
@@ -748,6 +785,27 @@ export const App: React.FC = () => {
     const isLocalGenerating = abortControllersRef.current.size > 0;
     const isGeneratingNow = generatingSessionIdsRef.current.length > 0;
 
+    const getSafeSessionsForDisk = (rawSessions: ChatSession[]) => {
+      return rawSessions.map((s) => ({
+        ...s,
+        messages: s.messages.map((m) => {
+          const protectedTurn = completedTurnsRef.current.get(m.id);
+          if (!protectedTurn) return m;
+          return {
+            ...m,
+            content: (protectedTurn.content?.length || 0) >= (m.content?.length || 0) ? protectedTurn.content : m.content,
+            reasoningContent: (protectedTurn.reasoningContent?.length || 0) >= (m.reasoningContent?.length || 0) ? protectedTurn.reasoningContent : m.reasoningContent,
+            metrics: m.metrics || protectedTurn.metrics,
+            stages: (m.stages && m.stages.length > 0) ? m.stages : protectedTurn.stages,
+            citations: (m.citations && m.citations.length > 0) ? m.citations : protectedTurn.citations,
+            pending: (protectedTurn.metrics || m.metrics) ? false : m.pending,
+            isThinking: (protectedTurn.metrics || m.metrics) ? false : m.isThinking,
+            stage: (protectedTurn.metrics || m.metrics) ? undefined : m.stage,
+          };
+        }),
+      }));
+    };
+
     if (isLocalGenerating) {
       const now = Date.now();
       if (now - lastSaveTimeRef.current < 300) {
@@ -755,19 +813,19 @@ export const App: React.FC = () => {
           saveTimeoutRef.current = setTimeout(() => {
             saveTimeoutRef.current = null;
             lastSaveTimeRef.current = Date.now();
-            saveSessions(sessionsRef.current, currentSessionIdRef.current || undefined, 'MAIN');
+            saveSessions(getSafeSessionsForDisk(sessionsRef.current), currentSessionIdRef.current || undefined, 'MAIN');
           }, 300);
         }
         return;
       }
       lastSaveTimeRef.current = now;
-      saveSessions(sessions, currentSessionIdRef.current || undefined, 'MAIN');
+      saveSessions(getSafeSessionsForDisk(sessions), currentSessionIdRef.current || undefined, 'MAIN');
     } else if (!isGeneratingNow) {
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
         saveTimeoutRef.current = null;
       }
-      saveSessions(sessions, currentSessionIdRef.current || undefined, 'MAIN');
+      saveSessions(getSafeSessionsForDisk(sessions), currentSessionIdRef.current || undefined, 'MAIN');
     }
   }, [sessions]);
 
@@ -1114,7 +1172,7 @@ export const App: React.FC = () => {
                           : st
                       );
                       stagesRef.current = closedStages;
-                      return { ...m, pending: false, stages: closedStages };
+                      return { ...m, pending: false, stage: undefined, stages: closedStages };
                     }),
                   }
                 : s
@@ -1271,7 +1329,7 @@ export const App: React.FC = () => {
                       ? { ...st, endedAt: tEnd, durationMs: Math.max(0, tEnd - st.startedAt) }
                       : st
                   );
-                  return {
+                  const finalMsg: ChatMessage = {
                     ...m,
                     reasoningContent: accumulatedReasoning,
                     content: accumulatedContent,
@@ -1282,6 +1340,8 @@ export const App: React.FC = () => {
                     stage: undefined,
                     stages: closedStages,
                   };
+                  completedTurnsRef.current.set(assistantMsgId, finalMsg);
+                  return finalMsg;
                 }),
               };
             })

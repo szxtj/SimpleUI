@@ -125,6 +125,8 @@ export const SpotlightView: React.FC = () => {
   const thinkingStartTimeRef = useRef(0);
   /** 本轮阶段阶梯记录快照：随流式广播带给镜像窗口（主窗口） */
   const stagesRef = useRef<TurnStageRecord[]>([]);
+  /** 已完成回合保护缓存：锁定包含真实 metrics 与终态内容的消息，严禁被任何后至的同步降级或覆盖 */
+  const completedTurnsRef = useRef<Map<string, ChatMessage>>(new Map());
 
   // Conversation-level toggles (both default to FALSE / OFF as requested)
   const [enableThinking, setEnableThinking] = useState(false);
@@ -141,11 +143,24 @@ export const SpotlightView: React.FC = () => {
 
   /**
    * 阶段阶梯记录回写（仅浮窗自己生成的回合会调用）。
-   * 与主窗口同一条路径：① 更新本窗口消息；② 立即落盘 + 广播（主窗口镜像 / 退出重开都在）。
+   * 更新本窗口消息并广播给主窗口镜像。
+   * 注意：严禁在这里盲目 loadSessions() -> saveSessions()，
+   * 否则会踩在生成结束时把包含完整指标的终态消息冲刷为旧快照。
    */
   const handleStagesChange = useCallback((messageId: string, stages: TurnStageRecord[]) => {
     stagesRef.current = stages;
-    setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, stages } : m)));
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.id === messageId) {
+          const updated = { ...m, stages };
+          if (updated.metrics) {
+            completedTurnsRef.current.set(messageId, updated);
+          }
+          return updated;
+        }
+        return m;
+      })
+    );
     // 检索/载入阶段没有任何 token → 不会有 STREAM_CHUNK，专门广播阶段变化给主窗口
     const curSid = generatingSessionIdRef.current || activeSessionIdRef.current;
     try {
@@ -158,19 +173,6 @@ export const SpotlightView: React.FC = () => {
       });
     } catch {
       // 广播失败不影响本窗口
-    }
-    try {
-      if (!curSid) return;
-      const all = loadSessions();
-      const idx = all.findIndex((s) => s.id === curSid);
-      if (idx < 0) return;
-      all[idx] = {
-        ...all[idx],
-        messages: all[idx].messages.map((m) => (m.id === messageId ? { ...m, stages } : m)),
-      };
-      saveSessions(all, curSid, 'SPOTLIGHT');
-    } catch {
-      // 落盘失败不影响本窗口显示
     }
   }, []);
 
@@ -511,6 +513,9 @@ export const SpotlightView: React.FC = () => {
     const target = all.find((s) => s.id === sessionId);
     if (target) {
       activeSessionIdRef.current = sessionId;
+      target.messages?.forEach((m) => {
+        if (m.metrics) completedTurnsRef.current.set(m.id, m);
+      });
       setMessages(target.messages || []);
       const cleanTokens = estimateHistoryTokens(target.messages || [], settings.systemPrompt, settings.apiProvider);
       setUsedTokens(cleanTokens);
@@ -559,6 +564,9 @@ export const SpotlightView: React.FC = () => {
         if (data.sessionId) {
           if (data.session && Array.isArray(data.session.messages)) {
             activeSessionIdRef.current = data.sessionId;
+            data.session.messages.forEach((m: ChatMessage) => {
+              if (m.metrics) completedTurnsRef.current.set(m.id, m);
+            });
             setMessages(data.session.messages);
             const cleanTokens = estimateHistoryTokens(data.session.messages, settings.systemPrompt, settings.apiProvider);
             setUsedTokens(cleanTokens);
@@ -691,11 +699,14 @@ export const SpotlightView: React.FC = () => {
                         content,
                         isThinking: false,
                         thinkingDuration,
-                        metrics,
+                        metrics: metrics || m.metrics,
+                        stage: undefined,
                         pending: false,
                       }
                     : m
                 );
+                const finalMsg = updated.find((m) => m.id === messageId);
+                if (finalMsg) completedTurnsRef.current.set(messageId, finalMsg);
                 const cleanTokens = estimateHistoryTokens(updated, settings.systemPrompt, settings.apiProvider);
                 setUsedTokens(cleanTokens);
                 return updated;
@@ -703,6 +714,9 @@ export const SpotlightView: React.FC = () => {
               const all = loadSessions();
               const target = all.find((s) => s.id === sessionId);
               if (target && target.messages) {
+                target.messages.forEach((m) => {
+                  if (m.metrics) completedTurnsRef.current.set(m.id, m);
+                });
                 return target.messages;
               }
               return prev;
@@ -754,24 +768,41 @@ export const SpotlightView: React.FC = () => {
 
               const merged = target.messages.map((diskMsg) => {
                 const memMsg = currentList.find((m) => m.id === diskMsg.id);
-                if (!memMsg) return diskMsg;
-                return {
+                const protectedTurn = completedTurnsRef.current.get(diskMsg.id);
+                const bestSource = protectedTurn || memMsg;
+                if (!bestSource) {
+                  if (diskMsg.metrics) completedTurnsRef.current.set(diskMsg.id, diskMsg);
+                  return diskMsg;
+                }
+
+                const finalMetrics = diskMsg.metrics || bestSource.metrics;
+                const memLen = bestSource.content?.length || 0;
+                const diskLen = diskMsg.content?.length || 0;
+                const bestContent = memLen >= diskLen ? bestSource.content : diskMsg.content;
+
+                const memReasonLen = bestSource.reasoningContent?.length || 0;
+                const diskReasonLen = diskMsg.reasoningContent?.length || 0;
+                const bestReasoning = memReasonLen >= diskReasonLen ? bestSource.reasoningContent : diskMsg.reasoningContent;
+
+                const isDone = !!finalMetrics || (bestSource.pending === false && diskMsg.pending === false);
+
+                const mergedMsg: ChatMessage = {
                   ...diskMsg,
-                  content:
-                    memMsg.content && memMsg.content.length > (diskMsg.content?.length || 0)
-                      ? memMsg.content
-                      : diskMsg.content,
-                  reasoningContent:
-                    memMsg.reasoningContent && memMsg.reasoningContent.length > (diskMsg.reasoningContent?.length || 0)
-                      ? memMsg.reasoningContent
-                      : diskMsg.reasoningContent,
-                  metrics: diskMsg.metrics || memMsg.metrics,
-                  citations: diskMsg.citations && diskMsg.citations.length > 0 ? diskMsg.citations : memMsg.citations,
-                  stages: diskMsg.stages && diskMsg.stages.length > 0 ? diskMsg.stages : memMsg.stages,
-                  thinkingDuration: diskMsg.thinkingDuration || memMsg.thinkingDuration,
-                  isThinking: diskMsg.isThinking ?? memMsg.isThinking,
-                  pending: diskMsg.pending ?? memMsg.pending,
+                  content: bestContent,
+                  reasoningContent: bestReasoning,
+                  metrics: finalMetrics,
+                  citations: (diskMsg.citations && diskMsg.citations.length > 0) ? diskMsg.citations : bestSource.citations,
+                  stages: (diskMsg.stages && diskMsg.stages.length > 0) ? diskMsg.stages : bestSource.stages,
+                  thinkingDuration: diskMsg.thinkingDuration || bestSource.thinkingDuration,
+                  isThinking: isDone ? false : (diskMsg.isThinking ?? bestSource.isThinking),
+                  pending: isDone ? false : (diskMsg.pending ?? bestSource.pending),
+                  stage: isDone ? undefined : (diskMsg.stage ?? bestSource.stage),
                 };
+
+                if (finalMetrics) {
+                  completedTurnsRef.current.set(diskMsg.id, mergedMsg);
+                }
+                return mergedMsg;
               });
 
               for (const m of currentList) {
@@ -1098,13 +1129,17 @@ export const SpotlightView: React.FC = () => {
             reasoningContent: accumulatedThought,
             isThinking: isFinal ? false : (accumulatedThought.length > 0 && !accumulatedContent),
             pending: isFinal ? false : (prevAsst?.pending ?? true),
+            stage: isFinal ? undefined : prevAsst?.stage,
             thinkingDuration: finalThinkingDuration || (performance.now() - thinkingStartTime) / 1000,
-            timestamp: Date.now(),
-            metrics,
-            citations: foundCitations.length > 0 ? foundCitations : undefined,
+            timestamp: isFinal ? Date.now() : (prevAsst?.timestamp ?? Date.now()),
+            metrics: metrics || prevAsst?.metrics,
+            citations: foundCitations.length > 0 ? foundCitations : (prevAsst?.citations),
             stages: closedStages,
             error: err?.message,
           };
+          if (isFinal && asstMsg.metrics) {
+            completedTurnsRef.current.set(asstMessageId, asstMsg);
+          }
           const currentTitle = all[idx].title;
           const resolvedTitle =
             isFirstUserMessage || !currentTitle || currentTitle === '新对话' || currentTitle === 'New Chat'
@@ -1162,7 +1197,7 @@ export const SpotlightView: React.FC = () => {
           );
           stagesRef.current = closedStages;
           setMessages((prev) =>
-            prev.map((m) => (m.id === asstMessageId ? { ...m, pending: false, stages: closedStages } : m))
+            prev.map((m) => (m.id === asstMessageId ? { ...m, pending: false, stage: undefined, stages: closedStages } : m))
           );
         },
         onThought: (delta) => {
@@ -1244,15 +1279,18 @@ export const SpotlightView: React.FC = () => {
           generatingSessionIdRef.current = null;
           recordActivity();
 
+          const finalMetrics = { ...metrics, contextUsed: 0 };
           const finalAsstMessage: ChatMessage = {
             id: asstMessageId,
             role: 'assistant',
             content: accumulatedContent,
             reasoningContent: accumulatedThought,
             isThinking: false,
+            pending: false,
+            stage: undefined,
             thinkingDuration: finalThinkingDuration,
             timestamp: Date.now(),
-            metrics,
+            metrics: finalMetrics,
             citations: foundCitations.length > 0 ? foundCitations : undefined,
             stages: (stagesRef.current ?? []).map((st) =>
               st.endedAt === undefined
@@ -1266,12 +1304,15 @@ export const SpotlightView: React.FC = () => {
             settings.systemPrompt,
             settings.apiProvider
           );
+          finalMetrics.contextUsed = cleanHistoryTokens;
+          finalAsstMessage.metrics = finalMetrics;
+          completedTurnsRef.current.set(asstMessageId, finalAsstMessage);
           setUsedTokens(cleanHistoryTokens);
 
           setMessages((prev) =>
             prev.map((m) => (m.id === asstMessageId ? finalAsstMessage : m))
           );
-          persistSession(true, { ...metrics, contextUsed: cleanHistoryTokens });
+          persistSession(true, finalMetrics);
           syncChannel?.postMessage({
             type: 'STREAM_DONE',
             sessionId: currentSessionId,
@@ -1279,7 +1320,7 @@ export const SpotlightView: React.FC = () => {
             reasoningContent: accumulatedThought,
             content: accumulatedContent,
             thinkingDuration: finalThinkingDuration,
-            metrics: { ...metrics, contextUsed: cleanHistoryTokens },
+            metrics: finalMetrics,
             stages: finalAsstMessage.stages,
             citations: foundCitations.length > 0 ? foundCitations : undefined,
             source: 'SPOTLIGHT',

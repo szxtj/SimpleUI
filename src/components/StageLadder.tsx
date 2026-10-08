@@ -167,6 +167,8 @@ export const StageLadder: React.FC<StageLadderProps> = ({
   onRecordsChangeRef.current = onRecordsChange;
   const phasesActiveRef = useRef(phasesActive);
   phasesActiveRef.current = phasesActive;
+  const recordingRef = useRef(recording);
+  recordingRef.current = recording;
 
   // 非生成方（或本轮已结束）：跟随消息里的记录
   useEffect(() => {
@@ -200,7 +202,9 @@ export const StageLadder: React.FC<StageLadderProps> = ({
             : r
         );
         setLive(finalized);
-        onRecordsChangeRef.current?.(messageId, finalized);
+        if (recordingRef.current) {
+          onRecordsChangeRef.current?.(messageId, finalized);
+        }
       }
     }
   }, [phasesActive, messageId]);
