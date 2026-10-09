@@ -197,6 +197,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         // 语音输入权限桥（设置页「语音识别服务」卡片据此展示/申请三件套权限）
         userContent.add(self, name: "voiceInput")
         userContent.add(self, name: "openExternal")
+        userContent.add(self, name: "chooseDirectory")
         config.userContentController = userContent
 
         // 权限状态在系统设置里被改动后，主动回推给页面刷新
@@ -312,6 +313,53 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             handleVoiceInputMessage(dict)
         } else if message.name == "openExternal", let urlString = message.body as? String {
             openExternal(urlString)
+        } else if message.name == "chooseDirectory", let dict = message.body as? [String: Any] {
+            let currentPath = dict["currentPath"] as? String
+            let callbackKey = dict["callbackKey"] as? String ?? "default"
+            showDirectoryPicker(currentPath: currentPath, callbackKey: callbackKey)
+        }
+    }
+
+    /// 弹出原生系统文件夹选择框，将选中的物理路径回传给网页前端
+    private func showDirectoryPicker(currentPath: String?, callbackKey: String) {
+        guard let win = window else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "选择"
+        panel.message = "请选择项目所在文件夹"
+
+        if let rawPath = currentPath, !rawPath.isEmpty {
+            let expandedPath = (rawPath as NSString).expandingTildeInPath
+            if FileManager.default.fileExists(atPath: expandedPath) {
+                panel.directoryURL = URL(fileURLWithPath: expandedPath)
+            }
+        }
+
+        let handleResponse: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self = self else { return }
+            if response == .OK, let selectedURL = panel.url {
+                let chosenPath = selectedURL.path
+                let home = NSHomeDirectory()
+                let displayPath = chosenPath.hasPrefix(home) ? "~" + chosenPath.dropFirst(home.count) : chosenPath
+                guard let data = try? JSONSerialization.data(withJSONObject: [
+                    "path": displayPath,
+                    "key": callbackKey
+                ]), let jsonStr = String(data: data, encoding: .utf8) else { return }
+                self.webView.evaluateJavaScript("window.__onDirectoryChosen && window.__onDirectoryChosen(\(jsonStr))") { _, _ in }
+            }
+        }
+
+        if win.attachedSheet != nil {
+            panel.begin { response in
+                handleResponse(response)
+            }
+        } else {
+            panel.beginSheetModal(for: win) { response in
+                handleResponse(response)
+            }
         }
     }
 

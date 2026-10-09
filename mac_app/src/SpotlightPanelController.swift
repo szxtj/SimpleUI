@@ -121,6 +121,7 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         userContent.add(self, name: "openMainFromSpotlight")
         userContent.add(self, name: "closeSpotlight")
         userContent.add(self, name: "resizePanel")
+        userContent.add(self, name: "chooseDirectory")
         config.userContentController = userContent
 
         webView = WKWebView(frame: panel.contentView?.bounds ?? .zero, configuration: config)
@@ -363,6 +364,42 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             let height = (dict["height"] as? CGFloat) ?? 88
             let isExpanding = (dict["expanded"] as? Bool) ?? (height > 100)
             handleResizePanel(width: width, height: height, isExpanding: isExpanding)
+        } else if message.name == "chooseDirectory", let dict = message.body as? [String: Any] {
+            let currentPath = dict["currentPath"] as? String
+            let callbackKey = dict["callbackKey"] as? String ?? "default"
+            showDirectoryPicker(currentPath: currentPath, callbackKey: callbackKey)
+        }
+    }
+
+    /// 弹出原生系统文件夹选择框，将选中的物理路径回传给网页前端
+    private func showDirectoryPicker(currentPath: String?, callbackKey: String) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "选择"
+        panel.message = "请选择项目所在文件夹"
+
+        if let rawPath = currentPath, !rawPath.isEmpty {
+            let expandedPath = (rawPath as NSString).expandingTildeInPath
+            if FileManager.default.fileExists(atPath: expandedPath) {
+                panel.directoryURL = URL(fileURLWithPath: expandedPath)
+            }
+        }
+
+        panel.begin { [weak self] response in
+            guard let self = self else { return }
+            if response == .OK, let selectedURL = panel.url {
+                let chosenPath = selectedURL.path
+                let home = NSHomeDirectory()
+                let displayPath = chosenPath.hasPrefix(home) ? "~" + chosenPath.dropFirst(home.count) : chosenPath
+                guard let data = try? JSONSerialization.data(withJSONObject: [
+                    "path": displayPath,
+                    "key": callbackKey
+                ]), let jsonStr = String(data: data, encoding: .utf8) else { return }
+                self.webView.evaluateJavaScript("window.__onDirectoryChosen && window.__onDirectoryChosen(\(jsonStr))") { _, _ in }
+            }
         }
     }
 

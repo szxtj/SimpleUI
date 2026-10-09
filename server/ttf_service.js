@@ -520,7 +520,7 @@ class TtfService {
     if (this.pendingOp) return;
     if (!isPidAlive(this.readPid())) return;
 
-    const { lines } = this.tailLog(5000);
+    const { lines } = this.tailLog(this.getActiveEngine(), 5000);
     let acceptedCount = 0;
     let terminalCount = 0;
     let latestTerminalAt = null;
@@ -812,6 +812,10 @@ class TtfService {
   }
 
   tailLog(engine = this.getActiveEngine(), maxLines = 200) {
+    if (typeof engine === 'number') {
+      maxLines = engine;
+      engine = this.getActiveEngine();
+    }
     const meta = ENGINE_METADATA[engine] || this.getActiveMeta();
     const logFile = meta.logFile;
     try {

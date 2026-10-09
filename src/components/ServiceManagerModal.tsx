@@ -8,7 +8,7 @@ import {
   SERVICE_STATE_LABEL_KEY,
   toServiceState,
 } from '../utils/serviceState';
-import { X, RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink } from 'lucide-react';
+import { X, RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen } from 'lucide-react';
 
 interface ServiceManagerModalProps {
   isOpen: boolean;
@@ -203,6 +203,26 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     };
   }, []);
 
+  // 原生系统文件夹选择器回调入口（Swift 侧 evaluateJavaScript 调用）
+  useEffect(() => {
+    (
+      window as unknown as {
+        __onDirectoryChosen?: (data: { path: string; key: string }) => void;
+      }
+    ).__onDirectoryChosen = (data: { path: string; key: string }) => {
+      if (!data?.path) return;
+      const target = data.key || selectedEngineRef.current;
+      if (target === 'mference') {
+        setSvcMferenceProjectDir(data.path);
+      } else {
+        setSvcProjectDir(data.path);
+      }
+    };
+    return () => {
+      (window as unknown as { __onDirectoryChosen?: unknown }).__onDirectoryChosen = undefined;
+    };
+  }, []);
+
   // 打开时拉取三个服务的状态与配置，之后 3s 轮询（弹窗打开期间）
   useEffect(() => {
     if (isOpen) {
@@ -298,6 +318,25 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
       await refreshSvcStatus();
     } finally {
       setSvcBusy(null);
+    }
+  };
+
+  const handleBrowseDirectory = () => {
+    const current = selectedEngine === 'mference' ? svcMferenceProjectDir : svcProjectDir;
+    const w = window as unknown as {
+      webkit?: {
+        messageHandlers?: {
+          chooseDirectory?: {
+            postMessage: (m: unknown) => void;
+          };
+        };
+      };
+    };
+    if (w.webkit?.messageHandlers?.chooseDirectory) {
+      w.webkit.messageHandlers.chooseDirectory.postMessage({
+        currentPath: current,
+        callbackKey: selectedEngine,
+      });
     }
   };
 
@@ -556,7 +595,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm select-none">
       <div
         onClick={(e) => e.stopPropagation()}
-        className="relative w-full max-w-lg rounded-2xl bg-white dark:bg-[#202227] border border-black/10 dark:border-[#353842] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-[#1f2328] dark:text-[#cfd3dc]"
+        className="relative w-full max-w-2xl rounded-2xl bg-white dark:bg-[#202227] border border-black/10 dark:border-[#353842] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-[#1f2328] dark:text-[#cfd3dc]"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-black/5 dark:border-[#2d3038]">
@@ -758,42 +797,42 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                 <button
                   type="button"
                   onClick={() => handleSwitchEngine('turbo-fieldfare')}
-                  className={`py-1.5 px-2.5 rounded-lg text-xs font-medium transition-all flex items-center justify-between cursor-pointer ${
+                  className={`py-1.5 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-between cursor-pointer gap-2 ${
                     selectedEngine === 'turbo-fieldfare'
                       ? 'bg-white dark:bg-[#202127] text-amber-700 dark:text-amber-400 shadow-sm font-semibold'
                       : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
                   }`}
                 >
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 min-w-0">
                     <span
-                      className={`w-1.5 h-1.5 rounded-full ${
+                      className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
                         SERVICE_STATE_CARD_DOT_CLASS[toServiceState(svcStatus?.ttf?.status)]
                       }`}
                     />
-                    <span>{t('modelEngineTTF')}</span>
+                    <span className="whitespace-nowrap">{t('modelEngineTTF')}</span>
                   </div>
-                  <span className="text-[10px] font-mono opacity-60">
+                  <span className="text-[10px] font-mono opacity-60 flex-shrink-0 ml-1">
                     :{svcStatus?.ttf?.port ?? 1235}
                   </span>
                 </button>
                 <button
                   type="button"
                   onClick={() => handleSwitchEngine('mference')}
-                  className={`py-1.5 px-2.5 rounded-lg text-xs font-medium transition-all flex items-center justify-between cursor-pointer ${
+                  className={`py-1.5 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-between cursor-pointer gap-2 ${
                     selectedEngine === 'mference'
                       ? 'bg-white dark:bg-[#202127] text-amber-700 dark:text-amber-400 shadow-sm font-semibold'
                       : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
                   }`}
                 >
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 min-w-0">
                     <span
-                      className={`w-1.5 h-1.5 rounded-full ${
+                      className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
                         SERVICE_STATE_CARD_DOT_CLASS[toServiceState(svcStatus?.mference?.status)]
                       }`}
                     />
-                    <span>{t('modelEngineMference')}</span>
+                    <span className="whitespace-nowrap">{t('modelEngineMference')}</span>
                   </div>
-                  <span className="text-[10px] font-mono opacity-60">
+                  <span className="text-[10px] font-mono opacity-60 flex-shrink-0 ml-1">
                     :{svcStatus?.mference?.port ?? 1241}
                   </span>
                 </button>
@@ -855,6 +894,16 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                 placeholder={selectedEngine === 'mference' ? '~/Mference' : '~/turbo-fieldfare'}
                 className="flex-1 bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-[#1f2328] dark:text-[#f1f3f7] font-mono focus:outline-none focus:border-amber-500"
               />
+              <button
+                type="button"
+                onClick={handleBrowseDirectory}
+                disabled={svcBusy !== null}
+                title={t('modelServicePathBrowse')}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-zinc-700 dark:text-zinc-200 border border-black/10 dark:border-white/10 text-xs font-medium transition-all active:scale-95 disabled:opacity-50 cursor-pointer flex-shrink-0"
+              >
+                <FolderOpen className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
+                <span>{t('modelServicePathBrowse')}</span>
+              </button>
               <button
                 type="button"
                 onClick={handleSvcPathApply}
