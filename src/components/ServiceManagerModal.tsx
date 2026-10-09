@@ -8,7 +8,7 @@ import {
   SERVICE_STATE_LABEL_KEY,
   toServiceState,
 } from '../utils/serviceState';
-import { X, RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen } from 'lucide-react';
+import { X, RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen, FileText } from 'lucide-react';
 
 interface ServiceManagerModalProps {
   isOpen: boolean;
@@ -203,23 +203,37 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     };
   }, []);
 
-  // 原生系统文件夹选择器回调入口（Swift 侧 evaluateJavaScript 调用）
+  // 原生系统文件 / 文件夹选择器回调入口（Swift 侧 evaluateJavaScript 调用）
   useEffect(() => {
     (
       window as unknown as {
         __onDirectoryChosen?: (data: { path: string; key: string }) => void;
+        __onFileChosen?: (data: { path: string; key: string }) => void;
       }
     ).__onDirectoryChosen = (data: { path: string; key: string }) => {
       if (!data?.path) return;
       const target = data.key || selectedEngineRef.current;
-      if (target === 'mference') {
+      if (target === 'zim' || target === 'wiki') {
+        setCustomZimPath(data.path);
+      } else if (target === 'mference') {
         setSvcMferenceProjectDir(data.path);
       } else {
         setSvcProjectDir(data.path);
       }
     };
+    (
+      window as unknown as {
+        __onFileChosen?: (data: { path: string; key: string }) => void;
+      }
+    ).__onFileChosen = (data: { path: string; key: string }) => {
+      if (!data?.path) return;
+      if (data.key === 'zim' || data.key === 'wiki' || !data.key) {
+        setCustomZimPath(data.path);
+      }
+    };
     return () => {
       (window as unknown as { __onDirectoryChosen?: unknown }).__onDirectoryChosen = undefined;
+      (window as unknown as { __onFileChosen?: unknown }).__onFileChosen = undefined;
     };
   }, []);
 
@@ -336,6 +350,25 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
       w.webkit.messageHandlers.chooseDirectory.postMessage({
         currentPath: current,
         callbackKey: selectedEngine,
+      });
+    }
+  };
+
+  const handleBrowseKbFile = () => {
+    const w = window as unknown as {
+      webkit?: {
+        messageHandlers?: {
+          chooseFile?: {
+            postMessage: (m: unknown) => void;
+          };
+        };
+      };
+    };
+    if (w.webkit?.messageHandlers?.chooseFile) {
+      w.webkit.messageHandlers.chooseFile.postMessage({
+        currentPath: customZimPath,
+        callbackKey: 'zim',
+        allowedExtensions: ['zim'],
       });
     }
   };
@@ -714,6 +747,16 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                   placeholder={t('kbPathPlaceholder')}
                   className="flex-1 bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-[#1f2328] dark:text-[#f1f3f7] font-mono focus:outline-none focus:border-blue-500"
                 />
+                <button
+                  type="button"
+                  onClick={handleBrowseKbFile}
+                  disabled={isApplyingPath}
+                  title={t('kbPathBrowse')}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-zinc-700 dark:text-zinc-200 border border-black/10 dark:border-white/10 text-xs font-medium transition-all active:scale-95 disabled:opacity-50 cursor-pointer flex-shrink-0"
+                >
+                  <FileText className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
+                  <span>{t('kbPathBrowse')}</span>
+                </button>
                 <button
                   type="button"
                   onClick={handleKbPathSave}

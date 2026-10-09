@@ -122,6 +122,7 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         userContent.add(self, name: "closeSpotlight")
         userContent.add(self, name: "resizePanel")
         userContent.add(self, name: "chooseDirectory")
+        userContent.add(self, name: "chooseFile")
         config.userContentController = userContent
 
         webView = WKWebView(frame: panel.contentView?.bounds ?? .zero, configuration: config)
@@ -368,6 +369,59 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             let currentPath = dict["currentPath"] as? String
             let callbackKey = dict["callbackKey"] as? String ?? "default"
             showDirectoryPicker(currentPath: currentPath, callbackKey: callbackKey)
+        } else if message.name == "chooseFile", let dict = message.body as? [String: Any] {
+            let currentPath = dict["currentPath"] as? String
+            let callbackKey = dict["callbackKey"] as? String ?? "zim"
+            let allowedExtensions = dict["allowedExtensions"] as? [String]
+            showFilePicker(currentPath: currentPath, callbackKey: callbackKey, allowedExtensions: allowedExtensions)
+        }
+    }
+
+    /// 弹出原生系统文件选择框，将选中的物理文件路径回传给网页前端
+    private func showFilePicker(currentPath: String?, callbackKey: String, allowedExtensions: [String]?) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.prompt = "选择"
+        panel.message = "请选择知识库文件 (.zim)"
+        panel.allowsOtherFileTypes = true
+
+        if let exts = allowedExtensions, !exts.isEmpty {
+            let types = exts.compactMap { UTType(filenameExtension: $0) }
+            if !types.isEmpty {
+                panel.allowedContentTypes = types
+            }
+        }
+
+        if let rawPath = currentPath, !rawPath.isEmpty {
+            let expandedPath = (rawPath as NSString).expandingTildeInPath
+            if FileManager.default.fileExists(atPath: expandedPath) {
+                let url = URL(fileURLWithPath: expandedPath)
+                var isDir: ObjCBool = false
+                if FileManager.default.fileExists(atPath: expandedPath, isDirectory: &isDir) {
+                    if isDir.boolValue {
+                        panel.directoryURL = url
+                    } else {
+                        panel.directoryURL = url.deletingLastPathComponent()
+                    }
+                }
+            }
+        }
+
+        panel.begin { [weak self] response in
+            guard let self = self else { return }
+            if response == .OK, let selectedURL = panel.url {
+                let chosenPath = selectedURL.path
+                let home = NSHomeDirectory()
+                let displayPath = chosenPath.hasPrefix(home) ? "~" + chosenPath.dropFirst(home.count) : chosenPath
+                guard let data = try? JSONSerialization.data(withJSONObject: [
+                    "path": displayPath,
+                    "key": callbackKey
+                ]), let jsonStr = String(data: data, encoding: .utf8) else { return }
+                self.webView.evaluateJavaScript("window.__onFileChosen && window.__onFileChosen(\(jsonStr))") { _, _ in }
+            }
         }
     }
 
