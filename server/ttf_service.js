@@ -12,7 +12,7 @@
 //   - TurboFieldfare: ttf_server.sh -> .build/release/TurboFieldfareServer (默认端口 1235)
 //   - Mference: mference_server.sh -> .build/release/MferenceServer (默认端口 1241)
 
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -258,6 +258,7 @@ class TtfService {
     this.lastActionLog = '';
     this.lastActionAt = 0;
     this.watchdog = null;
+    this.watchdogs = new Map();
     this.idleTimer = null;
     this.idleState = { hasHandled: false, inFlight: 0, lastFinishedAt: null };
   }
@@ -464,16 +465,29 @@ class TtfService {
     };
   }
 
-  ensureWatchdog() {
-    const meta = this.getActiveMeta();
-    try {
-      this.watchdog = startWatchdog({
-        pidFile: meta.pidFile,
-        binaryBasename: meta.binaryBasename,
-      });
-    } catch (e) {
-      // ignore
+  ensureWatchdogs() {
+    if (!this.watchdogs) this.watchdogs = new Map();
+    for (const engine of ['turbo-fieldfare', 'mference']) {
+      const meta = ENGINE_METADATA[engine];
+      if (meta && !this.watchdogs.has(meta.pidFile)) {
+        try {
+          const w = startWatchdog({
+            pidFile: meta.pidFile,
+            binaryBasename: meta.binaryBasename,
+          });
+          this.watchdogs.set(meta.pidFile, w);
+          if (engine === this.getActiveEngine()) {
+            this.watchdog = w;
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
     }
+  }
+
+  ensureWatchdog() {
+    this.ensureWatchdogs();
   }
 
   // ----------------------------- 闲置自动重置 -----------------------------
@@ -623,13 +637,13 @@ class TtfService {
       return { accepted: false, reason: 'script_not_found' };
     }
 
+    this.ensureWatchdogs();
     const alive = isPidAlive(this.readPid(activeEngine));
     if (alive && !this.pendingOp) {
       return { accepted: true, alreadyRunning: true };
     }
 
     this.exportEnvFile();
-    this.ensureWatchdog();
     this.pendingOp = 'start';
     this.pendingOpEngine = activeEngine;
     this.lastActionAt = Date.now();
@@ -744,6 +758,7 @@ class TtfService {
 
   init() {
     this.startIdleMonitor();
+    this.ensureWatchdogs();
     if (!this.config.enabled) {
       console.log('[ModelService] auto-start disabled (enabled=false)');
       return;
@@ -784,6 +799,15 @@ class TtfService {
         try { process.kill(pid, 'SIGKILL'); } catch (e) { /* ignore */ }
       }
       try { fs.unlinkSync(ENGINE_METADATA[engine].pidFile); } catch (e) { /* ignore */ }
+      // 兜底双保险：若仍有同名孤儿进程残留，按二进制全名精确清理
+      const bin = ENGINE_METADATA[engine]?.binaryBasename;
+      if (bin) {
+        try {
+          execSync(`pkill -x "${bin}"`, { stdio: 'ignore' });
+        } catch (e) {
+          // ignore (pkill returns 1 when no matching processes exist)
+        }
+      }
     }
   }
 
