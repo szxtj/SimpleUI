@@ -276,13 +276,13 @@ export const SpotlightView: React.FC = () => {
   const lastResizeSentRef = useRef<{ width: number; height: number; expanded: boolean } | null>(null);
 
   // Notify native AppKit panel to resize dynamically
-  const notifyResize = (expanded: boolean, hasImages: boolean = false) => {
+  const notifyResize = (expanded: boolean, hasImages: boolean = false, force: boolean = false) => {
     // @ts-expect-error WebKit bridge
     if (window.webkit?.messageHandlers?.resizePanel) {
       const width = expanded ? 500 : 540;
       const height = expanded ? 640 : (hasImages ? 138 : 88);
       const last = lastResizeSentRef.current;
-      if (last && last.width === width && last.height === height && last.expanded === expanded) {
+      if (!force && last && last.width === width && last.height === height && last.expanded === expanded) {
         return; // Skip duplicate message to native panel
       }
       lastResizeSentRef.current = { width, height, expanded };
@@ -312,7 +312,8 @@ export const SpotlightView: React.FC = () => {
     setLiveStreamingTokens(null);
     setEnableThinking(session.enableThinking ?? false);
     setEnableWikiSearch(session.enableWikiSearch ?? false);
-    notifyResize(false);
+    lastResizeSentRef.current = null;
+    notifyResize(false, false, true);
     recordActivity();
   }, [lang]);
 
@@ -522,7 +523,7 @@ export const SpotlightView: React.FC = () => {
       setLiveStreamingTokens(null);
       setEnableThinking(target.enableThinking ?? false);
       setEnableWikiSearch(target.enableWikiSearch ?? false);
-      notifyResize((target.messages && target.messages.length > 0) || false, images.length > 0);
+      notifyResize((target.messages && target.messages.length > 0) || false, images.length > 0, true);
       recordActivity();
 
       // Hydrate any offloaded images from IndexedDB
@@ -573,7 +574,7 @@ export const SpotlightView: React.FC = () => {
             setLiveStreamingTokens(null);
             setEnableThinking(data.session.enableThinking ?? false);
             setEnableWikiSearch(data.session.enableWikiSearch ?? false);
-            notifyResize(data.session.messages.length > 0, images.length > 0);
+            notifyResize(data.session.messages.length > 0, images.length > 0, true);
             recordActivity();
           } else {
             loadSessionById(data.sessionId);
@@ -860,6 +861,9 @@ export const SpotlightView: React.FC = () => {
       setSettings(loadSettings());
       WikiAPI.getStatus().then(setWikiStatus);
       syncChannel?.postMessage({ type: 'STREAM_QUERY' });
+      const hasMsgs = messagesRef.current.length > 0;
+      const isMulti = inputRef.current.includes('\n');
+      notifyResize(hasMsgs || isMulti, images.length > 0, true);
     };
 
     // @ts-expect-error global hook for Swift show()
@@ -1562,7 +1566,8 @@ export const SpotlightView: React.FC = () => {
     setUsedTokens(0);
     setEnableThinking(false);
     setEnableWikiSearch(false);
-    notifyResize(false);
+    lastResizeSentRef.current = null;
+    notifyResize(false, false, true);
     recordActivity();
   };
 

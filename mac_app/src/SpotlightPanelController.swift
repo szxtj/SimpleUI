@@ -217,32 +217,35 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         return screenRect.origin.y + 16
     }
 
-    func show() {
+    func show(isExpanded: Bool? = nil) {
         guard let panel = window else { return }
+        if let exp = isExpanded {
+            self.isExpanded = exp
+        }
         let screen = currentScreen()
         let screenRect = screen.visibleFrame
 
-        if isExpanded && hasUserCustomPosition, let origin = customExpandedOrigin {
+        dragView?.isHidden = !self.isExpanded
+
+        let targetWidth: CGFloat = self.isExpanded ? 500 : 540
+        let targetHeight: CGFloat = self.isExpanded ? 640 : 88
+
+        var targetFrame: NSRect
+        if self.isExpanded && hasUserCustomPosition, let origin = customExpandedOrigin {
             // Restore to the exact user-dragged position, clamped safely within active screens
-            let targetSize = panel.frame.size
-            let clampedX = min(screenRect.maxX - 100, max(screenRect.minX - targetSize.width + 100, origin.x))
-            let clampedY = min(screenRect.maxY - targetSize.height, max(screenRect.minY, origin.y))
-            let targetFrame = NSRect(x: clampedX, y: clampedY, width: targetSize.width, height: targetSize.height)
-
-            isProgrammaticAnimating = true
-            panel.setFrame(targetFrame, display: true)
-            isProgrammaticAnimating = false
+            let clampedX = min(screenRect.maxX - 100, max(screenRect.minX - targetWidth + 100, origin.x))
+            let clampedY = min(screenRect.maxY - targetHeight, max(screenRect.minY, origin.y))
+            targetFrame = NSRect(x: clampedX, y: clampedY, width: targetWidth, height: targetHeight)
         } else {
-            // In compact state OR no custom position: default Dock-aligned bottom center
-            let width = panel.frame.width
-            let height = panel.frame.height
-            let x = screenRect.origin.x + (screenRect.width - width) / 2
-            let y = targetY(for: height, on: screen)
-
-            isProgrammaticAnimating = true
-            panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
-            isProgrammaticAnimating = false
+            // Default Dock-aligned bottom center
+            let x = screenRect.origin.x + (screenRect.width - targetWidth) / 2
+            let y = targetY(for: targetHeight, on: screen)
+            targetFrame = NSRect(x: x, y: y, width: targetWidth, height: targetHeight)
         }
+
+        isProgrammaticAnimating = true
+        panel.setFrame(targetFrame, display: true)
+        isProgrammaticAnimating = false
 
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
@@ -252,8 +255,8 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         webView.evaluateJavaScript("window.onSpotlightShown && window.onSpotlightShown()") { _, _ in }
     }
 
-    func showWithSession(sessionId: String?) {
-        show()
+    func showWithSession(sessionId: String?, isExpanded: Bool = true) {
+        show(isExpanded: isExpanded)
         if let sid = sessionId {
             webView.evaluateJavaScript("window.loadSessionInSpotlight && window.loadSessionInSpotlight('\(sid)')") { _, _ in }
         }
@@ -313,6 +316,13 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             targetFrame = NSRect(x: defaultX, y: defaultY, width: width, height: height)
         }
 
+        // If the window is currently hidden, set frame immediately without animation.
+        // Invisible windows do not run AppKit animation groups properly and can get stuck.
+        if !panel.isVisible {
+            panel.setFrame(targetFrame, display: false)
+            return
+        }
+
         animateTo(newFrame: targetFrame)
     }
 
@@ -332,6 +342,8 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         }, completionHandler: { [weak self] in
             guard let self = self else { return }
             self.isProgrammaticAnimating = false
+            // Guarantee final frame is accurate even under high GPU/CPU load
+            self.window?.setFrame(newFrame, display: true)
             self.window?.contentView?.layoutSubtreeIfNeeded()
             if let dragView = self.dragView {
                 self.window?.invalidateCursorRects(for: dragView)

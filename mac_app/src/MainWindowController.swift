@@ -147,7 +147,7 @@ class TitleBarDragView: NSView {
 class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     private var webView: WKWebView!
     private var dragView: TitleBarDragView!
-    var onShrinkToSpotlight: ((String?) -> Void)?
+    var onShrinkToSpotlight: ((String?, Bool) -> Void)?
     /** 双击缩放前的原帧（自定义 zoom 态，替代 performZoom，见 toggleZoomAnimated 注释） */
     private var preZoomFrame: NSRect?
     /** 双击缩放的步进动画定时器 */
@@ -305,8 +305,9 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         } else if message.name == "shrinkToSpotlight" {
             let dict = message.body as? [String: Any]
             let sessionId = dict?["sessionId"] as? String
+            let isExpanded = (dict?["isExpanded"] as? Bool) ?? true
             window?.orderOut(nil)
-            onShrinkToSpotlight?(sessionId)
+            onShrinkToSpotlight?(sessionId, isExpanded)
         } else if message.name == "voiceInput", let dict = message.body as? [String: Any] {
             handleVoiceInputMessage(dict)
         } else if message.name == "openExternal", let urlString = message.body as? String {

@@ -23,8 +23,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.mainWindowController.showAndFocus()
         }
 
-        mainWindowController.onShrinkToSpotlight = { [weak self] sessionId in
-            self?.spotlightController.showWithSession(sessionId: sessionId)
+        mainWindowController.onShrinkToSpotlight = { [weak self] sessionId, isExpanded in
+            self?.spotlightController.showWithSession(sessionId: sessionId, isExpanded: isExpanded)
         }
 
         // Start Proxy if needed and show Main Window

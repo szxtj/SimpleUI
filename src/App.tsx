@@ -1547,6 +1547,7 @@ export const App: React.FC = () => {
 
     // 2. Notify Spotlight via syncChannel to load this session
     const targetSession = sessions.find((s) => s.id === currentSessionId);
+    const hasMessages = targetSession ? (targetSession.messages?.length ?? 0) > 0 : true;
     syncChannel?.postMessage({
       type: 'LOAD_SESSION_IN_SPOTLIGHT',
       sessionId: currentSessionId,
@@ -1559,6 +1560,7 @@ export const App: React.FC = () => {
       // @ts-expect-error WebKit bridge
       window.webkit.messageHandlers.shrinkToSpotlight.postMessage({
         sessionId: currentSessionId,
+        isExpanded: hasMessages,
       });
     }
   };
