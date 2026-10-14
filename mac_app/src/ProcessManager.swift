@@ -9,20 +9,27 @@ class ProcessManager {
     private var port: Int { ProcessManager.serverPort }
     private(set) var isRunning = false
 
-    /// 退出清理的总预算；超时后不再等待（会尝试硬杀自己拉起的代理）
+    /// 退出清理的总预算；超时后不再等待（会尝试硬杀自己拉起的代理与所有受管子进程）
     private let shutdownTimeout: TimeInterval = 8.0
     /// 代理退出后，detached 兜底 watchdog 最多再活一个轮询周期（0.5s），留 1s 余量
     private let watchdogGrace: TimeInterval = 1.0
 
+    /// 全部受管服务的 PID 文件清单（基础模型 / 语音识别 / 实时双语字幕）
+    private let managedPidFiles: [String] = [
+        "/tmp/turbo_fieldfare_server.pid",
+        "/tmp/mference_server.pid",
+        "/tmp/simpleui_audiocpp.pid",
+        "/tmp/simpleui_subtitle_asr.pid",
+        "/tmp/simpleui_subtitle_trans.pid"
+    ]
+
+    /// 启动入口：先检测并彻底清理任何上次残留的旧代理、旧模型与孤儿进程，再拉起全新服务，杜绝模块版本不一致
     func startProxyIfNeeded(completion: @escaping (Bool) -> Void) {
-        checkServerReady { isReady in
-            if isReady {
-                print("Local proxy server is already running on port \(self.port)")
-                self.isRunning = true
-                completion(true)
+        cleanStaleProcessesBeforeLaunch { [weak self] in
+            guard let self = self else {
+                completion(false)
                 return
             }
-
             self.launchNodeProxy { success in
                 self.isRunning = success
                 completion(success)
@@ -30,13 +37,89 @@ class ProcessManager {
         }
     }
 
+    // MARK: - 启动前残留检测与全量清理
+
+    /// 启动 App 时自动检测是否存在上次残留的旧代理或模型子进程，先完全清理再重新开启
+    private func cleanStaleProcessesBeforeLaunch(completion: @escaping () -> Void) {
+        pingProxy(timeout: 0.6) { [weak self] alive in
+            guard let self = self else {
+                completion()
+                return
+            }
+            if alive {
+                NSLog("[ProcessManager] 🧹 检测到端口 \(self.port) 存在旧版残留代理进程，正在请求退出并清理...")
+                self.requestRemoteQuit()
+                self.waitUntilProxyGoneForRelaunch(deadline: Date().addingTimeInterval(3.0)) {
+                    self.forceSweepResidualProcesses()
+                    completion()
+                }
+            } else {
+                self.forceSweepResidualProcesses()
+                completion()
+            }
+        }
+    }
+
+    private func waitUntilProxyGoneForRelaunch(deadline: Date, completion: @escaping () -> Void) {
+        pingProxy(timeout: 0.3) { [weak self] alive in
+            guard let self = self else {
+                completion()
+                return
+            }
+            if !alive || Date() >= deadline {
+                completion()
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    self.waitUntilProxyGoneForRelaunch(deadline: deadline, completion: completion)
+                }
+            }
+        }
+    }
+
+    /// 精确清理所有受管 PID 文件对应的残留进程及孤儿模型服务（含字幕 ASR 与 1249 翻译服务）
+    private func forceSweepResidualProcesses() {
+        // 1. 按 PID 文件优雅 SIGTERM -> 强制 SIGKILL
+        var killedPids: [pid_t] = []
+        for pidFile in managedPidFiles {
+            if let raw = try? String(contentsOfFile: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+               let pidVal = Int32(raw), pidVal > 1 {
+                if kill(pidVal, 0) == 0 {
+                    kill(pidVal, SIGTERM)
+                    killedPids.append(pidVal)
+                }
+            }
+            try? FileManager.default.removeItem(atPath: pidFile)
+        }
+
+        if !killedPids.isEmpty {
+            usleep(150_000) // 150ms 等待优雅退出
+            for pidVal in killedPids where kill(pidVal, 0) == 0 {
+                kill(pidVal, SIGKILL)
+            }
+        }
+
+        // 2. 精确清扫可能未写入 PID 文件的同名孤儿进程（及占用 31235 / 1249 端口的旧实例）
+        let cleanupScript = """
+        pkill -x "subtitle_stream_asr" 2>/dev/null || true
+        pkill -f "llama-server.*--port 1249" 2>/dev/null || true
+        pkill -x "audiocpp_server" 2>/dev/null || true
+        pkill -x "TurboFieldfareServer" 2>/dev/null || true
+        pkill -x "MferenceServer" 2>/dev/null || true
+        pkill -x "kiwix-serve" 2>/dev/null || true
+        pkill -f "server/proxy.js" 2>/dev/null || true
+        """
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-c", cleanupScript]
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = FileHandle.nullDevice
+        try? task.run()
+        task.waitUntilExit()
+    }
+
     // MARK: - 代理身份探测
 
     /// 探测 31235 上是否跑着 SimpleUI 代理。
-    ///
-    /// 用代理自己的 `/api/system/ping`，而不是 `/health`：后者会被代理转发给基础模型服务，
-    /// 模型未就绪（加载中 / 开关关闭）时返回 502，会被误判成「代理没在跑」——于是重复拉起
-    /// 一个注定 EADDRINUSE 的 node，而真正的代理反倒不在本 App 管理之下，退出时停不掉它。
     private func pingProxy(timeout: TimeInterval, completion: @escaping (Bool) -> Void) {
         guard let url = URL(string: "\(ProcessManager.baseURLString)/api/system/ping") else {
             completion(false)
@@ -134,8 +217,6 @@ class ProcessManager {
     }
 
     private func findNodeExecutable() -> String? {
-        // 优先使用随 App 打包的 Node 运行时（Contents/Resources/node/bin/node），
-        // 完全私有于本 App、不依赖用户系统是否安装 Node、不影响整体环境。
         if let resourcesDir = Bundle.main.resourcePath {
             let bundled = "\(resourcesDir)/node/bin/node"
             if FileManager.default.isExecutableFile(atPath: bundled) {
@@ -150,7 +231,6 @@ class ProcessManager {
             "/usr/bin/node"
         ]
 
-        // Dynamically discover all installed NVM Node versions
         let nvmDir = "\(home)/.nvm/versions/node"
         if let versions = try? FileManager.default.contentsOfDirectory(atPath: nvmDir) {
             for ver in versions.sorted().reversed() {
@@ -158,7 +238,6 @@ class ProcessManager {
             }
         }
 
-        // Additional common Node version managers (fnm, volta, asdf)
         candidates.append("\(home)/.local/share/fnm/current/bin/node")
         candidates.append("\(home)/.volta/bin/node")
         candidates.append("\(home)/.asdf/shims/node")
@@ -173,18 +252,13 @@ class ProcessManager {
 
     // MARK: - 退出清理
 
-    /// 退出前把代理与三个受管服务全部停掉，完成后回调（主线程）。
-    ///
-    /// 两种情况都要覆盖，才谈得上「退出即全停」：
-    ///  - 代理由本 App 拉起 → 直接 SIGTERM，走 proxy 的 cleanupAndExit 钩子；
-    ///  - 代理已在运行（例如先在终端跑过 ./start.sh）→ 走 POST /api/system/quit 请它自己退出。
-    /// 两条路径最终都汇到同一处：依次终止 kiwix / 基础模型 / 语音识别。
-    /// 回调前会等到 31235 不再响应，并留出兜底 watchdog 自行退出的时间。
+    /// 退出前把代理与全部四个受管服务（知识库 / 基础模型 / 语音识别 / 实时字幕三级模型）全部停掉。
     func stopAllServices(completion: @escaping () -> Void) {
         pingProxy(timeout: 1.0) { [weak self] alive in
             guard let self = self else { completion(); return }
             guard alive else {
-                // 代理本来就没在跑（或端口上不是 SimpleUI），无需清理
+                // 即使代理已不在，也执行一次底层孤儿进程清扫，确保字幕或模型进程无一残留
+                self.forceSweepResidualProcesses()
                 self.process = nil
                 self.isRunning = false
                 completion()
@@ -208,7 +282,6 @@ class ProcessManager {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 2.0
-        // 故意不带 Origin 头：代理据此确认请求不是浏览器发起的（防 CSRF）
         URLSession.shared.dataTask(with: request) { _, _, _ in }.resume()
     }
 
@@ -220,8 +293,6 @@ class ProcessManager {
                 return
             }
             if Date() >= deadline {
-                // 最后手段：确实是自己拉起的就直接 SIGKILL
-                //（受管服务交给 detached watchdog 收拾）
                 if let proc = self.process, proc.isRunning {
                     kill(proc.processIdentifier, SIGKILL)
                 }
@@ -237,14 +308,17 @@ class ProcessManager {
     private func finishStop(_ completion: @escaping () -> Void) {
         process = nil
         isRunning = false
+        // 代理退出后执行一次原生层兜底清扫，确保字幕模型与所有受管子进程 100% 终止
+        forceSweepResidualProcesses()
         DispatchQueue.main.asyncAfter(deadline: .now() + watchdogGrace) { completion() }
     }
 
-    /// 兜底：直接给代理进程发 SIGTERM（正常退出走 stopAllServices）
+    /// 兜底：直接给代理进程发 SIGTERM 并清扫受管子进程
     func stop() {
         if let proc = process, proc.isRunning {
             proc.terminate()
             process = nil
         }
+        forceSweepResidualProcesses()
     }
 }

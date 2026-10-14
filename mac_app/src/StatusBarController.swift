@@ -20,6 +20,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
     private var kbStatusItem: NSMenuItem!
     private var svcStatusItem: NSMenuItem!
     private var asrStatusItem: NSMenuItem!
+    private var subtitleMenuItem: NSMenuItem!
     private var pollTimer: Timer?
     private var pinAttempts = 0
 
@@ -99,10 +100,10 @@ class StatusBarController: NSObject, NSMenuDelegate {
         openSpotlight.target = self
         menu.addItem(openSpotlight)
 
-        let openSubtitles = NSMenuItem(title: lblSubtitles, action: #selector(toggleSubtitles), keyEquivalent: "s")
-        openSubtitles.keyEquivalentModifierMask = [.command, .option]
+        let openSubtitles = NSMenuItem(title: lblSubtitles, action: #selector(toggleSubtitles), keyEquivalent: "")
         openSubtitles.target = self
         openSubtitles.toolTip = tipSubtitles
+        subtitleMenuItem = openSubtitles
         menu.addItem(openSubtitles)
 
         menu.addItem(NSMenuItem.separator())
@@ -120,6 +121,12 @@ class StatusBarController: NSObject, NSMenuDelegate {
         }
         // 状态栏布局就绪后把图标钉到第三方状态项的最左侧（需要重试等待 superview 就绪）
         pinLeftmost()
+    }
+
+    func updateSubtitleActiveState(_ active: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            self?.subtitleMenuItem?.state = active ? .on : .off
+        }
     }
 
     func teardown() {

@@ -390,6 +390,10 @@ export const translations = {
 
     // 实时双语字幕悬浮窗
     subtitlePreparingModels: '流式模型准备中',
+    subtitleLoadingModelsTitle: '正在加载流式字幕引擎',
+    subtitleLoadingStageVad: '声学活动检测 (TEN-VAD)',
+    subtitleLoadingStageAsr: '流式语音识别 (Nemotron ANE)',
+    subtitleLoadingStageTrans: '神经机器翻译 (Index-2B)',
     subtitleRunningTitle: '实时英译中流式字幕 (ANE 160ms)',
     subtitlePaused: '已暂停',
     subtitleClearHistory: '清空字幕记录',
@@ -793,6 +797,10 @@ export const translations = {
 
     // Live bilingual subtitle overlay
     subtitlePreparingModels: 'Preparing Streaming Models',
+    subtitleLoadingModelsTitle: 'Loading Streaming Subtitle Engine',
+    subtitleLoadingStageVad: 'Voice Activity (TEN-VAD)',
+    subtitleLoadingStageAsr: 'Streaming ASR (Nemotron ANE)',
+    subtitleLoadingStageTrans: 'Neural Translation (Index-2B)',
     subtitleRunningTitle: 'Live EN→ZH Streaming Subtitles (ANE 160ms)',
     subtitlePaused: 'Paused',
     subtitleClearHistory: 'Clear subtitle history',

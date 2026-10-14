@@ -382,9 +382,10 @@ function cleanupAndExit(code = 0) {
       // ignore
     }
   }
+  // 实时字幕服务与三级模型子进程随退出一并终止
   if (subtitleService) {
     try {
-      subtitleService.stop();
+      subtitleService.shutdownSync();
     } catch (e) {
       // ignore
     }
@@ -419,7 +420,7 @@ process.on('exit', () => {
   }
   if (subtitleService) {
     try {
-      subtitleService.stop();
+      subtitleService.shutdownForce();
     } catch (e) {
       // ignore
     }

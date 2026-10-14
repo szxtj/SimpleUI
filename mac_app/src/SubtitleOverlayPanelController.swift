@@ -22,6 +22,7 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
 
     private var webView: WKWebView!
     private var webReady = false
+    var onVisibilityChanged: ((Bool) -> Void)?
 
     // MARK: - 系统音频 160ms 增量流式内录状态
     private var scStream: SCStream?
@@ -36,7 +37,8 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
     private var pendingSamples: [Int16] = []
     private var isSpeaking = false
     private var trailingSilentChunks = 0
-    private let maxTrailingSilentChunks = 5 // 5 * 160ms = 800ms 尾随静音后发送 is_final=1
+    // 方案 B：9 * 160ms = 1440ms 尾随静音后发送 is_final=1，避免慢语速句中停顿误触发硬切与状态重置
+    private let maxTrailingSilentChunks = 9
     private let energyThreshold: Double = 0.010
 
     // 严格 FIFO 串行发送队列，确保 160ms 增量音频帧绝不乱序或并发踩踏
@@ -120,13 +122,18 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
             panel.setFrame(bottomCenterFrame(on: currentScreen()), display: true)
         }
         panel.orderFrontRegardless()
+        onVisibilityChanged?(true)
         webView.evaluateJavaScript("window.onSubtitleOverlayShown && window.onSubtitleOverlayShown()") { _, _ in }
-        startAudioCapture()
+        // 触发服务端按阶段加载三个模型；待三个模型全部加载完成，前端将下发 startCapture 启动内录
+        postControl(action: "start")
     }
 
     func hide() {
         stopAudioCapture()
+        // 关闭窗口时立刻通知服务端停止并卸载全部三个字幕模型与子进程
+        postControl(action: "stop")
         window?.orderOut(nil)
+        onVisibilityChanged?(false)
     }
 
     func toggle() {
@@ -140,7 +147,7 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
     // MARK: - 系统音频内录 (ScreenCaptureKit Loopback)
 
     func startAudioCapture() {
-        guard !isRecording else { return }
+        guard !isRecording, isVisible else { return }
         Task {
             do {
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -176,7 +183,6 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
 
                 self.scStream = stream
                 self.isRecording = true
-                self.postControl(action: "start")
                 NSLog("[SubtitleOverlay] ✅ 系统音频 160ms 流式内录已启动 (ScreenCaptureKit Loopback)")
             } catch {
                 NSLog("[SubtitleOverlay] ❌ 启动系统音频内录失败: \(error)")
@@ -187,6 +193,16 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
     func stopAudioCapture() {
         guard isRecording else { return }
         isRecording = false
+        self.audioQueue.async {
+            self.samplesLock.lock()
+            self.preRollBuffer.removeAll()
+            self.pendingSamples.removeAll()
+            self.outboundQueue.removeAll()
+            self.isSpeaking = false
+            self.trailingSilentChunks = 0
+            self.isSendingFrame = false
+            self.samplesLock.unlock()
+        }
         if let stream = scStream {
             scStream = nil
             Task {
@@ -194,7 +210,6 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
                 NSLog("[SubtitleOverlay] ⏹ 系统音频内录已停止")
             }
         }
-        postControl(action: "stop")
     }
 
     // SCStreamOutput: 接收系统内部音频 PCM 缓冲区并按 160ms 切片流式发送
@@ -343,6 +358,9 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
               let action = dict["action"] as? String else { return }
         if action == "ready" {
             webReady = true
+            if isVisible {
+                postControl(action: "start")
+            }
         } else if action == "close" {
             hide()
         } else if action == "startCapture" {
@@ -363,10 +381,11 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
                   let dh = dict["dh"] as? Double {
             if let panel = self.window {
                 var frame = panel.frame
+                let topY = frame.origin.y + frame.size.height
                 let newW = max(panel.minSize.width, min(panel.maxSize.width, frame.size.width + CGFloat(dw)))
-                let newH = max(panel.minSize.height, min(panel.maxSize.height, frame.size.height - CGFloat(dh)))
-                let dy = newH - frame.size.height
-                frame.origin.y -= dy
+                // 鼠标向下拖拽时 dh > 0，窗口高度应随之增大（frame.size.height + CGFloat(dh)），并锚定顶部边缘 topY 不动
+                let newH = max(panel.minSize.height, min(panel.maxSize.height, frame.size.height + CGFloat(dh)))
+                frame.origin.y = topY - newH
                 frame.size.width = newW
                 frame.size.height = newH
                 panel.setFrame(frame, display: true)

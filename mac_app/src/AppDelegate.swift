@@ -30,13 +30,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Start Proxy if needed and show Main Window
-        ProcessManager.shared.startProxyIfNeeded { [weak self] success in
+        // 注意：字幕窗口（subtitleOverlayController）严格按需加载，启动时不预加载 WebView 或后台模型
+        ProcessManager.shared.startProxyIfNeeded { [weak self] _ in
             DispatchQueue.main.async {
                 self?.mainWindowController.loadContent()
                 self?.mainWindowController.showAndFocus()
                 self?.spotlightController.loadContent()
                 self?.voiceOverlayController.loadContent()
-                self?.subtitleOverlayController.loadContent()
             }
         }
 
@@ -64,6 +64,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarController.onToggleSubtitles = { [weak self] in
             self?.subtitleOverlayController.toggle()
         }
+        subtitleOverlayController.onVisibilityChanged = { [weak self] visible in
+            self?.statusBarController?.updateSubtitleActiveState(visible)
+        }
         statusBarController.setup()
     }
 
@@ -83,12 +86,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Dock 右键退出 / Cmd+Q / 状态栏菜单三条路径都汇到这里。
     ///
     /// 用 `applicationShouldTerminate` + `.terminateLater`，而不是在 `applicationWillTerminate`
-    /// 里发个信号就走：这样「App 图标消失」时，代理与三个受管服务已经确认全部停止，
+    /// 里发个信号就走：这样「App 图标消失」时，代理与全部受管服务（含字幕模型进程）已经确认全部停止，
     /// 不会留下「App 没了但服务还在跑」的窗口。
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        // 清理进行中又收到一次退出请求：继续等同一轮清理，不重复发起
         if isTerminating { return .terminateLater }
         isTerminating = true
+
+        // 若字幕窗口正开着，先停止内录并关闭窗口
+        subtitleOverlayController?.hide()
 
         ProcessManager.shared.stopAllServices { [weak self] in
             self?.teardownUI()
@@ -113,13 +118,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func teardownUI() {
         guard !didTeardownUI else { return }
         didTeardownUI = true
+        subtitleOverlayController?.hide()
         statusBarController?.teardown()
         HotKeyManager.shared.unregister()
         VoiceInputManager.shared.uninstall()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // 正常路径已在 applicationShouldTerminate 里做完，这里只是最后兜底
         teardownUI()
         ProcessManager.shared.stop()
     }
@@ -157,7 +162,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
 
-        // 3. View Menu
+        // 3. View Menu（实时双语字幕仅在状态栏菜单中开启，不在此处重复放置）
         let viewMenuItem = NSMenuItem()
         let viewMenu = NSMenu(title: "视图")
         let reloadItem = NSMenuItem(title: "重新载入", action: #selector(reloadActiveWindow), keyEquivalent: "r")
@@ -165,9 +170,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let toggleSpotlightItem = NSMenuItem(title: "快捷悬浮窗", action: #selector(toggleSpotlightWindow), keyEquivalent: " ")
         toggleSpotlightItem.keyEquivalentModifierMask = [.option]
         viewMenu.addItem(toggleSpotlightItem)
-        let toggleSubtitlesItem = NSMenuItem(title: "实时双语字幕", action: #selector(toggleSubtitleOverlay), keyEquivalent: "s")
-        toggleSubtitlesItem.keyEquivalentModifierMask = [.command, .option]
-        viewMenu.addItem(toggleSubtitlesItem)
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
 
@@ -188,9 +190,5 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleSpotlightWindow() {
         spotlightController?.toggle()
-    }
-
-    @objc private func toggleSubtitleOverlay() {
-        subtitleOverlayController?.toggle()
     }
 }

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Play, Pause, X, GripHorizontal, ArrowDownCircle, Trash2 } from 'lucide-react';
+import { Play, Pause, X, GripHorizontal, ArrowDownCircle, Trash2, Check, Loader2 } from 'lucide-react';
 import { useI18n } from '../i18n';
 
 interface SubtitleRecord {
@@ -11,9 +11,13 @@ interface SubtitleRecord {
 
 export const SubtitleOverlay: React.FC = () => {
   const { t } = useI18n();
-  const [isRunning, setIsRunning] = useState(true);
-  const [allReady, setAllReady] = useState(false);
+  const [isRunning, setIsRunning] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [allReady, setAllReady] = useState(true);
   const [missingModels, setMissingModels] = useState<string[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [loadingStage, setLoadingStage] = useState(0);
 
   // 上方历史字幕记录列表（完整可自由滚动阅览，包含每一句的原句与下方对应翻译）
   const [history, setHistory] = useState<SubtitleRecord[]>([]);
@@ -33,6 +37,21 @@ export const SubtitleOverlay: React.FC = () => {
     } catch {}
   }, []);
 
+  // 当三个模型全部加载完毕且处于运行状态时，自动通知原生端启动或停止 ScreenCaptureKit 音频内录
+  useEffect(() => {
+    try {
+      if (modelsLoaded && isRunning && !isPaused) {
+        (window as any).webkit?.messageHandlers?.subtitleOverlay?.postMessage({
+          action: 'startCapture',
+        });
+      } else {
+        (window as any).webkit?.messageHandlers?.subtitleOverlay?.postMessage({
+          action: 'stopCapture',
+        });
+      }
+    } catch {}
+  }, [modelsLoaded, isRunning, isPaused]);
+
   // 监听并保持自动吸底滚动（用户未手动上滚查阅历史时，新句子上推或流式吐字自动平滑吸底）
   useEffect(() => {
     if (!isUserScrolledUpRef.current && scrollContainerRef.current) {
@@ -51,9 +70,14 @@ export const SubtitleOverlay: React.FC = () => {
       es.addEventListener('status', (e: MessageEvent) => {
         try {
           const data = JSON.parse(e.data);
-          setIsRunning(data.running);
+          setIsRunning(Boolean(data.running));
+          setIsPaused(Boolean(data.paused));
           setAllReady(Boolean(data.allReady));
           setMissingModels(data.missingModels || []);
+          setIsLoading(Boolean(data.loading));
+          setModelsLoaded(Boolean(data.modelsLoaded));
+          setLoadingStage(typeof data.loadingStage === 'number' ? data.loadingStage : 0);
+
           if (data.recent && Array.isArray(data.recent) && data.recent.length > 0) {
             setHistory((prev) =>
               prev.length === 0
@@ -134,7 +158,7 @@ export const SubtitleOverlay: React.FC = () => {
 
       es.onerror = () => {
         es?.close();
-        reconnectTimer = setTimeout(connectSSE, 2000);
+        reconnectTimer = setTimeout(connectSSE, 1500);
       };
     };
 
@@ -222,11 +246,12 @@ export const SubtitleOverlay: React.FC = () => {
     window.addEventListener('mouseup', handleMouseUp);
   };
 
-  // 关闭悬浮窗
+  // 关闭悬浮窗（原生端将同时发送 stop 卸载全部三个模型）
   const handleClose = () => {
     try {
       (window as any).webkit?.messageHandlers?.subtitleOverlay?.postMessage({ action: 'close' });
     } catch {
+      fetch('/api/subtitles/stop', { method: 'POST' }).catch(() => {});
       window.close();
     }
   };
@@ -240,28 +265,33 @@ export const SubtitleOverlay: React.FC = () => {
     } catch {}
   };
 
-  // 切换监听状态
+  // 窗口内切换暂停/继续监听状态（不卸载模型，仅暂停内录）
   const toggleListening = async () => {
-    const action = isRunning ? 'stop' : 'start';
+    const endpoint = isRunning ? 'pause' : 'resume';
     try {
-      const res = await fetch(`/api/subtitles/${action}`, { method: 'POST' });
+      const res = await fetch(`/api/subtitles/${endpoint}`, { method: 'POST' });
       const data = await res.json();
-      setIsRunning(data.running);
-      try {
-        (window as any).webkit?.messageHandlers?.subtitleOverlay?.postMessage({
-          action: data.running ? 'startCapture' : 'stopCapture',
-        });
-      } catch {}
+      setIsRunning(Boolean(data.running));
+      setIsPaused(Boolean(data.paused));
     } catch (e) {
       console.error('Toggle listening failed:', e);
     }
   };
 
-  const readyCount = Math.max(0, 3 - missingModels.length);
+  const readyDiskCount = Math.max(0, 3 - missingModels.length);
+  const showLoadingScreen = allReady && (!modelsLoaded || isLoading);
+  const activeStepDisplay = Math.min(3, loadingStage + 1);
+  const progressPercent = modelsLoaded ? 100 : Math.min(92, Math.max(15, loadingStage * 33 + 22));
+
+  const stages = [
+    { key: 'vad', label: t('subtitleLoadingStageVad') },
+    { key: 'asr', label: t('subtitleLoadingStageAsr') },
+    { key: 'trans', label: t('subtitleLoadingStageTrans') },
+  ];
 
   return (
     <div className="w-full h-full flex flex-col select-none bg-transparent font-sans antialiased box-border">
-      <div className="relative w-full h-full rounded-[20px] flex flex-col bg-[#1b1c21]/95 border border-white/12 text-white overflow-hidden">
+      <div className="relative w-full h-full rounded-[20px] flex flex-col bg-[#1b1c21]/95 text-white overflow-hidden">
         {/* 顶部状态栏与拖动把手 */}
         <div
           onMouseDown={handleMouseDownOnHeader}
@@ -274,6 +304,8 @@ export const SubtitleOverlay: React.FC = () => {
                 className={`w-2 h-2 rounded-full ${
                   !allReady
                     ? 'bg-amber-400'
+                    : showLoadingScreen
+                    ? 'bg-cyan-400 animate-pulse'
                     : isRunning
                     ? 'bg-emerald-400 animate-pulse'
                     : 'bg-neutral-500'
@@ -281,7 +313,9 @@ export const SubtitleOverlay: React.FC = () => {
               />
               <span className="text-[11px] font-medium tracking-wide text-neutral-300">
                 {!allReady
-                  ? `${t('subtitlePreparingModels')} (${readyCount}/3)`
+                  ? `${t('subtitlePreparingModels')} (${readyDiskCount}/3)`
+                  : showLoadingScreen
+                  ? `${t('subtitleLoadingModelsTitle')} (${activeStepDisplay}/3)`
                   : isRunning
                   ? t('subtitleRunningTitle')
                   : t('subtitlePaused')}
@@ -290,7 +324,7 @@ export const SubtitleOverlay: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-1">
-            {history.length > 0 && (
+            {modelsLoaded && history.length > 0 && (
               <button
                 onClick={handleClearHistory}
                 title={t('subtitleClearHistory')}
@@ -300,7 +334,7 @@ export const SubtitleOverlay: React.FC = () => {
               </button>
             )}
 
-            {allReady && (
+            {allReady && modelsLoaded && !showLoadingScreen && (
               <button
                 onClick={toggleListening}
                 title={isRunning ? t('subtitlePauseCapture') : t('subtitleResumeCapture')}
@@ -320,7 +354,7 @@ export const SubtitleOverlay: React.FC = () => {
           </div>
         </div>
 
-        {/* 主内容区域：上方可自由滚动的历史双语卡片 + 下方实时流式吐字区 */}
+        {/* 主内容区域：1. 磁盘缺模型提示 / 2. 简约现代化三级模型加载进度视图 / 3. 双语流式字幕主视图 */}
         {!allReady ? (
           <div className="flex-1 p-4 flex flex-col justify-center gap-2 text-xs">
             <div className="text-neutral-300 font-medium flex items-center gap-2">
@@ -332,6 +366,56 @@ export const SubtitleOverlay: React.FC = () => {
               <code className="bg-white/5 border border-white/10 px-2 py-0.5 rounded text-cyan-300 font-mono text-[11px] select-text">
                 ./scripts/download_subtitle_models.sh --all
               </code>
+            </div>
+          </div>
+        ) : showLoadingScreen ? (
+          <div className="flex-1 px-6 py-4 flex flex-col items-center justify-center gap-3.5 select-none">
+            {/* 现代极简进度条 */}
+            <div className="w-full max-w-[520px] flex flex-col gap-2">
+              <div className="flex items-center justify-between text-xs text-neutral-300">
+                <div className="flex items-center gap-2 font-medium">
+                  <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
+                  <span>{t('subtitleLoadingModelsTitle')}</span>
+                </div>
+                <span className="text-[11px] font-mono text-cyan-300/90">
+                  {activeStepDisplay} / 3
+                </span>
+              </div>
+              <div className="w-full h-1.5 rounded-full bg-white/[0.07] overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-emerald-400 transition-all duration-300 ease-out"
+                  style={{ width: `${progressPercent}%` }}
+                />
+              </div>
+            </div>
+
+            {/* 三级模型阶段胶囊 */}
+            <div className="w-full max-w-[520px] grid grid-cols-3 gap-2">
+              {stages.map((st, idx) => {
+                const isDone = loadingStage > idx;
+                const isCurrent = loadingStage === idx;
+                return (
+                  <div
+                    key={st.key}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] transition-all duration-200 ${
+                      isDone
+                        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                        : isCurrent
+                        ? 'bg-cyan-500/10 border-cyan-400/35 text-cyan-200'
+                        : 'bg-white/[0.02] border-white/[0.06] text-neutral-500'
+                    }`}
+                  >
+                    {isDone ? (
+                      <Check className="w-3 h-3 text-emerald-400 shrink-0" strokeWidth={2.5} />
+                    ) : isCurrent ? (
+                      <Loader2 className="w-3 h-3 text-cyan-400 animate-spin shrink-0" />
+                    ) : (
+                      <span className="w-1.5 h-1.5 rounded-full bg-neutral-600 shrink-0 mx-0.5" />
+                    )}
+                    <span className="truncate">{st.label}</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         ) : (
@@ -388,7 +472,7 @@ export const SubtitleOverlay: React.FC = () => {
         )}
 
         {/* 悬浮回到底部快捷按钮（当用户手动向上滚轮翻阅历史时出现） */}
-        {showScrollBottomBtn && (
+        {showScrollBottomBtn && modelsLoaded && !showLoadingScreen && (
           <button
             onClick={scrollToBottom}
             className="absolute bottom-3.5 right-4 p-1.5 rounded-full bg-[#24262d] border border-white/20 text-neutral-200 hover:text-white hover:bg-[#2d3039] transition-all cursor-pointer flex items-center gap-1 text-[11px] px-2.5"
