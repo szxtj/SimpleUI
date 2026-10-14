@@ -6,6 +6,7 @@ interface ContextRingProps {
   maxContext: number;
   placement?: 'top' | 'bottom' | 'left';
   showRemainingPercent?: boolean;
+  showTooltip?: boolean;
 }
 
 export const ContextRing: React.FC<ContextRingProps> = ({
@@ -13,9 +14,10 @@ export const ContextRing: React.FC<ContextRingProps> = ({
   maxContext,
   placement = 'top',
   showRemainingPercent = false,
+  showTooltip = true,
 }) => {
   const { t } = useI18n();
-  const [showTooltip, setShowTooltip] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
 
   const safeMax = Math.max(1, maxContext || 32768);
   const safeUsed = Math.max(0, usedTokens || 0);
@@ -61,9 +63,11 @@ export const ContextRing: React.FC<ContextRingProps> = ({
 
   return (
     <div
-      className="relative flex items-center justify-center cursor-pointer select-none p-1"
-      onMouseEnter={() => setShowTooltip(true)}
-      onMouseLeave={() => setShowTooltip(false)}
+      className={`relative flex items-center justify-center select-none p-1 ${
+        showTooltip ? 'cursor-pointer' : 'cursor-default'
+      }`}
+      onMouseEnter={showTooltip ? () => setIsHovered(true) : undefined}
+      onMouseLeave={showTooltip ? () => setIsHovered(false) : undefined}
       aria-label={`${t('contextOccupancy')} ${percent.toFixed(1)}%`}
     >
       <div className="flex items-center gap-1.5">
@@ -100,7 +104,7 @@ export const ContextRing: React.FC<ContextRingProps> = ({
       </div>
 
       {/* Floating Detailed Context Tooltip */}
-      {showTooltip && (
+      {showTooltip && isHovered && (
         <div className={`absolute ${getPlacementClass()} z-50 pointer-events-none`}>
           <div className="bg-white dark:bg-[#1e2025] text-zinc-900 dark:text-white text-[11px] font-sans px-3 py-2 rounded-xl shadow-2xl border border-black/10 dark:border-white/10 whitespace-nowrap animate-in fade-in zoom-in-95">
             <div className="flex items-center gap-2 mb-1">

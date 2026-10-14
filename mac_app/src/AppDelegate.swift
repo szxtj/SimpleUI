@@ -6,6 +6,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var spotlightController: SpotlightPanelController!
     private var statusBarController: StatusBarController!
     private var voiceOverlayController: VoiceOverlayPanelController!
+    private var subtitleOverlayController: SubtitleOverlayPanelController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -17,6 +18,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mainWindowController = MainWindowController()
         spotlightController = SpotlightPanelController()
         voiceOverlayController = VoiceOverlayPanelController()
+        subtitleOverlayController = SubtitleOverlayPanelController()
 
         spotlightController.onOpenMainWindow = { [weak self] in
             // Focus and trigger in-memory session sync without reloading the whole web page
@@ -34,6 +36,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.mainWindowController.showAndFocus()
                 self?.spotlightController.loadContent()
                 self?.voiceOverlayController.loadContent()
+                self?.subtitleOverlayController.loadContent()
             }
         }
 
@@ -57,6 +60,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusBarController.onOpenSpotlight = { [weak self] in
             self?.spotlightController.show()
+        }
+        statusBarController.onToggleSubtitles = { [weak self] in
+            self?.subtitleOverlayController.toggle()
         }
         statusBarController.setup()
     }
@@ -159,6 +165,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let toggleSpotlightItem = NSMenuItem(title: "快捷悬浮窗", action: #selector(toggleSpotlightWindow), keyEquivalent: " ")
         toggleSpotlightItem.keyEquivalentModifierMask = [.option]
         viewMenu.addItem(toggleSpotlightItem)
+        let toggleSubtitlesItem = NSMenuItem(title: "实时双语字幕", action: #selector(toggleSubtitleOverlay), keyEquivalent: "s")
+        toggleSubtitlesItem.keyEquivalentModifierMask = [.command, .option]
+        viewMenu.addItem(toggleSubtitlesItem)
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
 
@@ -179,5 +188,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleSpotlightWindow() {
         spotlightController?.toggle()
+    }
+
+    @objc private func toggleSubtitleOverlay() {
+        subtitleOverlayController?.toggle()
     }
 }

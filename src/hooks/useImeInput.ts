@@ -41,11 +41,12 @@ export function useImeInput<T extends HTMLElement = HTMLTextAreaElement>(
   }, []);
 
   const handleCompositionEnd = useCallback((_e: React.CompositionEvent<T>) => {
+    isComposingRef.current = false;
     compositionEndTimeRef.current = Date.now();
-    // 延迟重置 ref，确保在 Safari 紧随其后的 keydown 宏任务/事件派发中，ref 也能起到兜底保护
-    setTimeout(() => {
-      isComposingRef.current = false;
-    }, 50);
+  }, []);
+
+  const handleBlur = useCallback((_e: React.FocusEvent<T>) => {
+    isComposingRef.current = false;
   }, []);
 
   const isComposing = useCallback((e: React.KeyboardEvent<T>): boolean => {
@@ -57,20 +58,20 @@ export function useImeInput<T extends HTMLElement = HTMLTextAreaElement>(
     if ((e as unknown as { isComposing?: boolean }).isComposing) {
       return true;
     }
-    // 3. 本地 ref 追踪状态（从 compositionstart 到 compositionend）
-    if (isComposingRef.current) {
-      return true;
-    }
-    // 4. 输入法合成专用 keyCode 229（Process）
+    // 3. 输入法合成专用 keyCode 229（Process）
     if (e.keyCode === 229 || e.which === 229) {
       return true;
     }
-    // 5. Safari/WebKit 缺陷防御：在 WebKit 内核中，按回车确认合成时，
+    // 4. Safari/WebKit 缺陷防御：在 WebKit 内核中，按回车确认合成时，
     //    compositionend 会先于 keydown(Enter) 触发，导致 keydown 到达时 isComposing 已为 false。
-    //    由同一次回车物理按键级联触发的 compositionend 与 keydown 时间间隔通常在 0~2ms 内。
-    //    这里设置 50ms 阈值可 100% 拦截该次非预期的发送，同时绝不影响后续正常回车发送。
-    if (Date.now() - compositionEndTimeRef.current < 50) {
+    //    由同一次回车物理按键级联触发的 compositionend 与 keydown 时间间隔通常在 0~5ms 内。
+    if (Date.now() - compositionEndTimeRef.current < 60) {
       return true;
+    }
+    // 5. 若底层事件已明确不在合成态且距离上次 compositionend 超过 60ms，
+    //    自动清理可能因组件卸载/焦点切换而残留的 isComposingRef 锁，防止回车永久失效变换行。
+    if (isComposingRef.current) {
+      isComposingRef.current = false;
     }
     return false;
   }, []);
@@ -83,13 +84,30 @@ export function useImeInput<T extends HTMLElement = HTMLTextAreaElement>(
         return;
       }
 
-      // 如果处于输入法合成状态或刚结束合成（确认候选词/直接上屏），
-      // 绝对不作为发送消息的回车，直接放行让输入法完成文字上屏。
-      if (isComposing(e)) {
+      const nativeComposing =
+        Boolean(e.nativeEvent?.isComposing) ||
+        Boolean((e as unknown as { isComposing?: boolean }).isComposing) ||
+        e.keyCode === 229 ||
+        e.which === 229;
+
+      // 正在输入法合成中：完全放行给系统输入法处理
+      if (nativeComposing) {
         return;
       }
 
-      // 单独回车（且非 Shift+Enter 换行）
+      // WebKit/Safari 特有时序：按回车确认英文/拼音上屏时，compositionend 先于 keydown(Enter) 触发。
+      // 此时候选词已经由 compositionend 提交上屏，紧随其后的这次级联 keydown(Enter) 既不能触发发送，
+      // 也必须 preventDefault() 阻止 <textarea> 插入多余的换行符！
+      if (Date.now() - compositionEndTimeRef.current < 60) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+        }
+        return;
+      }
+
+      isComposingRef.current = false;
+
+      // 单独回车（且非 Shift+Enter 换行）：触发发送并阻止换行
       if (e.key === 'Enter' && !e.shiftKey) {
         if (preventDefault) {
           e.preventDefault();
@@ -97,7 +115,7 @@ export function useImeInput<T extends HTMLElement = HTMLTextAreaElement>(
         onEnter?.(e);
       }
     },
-    [isComposing, onEnter, preventDefault, onKeyDown]
+    [onEnter, preventDefault, onKeyDown]
   );
 
   return {
@@ -109,6 +127,7 @@ export function useImeInput<T extends HTMLElement = HTMLTextAreaElement>(
       onKeyDown: handleKeyDown,
       onCompositionStart: handleCompositionStart,
       onCompositionEnd: handleCompositionEnd,
+      onBlur: handleBlur,
     },
   };
 }

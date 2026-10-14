@@ -2190,16 +2190,30 @@ export { isNonArticleTitle, relevanceScore, detectDisambiguation, extractSenses 
 
 // ---------------------------------------------------------------------------
 // RAG 阶段上报：记录最近一次检索回合所处阶段，供 /api/wiki/rag-stage 查询，
-// 前端在等待首个 token 之前渲染"知识库检索"阶段指示。只保留最近一次状态
-// （服务端串行处理检索；前端用时间戳过滤上一轮残留）。
+// 同时向进程内监听者（session_service.js）实时推送阶段变化，彻底免除前端轮询。
 // ---------------------------------------------------------------------------
 let ragStageState = { stage: 'idle', detail: '', at: 0, history: [] };
+const ragStageListeners = new Set();
+
+export function onRagStageChange(listener) {
+  if (typeof listener !== 'function') return () => {};
+  ragStageListeners.add(listener);
+  return () => ragStageListeners.delete(listener);
+}
 
 function setRagStage(stage, detail = '') {
-  ragStageState = { stage, detail, at: Date.now(), history: ragStageState.history };
+  const now = Date.now();
+  ragStageState = { stage, detail, at: now, history: ragStageState.history };
   // 历史仅用于排障（/api/wiki/rag-stage 的 history 字段），上限 12 条防止无限增长
-  ragStageState.history.push({ stage, detail, at: ragStageState.at });
+  ragStageState.history.push({ stage, detail, at: now });
   if (ragStageState.history.length > 12) ragStageState.history.shift();
+  for (const listener of ragStageListeners) {
+    try {
+      listener({ stage, detail, at: now });
+    } catch {
+      // ignore listener errors
+    }
+  }
 }
 
 export const wikiService = new WikiService();

@@ -14,6 +14,7 @@ import Cocoa
 class StatusBarController: NSObject, NSMenuDelegate {
     var onOpenMainWindow: (() -> Void)?
     var onOpenSpotlight: (() -> Void)?
+    var onToggleSubtitles: (() -> Void)?
 
     private var statusItem: NSStatusItem?
     private var kbStatusItem: NSMenuItem!
@@ -49,11 +50,13 @@ class StatusBarController: NSObject, NSMenuDelegate {
     private var lblStopping: String { zh ? "停止中" : "Stopping" }
     private var lblOpenMain: String { zh ? "打开主界面" : "Open Main Window" }
     private var lblOpenSpotlight: String { zh ? "打开小窗口" : "Open Mini Window" }
+    private var lblSubtitles: String { zh ? "实时双语字幕" : "Live Subtitles" }
     private var lblQuit: String { zh ? "退出并停止所有服务" : "Quit & Stop All Services" }
 
     private var tipKB: String { zh ? "点击开启或关闭知识库服务" : "Click to toggle Knowledge Base service" }
     private var tipSvc: String { zh ? "点击开启或关闭基础模型服务" : "Click to toggle Base Model service" }
     private var tipAsr: String { zh ? "点击开启或关闭语音识别服务" : "Click to toggle Speech Recognition service" }
+    private var tipSubtitles: String { zh ? "开启或关闭实时双语字幕悬浮窗" : "Toggle live bilingual subtitle overlay" }
 
     // ----------------------------- 生命周期 -----------------------------
 
@@ -95,6 +98,12 @@ class StatusBarController: NSObject, NSMenuDelegate {
         let openSpotlight = NSMenuItem(title: lblOpenSpotlight, action: #selector(openSpotlightWindow), keyEquivalent: "")
         openSpotlight.target = self
         menu.addItem(openSpotlight)
+
+        let openSubtitles = NSMenuItem(title: lblSubtitles, action: #selector(toggleSubtitles), keyEquivalent: "s")
+        openSubtitles.keyEquivalentModifierMask = [.command, .option]
+        openSubtitles.target = self
+        openSubtitles.toolTip = tipSubtitles
+        menu.addItem(openSubtitles)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -199,6 +208,10 @@ class StatusBarController: NSObject, NSMenuDelegate {
     @objc private func openSpotlightWindow() {
         NSApp.activate(ignoringOtherApps: true)
         onOpenSpotlight?()
+    }
+
+    @objc private func toggleSubtitles() {
+        onToggleSubtitles?()
     }
 
     // 退出即停所有服务：NSApp.terminate → AppDelegate.applicationWillTerminate

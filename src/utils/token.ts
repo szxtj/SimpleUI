@@ -43,6 +43,18 @@ export function getTokenCalibration(provider: CalibrationProvider = 'local'): nu
   return calibrationFactors[provider] || 1.0;
 }
 
+/** 从服务端快照同步各 Provider 的分词器校准系数 */
+export function syncCalibrationFactors(
+  factors?: Partial<Record<CalibrationProvider, number>>
+): void {
+  if (!factors || typeof factors !== 'object') return;
+  for (const [k, v] of Object.entries(factors)) {
+    if (typeof v === 'number' && v >= 0.5 && v <= 2.5) {
+      calibrationFactors[k as CalibrationProvider] = v;
+    }
+  }
+}
+
 /** 把原始估算值换算为校准后的展示值 */
 export function applyTokenCalibration(
   tokens: number,

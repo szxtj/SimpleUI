@@ -55,12 +55,14 @@ mkdir -p "$RESOURCES_DIR"
 # 3. 编译 Swift 原生源码
 echo "[3/4] 编译 Swift 原生双窗口应用..."
 swiftc -O \
-    -target arm64-apple-macos12.0 \
+    -target arm64-apple-macos13.0 \
     -framework Cocoa \
     -framework WebKit \
     -framework Carbon \
     -framework AVFoundation \
     -framework ApplicationServices \
+    -framework ScreenCaptureKit \
+    -framework CoreMedia \
     mac_app/src/main.swift \
     mac_app/src/AppDelegate.swift \
     mac_app/src/HotKeyManager.swift \
@@ -70,6 +72,7 @@ swiftc -O \
     mac_app/src/StatusBarController.swift \
     mac_app/src/VoiceInputManager.swift \
     mac_app/src/VoiceOverlayPanelController.swift \
+    mac_app/src/SubtitleOverlayPanelController.swift \
     -o "$MACOS_DIR/SimpleUI"
 
 # 拷贝资源
@@ -87,6 +90,13 @@ fi
 if [ -d "bin/kiwix" ]; then
     mkdir -p "$RESOURCES_DIR/bin"
     cp -R "bin/kiwix" "$RESOURCES_DIR/bin/"
+fi
+# 编译并随包分发 M4 NPU 专属 ANE 词级毫秒强制对齐引擎
+if [ -f "mac_app/src/ane_aligner.swift" ]; then
+    mkdir -p "$RESOURCES_DIR/bin" "bin"
+    swiftc -O -target arm64-apple-macos13.0 -framework CoreML -framework Foundation mac_app/src/ane_aligner.swift -o bin/ane_aligner
+    cp "bin/ane_aligner" "$RESOURCES_DIR/bin/ane_aligner"
+    chmod +x "$RESOURCES_DIR/bin/ane_aligner" "bin/ane_aligner"
 fi
 # 语音识别运行时 + 模型：打包前确保就位（本地有缓存则复用，缺失自动下载/编译），
 # 一并打进 App，使分发的 App 打开即用、无需任何下载或编译。
@@ -126,6 +136,20 @@ else
     echo "  ⚠ bin/audiocpp 仍缺失：语音识别将不可用（请检查网络或 ~/audio.cpp 构建）"
 fi
 
+# 打包 M4 NPU 专属 ANE 词级毫秒强制对齐引擎
+if [ -f "mac_app/src/ane_aligner.swift" ]; then
+    mkdir -p bin
+    if [ ! -f "bin/ane_aligner" ] || [ "mac_app/src/ane_aligner.swift" -nt "bin/ane_aligner" ]; then
+        echo "  · 编译 M4 NPU ANE 强制对齐引擎 (Swift + CoreML)..."
+        swiftc -O -target arm64-apple-macos13.0 mac_app/src/ane_aligner.swift -o bin/ane_aligner -framework CoreML -framework Foundation -framework Accelerate
+    fi
+    mkdir -p "$RESOURCES_DIR/bin"
+    cp -f "bin/ane_aligner" "$RESOURCES_DIR/bin/ane_aligner"
+    chmod +x "$RESOURCES_DIR/bin/ane_aligner" 2>/dev/null || true
+    echo "  -> 已打包 M4 ANE 词级毫秒强制对齐引擎: bin/ane_aligner"
+fi
+
+
 # 随包分发 Node 运行时：让 App 在没装 Node 的 Mac 上也能断网开箱即用。
 # 直接从当前构建环境拷贝 node 单文件二进制（自包含，无需 npm/include/lib），
 # 不写系统 PATH、不动 homebrew/nvm，完全私有于本 App。
@@ -162,7 +186,14 @@ const fs=require("fs"), path=require("path");
 const specs=new Set();
 for (const f of fs.readdirSync("server").filter(f=>f.endsWith(".js"))) {
   const src=fs.readFileSync(path.join("server",f),"utf8");
+  // 静态 import ... from "pkg"
   for (const m of src.matchAll(/(?:^|\n)\s*import\s+[^;\n]*?from\s*["\x27]([^"\x27]+)["\x27]/g)) {
+    const s=m[1];
+    if (s.startsWith(".")||s.startsWith("/")||s.startsWith("node:")) continue;
+    specs.add(s.startsWith("@") ? s.split("/").slice(0,2).join("/") : s.split("/")[0]);
+  }
+  // 动态 await import("pkg")：漏掉它会让原生依赖（如 onnxruntime-node）不打进包，APP 启动即崩
+  for (const m of src.matchAll(/\bimport\s*\(\s*["\x27]([^"\x27]+)["\x27]\s*\)/g)) {
     const s=m[1];
     if (s.startsWith(".")||s.startsWith("/")||s.startsWith("node:")) continue;
     specs.add(s.startsWith("@") ? s.split("/").slice(0,2).join("/") : s.split("/")[0]);
@@ -182,6 +213,10 @@ console.log([...closure].join(" "));
 ')
 mkdir -p "$RESOURCES_DIR/node_modules"
 for dep in $SERVER_DEPS; do
+    # onnxruntime-node 的安装期依赖（仅用于解压预编译二进制），运行时不加载，跳过
+    case "$dep" in
+        adm-zip|global-agent) continue ;;
+    esac
     if [ -d "node_modules/$dep" ]; then
         mkdir -p "$(dirname "$RESOURCES_DIR/node_modules/$dep")"
         cp -R "node_modules/$dep" "$RESOURCES_DIR/node_modules/$dep"
@@ -190,6 +225,24 @@ for dep in $SERVER_DEPS; do
         exit 1
     fi
 done
+
+# onnxruntime-node 随包分发全部平台的预编译二进制（约 293MB），App 只需要 darwin/arm64 一份。
+# 裁剪在拷贝之后进行，保留目录结构不变的同时把体积压到十分之一。
+ORT_DST="$RESOURCES_DIR/node_modules/onnxruntime-node"
+if [ -d "$ORT_DST/bin" ]; then
+    for napidir in "$ORT_DST"/bin/napi-v*/; do
+        [ -d "$napidir" ] || continue
+        for osdir in "$napidir"*/; do
+            [ -d "$osdir" ] || continue
+            [ "$(basename "$osdir")" = "darwin" ] || safe_remove "$osdir"
+        done
+        for archdir in "$napidir"darwin/*/; do
+            [ -d "$archdir" ] || continue
+            [ "$(basename "$archdir")" = "arm64" ] || safe_remove "$archdir"
+        done
+    done
+    echo "  -> 已裁剪 onnxruntime-node 至 darwin/arm64: $(du -sh "$ORT_DST" | cut -f1)"
+fi
 echo "  -> 服务端运行时依赖: $SERVER_DEPS"
 
 # 4. 代码签名 (优先使用本地免费个人开发证书，若无则使用纯本地无签名 Ad-hoc)

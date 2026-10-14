@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { ChatMessage, TurnMetrics, TurnStageRecord } from '../types/chat';
+import { ChatMessage, TurnMetrics } from '../types/chat';
 import { useI18n } from '../i18n';
 import { useFollowBottom } from '../hooks/useFollowBottom';
 import { MessageItem } from './MessageItem';
@@ -24,14 +24,6 @@ interface ChatViewProps {
   images: string[];
   setImages: React.Dispatch<React.SetStateAction<string[]>>;
   isGenerating: boolean;
-  /**
-   * 本轮是否由**本窗口**发起（主窗口 = 有自己的 abortController）。
-   * 注意不能用 isGenerating：镜像窗口也会为"显示停止按钮"把它置 true，
-   * 用它会导致两个窗口都去记录同一轮的阶段（双写、互相覆盖）。
-   */
-  ownsTurn: boolean;
-  /** 阶段阶梯记录变化 → 回写消息（App 负责持久化 + 广播） */
-  onStagesChange?: (messageId: string, stages: TurnStageRecord[]) => void;
   onSend: (promptText?: string) => void;
   onStop: () => void;
   usedTokens: number;
@@ -89,10 +81,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onRetry,
   onDelete,
   onShrinkToSpotlight,
-  onStagesChange,
   isDeepSeek = false,
   isMference = false,
-  ownsTurn,
 }) => {
   const { t } = useI18n();
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -434,8 +424,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 onOpenWiki={onOpenWiki}
                 onRetry={onRetry}
                 onDelete={onDelete}
-                turnRecording={ownsTurn}
-                onStagesChange={onStagesChange}
                 // 用户气泡的重试目标：紧随其后的助手回复 id（与浮窗的用户气泡重试一致）
                 retryTargetId={
                   message.role === 'user' && messages[idx + 1]?.role === 'assistant'

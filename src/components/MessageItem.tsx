@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChatMessage, TurnStageRecord } from '../types/chat';
+import { ChatMessage } from '../types/chat';
 import { useI18n } from '../i18n';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ThinkingAccordion } from './ThinkingAccordion';
@@ -14,10 +14,6 @@ interface MessageItemProps {
   onDelete?: (messageId: string) => void;
   /** 用户气泡的重试目标：紧随其后的助手回复 id（与浮窗的用户气泡重试一致） */
   retryTargetId?: string;
-  /** 本轮是否由**本窗口**负责生成（阶段阶梯只由生成方记录，镜像窗口只渲染） */
-  turnRecording?: boolean;
-  /** 阶段阶梯记录变化 → 回写消息（持久化 + 广播，两窗口共用同一条路径） */
-  onStagesChange?: (messageId: string, stages: TurnStageRecord[]) => void;
 }
 
 export const MessageItem: React.FC<MessageItemProps> = ({
@@ -26,22 +22,14 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   onRetry,
   onDelete,
   retryTargetId,
-  turnRecording,
-  onStagesChange,
 }) => {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const [showRawModal, setShowRawModal] = useState(false);
   const isUser = message.role === 'user';
   /**
-   * 记录阶段阶梯的条件：本窗口生成中 + 本轮尚未收到任何 token
-   * （检索 / 载入上下文两个阶段；首个思考或正文字符一到即收尾）。
-   */
-  const recordingStages =
-    !!turnRecording && !!message.pending && !message.content && !message.reasoningContent && !message.error;
-  /**
-   * 阶段是否仍在进行 —— 只看消息自身的 pending（广播会把它同步到另一窗口），
-   * 因此**两个窗口的展开/收起时机完全一致**：没结束就不收起，结束了就收起。
+   * 阶段是否仍在进行 —— 只看消息自身的 pending（服务端实时同步到所有窗口），
+   * 因此两个窗口的展开/收起时机完全一致：没结束就不收起，结束了就收起。
    */
   const phasesActive = !!message.pending && !message.error;
 
@@ -111,11 +99,9 @@ export const MessageItem: React.FC<MessageItemProps> = ({
           <StageLadder
             messageId={message.id}
             records={message.stages}
-            recording={recordingStages}
             phasesActive={phasesActive}
             turnStage={message.stage}
             prefillStartedAt={message.prefillStartedAt}
-            onRecordsChange={onStagesChange}
           />
           {/* Thinking Process Accordion */}
           {(message.reasoningContent || message.isThinking) && (

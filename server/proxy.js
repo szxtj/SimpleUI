@@ -182,6 +182,8 @@ import { ttfLogService, noteForwardedRequest, noteChatForward } from './ttf_log.
 import { ttfService } from './ttf_service.js';
 import { asrService } from './asr_service.js';
 import { mediaService } from './media_service.js';
+import { subtitleService } from './subtitle_service.js';
+import { sessionService } from './session_service.js';
 
 // 本进程是否成功抢到端口、从而成为受管服务的管理方。
 // 见 server.listen 回调与 server.on('error')：失败的重复实例不得清理别人的服务。
@@ -192,7 +194,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-target-port',
       'Access-Control-Max-Age': '86400',
     });
@@ -230,6 +232,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // 会话与流式生成状态中心 API（主窗口与 Spotlight 唯一事实来源）
+  if (req.url.startsWith('/api/sessions/')) {
+    sessionService.handleApi(req, res);
+    return;
+  }
+
   // Handle Wiki Knowledge Base APIs
   if (req.url.startsWith('/api/wiki/')) {
     wikiService.handleApi(req, res);
@@ -253,6 +261,12 @@ const server = http.createServer((req, res) => {
   // 与基础模型服务并列的第三个受管服务，随 App 自动拉起、退出一并终止。
   if (req.url.startsWith('/api/asr/')) {
     asrService.handleApi(req, res);
+    return;
+  }
+
+  // 实时双语字幕服务 API（TEN-VAD + Qwen3-ASR + Aligner + Index-Translate 端侧离线流）
+  if (req.url.startsWith('/api/subtitles/')) {
+    subtitleService.handleApi(req, res);
     return;
   }
 
@@ -305,6 +319,8 @@ server.listen(PORT, '127.0.0.1', () => {
   ttfService.init();
   // 语音识别服务随 SimpleUI 自动启动（enabled 开关在设置页语音卡片中控制）
   asrService.init();
+  // 实时双语字幕服务初始化
+  subtitleService.init();
 
   // Automatically exit if parent process (e.g. SimpleUI app) terminates
   if (process.ppid && process.ppid > 1) {
@@ -336,6 +352,13 @@ function cleanupAndExit(code = 0) {
   exiting = true;
   // 没抢到端口的实例不是服务的管理方，绝不能去杀别人的服务
   if (!ownsServices) process.exit(code);
+  if (sessionService) {
+    try {
+      sessionService.flushSync();
+    } catch (e) {
+      // ignore
+    }
+  }
   if (wikiService && wikiService.kiwixProcess) {
     try {
       wikiService.kiwixProcess.kill('SIGTERM');
@@ -355,6 +378,13 @@ function cleanupAndExit(code = 0) {
   if (asrService) {
     try {
       asrService.shutdownSync();
+    } catch (e) {
+      // ignore
+    }
+  }
+  if (subtitleService) {
+    try {
+      subtitleService.stop();
     } catch (e) {
       // ignore
     }
@@ -383,6 +413,13 @@ process.on('exit', () => {
   if (asrService) {
     try {
       asrService.shutdownForce();
+    } catch (e) {
+      // ignore
+    }
+  }
+  if (subtitleService) {
+    try {
+      subtitleService.stop();
     } catch (e) {
       // ignore
     }

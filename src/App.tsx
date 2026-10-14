@@ -1,55 +1,36 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
 import { SettingsModal } from './components/SettingsModal';
 import { ServiceManagerModal } from './components/ServiceManagerModal';
 import {
-  ChatSession,
-  ChatMessage,
   AppSettings,
   ServerHealthInfo,
-  TurnMetrics,
-  WikiCitation,
   WikiStatusInfo,
-  TurnStageRecord,
   AsrServiceStatus,
 } from './types/chat';
 import {
-  loadSessions,
-  saveSessions,
-  loadCurrentSessionId,
-  saveCurrentSessionId,
   loadSettings,
   saveSettings,
   DEFAULT_LOCAL_CONFIG,
   DEFAULT_DEEPSEEK_CONFIG,
-  createNewSession,
-  getOrCreateEmptySession,
-  clearStalePending,
-  requestAbort,
-  readAbortRequest,
-  notifySessionUpdate,
   syncChannel,
-  hydrateSessionImages,
-  generateSessionTitle,
-  deriveSessionTitleFromMessages,
 } from './services/storage';
 import { TurboFieldfareAPI, WikiAPI, ASRServiceAPI, ModelServiceAPI } from './services/api';
 import type { ModelServiceStatus } from './services/api';
 import {
-  buildPromptWithWiki,
-  buildTurnMessages,
-  buildWireMessages,
   buildSessionSettings,
   getActiveContextMessages,
 } from './services/chatTurn';
 import { SpotlightView } from './components/SpotlightView';
 import { VoiceOverlay } from './components/VoiceOverlay';
+import { SubtitleOverlay } from './components/SubtitleOverlay';
 import { WikiSidebar } from './components/WikiSidebar';
 import { I18nProvider, resolveLanguage } from './i18n';
 import { useTheme } from './hooks/useTheme';
+import { useSessionStore } from './hooks/useSessionStore';
 import { estimateHistoryTokens, applyTokenCalibration } from './utils/token';
-import { deleteUnreferencedMedia, triggerMediaGC } from './services/mediaCleanup';
+import { triggerMediaGC } from './services/mediaCleanup';
 
 export const App: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings>(loadSettings());
@@ -57,17 +38,16 @@ export const App: React.FC = () => {
 
   // Real-time synchronization of settings across Main and Spotlight windows
   useEffect(() => {
-    if (syncChannel) {
-      const handler = (event: MessageEvent) => {
-        if (event.data?.type === 'SETTINGS_CHANGED') {
-          setSettings(loadSettings());
-        }
-      };
-      syncChannel.addEventListener('message', handler);
-      return () => {
-        syncChannel?.removeEventListener('message', handler);
-      };
-    }
+    if (!syncChannel) return;
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type === 'SETTINGS_CHANGED') {
+        setSettings(loadSettings());
+      }
+    };
+    syncChannel.addEventListener('message', handler);
+    return () => {
+      syncChannel?.removeEventListener('message', handler);
+    };
   }, []);
 
   useEffect(() => {
@@ -89,8 +69,6 @@ export const App: React.FC = () => {
       const isEditable = (el: Element | null): el is HTMLElement =>
         !!el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' || (el as HTMLElement).isContentEditable);
 
-      // 优先插入当前焦点输入框；焦点不在输入框时回退到聊天输入框
-      // （在本 App 内长按右 ⌘ 说话，通常就是想往聊天框里写）
       let field = document.activeElement as HTMLElement | null;
       if (!isEditable(field)) {
         const fallback = document.querySelector<HTMLElement>('[data-chat-input]');
@@ -101,7 +79,6 @@ export const App: React.FC = () => {
       }
       if (!isEditable(field)) return;
 
-      // contentEditable：在当前选区插入文本（当前 App 无此场景，作通用兜底）
       if (field.isContentEditable) {
         const sel = window.getSelection();
         if (!sel || sel.rangeCount === 0) return;
@@ -115,18 +92,18 @@ export const App: React.FC = () => {
         return;
       }
 
-      const input = field as HTMLTextAreaElement & HTMLInputElement;
-      const start = input.selectionStart ?? input.value.length;
-      const end = input.selectionEnd ?? start;
-      const next = input.value.slice(0, start) + text + input.value.slice(end);
+      const inputEl = field as HTMLTextAreaElement & HTMLInputElement;
+      const start = inputEl.selectionStart ?? inputEl.value.length;
+      const end = inputEl.selectionEnd ?? start;
+      const next = inputEl.value.slice(0, start) + text + inputEl.value.slice(end);
       const proto = field.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-      const desc = Object.getOwnPropertyDescriptor(proto, 'value') || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value');
-      if (desc?.set) desc.set.call(input, next);
-      else input.value = next;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const desc = Object.getOwnPropertyDescriptor(proto, 'value') || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(inputEl), 'value');
+      if (desc?.set) desc.set.call(inputEl, next);
+      else inputEl.value = next;
+      inputEl.dispatchEvent(new Event('input', { bubbles: true }));
       const pos = start + text.length;
       try {
-        input.setSelectionRange(pos, pos);
+        inputEl.setSelectionRange(pos, pos);
       } catch {
         /* 非受支持元素忽略 */
       }
@@ -143,7 +120,20 @@ export const App: React.FC = () => {
   // 语音识别悬浮胶囊（原生 VoiceOverlayPanelController 承载的独立窗口）
   const isVoiceOverlay = window.location.hash === '#/voice';
 
-  useTheme(settings.theme, isSpotlight || isVoiceOverlay);
+  // 实时双语字幕悬浮面板（原生 SubtitleOverlayPanelController 承载的独立窗口）
+  const isSubtitleOverlay =
+    window.location.hash === '#/subtitles' ||
+    window.location.search.includes('mode=subtitles');
+
+  useTheme(settings.theme, isSpotlight || isVoiceOverlay || isSubtitleOverlay);
+
+  if (isSubtitleOverlay) {
+    return (
+      <I18nProvider preference={settings.language}>
+        <SubtitleOverlay />
+      </I18nProvider>
+    );
+  }
 
   if (isVoiceOverlay) {
     return (
@@ -161,33 +151,44 @@ export const App: React.FC = () => {
     );
   }
 
-  const [sessions, setSessions] = useState<ChatSession[]>(() => {
-    const loaded = loadSessions();
-    const safe = loaded.length > 0 ? loaded : [createNewSession()];
-    // App 启动时清掉「被中断的回合」残留的 pending（生成中被退出/强杀）：
-    // 否则阶段阶梯会永远停在"假进行中"的展开态。
-    if (clearStalePending(safe)) {
-      try {
-        saveSessions(safe, undefined, 'MAIN');
-      } catch {
-        // 回写失败不影响本次会话
-      }
-    }
-    return safe;
-  });
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(() => {
-    const loaded = loadSessions();
-    const savedId = loadCurrentSessionId();
-    if (savedId && loaded.some((s) => s.id === savedId)) {
-      return savedId;
-    }
-    return loaded.length > 0 ? loaded[0].id : null;
-  });
+  return <MainWindowView settings={settings} setSettings={setSettings} activeLang={activeLang} />;
+};
+
+interface MainWindowViewProps {
+  settings: AppSettings;
+  setSettings: React.Dispatch<React.SetStateAction<AppSettings>>;
+  activeLang: 'zh' | 'en';
+}
+
+const MainWindowView: React.FC<MainWindowViewProps> = ({
+  settings,
+  setSettings,
+  activeLang,
+}) => {
+  const defaultTitle = activeLang === 'en' ? 'New Chat' : '新对话';
+  const {
+    sessions,
+    currentSessionId,
+    currentSession,
+    messages,
+    generatingSessionIds,
+    isGenerating,
+    liveStreamingTokens,
+    lastMetrics,
+    selectSession,
+    createOrReuseEmptySession,
+    updateSessionMeta,
+    deleteSession,
+    sendTurn,
+    abortTurn,
+    retryTurn,
+    deleteTurn,
+    handoffToSpotlight,
+    refreshState,
+  } = useSessionStore('MAIN', defaultTitle);
+
   const [input, setInput] = useState('');
   const [images, setImages] = useState<string[]>([]);
-  const [generatingSessionIds, setGeneratingSessionIds] = useState<string[]>([]);
-  const [liveStreamingTokens, setLiveStreamingTokens] = useState<Record<string, number>>({});
-  const isGenerating = currentSessionId ? generatingSessionIds.includes(currentSessionId) : false;
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   /** 服务管理界面（三项受管服务的启停与参数，与设置界面并列的独立入口） */
@@ -198,7 +199,6 @@ export const App: React.FC = () => {
     online: false,
   });
   const [availableModels, setAvailableModels] = useState<string[]>([settings.modelId]);
-  const [lastMetrics, setLastMetrics] = useState<TurnMetrics | undefined>(undefined);
   const [wikiStatus, setWikiStatus] = useState<WikiStatusInfo>({
     enabled: true,
     connected: false,
@@ -218,433 +218,25 @@ export const App: React.FC = () => {
   /** 基础模型服务状态（左下角服务行；带 status 字段，可区分启动中） */
   const [modelStatus, setModelStatus] = useState<ModelServiceStatus | null>(null);
 
-  const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
-  /** 本轮阶段阶梯记录的最新快照：随流式广播带给镜像窗口（浮窗），使它也能实时长出阶梯行 */
-  const stagesRef = useRef<TurnStageRecord[]>([]);
-  /** 已完成回合保护缓存：锁定包含真实 metrics 与终态内容的消息，严禁被任何后至的同步降级或截断 */
-  const completedTurnsRef = useRef<Map<string, ChatMessage>>(new Map());
-  const activeStreamsRef = useRef<Map<string, {
-    messageId: string;
-    reasoningContent: string;
-    content: string;
-    isThinking: boolean;
-    thinkingDuration: number;
-    /** 该回合是否仍处于「检索 / 载入上下文」阶段（首个 token 前为 true） */
-    pending: boolean;
-  }>>(new Map());
-  const isSyncingRef = useRef(false);
-  const generatingSessionIdsRef = useRef<string[]>([]);
-  const currentSessionIdRef = useRef<string | null>(currentSessionId);
-  const sessionsRef = useRef<ChatSession[]>(sessions);
+  // Expose global hook for Swift wrapper showAndFocus evaluation & focus refresh
   useEffect(() => {
-    sessionsRef.current = sessions;
-  }, [sessions]);
-
-  useEffect(() => {
-    generatingSessionIdsRef.current = generatingSessionIds;
-  }, [generatingSessionIds]);
-
-  useEffect(() => {
-    currentSessionIdRef.current = currentSessionId;
-  }, [currentSessionId]);
-
-  // Invariant guard: Guarantee at least one session exists and currentSessionId points to a valid session
-  useEffect(() => {
-    if (sessions.length === 0) {
-      const fresh = createNewSession();
-      setSessions([fresh]);
-      setCurrentSessionId(fresh.id);
-      saveSessions([fresh]);
-      saveCurrentSessionId(fresh.id);
-    } else if (!currentSessionId || !sessions.some((s) => s.id === currentSessionId)) {
-      const fallbackId = sessions[0].id;
-      setCurrentSessionId(fallbackId);
-      saveCurrentSessionId(fallbackId);
-    }
-  }, [sessions, currentSessionId]);
-
-  // Real-time synchronization helper
-  const reloadFromStorage = () => {
-    const loaded = loadSessions();
-    // Safety guard: If storage returns empty or blank default chat, but in-memory state
-    // has active conversation messages, DO NOT overwrite memory with empty!
-    const memoryHasContent = sessionsRef.current.some(
-      (s) => s.messages && s.messages.length > 0
-    );
-    const loadedHasContent = loaded.some(
-      (s) => s.messages && s.messages.length > 0
-    );
-    if (!loadedHasContent && memoryHasContent) {
-      saveSessions(sessionsRef.current, currentSessionIdRef.current || undefined, 'MAIN');
-      return;
-    }
-
-    const safeLoaded = loaded.length > 0 ? loaded : [createNewSession()];
-
-    // Merge: intelligent non-downgrading merge protecting completed turns and metrics
-    const mergedSessions = safeLoaded.map((s) => {
-      const inMem = sessionsRef.current.find((m) => m.id === s.id);
-      if (!inMem || !inMem.messages || inMem.messages.length === 0) {
-        s.messages?.forEach((m) => {
-          if (m.metrics) completedTurnsRef.current.set(m.id, m);
-        });
-        return s;
-      }
-
-      const isLocallyGenerating = abortControllersRef.current.has(s.id);
-
-      const mergedMsgs = s.messages.map((diskMsg) => {
-        const memMsg = inMem.messages.find((m) => m.id === diskMsg.id);
-        const protectedMsg = completedTurnsRef.current.get(diskMsg.id);
-        const bestSource = protectedMsg || memMsg;
-        if (!bestSource) {
-          if (diskMsg.metrics) completedTurnsRef.current.set(diskMsg.id, diskMsg);
-          return diskMsg;
-        }
-
-        const hasMetrics = diskMsg.metrics || bestSource.metrics;
-        const finalMetrics = diskMsg.metrics || bestSource.metrics;
-
-        const memLen = bestSource.content?.length || 0;
-        const diskLen = diskMsg.content?.length || 0;
-        const bestContent = isLocallyGenerating
-          ? (bestSource.content || diskMsg.content)
-          : (memLen >= diskLen ? bestSource.content : diskMsg.content);
-
-        const memReasonLen = bestSource.reasoningContent?.length || 0;
-        const diskReasonLen = diskMsg.reasoningContent?.length || 0;
-        const bestReasoning = isLocallyGenerating
-          ? (bestSource.reasoningContent || diskMsg.reasoningContent)
-          : (memReasonLen >= diskReasonLen ? bestSource.reasoningContent : diskMsg.reasoningContent);
-
-        const isDone = !!hasMetrics || (!bestSource.pending && !diskMsg.pending);
-
-        const mergedMsg: ChatMessage = {
-          ...diskMsg,
-          content: bestContent,
-          reasoningContent: bestReasoning,
-          metrics: finalMetrics,
-          stages: (diskMsg.stages && diskMsg.stages.length > 0) ? diskMsg.stages : bestSource.stages,
-          citations: (diskMsg.citations && diskMsg.citations.length > 0) ? diskMsg.citations : bestSource.citations,
-          thinkingDuration: diskMsg.thinkingDuration || bestSource.thinkingDuration,
-          isThinking: isDone ? false : (isLocallyGenerating ? bestSource.isThinking : (diskMsg.isThinking ?? bestSource.isThinking)),
-          pending: isDone ? false : (isLocallyGenerating ? bestSource.pending : (diskMsg.pending ?? bestSource.pending)),
-          stage: isDone ? undefined : (isLocallyGenerating ? bestSource.stage : (diskMsg.stage ?? bestSource.stage)),
-        };
-
-        if (finalMetrics) {
-          completedTurnsRef.current.set(diskMsg.id, mergedMsg);
-        }
-        return mergedMsg;
-      });
-
-      for (const m of inMem.messages) {
-        if (!mergedMsgs.some((d) => d.id === m.id)) {
-          mergedMsgs.push(m);
-        }
-      }
-
-      const allAsstDone = mergedMsgs.filter((m) => m.role === 'assistant').every((m) => !m.pending && (m.metrics || m.content));
-      if (allAsstDone && !isLocallyGenerating && generatingSessionIdsRef.current.includes(s.id)) {
-        setGeneratingSessionIds((prev) => prev.filter((id) => id !== s.id));
-      }
-
-      return {
-        ...s,
-        messages: mergedMsgs,
-        contextUsed: s.contextUsed || inMem.contextUsed,
-      };
-    });
-
-    // Also include any generating session that might exist in memory but not yet flushed to disk
-    for (const inMem of sessionsRef.current) {
-      if (generatingSessionIdsRef.current.includes(inMem.id) && !mergedSessions.some((s) => s.id === inMem.id)) {
-        mergedSessions.unshift(inMem);
-      }
-    }
-
-    isSyncingRef.current = true;
-    setSessions(mergedSessions);
-    const savedId = loadCurrentSessionId();
-    if (savedId && mergedSessions.some((s) => s.id === savedId)) {
-      setCurrentSessionId(savedId);
-    } else if (!currentSessionIdRef.current || !mergedSessions.some((s) => s.id === currentSessionIdRef.current)) {
-      setCurrentSessionId(mergedSessions[0].id);
-      saveCurrentSessionId(mergedSessions[0].id);
-    }
-    setTimeout(() => {
-      isSyncingRef.current = false;
-    }, 80);
-  };
-
-  // Initialize sessions and hook up cross-window sync
-  useEffect(() => {
-    // 1. Initial load
-    reloadFromStorage();
-
-    // 2. Expose global hook for Swift wrapper showAndFocus evaluation
-    // @ts-expect-error global hook
-    window.reloadSessionsFromStorage = reloadFromStorage;
-
-    // 3. BroadcastChannel listener (instant real-time sync with Spotlight)
-    if (syncChannel) {
-      syncChannel.onmessage = (event) => {
-        const data = event.data;
-        if (!data) return;
-
-        if (data.type === 'SESSIONS_CHANGED') {
-          if (data.source === 'MAIN') return;
-          reloadFromStorage();
-        } else if (data.type === 'SETTINGS_CHANGED') {
-          setSettings(loadSettings());
-        } else if (data.type === 'STREAM_TOKEN_PROGRESS') {
-          if (data.source !== 'MAIN' && data.sessionId) {
-            setLiveStreamingTokens((prev) => ({ ...prev, [data.sessionId]: data.liveTokens }));
-          }
-        } else if (data.type === 'STREAM_CHUNK') {
-          if (data.source !== 'MAIN') {
-            const { sessionId, messageId, reasoningContent, content, isThinking, thinkingDuration, stage, pending, citations, stages: incomingStages } = data;
-            isSyncingRef.current = true;
-            setTimeout(() => {
-              isSyncingRef.current = false;
-            }, 60);
-            setGeneratingSessionIds((prev) => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
-            setSessions((prev) => {
-              const sessionIdx = prev.findIndex((s) => s.id === sessionId);
-              if (sessionIdx >= 0) {
-                const targetSession = prev[sessionIdx];
-                const msgIdx = targetSession.messages.findIndex((m) => m.id === messageId);
-                let updatedMsgs: ChatMessage[];
-                if (msgIdx >= 0) {
-                  updatedMsgs = targetSession.messages.map((m) =>
-                    m.id === messageId
-                      ? {
-                          ...m,
-                          reasoningContent,
-                          content,
-                          isThinking,
-                          thinkingDuration,
-                          // 浮窗的阶段机同步：rag/prefill 转换与 pending 清理由广播驱动，
-                          // 主窗口据此显示同一套阶段指示器与"停止"按钮
-                          ...(stage !== undefined ? { stage } : {}),
-                          ...(pending !== undefined ? { pending } : {}),
-                          // 引用胶囊随载荷同步（浮窗 RAG 完成即已知）
-                          ...(citations !== undefined ? { citations } : {}),
-                          // 阶段阶梯记录随载荷同步：镜像窗口的行数/耗时与生成方实时一致
-                          ...(incomingStages !== undefined ? { stages: incomingStages } : {}),
-                        }
-                      : m
-                  );
-                } else {
-                  updatedMsgs = [
-                    ...targetSession.messages,
-                    {
-                      id: messageId,
-                      role: 'assistant',
-                      content,
-                      reasoningContent,
-                      isThinking,
-                      thinkingDuration,
-                      timestamp: Date.now(),
-                      ...(stage !== undefined ? { stage } : {}),
-                      ...(pending !== undefined ? { pending } : {}),
-                      ...(citations !== undefined ? { citations } : {}),
-                      ...(incomingStages !== undefined ? { stages: incomingStages } : {}),
-                    },
-                  ];
-                }
-                const updatedSessions = [...prev];
-                updatedSessions[sessionIdx] = {
-                  ...targetSession,
-                  messages: updatedMsgs,
-                };
-                return updatedSessions;
-              } else {
-                const all = loadSessions();
-                return all.length > 0 ? all : prev;
-              }
-            });
-          }
-        } else if (data.type === 'STAGES_CHANGED') {
-          // 镜像窗口（浮窗）的阶段阶梯记录：实时并入本窗口消息
-          if (data.source !== 'MAIN' && data.sessionId && data.messageId) {
-            setSessions((prev) =>
-              prev.map((s) =>
-                s.id !== data.sessionId
-                  ? s
-                  : {
-                      ...s,
-                      messages: s.messages.map((m) => (m.id === data.messageId ? { ...m, stages: data.stages } : m)),
-                    }
-              )
-            );
-          }
-        } else if (data.type === 'STREAM_DONE') {
-          if (data.source !== 'MAIN') {
-            const { sessionId, messageId, reasoningContent, content, thinkingDuration, metrics, stages: incomingStages, citations: incomingCitations } = data;
-            if (saveTimeoutRef.current) {
-              clearTimeout(saveTimeoutRef.current);
-              saveTimeoutRef.current = null;
-            }
-            isSyncingRef.current = true;
-            setTimeout(() => {
-              isSyncingRef.current = false;
-            }, 300);
-            setGeneratingSessionIds((prev) => prev.filter((id) => id !== sessionId));
-            setLiveStreamingTokens((prev) => {
-              const next = { ...prev };
-              delete next[sessionId];
-              return next;
-            });
-            setSessions((prev) =>
-              prev.map((s) => {
-                if (s.id !== sessionId) return s;
-                let foundMsg = false;
-                const updatedMsgs = s.messages.map((m) => {
-                  if (m.id === messageId) {
-                    foundMsg = true;
-                    const finalMsg: ChatMessage = {
-                      ...m,
-                      reasoningContent,
-                      content,
-                      isThinking: false,
-                      thinkingDuration,
-                      metrics,
-                      // 生成结束：prefill 指示器与阶段必须撤下
-                      pending: false,
-                      stage: undefined,
-                      ...(incomingStages ? { stages: incomingStages } : {}),
-                      ...(incomingCitations ? { citations: incomingCitations } : {}),
-                    };
-                    completedTurnsRef.current.set(messageId, finalMsg);
-                    return finalMsg;
-                  }
-                  return m;
-                });
-                if (!foundMsg) {
-                  const finalMsg: ChatMessage = {
-                    id: messageId,
-                    role: 'assistant',
-                    content,
-                    reasoningContent,
-                    isThinking: false,
-                    thinkingDuration,
-                    metrics,
-                    pending: false,
-                    stage: undefined,
-                    timestamp: Date.now(),
-                    ...(incomingStages ? { stages: incomingStages } : {}),
-                    ...(incomingCitations ? { citations: incomingCitations } : {}),
-                  };
-                  completedTurnsRef.current.set(messageId, finalMsg);
-                  updatedMsgs.push(finalMsg);
-                }
-                const cleanHistoryTokens = estimateHistoryTokens(updatedMsgs, settings.systemPrompt, settings.apiProvider);
-                return {
-                  ...s,
-                  contextUsed: cleanHistoryTokens,
-                  messages: updatedMsgs,
-                };
-              })
-            );
-            if (currentSessionIdRef.current === sessionId && metrics) {
-              setLastMetrics(metrics);
-            }
-          }
-        } else if (data.type === 'STREAM_ABORT') {
-          const targetId = data.sessionId;
-          if (targetId) {
-            const controller = abortControllersRef.current.get(targetId);
-            if (controller) {
-              controller.abort();
-              abortControllersRef.current.delete(targetId);
-            }
-            activeStreamsRef.current.delete(targetId);
-            setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetId));
-            setLiveStreamingTokens((prev) => {
-              const next = { ...prev };
-              delete next[targetId];
-              return next;
-            });
-            // Also defensively clear pending / isThinking and sync from storage if placeholder was deleted
-            const all = loadSessions();
-            const sFromDisk = all.find((s) => s.id === targetId);
-            setSessions((prev) =>
-              prev.map((s) => {
-                if (s.id !== targetId) return s;
-                if (sFromDisk) return sFromDisk;
-                return {
-                  ...s,
-                  messages: s.messages.map((m) =>
-                    m.pending || m.isThinking ? { ...m, pending: false, isThinking: false } : m
-                  ),
-                };
-              })
-            );
-          } else {
-            abortControllersRef.current.forEach((controller) => controller.abort());
-            abortControllersRef.current.clear();
-            activeStreamsRef.current.clear();
-            setGeneratingSessionIds([]);
-            setLiveStreamingTokens({});
-            setSessions((prev) =>
-              prev.map((s) => ({
-                ...s,
-                messages: s.messages.map((m) =>
-                  m.pending || m.isThinking ? { ...m, pending: false, isThinking: false } : m
-                ),
-              }))
-            );
-          }
-        } else if (data.type === 'STREAM_QUERY') {
-          activeStreamsRef.current.forEach((stream, sessId) => {
-            syncChannel?.postMessage({
-              type: 'STREAM_CHUNK',
-              sessionId: sessId,
-              messageId: stream.messageId,
-              reasoningContent: stream.reasoningContent,
-              content: stream.content,
-              isThinking: stream.isThinking,
-              thinkingDuration: stream.thinkingDuration,
-              // 用真实状态：回合刚开始就登记了（此时 pending=true），
-              // 硬编码 false 会让浮窗在检索/载入阶段误判成"阶段已结束"
-              pending: stream.pending,
-              stages: stagesRef.current,
-              source: 'MAIN',
-            });
-          });
-        }
-      };
-    }
-
-    // 4. Focus and storage event listeners
     const handleFocus = () => {
-      reloadFromStorage();
+      refreshState();
       setSettings(loadSettings());
-      syncChannel?.postMessage({ type: 'STREAM_QUERY' });
     };
-    const handleStorage = (e: StorageEvent) => {
-      if (e.key === 'tff_chat_sessions_v1' || e.key === 'tff_chat_current_id_v1') {
-        reloadFromStorage();
-      } else if (e.key === 'tff_chat_settings_v1') {
-        setSettings(loadSettings());
-      } else if (e.key === 'tff_abort_request_v1') {
-        // 浮窗点了「停止」：本窗口若正持有该回合，就地中止
-        const req = readAbortRequest();
-        if (req) handleStop(req.sessionId);
-      }
-    };
-
+    // @ts-expect-error global hook
+    window.reloadSessionsFromStorage = refreshState;
+    // @ts-expect-error global hook
+    window.__syncSessionStore = refreshState;
     window.addEventListener('focus', handleFocus);
-    window.addEventListener('storage', handleStorage);
-
     return () => {
       window.removeEventListener('focus', handleFocus);
-      window.removeEventListener('storage', handleStorage);
       // @ts-expect-error global hook
       delete window.reloadSessionsFromStorage;
+      // @ts-expect-error global hook
+      delete window.__syncSessionStore;
     };
-  }, []);
+  }, [refreshState, setSettings]);
 
   // Poll server health & fetch models
   useEffect(() => {
@@ -694,6 +286,7 @@ export const App: React.FC = () => {
     settings.deepseekApiKey,
     settings.deepseekModelId,
     settings.deepseekBaseUrl,
+    setSettings,
   ]);
 
   // DeepSeek 模式下自动关闭知识库面板
@@ -725,9 +318,7 @@ export const App: React.FC = () => {
     return () => clearInterval(asrTimer);
   }, []);
 
-  // Poll 基础模型服务状态（左下角服务行）。
-  // 用 /api/model/status 而不是 /health 探测：前者带 status 字段，能区分
-  // running / loading / stopped，左下角才能显示黄灯「启动中」。
+  // Poll 基础模型服务状态（左下角服务行）
   useEffect(() => {
     const checkModel = async () => {
       const status = await ModelServiceAPI.getStatus();
@@ -737,104 +328,6 @@ export const App: React.FC = () => {
     const modelTimer = setInterval(checkModel, 6000);
     return () => clearInterval(modelTimer);
   }, []);
-
-  /**
-   * 阶段阶梯记录回写（由 StageLadder 在生成期间回调，一轮只写几次，开销可忽略）。
-   *
-   * 两步都做：① 更新本窗口状态；② **立即落盘 + 广播**——阶梯记录挂在消息上，
-   * 落盘后另一窗口（浮窗）会通过 SESSIONS_CHANGED 镜像过来，退出 App 再打开也还在。
-   */
-  const handleStagesChange = useCallback((messageId: string, stages: TurnStageRecord[]) => {
-    const sid = currentSessionIdRef.current;
-    if (!sid) return;
-    stagesRef.current = stages; // 供流式广播携带（镜像窗口据此实时长出阶梯行）
-    // 阶段可能发生在"一个 token 都还没有"的检索/载入阶段——那时没有 STREAM_CHUNK，
-    // 所以专门广播一条 STAGES_CHANGED，保证镜像窗口实时长出同样的阶梯行。
-    try {
-      syncChannel?.postMessage({ type: 'STAGES_CHANGED', sessionId: sid, messageId, stages, source: 'MAIN' });
-    } catch {
-      // 广播失败不影响本窗口
-    }
-    setSessions((prev) =>
-      prev.map((s) => {
-        if (s.id !== sid) return s;
-        return {
-          ...s,
-          messages: s.messages.map((m) => {
-            if (m.id === messageId) {
-              const updated = { ...m, stages };
-              if (updated.metrics) completedTurnsRef.current.set(messageId, updated);
-              return updated;
-            }
-            return m;
-          }),
-        };
-      })
-    );
-  }, []);
-
-  const lastSaveTimeRef = useRef(0);
-  const saveTimeoutRef = useRef<any>(null);
-
-  // Save sessions on change only when not syncing from outside (throttled during generation)
-  useEffect(() => {
-    if (sessions.length === 0 || isSyncingRef.current) return;
-
-    // Only throttle/save during generation if MAIN WINDOW itself owns an active stream!
-    // When mirroring a stream generated by Spotlight, Main Window must NOT write to disk!
-    const isLocalGenerating = abortControllersRef.current.size > 0;
-    const isGeneratingNow = generatingSessionIdsRef.current.length > 0;
-
-    const getSafeSessionsForDisk = (rawSessions: ChatSession[]) => {
-      return rawSessions.map((s) => ({
-        ...s,
-        messages: s.messages.map((m) => {
-          const protectedTurn = completedTurnsRef.current.get(m.id);
-          if (!protectedTurn) return m;
-          return {
-            ...m,
-            content: (protectedTurn.content?.length || 0) >= (m.content?.length || 0) ? protectedTurn.content : m.content,
-            reasoningContent: (protectedTurn.reasoningContent?.length || 0) >= (m.reasoningContent?.length || 0) ? protectedTurn.reasoningContent : m.reasoningContent,
-            metrics: m.metrics || protectedTurn.metrics,
-            stages: (m.stages && m.stages.length > 0) ? m.stages : protectedTurn.stages,
-            citations: (m.citations && m.citations.length > 0) ? m.citations : protectedTurn.citations,
-            pending: (protectedTurn.metrics || m.metrics) ? false : m.pending,
-            isThinking: (protectedTurn.metrics || m.metrics) ? false : m.isThinking,
-            stage: (protectedTurn.metrics || m.metrics) ? undefined : m.stage,
-          };
-        }),
-      }));
-    };
-
-    if (isLocalGenerating) {
-      const now = Date.now();
-      if (now - lastSaveTimeRef.current < 300) {
-        if (!saveTimeoutRef.current) {
-          saveTimeoutRef.current = setTimeout(() => {
-            saveTimeoutRef.current = null;
-            lastSaveTimeRef.current = Date.now();
-            saveSessions(getSafeSessionsForDisk(sessionsRef.current), currentSessionIdRef.current || undefined, 'MAIN');
-          }, 300);
-        }
-        return;
-      }
-      lastSaveTimeRef.current = now;
-      saveSessions(getSafeSessionsForDisk(sessions), currentSessionIdRef.current || undefined, 'MAIN');
-    } else if (!isGeneratingNow) {
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-        saveTimeoutRef.current = null;
-      }
-      saveSessions(getSafeSessionsForDisk(sessions), currentSessionIdRef.current || undefined, 'MAIN');
-    }
-  }, [sessions]);
-
-  // Save current session ID on change
-  useEffect(() => {
-    if (!isSyncingRef.current) {
-      saveCurrentSessionId(currentSessionId);
-    }
-  }, [currentSessionId]);
 
   // Notify native macOS wrapper to disable TitleBarDragView when a modal is open
   useEffect(() => {
@@ -857,14 +350,12 @@ export const App: React.FC = () => {
   // 后台静默执行磁盘孤立媒体文件垃圾回收（启动 3 秒后执行，5 分钟安全缓冲期）
   useEffect(() => {
     const timer = setTimeout(() => {
-      triggerMediaGC(loadSessions());
+      if (sessions.length > 0) {
+        triggerMediaGC(sessions);
+      }
     }, 3000);
     return () => clearTimeout(timer);
   }, []);
-
-  // Current session helper
-  const currentSession = sessions.find((s) => s.id === currentSessionId);
-  const messages = currentSession?.messages || [];
 
   // Persistent conversation history baseline tokens (excluding temporary RAG prompts & reasoning tokens)
   const persistentHistoryTokens = useMemo(() => {
@@ -875,7 +366,6 @@ export const App: React.FC = () => {
       maxTokens: settings.maxTokens,
       provider: settings.apiProvider,
     });
-    // 展示层施加校准系数（系数由上一轮真实 usage.prompt_tokens 反推）
     return applyTokenCalibration(
       estimateHistoryTokens(activeMessages, settings.systemPrompt, settings.apiProvider),
       settings.apiProvider
@@ -885,23 +375,6 @@ export const App: React.FC = () => {
   const currentLiveTokens = currentSessionId ? liveStreamingTokens[currentSessionId] : undefined;
   const usedTokens = (isGenerating && currentLiveTokens !== undefined) ? currentLiveTokens : persistentHistoryTokens;
 
-  // Hydrate any offloaded images from IndexedDB for the current session
-  useEffect(() => {
-    if (!currentSession) return;
-    const hasOffloadedImages = currentSession.messages?.some((m) =>
-      m.images?.some((img) => img.startsWith('__idb__:'))
-    );
-    if (hasOffloadedImages) {
-      hydrateSessionImages(currentSession).then((changed) => {
-        if (changed) {
-          setSessions((prev) =>
-            prev.map((s) => (s.id === currentSession.id ? { ...currentSession } : s))
-          );
-        }
-      });
-    }
-  }, [currentSessionId]);
-
   // Clear unsendable image attachments if Mference is selected
   useEffect(() => {
     if (settings.apiProvider === 'mference' && images.length > 0) {
@@ -909,63 +382,19 @@ export const App: React.FC = () => {
     }
   }, [settings.apiProvider, images.length]);
 
-  // Session management handlers
-  const handleNewSession = () => {
-    const { session, allSessions, isNew } = getOrCreateEmptySession(
-      activeLang === 'en' ? 'New Chat' : '新对话',
-      'MAIN'
-    );
-    if (isNew) {
-      setSessions(allSessions);
-    }
-    setCurrentSessionId(session.id);
-    setLastMetrics(undefined);
+  const handleNewSession = async () => {
+    await createOrReuseEmptySession(defaultTitle);
     setInput('');
     setImages([]);
   };
 
-  const handleDeleteSession = (id: string) => {
-    // Forbid deleting a session that is actively generating
-    if (generatingSessionIds.includes(id)) {
-      return;
-    }
-    const target = sessions.find((s) => s.id === id);
-    // Lock-down: If this is the last remaining blank session, refuse deletion
-    if (sessions.length <= 1 && (!target?.messages || target.messages.length === 0)) {
-      return;
-    }
-
-    const deletedImages: string[] = [];
-    target?.messages?.forEach((m) => {
-      if (m.images) deletedImages.push(...m.images);
-    });
-
-    setSessions((prev) => {
-      const filtered = prev.filter((s) => s.id !== id);
-      if (filtered.length === 0) {
-        const fresh = createNewSession(activeLang === 'en' ? 'New Chat' : '新对话');
-        setCurrentSessionId(fresh.id);
-        saveCurrentSessionId(fresh.id);
-        deleteUnreferencedMedia(deletedImages, [fresh]);
-        return [fresh];
-      }
-      if (currentSessionId === id) {
-        const nextId = filtered[0].id;
-        setCurrentSessionId(nextId);
-        saveCurrentSessionId(nextId);
-      }
-      deleteUnreferencedMedia(deletedImages, filtered);
-      return filtered;
-    });
+  const handleDeleteSession = async (id: string) => {
+    await deleteSession(id, defaultTitle);
   };
 
-  const handleRenameSession = (id: string, newTitle: string) => {
-    if (generatingSessionIds.includes(id)) {
-      return;
-    }
-    setSessions((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, title: newTitle, updatedAt: Date.now() } : s))
-    );
+  const handleRenameSession = async (id: string, newTitle: string) => {
+    if (generatingSessionIds.includes(id)) return;
+    await updateSessionMeta(id, { title: newTitle });
   };
 
   const handleSaveSettings = (newSettings: AppSettings) => {
@@ -973,10 +402,6 @@ export const App: React.FC = () => {
     saveSettings(newSettings);
   };
 
-  /**
-   * 服务管理界面里改了基础模型监听端口后，同步本地的请求端口并立即持久化。
-   * 否则用户改完端口直接关弹窗，对话请求（x-target-port）会打不到服务。
-   */
   const handleServiceApiPortChange = (port: number) => {
     setSettings((prev) => {
       const nextLocal = { ...(prev.localConfig || DEFAULT_LOCAL_CONFIG), apiPort: port };
@@ -986,575 +411,61 @@ export const App: React.FC = () => {
     });
   };
 
-  // Helper to execute chat streaming with given prompt, attachments and history
-  const executeChat = async (
-    textToSend: string,
-    currentImages: string[],
-    historyMessages: ChatMessage[],
-    targetSessionId: string
-  ) => {
-    const targetSession = sessions.find((s) => s.id === targetSessionId);
-    if (!targetSession) return;
-
-    const abortController = new AbortController();
-    abortControllersRef.current.set(targetSessionId, abortController);
-    stagesRef.current = []; // 新一轮：清空阶段快照
-    setGeneratingSessionIds((prev) => (prev.includes(targetSessionId) ? prev : [...prev, targetSessionId]));
-
-    // 会话级开关（DeepSeek模式下禁用知识库）
-    const isDeepSeek = settings.apiProvider === 'deepseek';
-    const sessionEnableWiki = isDeepSeek ? false : (targetSession.enableWikiSearch ?? false);
-    const sessionEnableThinking = targetSession.enableThinking ?? false;
-
-    // 占位消息：DeepSeek模式直接进入prefill；本地模式先进入stage='rag'
-    const { userMessage, assistantMessage } = buildTurnMessages({
-      historyMessages,
-      textToSend,
-      images: currentImages,
-      enableThinking: sessionEnableThinking,
-      isDeepSeek,
-    });
-    const assistantMsgId = assistantMessage.id;
-
-    // Update session title on first message
-    const isFirstUserMessage = historyMessages.length === 0;
-    const defaultTitle = activeLang === 'en' ? 'New Chat' : '新对话';
-    const computedTitle = generateSessionTitle(textToSend, currentImages.length > 0, defaultTitle);
-    const sessionTitle = isFirstUserMessage
-      ? computedTitle
-      : (!targetSession.title || targetSession.title === '新对话' || targetSession.title === 'New Chat')
-      ? (historyMessages.length > 0 ? deriveSessionTitleFromMessages(historyMessages, defaultTitle) : computedTitle)
-      : targetSession.title;
-
-    const updatedMessages = [...historyMessages, userMessage, assistantMessage];
-
-    setSessions((prev) =>
-      prev.map((s) => {
-        if (s.id === targetSessionId) {
-          return {
-            ...s,
-            title: sessionTitle,
-            messages: updatedMessages,
-            updatedAt: Date.now(),
-          };
-        }
-        return s;
-      })
-    );
-
-    // 离线维基 RAG：检索 + Grounding Prompt 包装（DeepSeek 模式自动跳过）。
-    let ragResult: { promptToSend: string; citations: WikiCitation[] };
-    try {
-      ragResult = await buildPromptWithWiki({
-        textToSend,
-        lang: activeLang,
-        wikiMasterEnabled: wikiStatus.enabled,
-        sessionEnableWiki,
-        wikiConnected: wikiStatus.connected,
-        isDeepSeek,
-        signal: abortController.signal,
-      });
-    } catch (e) {
-      if ((e as Error).name === 'AbortError' || abortController.signal.aborted) {
-        // 检索期间被叫停：撤下本轮占位消息，无任何后续调用
-        abortControllersRef.current.delete(targetSessionId);
-        setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetSessionId));
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === targetSessionId
-              // 只撤下助理占位消息，**保留用户的提问**（整轮删除会让会话变空 → 被当成新对话）
-              ? { ...s, messages: s.messages.filter((m) => m.id !== assistantMsgId) }
-              : s
-          )
-        );
-        // 明确通知浮窗"已停止"，否则镜像侧会一直停在生成中
-        syncChannel?.postMessage({ type: 'STREAM_ABORT', sessionId: targetSessionId, source: 'MAIN' });
-        return;
-      }
-      throw e;
-    }
-    const { promptToSend, citations: foundCitations } = ragResult;
-
-    if (abortController.signal.aborted) {
-      // 检索期间被叫停：撤下本轮占位消息
-      abortControllersRef.current.delete(targetSessionId);
-      setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetSessionId));
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.id === targetSessionId
-            // 同上：只撤占位消息，保留提问
-            ? { ...s, messages: s.messages.filter((m) => m.id !== assistantMsgId) }
-            : s
-        )
-      );
-      syncChannel?.postMessage({ type: 'STREAM_ABORT', sessionId: targetSessionId, source: 'MAIN' });
-      return;
-    }
-
-    // RAG 解析完成 → 进入 prefill 阶段；引用胶囊数据此时才确定，一并挂上
-    setSessions((prev) =>
-      prev.map((s) =>
-        s.id === targetSessionId
-          ? {
-              ...s,
-              messages: s.messages.map((m) =>
-                m.id === assistantMsgId
-                  ? {
-                      ...m,
-                      stage: 'prefill',
-                      // 估算百分比以此为计时起点：RAG 阶段的等待不计入 prefill
-                      prefillStartedAt: Date.now(),
-                      citations: foundCitations.length > 0 ? foundCitations : undefined,
-                    }
-                  : m
-              ),
-            }
-          : s
-      )
-    );
-
-    let accumulatedReasoning = '';
-    let accumulatedContent = '';
-    // prefill 阶段不算"思考中"——首个思考 token 到达（onThought）后才置 true
-    let isThinking = false;
-    let thinkingDuration = 0;
-    const thinkingStartTime = performance.now();
-
-    activeStreamsRef.current.set(targetSessionId, {
-      messageId: assistantMsgId,
-      reasoningContent: '',
-      content: '',
-      isThinking,
-      thinkingDuration: 0,
-      pending: true, // 尚未收到任何 token：仍处于检索/载入阶段
-    });
-
-    const sessionSettings = buildSessionSettings(settings, sessionEnableThinking, sessionEnableWiki);
-    const wireMessages = buildWireMessages(historyMessages, userMessage, promptToSend, {
-      systemPrompt: settings.systemPrompt,
-      maxContext: settings.maxContext,
-      maxTokens: settings.maxTokens,
-      provider: settings.apiProvider,
-    });
-
-    const promptTokensEstimate = applyTokenCalibration(
-      estimateHistoryTokens(wireMessages, settings.systemPrompt, settings.apiProvider),
-      settings.apiProvider
-    );
-    setLiveStreamingTokens((prev) => ({ ...prev, [targetSessionId]: promptTokensEstimate }));
-
-    await TurboFieldfareAPI.streamChat(
-      wireMessages,
-      sessionSettings,
-      {
-        onTokenProgress: (liveTokens) => {
-          setLiveStreamingTokens((prev) => ({ ...prev, [targetSessionId]: liveTokens }));
-          syncChannel?.postMessage({
-            type: 'STREAM_TOKEN_PROGRESS',
-            sessionId: targetSessionId,
-            liveTokens,
-            source: 'MAIN',
-          });
-        },
-        onFirstToken: () => {
-          // 首个 token 到达：prefill 结束，撤下"载入上下文"指示，并闭合阶段打点
-          const tEnd = Date.now();
-          setSessions((prev) =>
-            prev.map((s) =>
-              s.id === targetSessionId
-                ? {
-                    ...s,
-                    messages: s.messages.map((m) => {
-                      if (m.id !== assistantMsgId) return m;
-                      const closedStages = (m.stages ?? stagesRef.current ?? []).map((st) =>
-                        st.endedAt === undefined
-                          ? { ...st, endedAt: tEnd, durationMs: Math.max(0, tEnd - st.startedAt) }
-                          : st
-                      );
-                      stagesRef.current = closedStages;
-                      return { ...m, pending: false, stage: undefined, stages: closedStages };
-                    }),
-                  }
-                : s
-            )
-          );
-        },
-        onThought: (delta) => {
-          const duration = (performance.now() - thinkingStartTime) / 1000;
-          accumulatedReasoning += delta;
-          isThinking = true;
-          thinkingDuration = duration;
-
-          activeStreamsRef.current.set(targetSessionId, {
-            messageId: assistantMsgId,
-            reasoningContent: accumulatedReasoning,
-            content: accumulatedContent,
-            isThinking: true,
-            thinkingDuration: duration,
-            pending: false, // 已有 token：阶段结束
-          });
-
-          syncChannel?.postMessage({
-            type: 'STREAM_CHUNK',
-            sessionId: targetSessionId,
-            messageId: assistantMsgId,
-            reasoningContent: accumulatedReasoning,
-            content: accumulatedContent,
-            isThinking: true,
-            thinkingDuration: duration,
-            // 首个 token 已到达 → 检索/prefill 阶段结束：把 pending 一并广播，
-            // 否则镜像窗口（浮窗）会一直停在"阶段进行中"的展开态。
-            pending: false,
-            stages: stagesRef.current,
-            source: 'MAIN',
-          });
-
-          setSessions((prev) =>
-            prev.map((s) => {
-              if (s.id !== targetSessionId) return s;
-              return {
-                ...s,
-                messages: s.messages.map((m) => {
-                  if (m.id !== assistantMsgId) return m;
-                  return {
-                    ...m,
-                    reasoningContent: accumulatedReasoning,
-                    isThinking: true,
-                    thinkingDuration: duration,
-                  };
-                }),
-              };
-            })
-          );
-        },
-        onContent: (delta) => {
-          accumulatedContent += delta;
-          isThinking = false;
-
-          activeStreamsRef.current.set(targetSessionId, {
-            messageId: assistantMsgId,
-            reasoningContent: accumulatedReasoning,
-            content: accumulatedContent,
-            isThinking: false,
-            thinkingDuration: thinkingDuration,
-            pending: false, // 已有 token：阶段结束
-          });
-
-          syncChannel?.postMessage({
-            type: 'STREAM_CHUNK',
-            sessionId: targetSessionId,
-            messageId: assistantMsgId,
-            reasoningContent: accumulatedReasoning,
-            content: accumulatedContent,
-            isThinking: false,
-            thinkingDuration: thinkingDuration,
-            // 同上：正文已开始 → 阶段结束，镜像窗口同步收起阶段阶梯
-            pending: false,
-            stages: stagesRef.current,
-            source: 'MAIN',
-          });
-
-          setSessions((prev) =>
-            prev.map((s) => {
-              if (s.id !== targetSessionId) return s;
-              return {
-                ...s,
-                messages: s.messages.map((m) => {
-                  if (m.id !== assistantMsgId) return m;
-                  return {
-                    ...m,
-                    content: accumulatedContent,
-                    isThinking: false,
-                    thinkingDuration: thinkingDuration,
-                  };
-                }),
-              };
-            })
-          );
-        },
-        onDone: (metrics) => {
-          if (saveTimeoutRef.current) {
-            clearTimeout(saveTimeoutRef.current);
-            saveTimeoutRef.current = null;
-          }
-          abortControllersRef.current.delete(targetSessionId);
-          activeStreamsRef.current.delete(targetSessionId);
-          setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetSessionId));
-          setLiveStreamingTokens((prev) => {
-            const next = { ...prev };
-            delete next[targetSessionId];
-            return next;
-          });
-
-          if (currentSessionIdRef.current === targetSessionId) {
-            setLastMetrics(metrics);
-          }
-
-          const cleanHistoryTokens = estimateHistoryTokens(
-            [
-              ...historyMessages,
-              userMessage,
-              {
-                id: assistantMsgId,
-                role: 'assistant',
-                content: accumulatedContent,
-              },
-            ],
-            settings.systemPrompt,
-            settings.apiProvider
-          );
-
-          syncChannel?.postMessage({
-            type: 'STREAM_DONE',
-            sessionId: targetSessionId,
-            messageId: assistantMsgId,
-            reasoningContent: accumulatedReasoning,
-            content: accumulatedContent,
-            thinkingDuration: thinkingDuration,
-            metrics: { ...metrics, contextUsed: cleanHistoryTokens },
-            source: 'MAIN',
-          });
-
-          setSessions((prev) =>
-            prev.map((s) => {
-              if (s.id !== targetSessionId) return s;
-              return {
-                ...s,
-                contextUsed: cleanHistoryTokens,
-                messages: s.messages.map((m) => {
-                  if (m.id !== assistantMsgId) return m;
-                  const tEnd = Date.now();
-                  const closedStages = (m.stages ?? stagesRef.current ?? []).map((st) =>
-                    st.endedAt === undefined
-                      ? { ...st, endedAt: tEnd, durationMs: Math.max(0, tEnd - st.startedAt) }
-                      : st
-                  );
-                  const finalMsg: ChatMessage = {
-                    ...m,
-                    reasoningContent: accumulatedReasoning,
-                    content: accumulatedContent,
-                    isThinking: false,
-                    thinkingDuration: thinkingDuration,
-                    metrics,
-                    pending: false,
-                    stage: undefined,
-                    stages: closedStages,
-                  };
-                  completedTurnsRef.current.set(assistantMsgId, finalMsg);
-                  return finalMsg;
-                }),
-              };
-            })
-          );
-        },
-        onError: (err) => {
-          abortControllersRef.current.delete(targetSessionId);
-          activeStreamsRef.current.delete(targetSessionId);
-          setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetSessionId));
-          setLiveStreamingTokens((prev) => {
-            const next = { ...prev };
-            delete next[targetSessionId];
-            return next;
-          });
-
-          syncChannel?.postMessage({
-            type: 'STREAM_DONE',
-            sessionId: targetSessionId,
-            messageId: assistantMsgId,
-            reasoningContent: accumulatedReasoning,
-            content: accumulatedContent,
-            thinkingDuration: thinkingDuration,
-            source: 'MAIN',
-          });
-
-          setSessions((prev) =>
-            prev.map((s) => {
-              if (s.id !== targetSessionId) return s;
-              return {
-                ...s,
-                messages: s.messages.map((m) => {
-                  if (m.id !== assistantMsgId) return m;
-                  return {
-                    ...m,
-                    isThinking: false,
-                    error: err.message,
-                    pending: false,
-                    stage: undefined,
-                  };
-                }),
-              };
-            })
-          );
-        },
-      },
-      abortController.signal
-    );
-  };
-
-  // Chat generation handler
   const handleSend = async (overridePrompt?: string) => {
     const textToSend = (overridePrompt ?? input).trim();
     if (!textToSend && images.length === 0) return;
-
-    let targetSessionId = currentSessionId;
-    let targetSession = sessions.find((s) => s.id === targetSessionId);
-
-    if (!targetSession) {
-      const fresh = createNewSession(activeLang === 'en' ? 'New Chat' : '新对话');
-      targetSessionId = fresh.id;
-      targetSession = fresh;
-      setSessions((prev) => [fresh, ...prev]);
-      setCurrentSessionId(fresh.id);
-    }
-
-    if (generatingSessionIds.includes(targetSession.id)) return;
+    if (currentSessionId && generatingSessionIds.includes(currentSessionId)) return;
 
     const currentImages = [...images];
     setInput('');
     setImages([]);
 
-    const activeMessages = targetSession.messages || [];
-    await executeChat(textToSend, currentImages, activeMessages, targetSession.id);
-  };
+    const isDeepSeek = settings.apiProvider === 'deepseek';
+    const sessionEnableThinking = currentSession?.enableThinking ?? false;
+    const sessionEnableWiki = isDeepSeek ? false : (currentSession?.enableWikiSearch ?? false);
+    const sessionSettings = buildSessionSettings(settings, sessionEnableThinking, sessionEnableWiki);
 
-  // Retry generating an assistant response
-  const handleRetry = async (assistantMessageId: string) => {
-    const targetSession =
-      sessions.find((s) => s.id === currentSessionId) ||
-      sessions.find((s) => s.messages.some((m) => m.id === assistantMessageId));
-    if (!targetSession) return;
-
-    if (generatingSessionIds.includes(targetSession.id)) {
-      handleStop(targetSession.id);
-    }
-
-    const asstIdx = targetSession.messages.findIndex((m) => m.id === assistantMessageId);
-    if (asstIdx === -1) return;
-
-    let userIdx = -1;
-    for (let i = asstIdx - 1; i >= 0; i--) {
-      if (targetSession.messages[i].role === 'user') {
-        userIdx = i;
-        break;
-      }
-    }
-    if (userIdx === -1) return;
-
-    const userMessage = targetSession.messages[userIdx];
-    const historyBeforeUser = targetSession.messages.slice(0, userIdx);
-
-    await executeChat(
-      userMessage.content,
-      userMessage.images || [],
-      historyBeforeUser,
-      targetSession.id
-    );
-  };
-
-  // Delete a turn (both question and assistant response)
-  const handleDeleteTurn = (assistantMessageId: string) => {
-    const targetSession = sessions.find((s) => s.messages.some((m) => m.id === assistantMessageId));
-    if (targetSession && generatingSessionIds.includes(targetSession.id)) {
-      handleStop(targetSession.id);
-    }
-
-    const deletedTurnImages: string[] = [];
-
-    const updatedSessions = sessions.map((s) => {
-      const asstIdx = s.messages.findIndex((m) => m.id === assistantMessageId);
-      if (asstIdx === -1) return s;
-
-      let userIdx = -1;
-      for (let i = asstIdx - 1; i >= 0; i--) {
-        if (s.messages[i].role === 'user') {
-          userIdx = i;
-          break;
-        }
-      }
-
-      const idsToDelete = new Set<string>([assistantMessageId]);
-      if (userIdx !== -1) {
-        idsToDelete.add(s.messages[userIdx].id);
-        if (s.messages[userIdx].images) {
-          deletedTurnImages.push(...s.messages[userIdx].images!);
-        }
-      }
-
-      return {
-        ...s,
-        messages: s.messages.filter((m) => !idsToDelete.has(m.id)),
-        updatedAt: Date.now(),
-      };
+    await sendTurn({
+      sessionId: currentSessionId,
+      text: textToSend,
+      images: currentImages,
+      settings: sessionSettings,
+      lang: activeLang,
     });
-
-    setSessions(updatedSessions);
-    saveSessions(updatedSessions, targetSession?.id, 'MAIN');
-    deleteUnreferencedMedia(deletedTurnImages, updatedSessions);
   };
 
-  const handleStop = (sessionIdToStop?: string) => {
+  const handleRetry = async (assistantMessageId: string) => {
+    const isDeepSeek = settings.apiProvider === 'deepseek';
+    const sessionEnableThinking = currentSession?.enableThinking ?? false;
+    const sessionEnableWiki = isDeepSeek ? false : (currentSession?.enableWikiSearch ?? false);
+    const sessionSettings = buildSessionSettings(settings, sessionEnableThinking, sessionEnableWiki);
+
+    await retryTurn({
+      assistantMessageId,
+      settings: sessionSettings,
+      lang: activeLang,
+      sessionId: currentSessionId,
+    });
+  };
+
+  const handleDeleteTurn = async (assistantMessageId: string) => {
+    await deleteTurn(assistantMessageId, currentSessionId);
+  };
+
+  const handleStop = async (sessionIdToStop?: string) => {
     const targetId =
       typeof sessionIdToStop === 'string' && sessionIdToStop
         ? sessionIdToStop
         : currentSessionId;
     if (!targetId) return;
-
-    const controller = abortControllersRef.current.get(targetId);
-    if (controller) {
-      controller.abort();
-      abortControllersRef.current.delete(targetId);
-    }
-    activeStreamsRef.current.delete(targetId);
-    setGeneratingSessionIds((prev) => prev.filter((id) => id !== targetId));
-    setLiveStreamingTokens((prev) => {
-      const next = { ...prev };
-      delete next[targetId];
-      return next;
-    });
-
-    // Also defensively clear pending and isThinking in this session's messages
-    setSessions((prev) =>
-      prev.map((s) => {
-        if (s.id !== targetId) return s;
-        return {
-          ...s,
-          messages: s.messages.map((m) =>
-            m.pending || m.isThinking || m.stage
-              ? { ...m, pending: false, isThinking: false, stage: undefined }
-              : m
-          ),
-        };
-      })
-    );
-
-    // BroadcastChannel 不一定能跨两个 WKWebView 投递，中止请求额外走一次 localStorage
-    requestAbort(targetId);
-    syncChannel?.postMessage({
-      type: 'STREAM_ABORT',
-      sessionId: targetId,
-      source: 'MAIN',
-    });
+    await abortTurn(targetId);
   };
 
   const handleShrinkToSpotlight = () => {
-    // 1. Ensure current session state is saved in storage
-    if (sessions.length > 0) {
-      saveSessions(sessions, currentSessionId || undefined, 'MAIN');
-    }
+    const hasMessages = (currentSession?.messages?.length ?? 0) > 0;
     if (currentSessionId) {
-      saveCurrentSessionId(currentSessionId);
+      handoffToSpotlight(currentSessionId);
     }
-
-    // 2. Notify Spotlight via syncChannel to load this session
-    const targetSession = sessions.find((s) => s.id === currentSessionId);
-    const hasMessages = targetSession ? (targetSession.messages?.length ?? 0) > 0 : true;
-    syncChannel?.postMessage({
-      type: 'LOAD_SESSION_IN_SPOTLIGHT',
-      sessionId: currentSessionId,
-      session: targetSession,
-    });
-
-    // 3. Ask native macOS container to show Spotlight with this session and hide Main Window
     // @ts-expect-error WebKit bridge
     if (window.webkit?.messageHandlers?.shrinkToSpotlight) {
       // @ts-expect-error WebKit bridge
@@ -1574,7 +485,7 @@ export const App: React.FC = () => {
           currentSessionId={currentSessionId}
           generatingSessionIds={generatingSessionIds}
           onSelectSession={(id) => {
-            setCurrentSessionId(id);
+            selectSession(id);
           }}
           onNewSession={handleNewSession}
           onDeleteSession={handleDeleteSession}
@@ -1596,8 +507,6 @@ export const App: React.FC = () => {
           images={images}
           setImages={setImages}
           isGenerating={isGenerating}
-          ownsTurn={isGenerating}
-          onStagesChange={handleStagesChange}
           onSend={handleSend}
           onStop={handleStop}
           usedTokens={usedTokens}
@@ -1605,11 +514,7 @@ export const App: React.FC = () => {
           enableThinking={currentSession?.enableThinking ?? false}
           setEnableThinking={(val) => {
             if (!currentSessionId) return;
-            setSessions((prev) =>
-              prev.map((s) => (s.id === currentSessionId ? { ...s, enableThinking: val, updatedAt: Date.now() } : s))
-            );
-            // 立即广播，保证 Spotlight 浮窗同步到同一会话的同名开关
-            notifySessionUpdate(currentSessionId, 'MAIN');
+            updateSessionMeta(currentSessionId, { enableThinking: val });
           }}
           modelId={settings.apiProvider === 'deepseek' ? (settings.deepseekModelId || 'deepseek-flash') : settings.modelId}
           availableModels={availableModels}
@@ -1645,11 +550,7 @@ export const App: React.FC = () => {
           enableWikiSearch={currentSession?.enableWikiSearch ?? false}
           setEnableWikiSearch={(val) => {
             if (!currentSessionId) return;
-            setSessions((prev) =>
-              prev.map((s) => (s.id === currentSessionId ? { ...s, enableWikiSearch: val, updatedAt: Date.now() } : s))
-            );
-            // 立即广播，保证 Spotlight 浮窗同步到同一会话的同名开关
-            notifySessionUpdate(currentSessionId, 'MAIN');
+            updateSessionMeta(currentSessionId, { enableWikiSearch: val });
           }}
           wikiConnected={wikiStatus.connected}
           wikiEnabled={wikiStatus.enabled}

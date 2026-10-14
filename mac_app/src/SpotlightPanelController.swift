@@ -78,6 +78,8 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
     private var hasUserCustomPosition: Bool = false
     private var customExpandedOrigin: NSPoint? = nil
     private var isProgrammaticAnimating: Bool = false
+    private var animationGeneration: Int = 0
+    private var targetFrameSize: NSSize = NSSize(width: 540, height: 88)
 
     init() {
         // Initial compact input capsule size: 540 x 88
@@ -219,7 +221,7 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         return screenRect.origin.y + 16
     }
 
-    func show(isExpanded: Bool? = nil) {
+    func show(isExpanded: Bool? = nil, notifyJS: Bool = true) {
         guard let panel = window else { return }
         if let exp = isExpanded {
             self.isExpanded = exp
@@ -231,6 +233,8 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
 
         let targetWidth: CGFloat = self.isExpanded ? 500 : 540
         let targetHeight: CGFloat = self.isExpanded ? 640 : 88
+        self.targetFrameSize = NSSize(width: targetWidth, height: targetHeight)
+        self.animationGeneration += 1
 
         var targetFrame: NSRect
         if self.isExpanded && hasUserCustomPosition, let origin = customExpandedOrigin {
@@ -254,13 +258,19 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         if let view = webView {
             panel.makeFirstResponder(view)
         }
-        webView.evaluateJavaScript("window.onSpotlightShown && window.onSpotlightShown()") { _, _ in }
+        if notifyJS {
+            webView.evaluateJavaScript("window.onSpotlightShown && window.onSpotlightShown()") { _, _ in }
+        }
     }
 
     func showWithSession(sessionId: String?, isExpanded: Bool = true) {
-        show(isExpanded: isExpanded)
-        if let sid = sessionId {
+        if let sid = sessionId, !sid.isEmpty {
+            // Evaluate loadSessionInSpotlight BEFORE showing/focusing the panel so JS state
+            // already points to the target session when focus/shown handlers fire.
             webView.evaluateJavaScript("window.loadSessionInSpotlight && window.loadSessionInSpotlight('\(sid)')") { _, _ in }
+            show(isExpanded: isExpanded, notifyJS: false)
+        } else {
+            show(isExpanded: isExpanded, notifyJS: true)
         }
     }
 
@@ -278,11 +288,17 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
 
         self.isExpanded = isExpanding
 
-        // If the panel is already at requested size and state, do NOT trigger redundant animations
-        if abs(panel.frame.width - width) < 1.0 && abs(panel.frame.height - height) < 1.0 {
+        // Only skip if NOT currently in the middle of an animation AND both current frame and target size match
+        if !isProgrammaticAnimating &&
+           abs(panel.frame.width - width) < 1.0 &&
+           abs(panel.frame.height - height) < 1.0 &&
+           abs(targetFrameSize.width - width) < 1.0 &&
+           abs(targetFrameSize.height - height) < 1.0 {
             dragView.isHidden = !isExpanding
             return
         }
+
+        self.targetFrameSize = NSSize(width: width, height: height)
 
         let screen = currentScreen()
         let screenRect = screen.visibleFrame
@@ -321,6 +337,7 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         // If the window is currently hidden, set frame immediately without animation.
         // Invisible windows do not run AppKit animation groups properly and can get stuck.
         if !panel.isVisible {
+            animationGeneration += 1
             panel.setFrame(targetFrame, display: false)
             return
         }
@@ -330,19 +347,22 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
 
     private func animateTo(newFrame: NSRect) {
         guard let panel = window else { return }
-        if abs(panel.frame.minX - newFrame.minX) < 1.0 &&
+        if !isProgrammaticAnimating &&
+           abs(panel.frame.minX - newFrame.minX) < 1.0 &&
            abs(panel.frame.minY - newFrame.minY) < 1.0 &&
            abs(panel.frame.width - newFrame.width) < 1.0 &&
            abs(panel.frame.height - newFrame.height) < 1.0 {
             return
         }
+        animationGeneration += 1
+        let currentGen = animationGeneration
         isProgrammaticAnimating = true
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.22
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().setFrame(newFrame, display: true)
         }, completionHandler: { [weak self] in
-            guard let self = self else { return }
+            guard let self = self, self.animationGeneration == currentGen else { return }
             self.isProgrammaticAnimating = false
             // Guarantee final frame is accurate even under high GPU/CPU load
             self.window?.setFrame(newFrame, display: true)
