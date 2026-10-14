@@ -387,6 +387,22 @@ export const translations = {
     voiceInserted: '已输入',
     voicePasted: '已粘贴',
     voiceTranscribing: '正在识别…',
+
+    // 实时双语字幕悬浮窗
+    subtitlePreparingModels: '流式模型准备中',
+    subtitleRunningTitle: '实时英译中流式字幕 (ANE 160ms)',
+    subtitlePaused: '已暂停',
+    subtitleClearHistory: '清空字幕记录',
+    subtitlePauseCapture: '暂停内录',
+    subtitleResumeCapture: '继续内录',
+    subtitleClose: '关闭字幕',
+    subtitleModelsNotReady: '流式语音识别或翻译模型尚未就绪',
+    subtitleRunDownloadScript: '在终端运行下载脚本（将自动清理旧模型并拉取最新流式模型）：',
+    subtitleTranslating: '正在极速翻译...',
+    subtitleWaitingAudio: '等待系统英文音频播放中（视频、直播、会议、播客等）...',
+    subtitleCapturePaused: '内录已暂停',
+    subtitleScrollToBottom: '回到底部',
+    subtitleResizeWindow: '按住拖拽调节窗口尺寸',
   },
   en: {
     // Sidebar
@@ -774,6 +790,22 @@ export const translations = {
     voiceInserted: 'Inserted',
     voicePasted: 'Pasted',
     voiceTranscribing: 'Transcribing…',
+
+    // Live bilingual subtitle overlay
+    subtitlePreparingModels: 'Preparing Streaming Models',
+    subtitleRunningTitle: 'Live EN→ZH Streaming Subtitles (ANE 160ms)',
+    subtitlePaused: 'Paused',
+    subtitleClearHistory: 'Clear subtitle history',
+    subtitlePauseCapture: 'Pause audio capture',
+    subtitleResumeCapture: 'Resume audio capture',
+    subtitleClose: 'Close subtitles',
+    subtitleModelsNotReady: 'Streaming speech recognition or translation models are not ready',
+    subtitleRunDownloadScript: 'Run the download script in Terminal (cleans legacy models and fetches streaming models):',
+    subtitleTranslating: 'Translating...',
+    subtitleWaitingAudio: 'Waiting for system English audio (videos, streams, meetings, podcasts)...',
+    subtitleCapturePaused: 'Audio capture paused',
+    subtitleScrollToBottom: 'Scroll to bottom',
+    subtitleResizeWindow: 'Drag to resize window',
   },
 } as const;
 

@@ -26,6 +26,7 @@ APP_NAME="SimpleUI"
 BUNDLE_NAME="SimpleUI.app"
 BUILD_DIR="$PROJECT_ROOT/build"
 APP_DIR="$BUILD_DIR/$BUNDLE_NAME"
+CONTENTS_DIR="$APP_DIR"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
@@ -36,8 +37,6 @@ echo "=========================================================="
 
 # 1. 编译前端静态资源
 echo "[1/4] 编译前端 Web 界面..."
-# 受限环境下 vite 的 emptyOutDir 批量删除 dist/assets 会被安全删除拦截，
-# 先把旧产物转存到临时目录（确保父目录存在），再让 vite 在空 dist 上重建。
 if [ -d dist/assets ]; then
   _ts="$(date +%s)"
   mkdir -p "/tmp/simpleui_stale_${_ts}"
@@ -83,7 +82,6 @@ fi
 if [ -f "mac_app/Resources/StatusBarIcon.png" ]; then
     cp mac_app/Resources/StatusBarIcon.png "$RESOURCES_DIR/StatusBarIcon.png"
 fi
-# 状态栏图标 SVG 设计源文件（运行时不用，PNG 由它光栅化；改图标几何只改 SVG 再重出 PNG）
 if [ -f "mac_app/Resources/StatusBarIcon.svg" ]; then
     cp mac_app/Resources/StatusBarIcon.svg "$RESOURCES_DIR/StatusBarIcon.svg"
 fi
@@ -91,24 +89,27 @@ if [ -d "bin/kiwix" ]; then
     mkdir -p "$RESOURCES_DIR/bin"
     cp -R "bin/kiwix" "$RESOURCES_DIR/bin/"
 fi
-# 编译并随包分发 M4 NPU 专属 ANE 词级毫秒强制对齐引擎
-if [ -f "mac_app/src/ane_aligner.swift" ]; then
+
+# 编译并随包分发 M系列 NPU 专属原生流式字幕 ASR 守护进程 (Nemotron-Speech-Streaming CoreML)
+if [ -f "mac_app/src/subtitle_stream_asr.swift" ]; then
     mkdir -p "$RESOURCES_DIR/bin" "bin"
-    swiftc -O -target arm64-apple-macos13.0 -framework CoreML -framework Foundation mac_app/src/ane_aligner.swift -o bin/ane_aligner
-    cp "bin/ane_aligner" "$RESOURCES_DIR/bin/ane_aligner"
-    chmod +x "$RESOURCES_DIR/bin/ane_aligner" "bin/ane_aligner"
+    echo "  · 编译 ANE 原生流式字幕 ASR 守护进程 (Swift + CoreML + Accelerate)..."
+    swiftc -O -target arm64-apple-macos13.0 \
+        -framework CoreML -framework Foundation -framework Accelerate \
+        mac_app/src/subtitle_stream_asr.swift -o bin/subtitle_stream_asr
+    cp -f "bin/subtitle_stream_asr" "$RESOURCES_DIR/bin/subtitle_stream_asr"
+    chmod +x "$RESOURCES_DIR/bin/subtitle_stream_asr" "bin/subtitle_stream_asr"
+    echo "  -> 已打包 ANE 原生流式字幕 ASR 守护进程: bin/subtitle_stream_asr"
 fi
-# 语音识别运行时 + 模型：打包前确保就位（本地有缓存则复用，缺失自动下载/编译），
-# 一并打进 App，使分发的 App 打开即用、无需任何下载或编译。
+
+# 语音识别运行时 + 模型（独立用于语音输入服务，保持原样不动）
 ensure_asr_assets() {
   local MODEL_FILE="sensevoice-small-q8-audiocpp-v1.gguf"
   local LOCAL_CACHE="$HOME/Library/Application Support/SimpleUI/models/$MODEL_FILE"
-  # 运行时二进制：本地缺失才 clone+编译（sync --build 会跳过已有构建）
   if [ ! -x "bin/audiocpp/bin/audiocpp_server" ]; then
     echo "  · 未找到本地 audiocpp 运行时，自动准备..."
     ./scripts/sync_audiocpp.sh --build
   fi
-  # 模型：优先复用本地缓存，其次下载（约 254MB，官方源失败回退镜像）
   if [ ! -f "bin/audiocpp/models/$MODEL_FILE" ]; then
     mkdir -p "bin/audiocpp/models"
     if [ -f "$LOCAL_CACHE" ]; then
@@ -136,23 +137,7 @@ else
     echo "  ⚠ bin/audiocpp 仍缺失：语音识别将不可用（请检查网络或 ~/audio.cpp 构建）"
 fi
 
-# 打包 M4 NPU 专属 ANE 词级毫秒强制对齐引擎
-if [ -f "mac_app/src/ane_aligner.swift" ]; then
-    mkdir -p bin
-    if [ ! -f "bin/ane_aligner" ] || [ "mac_app/src/ane_aligner.swift" -nt "bin/ane_aligner" ]; then
-        echo "  · 编译 M4 NPU ANE 强制对齐引擎 (Swift + CoreML)..."
-        swiftc -O -target arm64-apple-macos13.0 mac_app/src/ane_aligner.swift -o bin/ane_aligner -framework CoreML -framework Foundation -framework Accelerate
-    fi
-    mkdir -p "$RESOURCES_DIR/bin"
-    cp -f "bin/ane_aligner" "$RESOURCES_DIR/bin/ane_aligner"
-    chmod +x "$RESOURCES_DIR/bin/ane_aligner" 2>/dev/null || true
-    echo "  -> 已打包 M4 ANE 词级毫秒强制对齐引擎: bin/ane_aligner"
-fi
-
-
-# 随包分发 Node 运行时：让 App 在没装 Node 的 Mac 上也能断网开箱即用。
-# 直接从当前构建环境拷贝 node 单文件二进制（自包含，无需 npm/include/lib），
-# 不写系统 PATH、不动 homebrew/nvm，完全私有于本 App。
+# 随包分发 Node 运行时
 ensure_node_runtime() {
   local NODE_BIN
   NODE_BIN="$(command -v node 2>/dev/null || true)"
@@ -160,7 +145,6 @@ ensure_node_runtime() {
     echo "  ⚠ 未检测到 node，跳过打包（运行时将回退系统 PATH 中的 node）"
     return 0
   fi
-  # 解析符号链接，拷真实二进制（homebrew 的 node 是 Cellar 的符号链接）
   local NODE_REAL
   NODE_REAL="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$NODE_BIN" 2>/dev/null || echo "$NODE_BIN")"
   if [ ! -x "$NODE_REAL" ]; then
@@ -179,20 +163,17 @@ ensure_node_runtime
 cp -R dist "$RESOURCES_DIR/dist"
 cp -R server "$RESOURCES_DIR/server"
 cp package.json "$RESOURCES_DIR/package.json"
-# 服务端运行时依赖：从 server/*.js 的 import 自动推导（连同传递依赖），
-# 不再硬编码包名——否则一旦给服务端加依赖就会漏打，APP 启动即崩、界面全白。
+
 SERVER_DEPS=$(node -e '
 const fs=require("fs"), path=require("path");
 const specs=new Set();
 for (const f of fs.readdirSync("server").filter(f=>f.endsWith(".js"))) {
   const src=fs.readFileSync(path.join("server",f),"utf8");
-  // 静态 import ... from "pkg"
   for (const m of src.matchAll(/(?:^|\n)\s*import\s+[^;\n]*?from\s*["\x27]([^"\x27]+)["\x27]/g)) {
     const s=m[1];
     if (s.startsWith(".")||s.startsWith("/")||s.startsWith("node:")) continue;
     specs.add(s.startsWith("@") ? s.split("/").slice(0,2).join("/") : s.split("/")[0]);
   }
-  // 动态 await import("pkg")：漏掉它会让原生依赖（如 onnxruntime-node）不打进包，APP 启动即崩
   for (const m of src.matchAll(/\bimport\s*\(\s*["\x27]([^"\x27]+)["\x27]\s*\)/g)) {
     const s=m[1];
     if (s.startsWith(".")||s.startsWith("/")||s.startsWith("node:")) continue;
@@ -203,7 +184,7 @@ const closure=new Set();
 const walk=(name)=>{
   if (closure.has(name)) return;
   const p=path.join("node_modules",name,"package.json");
-  if (!fs.existsSync(p)) return; // Node 内置模块在这里自然被排除
+  if (!fs.existsSync(p)) return;
   closure.add(name);
   let meta={}; try{ meta=JSON.parse(fs.readFileSync(p,"utf8")); }catch(e){ return; }
   for (const d of Object.keys(meta.dependencies||{})) walk(d);
@@ -213,7 +194,6 @@ console.log([...closure].join(" "));
 ')
 mkdir -p "$RESOURCES_DIR/node_modules"
 for dep in $SERVER_DEPS; do
-    # onnxruntime-node 的安装期依赖（仅用于解压预编译二进制），运行时不加载，跳过
     case "$dep" in
         adm-zip|global-agent) continue ;;
     esac
@@ -226,8 +206,6 @@ for dep in $SERVER_DEPS; do
     fi
 done
 
-# onnxruntime-node 随包分发全部平台的预编译二进制（约 293MB），App 只需要 darwin/arm64 一份。
-# 裁剪在拷贝之后进行，保留目录结构不变的同时把体积压到十分之一。
 ORT_DST="$RESOURCES_DIR/node_modules/onnxruntime-node"
 if [ -d "$ORT_DST/bin" ]; then
     for napidir in "$ORT_DST"/bin/napi-v*/; do
@@ -245,11 +223,7 @@ if [ -d "$ORT_DST/bin" ]; then
 fi
 echo "  -> 服务端运行时依赖: $SERVER_DEPS"
 
-# 4. 代码签名 (优先使用本地免费个人开发证书，若无则使用纯本地无签名 Ad-hoc)
-# 策略说明：
-#   优先使用本地免费个人开发证书 (Apple Development: ...)，保证应用更新后系统辅助功能与快捷键权限不丢失。
-#   开源项目坚决排除 Apple 付费分发证书 (Apple Distribution / Developer ID)。
-#   若未检测到个人开发证书，则兜底降级为纯本地无签名 Ad-hoc 模式 (-)。
+# 4. 代码签名
 echo "[4/4] 正在检测代码签名配置..."
 SIGNING_IDENTITY=""
 
@@ -257,7 +231,6 @@ if [ -n "$CODESIGN_IDENTITY" ]; then
     echo "  -> [指定] 使用环境变量指定的签名身份: \"$CODESIGN_IDENTITY\""
     SIGNING_IDENTITY="$CODESIGN_IDENTITY"
 else
-    # 查找本地免费个人开发证书 (严格排除 Apple Distribution / Developer ID 等付费企业/分发证书)
     FREE_DEV_CERT=$(security find-identity -p codesigning -v 2>/dev/null | grep "Apple Development" | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
 
     if [ -n "$FREE_DEV_CERT" ]; then
@@ -280,7 +253,6 @@ echo "=========================================================="
 
 if [ "$1" = "install" ]; then
     echo "正在安装至 /Applications/SimpleUI.app..."
-    # 清理旧包名
     safe_remove "/Applications/TurboFieldfareChat.app"
     safe_remove "/Applications/SimpleUI.app"
     cp -R "$APP_DIR" "/Applications/SimpleUI.app"

@@ -14,48 +14,34 @@ class SubtitleOverlayPanel: NSPanel {
 /// 屏幕底部半透明双语字幕面板控制器。
 /// 承载 `http://127.0.0.1:31235/#/subtitles`。
 /// 采用 ScreenCaptureKit 原生无损系统音频流内录（Audio Loopback），
-/// 直接捕获所有 App、浏览器视频、会议音频，完全不调用物理麦克风、零环境杂音。
+/// 按 160ms (2560 samples @ 16kHz) 增量切片无损流式推送至服务端 ANE 流式引擎。
 class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler, WKNavigationDelegate, SCStreamOutput {
     private static let panelWidth: CGFloat = 800
-    private static let panelHeight: CGFloat = 185
+    private static let panelHeight: CGFloat = 195
     private static let bottomInset: CGFloat = 48
 
     private var webView: WKWebView!
     private var webReady = false
 
-    // MARK: - 系统音频内录状态
+    // MARK: - 系统音频 160ms 增量流式内录状态
     private var scStream: SCStream?
     private var isRecording = false
     private let audioQueue = DispatchQueue(label: "com.simpleui.systemAudioCapture", qos: .userInitiated)
     private var samplesLock = NSLock()
-    private var currentChunk: [Int16] = []
+
+    // 160ms @ 16kHz = 2560 采样点（与 Nemotron Streaming 160ms 帧严格对齐）
+    private let chunkSamples = 2560
+    // 160ms 前置环形缓冲：静默期持续保留最近 160ms 音频，人声触发瞬间一并送入，防止吞掉句首辅音
+    private var preRollBuffer: [Int16] = []
+    private var pendingSamples: [Int16] = []
     private var isSpeaking = false
-    private var silenceSampleCount = 0
-    private var lastPartialFeedCount = 0
-    private var isFeedingPartial = false
-    private var pendingPartialSamples: [Int16]? = nil
-    private let energyThreshold: Double = 0.015 // 系统数字音频信噪比极高
+    private var trailingSilentChunks = 0
+    private let maxTrailingSilentChunks = 5 // 5 * 160ms = 800ms 尾随静音后发送 is_final=1
+    private let energyThreshold: Double = 0.010
 
-    // 静音兜底阈值：连续静音这么久，就通知服务端「说话人停了」，让它做 L2 兜底断句。
-    // 注意这里**不是断句依据** —— 真正的断句由服务端的句末判定模型决定，
-    // 说话人一口气讲三句也不会等到这里才切。这一条只用来补上「模型在文本截断处
-    // 拒绝表态」的那部分句子。
-    // 700ms 太短：句内换气停顿就会被当成「说完了」，实测切出过 "Of course two rows of"
-    // 这种半句话。句内停顿多在 800ms 以内，句子之间通常在 1s 以上，取 1.2s。
-    private let silenceFlushSamples = 19200 // 1.2s @16kHz
-    // 纯安全网：说话人长时间不停顿、服务端也没断句时，防止音频缓冲无界增长。
-    // 正常路径下几乎不会触发，触发也只是把当前缓冲整段交给服务端。
-    private let maxBufferSamples = 16000 * 12 // 12s（ASR 耗时随音频长度增长，不能无限累积）
-    // 收到 trimAudio 后保留的尾部音频，只用来兜住「说话人已经起了下一句的头」那几个字。
-    // 刻意留得很短：实测保留 2s 时，ASR 每轮看到的都是「上一句的尾巴 + 新句的开头」，
-    // 这种跨句边界的音频是它最容易崩的输入（"the first the middle" 就出自这里）。
-    // 短一点没关系，服务端会用「已消费文本的后缀匹配」把这点重叠对齐掉。
-    private let trimKeepSamples = 8000 // 0.5s @16kHz
-
-    // 送 ASR 的最小音频长度与步进。音频太短是识别质量崩坏的主因：
-    // 0.2s 音频喂给 ASR 只会得到碎片和幻觉，宁可让首字晚一点出来。
-    private let minPartialSamples = 32000  // 首次送达 2s
-    private let partialStepSamples = 12800 // 之后每新增 0.8s 送一次
+    // 严格 FIFO 串行发送队列，确保 160ms 增量音频帧绝不乱序或并发踩踏
+    private var outboundQueue: [(samples: [Int16], isFinal: Bool)] = []
+    private var isSendingFrame = false
 
     var isVisible: Bool {
         return window?.isVisible ?? false
@@ -64,7 +50,7 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
     init() {
         let panel = SubtitleOverlayPanel(
             contentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight),
-            styleMask: [.nonactivatingPanel, .fullSizeContentView, .resizable],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -73,9 +59,7 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
-        panel.isMovableByWindowBackground = true // 允许用户点击背景拖动字幕条
+        panel.isMovableByWindowBackground = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.isOpaque = false
@@ -102,7 +86,9 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
         webView = WKWebView(frame: panel.contentView?.bounds ?? .zero, configuration: config)
         webView.autoresizingMask = [.width, .height]
         webView.navigationDelegate = self
-        webView.setValue(false, forKey: "drawsBackground") // 纯透明 WebKit 背景
+        webView.setValue(false, forKey: "drawsBackground")
+        panel.contentView?.wantsLayer = true
+        panel.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
         panel.contentView?.addSubview(webView)
     }
 
@@ -134,6 +120,7 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
             panel.setFrame(bottomCenterFrame(on: currentScreen()), display: true)
         }
         panel.orderFrontRegardless()
+        webView.evaluateJavaScript("window.onSubtitleOverlayShown && window.onSubtitleOverlayShown()") { _, _ in }
         startAudioCapture()
     }
 
@@ -164,10 +151,9 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
                 let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
                 let config = SCStreamConfiguration()
                 config.capturesAudio = true
-                config.excludesCurrentProcessAudio = true // 排除自身声音，防止音频反馈循环
-                config.sampleRate = 16000                 // 16kHz
-                config.channelCount = 1                   // 单声道
-                // 极小化不可见的画面捕获开销
+                config.excludesCurrentProcessAudio = true
+                config.sampleRate = 16000
+                config.channelCount = 1
                 config.width = 100
                 config.height = 100
                 config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
@@ -179,19 +165,19 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
 
                 self.audioQueue.async {
                     self.samplesLock.lock()
-                    self.currentChunk.removeAll()
-                    self.silenceSampleCount = 0
+                    self.preRollBuffer.removeAll()
+                    self.pendingSamples.removeAll()
+                    self.outboundQueue.removeAll()
                     self.isSpeaking = false
-                    self.lastPartialFeedCount = 0
-                    self.isFeedingPartial = false
-                    self.pendingPartialSamples = nil
+                    self.trailingSilentChunks = 0
+                    self.isSendingFrame = false
                     self.samplesLock.unlock()
                 }
 
                 self.scStream = stream
                 self.isRecording = true
                 self.postControl(action: "start")
-                NSLog("[SubtitleOverlay] ✅ 系统音频内录已成功启动 (ScreenCaptureKit Loopback)")
+                NSLog("[SubtitleOverlay] ✅ 系统音频 160ms 流式内录已启动 (ScreenCaptureKit Loopback)")
             } catch {
                 NSLog("[SubtitleOverlay] ❌ 启动系统音频内录失败: \(error)")
             }
@@ -211,7 +197,7 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
         postControl(action: "stop")
     }
 
-    // SCStreamOutput: 接收系统内部音频 PCM 缓冲区
+    // SCStreamOutput: 接收系统内部音频 PCM 缓冲区并按 160ms 切片流式发送
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio, isRecording else { return }
         guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
@@ -249,145 +235,104 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
 
         guard !samples.isEmpty else { return }
 
-        // 计算 RMS 能量
-        var sumSquares: Double = 0
-        for s in samples {
-            let f = Double(s) / 32768.0
-            sumSquares += f * f
-        }
-        let rms = sqrt(sumSquares / Double(samples.count))
-
         samplesLock.lock()
-        defer { samplesLock.unlock() }
+        pendingSamples.append(contentsOf: samples)
 
-        if rms > energyThreshold {
-            isSpeaking = true
-            silenceSampleCount = 0
-            currentChunk.append(contentsOf: samples)
+        while pendingSamples.count >= chunkSamples {
+            let slice = Array(pendingSamples.prefix(chunkSamples))
+            pendingSamples.removeFirst(chunkSamples)
 
-            // 送 ASR 的节奏：先攒够 1.5s 再送第一次，之后每新增 0.8s 送一次。
-            // 频率让位于质量 —— 半秒音频喂进去只会得到幻觉和伪句末。
-            if currentChunk.count >= minPartialSamples &&
-                (currentChunk.count - lastPartialFeedCount >= partialStepSamples) {
-                lastPartialFeedCount = currentChunk.count
-                let partialSlice = currentChunk
-                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    self?.feedAudioToService(samples: partialSlice, isFinal: false)
-                }
+            // 计算该 160ms 切片的 RMS 能量
+            var sumSq: Double = 0
+            for s in slice {
+                let f = Double(s) / 32768.0
+                sumSq += f * f
             }
-        } else {
-            if isSpeaking {
-                silenceSampleCount += samples.count
-                currentChunk.append(contentsOf: samples)
+            let rms = sqrt(sumSq / Double(slice.count))
 
-                // 静音兜底：只负责告诉服务端「说话人停下了」，由它做 L2 兜底定稿。
-                // 安全网：缓冲过长时强制送一次，避免无界增长（与断句无关）。
-                let silenceReached = silenceSampleCount >= silenceFlushSamples
-                let bufferTooLong = currentChunk.count >= maxBufferSamples
-
-                if silenceReached || bufferTooLong {
-                    let chunkToFeed = currentChunk
-                    currentChunk.removeAll()
-                    isSpeaking = false
-                    silenceSampleCount = 0
-                    lastPartialFeedCount = 0
-                    if chunkToFeed.count >= 6400 { // 至少 400ms 保证有效语音
-                        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                            self?.feedAudioToService(samples: chunkToFeed, isFinal: true)
-                        }
+            if rms >= energyThreshold {
+                if !isSpeaking {
+                    isSpeaking = true
+                    trailingSilentChunks = 0
+                    // 将触发前 160ms 的前置缓冲一并推入，防止吞掉句首辅音
+                    if !preRollBuffer.isEmpty {
+                        outboundQueue.append((samples: preRollBuffer, isFinal: false))
+                        preRollBuffer.removeAll(keepingCapacity: true)
                     }
+                } else {
+                    trailingSilentChunks = 0
+                }
+                outboundQueue.append((samples: slice, isFinal: false))
+            } else {
+                if isSpeaking {
+                    trailingSilentChunks += 1
+                    let reachedFinalSilence = trailingSilentChunks >= maxTrailingSilentChunks
+                    outboundQueue.append((samples: slice, isFinal: reachedFinalSilence))
+                    if reachedFinalSilence {
+                        isSpeaking = false
+                        trailingSilentChunks = 0
+                    }
+                } else {
+                    // 静默期仅更新 160ms 前置环形缓冲，不向服务端发无效请求
+                    preRollBuffer = slice
                 }
             }
         }
+
+        // 限制积压队列上限（超过 25 帧即 4s 时丢弃最旧的非 final 帧防滞后）
+        if outboundQueue.count > 25 {
+            outboundQueue.removeFirst(outboundQueue.count - 15)
+        }
+        samplesLock.unlock()
+
+        drainOutboundQueue()
     }
 
-    private func feedAudioToService(samples: [Int16], isFinal: Bool) {
-        if !isFinal {
-            if isFeedingPartial {
-                // 当前正有推理在进行中，锁存最新采样的音频，待返回后立即紧跟补发
-                pendingPartialSamples = samples
-                return
-            }
-            isFeedingPartial = true
-        } else {
-            pendingPartialSamples = nil
+    private func drainOutboundQueue() {
+        samplesLock.lock()
+        if isSendingFrame || outboundQueue.isEmpty {
+            samplesLock.unlock()
+            return
         }
-        let wav = Self.makeWAV(samples: samples, sampleRate: 16000)
-        let endpoint = isFinal
-            ? "\(ProcessManager.baseURLString)/api/subtitles/feed?is_final=1"
-            : "\(ProcessManager.baseURLString)/api/subtitles/feed?is_partial=1"
-        guard let url = URL(string: endpoint) else { return }
+        isSendingFrame = true
+        let item = outboundQueue.removeFirst()
+        samplesLock.unlock()
+
+        var rawData = Data(capacity: item.samples.count * 2)
+        item.samples.withUnsafeBytes { raw in
+            rawData.append(contentsOf: raw)
+        }
+
+        let endpoint = item.isFinal
+            ? "\(ProcessManager.baseURLString)/api/subtitles/feed?format=pcm&is_final=1"
+            : "\(ProcessManager.baseURLString)/api/subtitles/feed?format=pcm"
+        guard let url = URL(string: endpoint) else {
+            samplesLock.lock()
+            isSendingFrame = false
+            samplesLock.unlock()
+            return
+        }
+
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
-        req.httpBody = wav
-        // 服务端现在是同步处理完 ASR 与句末判定才返回（响应里带 trimAudio），耗时以 ASR 为准
-        req.timeoutInterval = 20.0
-        let task = URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        req.httpBody = rawData
+        req.timeoutInterval = 5.0
+
+        URLSession.shared.dataTask(with: req) { [weak self] _, _, _ in
             guard let self = self else { return }
-
-            // 服务端判定已成一整句：把对应音频丢掉，只留尾部一小段（说话人可能已起了下一句的头）。
-            // 不截断的话，这一段语音会在后续每一轮被反复送进 ASR，长句时越来越慢。
-            if let data = data,
-               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let trim = obj["trimAudio"] as? Bool, trim {
-                self.samplesLock.lock()
-                let keep = min(self.trimKeepSamples, self.currentChunk.count)
-                if self.currentChunk.count > keep {
-                    self.currentChunk = Array(self.currentChunk.suffix(keep))
-                }
-                self.lastPartialFeedCount = 0
-                self.samplesLock.unlock()
-            }
-
-            if !isFinal {
-                self.isFeedingPartial = false
-                if let next = self.pendingPartialSamples {
-                    self.pendingPartialSamples = nil
-                    self.feedAudioToService(samples: next, isFinal: false)
-                }
-            }
-        }
-        task.resume()
+            self.samplesLock.lock()
+            self.isSendingFrame = false
+            self.samplesLock.unlock()
+            self.drainOutboundQueue()
+        }.resume()
     }
-
 
     private func postControl(action: String) {
         guard let url = URL(string: "\(ProcessManager.baseURLString)/api/subtitles/\(action)") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         URLSession.shared.dataTask(with: req).resume()
-    }
-
-    private static func makeWAV(samples: [Int16], sampleRate: Int) -> Data {
-        let channels: Int16 = 1
-        let bitsPerSample: Int16 = 16
-        let byteRate = Int32(sampleRate) * Int32(channels) * Int32(bitsPerSample / 8)
-        let blockAlign = Int16(channels * bitsPerSample / 8)
-        let dataBytes = samples.count * 2
-
-        var data = Data()
-        func appendString(_ s: String) { data.append(contentsOf: Array(s.utf8)) }
-        func appendUInt32(_ v: UInt32) { var x = v.littleEndian; withUnsafeBytes(of: &x) { data.append(contentsOf: $0) } }
-        func appendUInt16(_ v: UInt16) { var x = v.littleEndian; withUnsafeBytes(of: &x) { data.append(contentsOf: $0) } }
-
-        appendString("RIFF")
-        appendUInt32(UInt32(36 + dataBytes))
-        appendString("WAVE")
-        appendString("fmt ")
-        appendUInt32(16)
-        appendUInt16(1)
-        appendUInt16(UInt16(channels))
-        appendUInt32(UInt32(sampleRate))
-        appendUInt32(UInt32(byteRate))
-        appendUInt16(UInt16(bitPattern: blockAlign))
-        appendUInt16(UInt16(bitsPerSample))
-        appendString("data")
-        appendUInt32(UInt32(dataBytes))
-        samples.withUnsafeBytes { raw in
-            data.append(contentsOf: raw)
-        }
-        return data
     }
 
     // MARK: - WKScriptMessageHandler
@@ -410,7 +355,7 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
             if let panel = self.window {
                 var origin = panel.frame.origin
                 origin.x += CGFloat(dx)
-                origin.y -= CGFloat(dy) // Cocoa Y 坐标系与屏幕反向
+                origin.y -= CGFloat(dy)
                 panel.setFrameOrigin(origin)
             }
         } else if action == "resizeWindow",

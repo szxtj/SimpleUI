@@ -56,8 +56,23 @@ export const App: React.FC = () => {
         setSettings(loadSettings());
       }
     };
+    const refreshSettings = () => {
+      const latest = loadSettings();
+      setSettings((prev) =>
+        prev.language !== latest.language || prev.theme !== latest.theme ? latest : prev
+      );
+    };
+    (window as any).onSubtitleOverlayShown = refreshSettings;
     window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
+    const pollId =
+      window.location.hash === '#/subtitles' || window.location.hash === '#/voice'
+        ? window.setInterval(refreshSettings, 1000)
+        : undefined;
+    return () => {
+      delete (window as any).onSubtitleOverlayShown;
+      window.removeEventListener('storage', handleStorage);
+      if (pollId !== undefined) window.clearInterval(pollId);
+    };
   }, []);
 
   // 语音输入桥：原生侧在「焦点在本 App 自身输入框」时调用，把转写结果插入当前光标处。
