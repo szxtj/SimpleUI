@@ -249,7 +249,11 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             targetFrame = NSRect(x: x, y: y, width: targetWidth, height: targetHeight)
         }
 
+        let wasVisible = panel.isVisible
         isProgrammaticAnimating = true
+        if !wasVisible {
+            panel.alphaValue = 0.0
+        }
         panel.setFrame(targetFrame, display: true)
         isProgrammaticAnimating = false
 
@@ -258,6 +262,15 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         if let view = webView {
             panel.makeFirstResponder(view)
         }
+        if !wasVisible {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().alphaValue = 1.0
+            }
+        } else {
+            panel.alphaValue = 1.0
+        }
         if notifyJS {
             webView.evaluateJavaScript("window.onSpotlightShown && window.onSpotlightShown()") { _, _ in }
         }
@@ -265,9 +278,10 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
 
     func showWithSession(sessionId: String?, isExpanded: Bool = true) {
         if let sid = sessionId, !sid.isEmpty {
+            let expLiteral = isExpanded ? "true" : "false"
             // Evaluate loadSessionInSpotlight BEFORE showing/focusing the panel so JS state
-            // already points to the target session when focus/shown handlers fire.
-            webView.evaluateJavaScript("window.loadSessionInSpotlight && window.loadSessionInSpotlight('\(sid)')") { _, _ in }
+            // already points to the target session and knows its expanded state.
+            webView.evaluateJavaScript("window.loadSessionInSpotlight && window.loadSessionInSpotlight('\(sid)', \(expLiteral))") { _, _ in }
             show(isExpanded: isExpanded, notifyJS: false)
         } else {
             show(isExpanded: isExpanded, notifyJS: true)
@@ -276,6 +290,26 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
 
     func hide() {
         window?.orderOut(nil)
+    }
+
+    /// Resets the panel geometry to the compact bottom capsule state while hidden
+    private func resetToCollapsedCapsuleWhileHidden() {
+        guard let panel = window else { return }
+        self.isExpanded = false
+        self.dragView?.isHidden = true
+        self.hasUserCustomPosition = false
+        self.customExpandedOrigin = nil
+        let width: CGFloat = 540
+        let height: CGFloat = 88
+        self.targetFrameSize = NSSize(width: width, height: height)
+        self.animationGeneration += 1
+        let screen = currentScreen()
+        let screenRect = screen.visibleFrame
+        let defaultX = screenRect.origin.x + (screenRect.width - width) / 2
+        let defaultY = targetY(for: height, on: screen)
+        isProgrammaticAnimating = true
+        panel.setFrame(NSRect(x: defaultX, y: defaultY, width: width, height: height), display: false)
+        isProgrammaticAnimating = false
     }
 
     func handleResizePanel(width: CGFloat, height: CGFloat, isExpanding: Bool) {
@@ -288,7 +322,7 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
 
         self.isExpanded = isExpanding
 
-        // Only skip if NOT currently in the middle of an animation AND both current frame and target size match
+        // Skip if both current frame and target size already match
         if !isProgrammaticAnimating &&
            abs(panel.frame.width - width) < 1.0 &&
            abs(panel.frame.height - height) < 1.0 &&
@@ -299,6 +333,7 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         }
 
         self.targetFrameSize = NSSize(width: width, height: height)
+        self.animationGeneration += 1
 
         let screen = currentScreen()
         let screenRect = screen.visibleFrame
@@ -308,8 +343,6 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         if isExpanding {
             // EXPANDED:
             dragView.isHidden = false
-            panel.contentView?.layoutSubtreeIfNeeded()
-            panel.invalidateCursorRects(for: dragView)
 
             if hasUserCustomPosition, let origin = customExpandedOrigin {
                 // User already dragged it previously: preserve location
@@ -324,7 +357,6 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             }
         } else {
             // COLLAPSED / NEW CHAT RESET:
-            // "当然，当新建对话之后，收起来之后，位置应当归位"
             dragView.isHidden = true
             hasUserCustomPosition = false
             customExpandedOrigin = nil
@@ -334,43 +366,16 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             targetFrame = NSRect(x: defaultX, y: defaultY, width: width, height: height)
         }
 
-        // If the window is currently hidden, set frame immediately without animation.
-        // Invisible windows do not run AppKit animation groups properly and can get stuck.
-        if !panel.isVisible {
-            animationGeneration += 1
-            panel.setFrame(targetFrame, display: false)
-            return
-        }
-
-        animateTo(newFrame: targetFrame)
-    }
-
-    private func animateTo(newFrame: NSRect) {
-        guard let panel = window else { return }
-        if !isProgrammaticAnimating &&
-           abs(panel.frame.minX - newFrame.minX) < 1.0 &&
-           abs(panel.frame.minY - newFrame.minY) < 1.0 &&
-           abs(panel.frame.width - newFrame.width) < 1.0 &&
-           abs(panel.frame.height - newFrame.height) < 1.0 {
-            return
-        }
-        animationGeneration += 1
-        let currentGen = animationGeneration
+        // Instant frame update without heavy multi-frame WKWebView geometry interpolation
         isProgrammaticAnimating = true
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.22
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            panel.animator().setFrame(newFrame, display: true)
-        }, completionHandler: { [weak self] in
-            guard let self = self, self.animationGeneration == currentGen else { return }
-            self.isProgrammaticAnimating = false
-            // Guarantee final frame is accurate even under high GPU/CPU load
-            self.window?.setFrame(newFrame, display: true)
-            self.window?.contentView?.layoutSubtreeIfNeeded()
+        panel.setFrame(targetFrame, display: panel.isVisible)
+        isProgrammaticAnimating = false
+        if panel.isVisible {
+            panel.contentView?.layoutSubtreeIfNeeded()
             if let dragView = self.dragView {
-                self.window?.invalidateCursorRects(for: dragView)
+                panel.invalidateCursorRects(for: dragView)
             }
-        })
+        }
     }
 
     // MARK: - WKScriptMessageHandler
@@ -378,8 +383,12 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         if message.name == "closeSpotlight" {
             hide()
         } else if message.name == "openMainWindow" || message.name == "openMainFromSpotlight" {
+            let wasVisible = window?.isVisible ?? false
             hide()
-            onOpenMainWindow?()
+            resetToCollapsedCapsuleWhileHidden()
+            if wasVisible {
+                onOpenMainWindow?()
+            }
         } else if message.name == "resizePanel", let dict = message.body as? [String: Any] {
             let width = (dict["width"] as? CGFloat) ?? 540
             let height = (dict["height"] as? CGFloat) ?? 88

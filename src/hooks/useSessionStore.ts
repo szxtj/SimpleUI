@@ -193,19 +193,25 @@ export function useSessionStore(
   );
 
   /**
-   * 主动拉取一次服务端最新快照（用于窗口获焦、原生唤醒或重连兜底）
+   * 同步内存中的最新流式缓存到 React 状态；仅当 forceNetwork === true 时才重新拉取全量快照，
+   * 彻底消除大小窗口切换/获焦时重复请求 /api/sessions/state 造成的全量反序列化与重排卡顿。
    */
-  const refreshState = useCallback(async () => {
-    try {
-      const res = await fetch('/api/sessions/state');
-      if (res.ok) {
-        const snap: ServerSnapshot = await res.json();
-        applySnapshot(snap);
+  const refreshState = useCallback(
+    async (forceNetwork: boolean = false) => {
+      setSessions([...sessionsRef.current]);
+      if (!forceNetwork) return;
+      try {
+        const res = await fetch('/api/sessions/state');
+        if (res.ok) {
+          const snap: ServerSnapshot = await res.json();
+          applySnapshot(snap);
+        }
+      } catch {
+        // ignore transient network error during startup
       }
-    } catch {
-      // ignore transient network error during startup
-    }
-  }, [applySnapshot]);
+    },
+    [applySnapshot]
+  );
 
   /**
    * 建立 SSE 实时订阅连接（带自动指数退避重连）
@@ -213,7 +219,28 @@ export function useSessionStore(
   useEffect(() => {
     let es: EventSource | null = null;
     let reconnectTimer: number | null = null;
+    let chunkRafId: number | null = null;
     let unmounted = false;
+
+    const scheduleSessionsCommit = () => {
+      if (chunkRafId !== null) return;
+      chunkRafId = window.requestAnimationFrame(() => {
+        chunkRafId = null;
+        if (!unmounted) {
+          setSessions([...sessionsRef.current]);
+        }
+      });
+    };
+
+    const flushSessionsCommitNow = () => {
+      if (chunkRafId !== null) {
+        window.cancelAnimationFrame(chunkRafId);
+        chunkRafId = null;
+      }
+      if (!unmounted) {
+        setSessions([...sessionsRef.current]);
+      }
+    };
 
     const connect = () => {
       if (unmounted) return;
@@ -237,17 +264,17 @@ export function useSessionStore(
           } = JSON.parse(e.data);
           if (!data?.session) return;
 
-          setSessions((prev) => {
-            const idx = prev.findIndex((s) => s.id === data.session.id);
-            if (idx >= 0) {
-              const next = [...prev];
-              next[idx] = data.session;
-              return next;
-            }
-            return [data.session, ...prev];
-          });
+          const prev = sessionsRef.current;
+          const idx = prev.findIndex((s) => s.id === data.session.id);
+          const next =
+            idx >= 0
+              ? prev.map((s, i) => (i === idx ? data.session : s))
+              : [data.session, ...prev];
+          sessionsRef.current = next;
+          flushSessionsCommitNow();
 
           if (role === 'MAIN' && data.selectInMain && data.session.id) {
+            currentSessionIdRef.current = data.session.id;
             setCurrentSessionId(data.session.id);
           }
         } catch (err) {
@@ -264,18 +291,24 @@ export function useSessionStore(
           } = JSON.parse(e.data);
           if (!data || !Array.isArray(data.sessions)) return;
 
-          setSessions(data.sessions);
+          sessionsRef.current = data.sessions;
+          flushSessionsCommitNow();
           setGeneratingSessionIds((prev) => prev.filter((id) => id !== data.sessionId));
 
           if (role === 'MAIN') {
             if (data.mainSessionId) {
+              currentSessionIdRef.current = data.mainSessionId;
               setCurrentSessionId(data.mainSessionId);
             } else if (currentSessionIdRef.current === data.sessionId) {
-              setCurrentSessionId(data.sessions[0]?.id || null);
+              const nextId = data.sessions[0]?.id || null;
+              currentSessionIdRef.current = nextId;
+              setCurrentSessionId(nextId);
             }
           } else if (currentSessionIdRef.current === data.sessionId) {
             const empty = data.sessions.find((s) => !s.messages || s.messages.length === 0);
-            setCurrentSessionId(empty ? empty.id : null);
+            const nextId = empty ? empty.id : null;
+            currentSessionIdRef.current = nextId;
+            setCurrentSessionId(nextId);
           }
         } catch (err) {
           console.warn('[useSessionStore] Failed to parse session-deleted:', err);
@@ -287,6 +320,8 @@ export function useSessionStore(
         try {
           const data: { mainSessionId: string | null } = JSON.parse(e.data);
           if (data?.mainSessionId) {
+            currentSessionIdRef.current = data.mainSessionId;
+            flushSessionsCommitNow();
             setCurrentSessionId(data.mainSessionId);
           }
         } catch {
@@ -304,17 +339,15 @@ export function useSessionStore(
           } = JSON.parse(e.data);
           if (!data?.sessionId) return;
           if (data.session) {
-            setSessions((prev) => {
-              const idx = prev.findIndex((s) => s.id === data.session!.id);
-              const next =
-                idx >= 0
-                  ? prev.map((s, i) => (i === idx ? data.session! : s))
-                  : [data.session!, ...prev];
-              sessionsRef.current = next;
-              return next;
-            });
+            const prev = sessionsRef.current;
+            const idx = prev.findIndex((s) => s.id === data.session!.id);
+            sessionsRef.current =
+              idx >= 0
+                ? prev.map((s, i) => (i === idx ? data.session! : s))
+                : [data.session!, ...prev];
           }
           currentSessionIdRef.current = data.sessionId;
+          flushSessionsCommitNow();
           setCurrentSessionId(data.sessionId);
           const expanded =
             data.isExpanded ?? ((data.session?.messages?.length ?? 0) > 0);
@@ -359,28 +392,32 @@ export function useSessionStore(
             prev.includes(data.sessionId) ? prev : [...prev, data.sessionId]
           );
 
-          setSessions((prev) =>
-            prev.map((s) => {
-              if (s.id !== data.sessionId) return s;
-              return {
-                ...s,
-                messages: s.messages.map((m) =>
-                  m.id === data.messageId
-                    ? {
-                        ...m,
-                        ...(data.stage !== undefined ? { stage: data.stage } : {}),
-                        ...(data.pending !== undefined ? { pending: data.pending } : {}),
-                        ...(data.prefillStartedAt !== undefined
-                          ? { prefillStartedAt: data.prefillStartedAt }
-                          : {}),
-                        ...(data.stages !== undefined ? { stages: data.stages } : {}),
-                        ...(data.citations !== undefined ? { citations: data.citations } : {}),
-                      }
-                    : m
-                ),
-              };
-            })
-          );
+          sessionsRef.current = sessionsRef.current.map((s) => {
+            if (s.id !== data.sessionId) return s;
+            return {
+              ...s,
+              messages: s.messages.map((m) =>
+                m.id === data.messageId
+                  ? {
+                      ...m,
+                      ...(data.stage !== undefined ? { stage: data.stage } : {}),
+                      ...(data.pending !== undefined ? { pending: data.pending } : {}),
+                      ...(data.prefillStartedAt !== undefined
+                        ? { prefillStartedAt: data.prefillStartedAt }
+                        : {}),
+                      ...(data.stages !== undefined ? { stages: data.stages } : {}),
+                      ...(data.citations !== undefined ? { citations: data.citations } : {}),
+                    }
+                  : m
+              ),
+            };
+          });
+
+          // If Spotlight is not viewing this session, only update memory ref to avoid background re-renders
+          if (role === 'SPOTLIGHT' && currentSessionIdRef.current !== data.sessionId) {
+            return;
+          }
+          flushSessionsCommitNow();
         } catch {
           // ignore
         }
@@ -412,47 +449,50 @@ export function useSessionStore(
             }));
           }
 
-          setSessions((prev) =>
-            prev.map((s) => {
-              if (s.id !== data.sessionId) return s;
-              const exists = s.messages.some((m) => m.id === data.messageId);
-              const nextMsgs = exists
-                ? s.messages.map((m) =>
-                    m.id === data.messageId
-                      ? {
-                          ...m,
-                          reasoningContent: data.reasoningContent,
-                          content: data.content,
-                          isThinking: data.isThinking,
-                          thinkingDuration: data.thinkingDuration,
-                          pending: false,
-                          stage: undefined,
-                          ...(data.stages ? { stages: data.stages } : {}),
-                          ...(data.citations ? { citations: data.citations } : {}),
-                        }
-                      : m
-                  )
-                : [
-                    ...s.messages,
-                    {
-                      id: data.messageId,
-                      role: 'assistant' as const,
-                      reasoningContent: data.reasoningContent,
-                      content: data.content,
-                      isThinking: data.isThinking,
-                      thinkingDuration: data.thinkingDuration,
-                      pending: false,
-                      timestamp: Date.now(),
-                      ...(data.stages ? { stages: data.stages } : {}),
-                      ...(data.citations ? { citations: data.citations } : {}),
-                    },
-                  ];
-              return {
-                ...s,
-                messages: nextMsgs,
-              };
-            })
-          );
+          sessionsRef.current = sessionsRef.current.map((s) => {
+            if (s.id !== data.sessionId) return s;
+            const exists = s.messages.some((m) => m.id === data.messageId);
+            const nextMsgs = exists
+              ? s.messages.map((m) =>
+                  m.id === data.messageId
+                    ? {
+                        ...m,
+                        reasoningContent: data.reasoningContent,
+                        content: data.content,
+                        isThinking: data.isThinking,
+                        thinkingDuration: data.thinkingDuration,
+                        pending: false,
+                        stage: undefined,
+                        ...(data.stages ? { stages: data.stages } : {}),
+                        ...(data.citations ? { citations: data.citations } : {}),
+                      }
+                    : m
+                )
+              : [
+                  ...s.messages,
+                  {
+                    id: data.messageId,
+                    role: 'assistant' as const,
+                    reasoningContent: data.reasoningContent,
+                    content: data.content,
+                    isThinking: data.isThinking,
+                    thinkingDuration: data.thinkingDuration,
+                    pending: false,
+                    timestamp: Date.now(),
+                    ...(data.stages ? { stages: data.stages } : {}),
+                    ...(data.citations ? { citations: data.citations } : {}),
+                  },
+                ];
+            return {
+              ...s,
+              messages: nextMsgs,
+            };
+          });
+
+          // Only trigger React re-render if this window is actively viewing the streaming session
+          if (currentSessionIdRef.current === data.sessionId) {
+            scheduleSessionsCommit();
+          }
         } catch {
           // ignore
         }
@@ -486,20 +526,19 @@ export function useSessionStore(
           }
 
           if (data.message) {
-            setSessions((prev) =>
-              prev.map((s) => {
-                if (s.id !== data.sessionId) return s;
-                const exists = s.messages.some((m) => m.id === data.messageId);
-                const nextMsgs = exists
-                  ? s.messages.map((m) => (m.id === data.messageId ? data.message! : m))
-                  : [...s.messages, data.message!];
-                return {
-                  ...s,
-                  contextUsed: data.contextUsed ?? s.contextUsed,
-                  messages: nextMsgs,
-                };
-              })
-            );
+            sessionsRef.current = sessionsRef.current.map((s) => {
+              if (s.id !== data.sessionId) return s;
+              const exists = s.messages.some((m) => m.id === data.messageId);
+              const nextMsgs = exists
+                ? s.messages.map((m) => (m.id === data.messageId ? data.message! : m))
+                : [...s.messages, data.message!];
+              return {
+                ...s,
+                contextUsed: data.contextUsed ?? s.contextUsed,
+                messages: nextMsgs,
+              };
+            });
+            flushSessionsCommitNow();
           }
         } catch {
           // ignore
@@ -523,25 +562,24 @@ export function useSessionStore(
           });
 
           if (data.session) {
-            setSessions((prev) =>
-              prev.map((s) => (s.id === data.sessionId ? data.session! : s))
+            sessionsRef.current = sessionsRef.current.map((s) =>
+              s.id === data.sessionId ? data.session! : s
             );
           } else {
-            setSessions((prev) =>
-              prev.map((s) =>
-                s.id !== data.sessionId
-                  ? s
-                  : {
-                      ...s,
-                      messages: s.messages.map((m) =>
-                        m.pending || m.isThinking || m.stage
-                          ? { ...m, pending: false, isThinking: false, stage: undefined }
-                          : m
-                      ),
-                    }
-              )
+            sessionsRef.current = sessionsRef.current.map((s) =>
+              s.id !== data.sessionId
+                ? s
+                : {
+                    ...s,
+                    messages: s.messages.map((m) =>
+                      m.pending || m.isThinking || m.stage
+                        ? { ...m, pending: false, isThinking: false, stage: undefined }
+                        : m
+                    ),
+                  }
             );
           }
+          flushSessionsCommitNow();
         } catch {
           // ignore
         }
@@ -563,6 +601,9 @@ export function useSessionStore(
 
     return () => {
       unmounted = true;
+      if (chunkRafId !== null) {
+        window.cancelAnimationFrame(chunkRafId);
+      }
       if (reconnectTimer !== null) {
         clearTimeout(reconnectTimer);
       }
@@ -577,6 +618,7 @@ export function useSessionStore(
   const selectSession = useCallback(
     async (sessionId: string) => {
       currentSessionIdRef.current = sessionId;
+      setSessions([...sessionsRef.current]);
       setCurrentSessionId(sessionId);
       if (role === 'MAIN') {
         try {

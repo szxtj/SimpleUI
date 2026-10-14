@@ -443,21 +443,22 @@ export const SpotlightView: React.FC = () => {
   // Native bridge hook: Swift `showWithSession(sessionId:isExpanded:)` calls `window.loadSessionInSpotlight`
   useEffect(() => {
     // @ts-expect-error global hook for Swift showWithSession evaluation
-    window.loadSessionInSpotlight = (sessionId: string) => {
+    window.loadSessionInSpotlight = (sessionId: string, isExpandedHint?: boolean) => {
       if (!sessionId) return;
-      handoffLockUntilRef.current = Date.now() + 2500;
       recordActivity();
       selectSession(sessionId);
       const target = sessionsListRef.current.find((s) => s.id === sessionId);
-      const targetExpanded = Boolean(target && target.messages && target.messages.length > 0);
-      notifyResize(targetExpanded || true, imagesRef.current.length > 0, true);
-      refreshState();
+      const hasMsgs = Boolean(target && target.messages && target.messages.length > 0);
+      const targetExpanded = typeof isExpandedHint === 'boolean' ? isExpandedHint : hasMsgs;
+      handoffLockUntilRef.current = targetExpanded ? Date.now() + 1200 : 0;
+      lastResizeSentRef.current = null;
+      notifyResize(targetExpanded, imagesRef.current.length > 0, true);
     };
     return () => {
       // @ts-expect-error global hook
       delete window.loadSessionInSpotlight;
     };
-  }, [selectSession, refreshState, recordActivity, notifyResize]);
+  }, [selectSession, recordActivity, notifyResize]);
 
   // Real-time synchronization of settings across windows
   useEffect(() => {
@@ -483,21 +484,23 @@ export const SpotlightView: React.FC = () => {
     return () => window.removeEventListener('storage', handleStorage);
   }, []);
 
-  // Reload latest settings & refresh server state whenever Spotlight gains focus or is shown
+  // Reload latest settings & sync in-memory state whenever Spotlight gains focus or is shown
   useEffect(() => {
     const handleFocusOrShown = () => {
       setSettings(loadSettings());
       WikiAPI.getStatus().then(setWikiStatus);
       if (Date.now() < handoffLockUntilRef.current) {
         recordActivity();
-        refreshState();
+        refreshState(false);
+        lastResizeSentRef.current = null;
         notifyResize(true, imagesRef.current.length > 0, true);
         return;
       }
       checkIdleReset();
-      refreshState();
+      refreshState(false);
       const hasMsgs = messagesRef.current.length > 0 || isGeneratingRef.current;
       const isMulti = inputRef.current.includes('\n');
+      lastResizeSentRef.current = null;
       notifyResize(hasMsgs || isMulti, imagesRef.current.length > 0, true);
     };
 
@@ -582,25 +585,25 @@ export const SpotlightView: React.FC = () => {
     }
   };
 
-  const handleOpenInMain = useCallback(async () => {
+  const handleOpenInMain = useCallback(() => {
     if (currentSessionId) {
-      await handoffToMain(currentSessionId);
+      handoffToMain(currentSessionId);
     }
 
+    // 立即通知原生隐藏浮窗并唤起主窗口（只发一次，不阻塞等待 HTTP）
     // @ts-expect-error WebKit bridge
     if (window.webkit?.messageHandlers?.openMainWindow) {
       // @ts-expect-error WebKit bridge
       window.webkit.messageHandlers.openMainWindow.postMessage({});
-    }
-    // @ts-expect-error WebKit bridge
-    if (window.webkit?.messageHandlers?.openMainFromSpotlight) {
+    } else {
       // @ts-expect-error WebKit bridge
-      window.webkit.messageHandlers.openMainFromSpotlight.postMessage({});
+      window.webkit?.messageHandlers?.openMainFromSpotlight?.postMessage?.({});
     }
 
-    // 浮窗解绑当前会话并恢复为空白胶囊态；
-    // 若该会话仍在后台流式生成，服务端会继续推送至主窗口，浮窗完全解耦！
-    await initEmptySession();
+    // 延迟到浮窗隐藏动画后再静默解绑并恢复为空白胶囊态，避免与主窗口切入抢占算力
+    window.setTimeout(() => {
+      initEmptySession();
+    }, 120);
   }, [currentSessionId, handoffToMain, initEmptySession]);
 
   // Global shortcut listener (Cmd+O to open in main window)
@@ -701,7 +704,7 @@ export const SpotlightView: React.FC = () => {
   if (!isExpanded) {
     return (
       <div
-        className="w-full h-full select-none bg-transparent relative"
+        className="w-full h-full select-none bg-transparent relative flex flex-col justify-end"
         onDragEnter={handleDragEnter}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}

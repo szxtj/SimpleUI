@@ -462,7 +462,7 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
   };
 
   const handleShrinkToSpotlight = () => {
-    const hasMessages = (currentSession?.messages?.length ?? 0) > 0;
+    const hasMessages = (currentSession?.messages?.length ?? 0) > 0 || isGenerating;
     if (currentSessionId) {
       handoffToSpotlight(currentSessionId);
     }

@@ -287,9 +287,22 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
     }
 
     func showAndFocus() {
+        guard let win = window else { return }
+        let wasVisible = win.isVisible
+        if !wasVisible {
+            win.alphaValue = 0.0
+        }
         NSApp.activate(ignoringOtherApps: true)
-        window?.makeKeyAndOrderFront(nil)
-        // Instantly sync latest sessions from storage
+        win.makeKeyAndOrderFront(nil)
+        if !wasVisible {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                win.animator().alphaValue = 1.0
+            }
+        } else {
+            win.alphaValue = 1.0
+        }
         webView.evaluateJavaScript("window.reloadSessionsFromStorage && window.reloadSessionsFromStorage()") { _, _ in }
     }
 
