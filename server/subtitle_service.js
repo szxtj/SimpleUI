@@ -6,12 +6,13 @@
 //   - 第 3 级：IndexTeam/Index-Translate-2B-GGUF                  -> index_translate_2b_q4_k_m.gguf (llama-server 1249 极速翻译)
 //
 // 生命周期契约：
-//   - App 启动时绝不自动拉起字幕模型（0 后台常驻显存/内存），且启动时自动清扫上次残留的旧进程；
+//   - App 启动时绝不自动拉起字幕模型（0 后台常驻显存/内存），且启动时自动清扫上次残留的旧进程与无用缓存；
 //   - 仅当用户从状态栏菜单开启字幕窗口（POST /api/subtitles/start）时，按阶段依次加载三个模型并实时广播加载进度；
 //   - 三个模型全部就绪（modelsLoaded = true）后，才进入就绪监听态；
 //   - 关闭字幕窗口（POST /api/subtitles/stop）或退出 App（shutdownSync / shutdownForce）时，立刻终止并卸载全部三个模型与子进程。
 
 import http from 'http';
+import https from 'https';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -30,8 +31,22 @@ const CONFIG_FILE = path.join(userConfigDir, 'subtitles_config.json');
 const ASR_PID_FILE = '/tmp/simpleui_subtitle_asr.pid';
 const TRANS_PID_FILE = '/tmp/simpleui_subtitle_trans.pid';
 
-// 专属隔离模型目录
+// 专属隔离模型目录（标准内置文件夹）
 export const SUBTITLE_MODELS_DIR = path.join(userConfigDir, 'models', 'subtitles_pipeline');
+
+// 官方源与国内高速镜像源定义
+const DOWNLOAD_SOURCES = [
+  {
+    id: 'mirror',
+    name: '国内高速镜像源 (hf-mirror.com)',
+    baseUrl: 'https://hf-mirror.com',
+  },
+  {
+    id: 'official',
+    name: 'HuggingFace 官方源 (huggingface.co)',
+    baseUrl: 'https://huggingface.co',
+  },
+];
 
 // 已废弃的旧版模型与目录（启动或清理时自动移除以释放磁盘空间）
 const LEGACY_MODEL_PATHS = [
@@ -41,26 +56,151 @@ const LEGACY_MODEL_PATHS = [
   'punct',
 ];
 
-export const REQUIRED_MODELS = {
+export const MODEL_SPECS = {
   vad: {
     name: 'TEN-VAD (16ms 帧级声学活动检测)',
-    relPath: 'ten_vad.onnx',
-    minBytes: 300 * 1024,
+    shortName: 'TEN-VAD',
+    repo: 'TEN-framework/ten-vad',
     sizeDesc: '315 KB',
+    expectedBytes: Math.round(0.31 * 1024 * 1024),
+    files: [
+      {
+        src: 'src/onnx_model/ten-vad.onnx',
+        dst: 'ten_vad.onnx',
+        minBytes: 300 * 1024,
+        expectedBytes: 315 * 1024,
+        optional: false,
+      },
+    ],
   },
   asr: {
     name: 'Nemotron-Speech-Streaming-0.6B (ANE 160ms 流式英文识别)',
-    relPath: path.join('nemotron_asr', 'encoder.mlmodelc', 'weights', 'weight.bin'),
-    minBytes: 400 * 1024 * 1024,
+    shortName: 'Nemotron-Speech-0.6B (CoreML)',
+    repo: 'aufklarer/Nemotron-Speech-Streaming-0.6B-CoreML-INT8',
+    useRepoTree: true,
+    dstPrefix: 'nemotron_asr',
     sizeDesc: '580 MB',
+    expectedBytes: Math.round(578.8 * 1024 * 1024),
+    files: [
+      {
+        src: 'config.json',
+        dst: 'nemotron_asr/config.json',
+        minBytes: 100,
+        expectedBytes: 1024,
+        optional: false,
+      },
+      {
+        src: 'vocab.json',
+        dst: 'nemotron_asr/vocab.json',
+        minBytes: 2 * 1024,
+        expectedBytes: 20 * 1024,
+        optional: false,
+      },
+      {
+        src: 'encoder.mlmodelc/weights/weight.bin',
+        dst: 'nemotron_asr/encoder.mlmodelc/weights/weight.bin',
+        minBytes: 500 * 1024 * 1024,
+        expectedBytes: Math.round(560.9 * 1024 * 1024),
+        optional: false,
+      },
+      {
+        src: 'encoder.mlmodelc/model.mil',
+        dst: 'nemotron_asr/encoder.mlmodelc/model.mil',
+        minBytes: 100 * 1024,
+        expectedBytes: Math.round(0.8 * 1024 * 1024),
+        optional: false,
+      },
+      {
+        src: 'encoder.mlmodelc/coremldata.bin',
+        dst: 'nemotron_asr/encoder.mlmodelc/coremldata.bin',
+        minBytes: 100,
+        expectedBytes: 1024,
+        optional: false,
+      },
+      {
+        src: 'encoder.mlmodelc/analytics/coremldata.bin',
+        dst: 'nemotron_asr/encoder.mlmodelc/analytics/coremldata.bin',
+        minBytes: 50,
+        expectedBytes: 1024,
+        optional: true,
+      },
+      {
+        src: 'decoder.mlmodelc/weights/weight.bin',
+        dst: 'nemotron_asr/decoder.mlmodelc/weights/weight.bin',
+        minBytes: 10 * 1024 * 1024,
+        expectedBytes: Math.round(13.8 * 1024 * 1024),
+        optional: false,
+      },
+      {
+        src: 'decoder.mlmodelc/model.mil',
+        dst: 'nemotron_asr/decoder.mlmodelc/model.mil',
+        minBytes: 1024,
+        expectedBytes: 10 * 1024,
+        optional: false,
+      },
+      {
+        src: 'decoder.mlmodelc/coremldata.bin',
+        dst: 'nemotron_asr/decoder.mlmodelc/coremldata.bin',
+        minBytes: 100,
+        expectedBytes: 1024,
+        optional: false,
+      },
+      {
+        src: 'decoder.mlmodelc/analytics/coremldata.bin',
+        dst: 'nemotron_asr/decoder.mlmodelc/analytics/coremldata.bin',
+        minBytes: 50,
+        expectedBytes: 1024,
+        optional: true,
+      },
+      {
+        src: 'joint.mlmodelc/weights/weight.bin',
+        dst: 'nemotron_asr/joint.mlmodelc/weights/weight.bin',
+        minBytes: 2 * 1024 * 1024,
+        expectedBytes: Math.round(3.3 * 1024 * 1024),
+        optional: false,
+      },
+      {
+        src: 'joint.mlmodelc/model.mil',
+        dst: 'nemotron_asr/joint.mlmodelc/model.mil',
+        minBytes: 1024,
+        expectedBytes: 4 * 1024,
+        optional: false,
+      },
+      {
+        src: 'joint.mlmodelc/coremldata.bin',
+        dst: 'nemotron_asr/joint.mlmodelc/coremldata.bin',
+        minBytes: 100,
+        expectedBytes: 1024,
+        optional: false,
+      },
+      {
+        src: 'joint.mlmodelc/analytics/coremldata.bin',
+        dst: 'nemotron_asr/joint.mlmodelc/analytics/coremldata.bin',
+        minBytes: 50,
+        expectedBytes: 1024,
+        optional: true,
+      },
+    ],
   },
   translate: {
     name: 'Index-Translate-2B Q4_K_M (专精神经机器翻译)',
-    relPath: 'index_translate_2b_q4_k_m.gguf',
-    minBytes: 1200 * 1024 * 1024,
+    shortName: 'Index-Translate-2B (GGUF)',
+    repo: 'IndexTeam/Index-Translate-2B-GGUF',
     sizeDesc: '1.25 GB',
+    expectedBytes: Math.round(1251.4 * 1024 * 1024),
+    files: [
+      {
+        src: 'Index-Translate-2B.Q4_K_M.gguf',
+        dst: 'index_translate_2b_q4_k_m.gguf',
+        minBytes: 1200 * 1024 * 1024,
+        expectedBytes: Math.round(1251.4 * 1024 * 1024),
+        optional: false,
+      },
+    ],
   },
 };
+
+export const REQUIRED_MODELS = MODEL_SPECS;
 
 const DEFAULT_CONFIG = {
   enabled: true,
@@ -210,12 +350,69 @@ function isPidAlive(pid) {
   }
 }
 
-function getLlamaServerBin() {
-  const customPath = path.join(userConfigDir, 'runtime', 'llama', 'bin', 'llama-server');
-  if (fs.existsSync(customPath)) return customPath;
-  const appPath = '/Applications/SimpleUI.app/Contents/Resources/bin/llama-server';
-  if (fs.existsSync(appPath)) return appPath;
-  return 'llama-server';
+/**
+ * 解析标准内置文件夹中的 llama-server 及其动态库目录：
+ *   1. App 包内内置目录: Contents/Resources/llama/{bin/llama-server, lib}
+ *   2. 开发态项目内置目录: bin/llama/{bin/llama-server, lib}
+ *   3. 用户级标准内置目录: ~/Library/Application Support/SimpleUI/runtime/llama/{bin/llama-server, lib}
+ */
+function resolveLlamaRuntime() {
+  const roots = [
+    path.resolve(__dirname, '../llama'),
+    '/Applications/SimpleUI.app/Contents/Resources/llama',
+    path.resolve(__dirname, '../bin/llama'),
+    path.join(userConfigDir, 'runtime', 'llama'),
+  ];
+
+  for (const root of roots) {
+    const binPath = path.join(root, 'bin', 'llama-server');
+    if (fs.existsSync(binPath)) {
+      const libDir = path.join(root, 'lib');
+      return {
+        ready: true,
+        binPath,
+        libDir: fs.existsSync(libDir) ? libDir : path.dirname(binPath),
+        bundled: !root.startsWith(userConfigDir),
+      };
+    }
+  }
+
+  const standaloneCandidates = [
+    '/Applications/SimpleUI.app/Contents/Resources/bin/llama-server',
+    '/opt/homebrew/bin/llama-server',
+    '/usr/local/bin/llama-server',
+  ];
+  for (const binPath of standaloneCandidates) {
+    if (fs.existsSync(binPath)) {
+      return {
+        ready: true,
+        binPath,
+        libDir: path.resolve(path.dirname(binPath), '../lib'),
+        bundled: binPath.startsWith('/Applications/SimpleUI.app'),
+      };
+    }
+  }
+
+  return {
+    ready: false,
+    binPath: null,
+    libDir: path.join(userConfigDir, 'runtime', 'llama', 'lib'),
+    bundled: false,
+  };
+}
+
+/**
+ * 解析标准内置文件夹中的原生 CoreML 流式 ASR 守护进程 (subtitle_stream_asr)
+ */
+function resolveStreamAsrBin() {
+  const possiblePaths = [
+    path.resolve(__dirname, '../bin/subtitle_stream_asr'),
+    '/Applications/SimpleUI.app/Contents/Resources/bin/subtitle_stream_asr',
+    path.resolve(__dirname, '../../bin/subtitle_stream_asr'),
+    path.join(userConfigDir, 'runtime', 'bin', 'subtitle_stream_asr'),
+    path.join(process.cwd(), 'bin/subtitle_stream_asr'),
+  ];
+  return possiblePaths.find((p) => fs.existsSync(p)) || null;
 }
 
 function stripThinkTags(text) {
@@ -334,13 +531,33 @@ class SubtitleService {
 
     // 流式断句状态机
     this.currentWords = [];        // 当前正在底部流式吐出的词序列
-    this.consumedPrefixWords = [];  // 当前底层 ASR 会话中已被切走定稿的前缀词（用于软切后去重）
+    this.consumedPrefixWords = []; // 当前底层 ASR 会话中已被切走定稿的前缀词（用于软切后去重）
     this.silenceMs = 0;            // 连续静音毫秒数
     this.speechMs = 0;             // 当前句累积人声毫秒数
     this.lastCommittedEn = '';     // 上一句定稿英文（供翻译模型做上下文消歧）
 
+    // 内置模型自动测速与下载管理器状态
+    this.downloadAbortController = null;
+    this.downloadState = {
+      active: false,
+      phase: 'idle', // 'idle' | 'probing' | 'downloading' | 'cleaning' | 'completed' | 'error' | 'cancelled'
+      targetModel: null,
+      currentModelKey: null,
+      currentModelName: '',
+      currentFile: '',
+      selectedSource: null, // { id, name, baseUrl, latencyMs, speedKbps }
+      probeResults: [],
+      downloadedBytes: 0,
+      totalBytes: 0,
+      progressPercent: 0,
+      speedBps: 0,
+      etaSeconds: null,
+      error: null,
+      updatedAt: 0,
+    };
+
     this.loadConfig();
-    this.cleanLegacyModels();
+    this.cleanLegacyModels({ removePartFiles: true });
   }
 
   loadConfig() {
@@ -423,9 +640,9 @@ class SubtitleService {
   }
 
   /**
-   * 自动清理废弃的旧模型（Qwen3-ASR 1.7B、残缺 ForcedAligner、独立 Punct）与 .part 碎片
+   * 自动清理废弃的旧模型（Qwen3-ASR 1.7B、残缺 ForcedAligner、独立 Punct）与无用缓存碎片（.part / .tmp / .DS_Store）
    */
-  cleanLegacyModels() {
+  cleanLegacyModels(opts = { removePartFiles: true }) {
     if (!fs.existsSync(SUBTITLE_MODELS_DIR)) return { freedBytes: 0, removed: [] };
     let freedBytes = 0;
     const removed = [];
@@ -453,13 +670,23 @@ class SubtitleService {
       }
     }
 
-    const cleanPartRecursive = (dir) => {
+    const cleanTempRecursive = (dir) => {
       try {
         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
           const full = path.join(dir, entry.name);
           if (entry.isDirectory()) {
-            cleanPartRecursive(full);
-          } else if (entry.name.endsWith('.part')) {
+            cleanTempRecursive(full);
+            // 清理空目录
+            try {
+              if (fs.readdirSync(full).length === 0) {
+                fs.rmdirSync(full);
+              }
+            } catch {}
+          } else if (
+            (opts.removePartFiles && entry.name.endsWith('.part')) ||
+            entry.name.endsWith('.tmp') ||
+            entry.name.endsWith('.download')
+          ) {
             freedBytes += getSize(full);
             fs.rmSync(full, { force: true });
             removed.push(path.relative(SUBTITLE_MODELS_DIR, full));
@@ -467,38 +694,83 @@ class SubtitleService {
         }
       } catch {}
     };
-    cleanPartRecursive(SUBTITLE_MODELS_DIR);
+    cleanTempRecursive(SUBTITLE_MODELS_DIR);
 
     if (removed.length > 0) {
       console.log(
-        `[Subtitles] 🧹 已自动清理废弃模型与缓存 (${(freedBytes / (1024 * 1024)).toFixed(1)} MB): ${removed.join(', ')}`
+        `[Subtitles] 🧹 已自动清理废弃模型与无用缓存 (${(freedBytes / (1024 * 1024)).toFixed(1)} MB): ${removed.join(', ')}`
       );
     }
     return { freedBytes, removed };
   }
 
+  /**
+   * 校验字幕服务内置运行环境（onnxruntime-node + subtitle_stream_asr + llama-server）
+   */
+  checkRuntimeReadiness() {
+    const ortCandidates = [
+      path.resolve(__dirname, '../node_modules/onnxruntime-node'),
+      '/Applications/SimpleUI.app/Contents/Resources/node_modules/onnxruntime-node',
+    ];
+    const onnxReady = ortCandidates.some((p) => fs.existsSync(p));
+    const asrBinPath = resolveStreamAsrBin();
+    const asrBinReady = Boolean(asrBinPath);
+    const llamaRuntime = resolveLlamaRuntime();
+
+    return {
+      ready: onnxReady && asrBinReady && llamaRuntime.ready,
+      onnxReady,
+      asrBinReady,
+      asrBinPath,
+      llamaBinReady: llamaRuntime.ready,
+      llamaBinPath: llamaRuntime.binPath,
+      llamaLibDir: llamaRuntime.libDir,
+      llamaBundled: llamaRuntime.bundled,
+    };
+  }
+
+  /**
+   * 完整校验三级流式字幕模型的每一个必需文件是否完整就绪
+   */
   checkModelsReadiness() {
     const status = {};
     let allReady = true;
     const missing = [];
 
-    for (const [key, spec] of Object.entries(REQUIRED_MODELS)) {
-      const fullPath = path.join(SUBTITLE_MODELS_DIR, spec.relPath);
-      const exists = fs.existsSync(fullPath);
-      let sizeBytes = 0;
-      if (exists) {
-        try {
-          sizeBytes = fs.statSync(fullPath).size;
-        } catch {}
+    for (const [key, spec] of Object.entries(MODEL_SPECS)) {
+      const requiredFiles = spec.files.filter((f) => !f.optional);
+      let readyFilesCount = 0;
+      let totalSizeBytes = 0;
+
+      for (const f of spec.files) {
+        const fullPath = path.join(SUBTITLE_MODELS_DIR, f.dst);
+        if (fs.existsSync(fullPath)) {
+          try {
+            const st = fs.statSync(fullPath);
+            if (st.isFile()) {
+              totalSizeBytes += st.size;
+              if (!f.optional && st.size >= f.minBytes) {
+                readyFilesCount += 1;
+              }
+            }
+          } catch {}
+        }
       }
-      const ready = exists && sizeBytes >= spec.minBytes;
+
+      const ready = readyFilesCount === requiredFiles.length && requiredFiles.length > 0;
+      const primaryRelPath = spec.dstPrefix || spec.files[0]?.dst || '';
       status[key] = {
+        key,
         name: spec.name,
+        shortName: spec.shortName,
         ready,
-        sizeBytes,
-        sizeMb: (sizeBytes / (1024 * 1024)).toFixed(1),
+        readyFilesCount,
+        totalRequiredFiles: requiredFiles.length,
+        sizeBytes: totalSizeBytes,
+        expectedBytes: spec.expectedBytes,
+        sizeMb: (totalSizeBytes / (1024 * 1024)).toFixed(1),
         sizeDesc: spec.sizeDesc,
-        path: fullPath,
+        path: path.join(SUBTITLE_MODELS_DIR, primaryRelPath),
       };
       if (!ready) {
         allReady = false;
@@ -507,6 +779,584 @@ class SubtitleService {
     }
 
     return { allReady, status, missing };
+  }
+
+  // MARK: - 自动双源测速与一键下载管理器
+
+  /**
+   * 发起支持自动重定向（301/302/307/308）的 HTTP/HTTPS 请求
+   */
+  httpRequestWithRedirects(urlStr, options = {}, maxRedirects = 5) {
+    return new Promise((resolve, reject) => {
+      const follow = (currentUrl, redirectsLeft) => {
+        let parsedUrl;
+        try {
+          parsedUrl = new URL(currentUrl);
+        } catch (err) {
+          reject(err);
+          return;
+        }
+
+        const client = parsedUrl.protocol === 'https:' ? https : http;
+        const reqOpts = {
+          hostname: parsedUrl.hostname,
+          port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+          path: parsedUrl.pathname + parsedUrl.search,
+          method: options.method || 'GET',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) SimpleUI/1.0',
+            ...(options.headers || {}),
+          },
+          timeout: options.timeout || 25000,
+        };
+
+        const req = client.request(reqOpts, (res) => {
+          if (
+            [301, 302, 303, 307, 308].includes(res.statusCode) &&
+            res.headers.location &&
+            redirectsLeft > 0
+          ) {
+            res.resume();
+            const nextUrl = new URL(res.headers.location, currentUrl).toString();
+            follow(nextUrl, redirectsLeft - 1);
+            return;
+          }
+          resolve({ req, res, finalUrl: currentUrl });
+        });
+
+        if (options.signal) {
+          if (options.signal.aborted) {
+            req.destroy(new Error('Download cancelled'));
+            return;
+          }
+          options.signal.addEventListener(
+            'abort',
+            () => {
+              req.destroy(new Error('Download cancelled'));
+            },
+            { once: true }
+          );
+        }
+
+        req.on('timeout', () => {
+          req.destroy(new Error('Request timeout'));
+        });
+        req.on('error', (err) => {
+          reject(err);
+        });
+        req.end();
+      };
+
+      follow(urlStr, maxRedirects);
+    });
+  }
+
+  /**
+   * 并发对官方源 (huggingface.co) 与国内镜像源 (hf-mirror.com) 进行真实数据块拉取测速，
+   * 选出延迟最低、吞吐最快的源作为主下载源，另一源作为故障自动切换备份。
+   */
+  async probeBestMirror(signal) {
+    const probeSingleSource = async (source) => {
+      const testUrl = `${source.baseUrl}/TEN-framework/ten-vad/resolve/main/src/onnx_model/ten-vad.onnx`;
+      const startTime = Date.now();
+      try {
+        const { res } = await this.httpRequestWithRedirects(
+          testUrl,
+          {
+            method: 'GET',
+            headers: { Range: 'bytes=0-32767' },
+            timeout: 4000,
+            signal,
+          },
+          4
+        );
+
+        if (res.statusCode !== 200 && res.statusCode !== 206) {
+          res.resume();
+          return { ...source, ok: false, latencyMs: Infinity, speedKbps: 0 };
+        }
+
+        let received = 0;
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            res.destroy();
+            resolve();
+          }, 3500);
+          res.on('data', (chunk) => {
+            received += chunk.length;
+            if (received >= 32768) {
+              clearTimeout(timer);
+              res.destroy();
+              resolve();
+            }
+          });
+          res.on('end', () => {
+            clearTimeout(timer);
+            resolve();
+          });
+          res.on('error', (err) => {
+            clearTimeout(timer);
+            if (received > 0) resolve();
+            else reject(err);
+          });
+        });
+
+        const elapsedMs = Math.max(1, Date.now() - startTime);
+        if (received <= 0) {
+          return { ...source, ok: false, latencyMs: Infinity, speedKbps: 0 };
+        }
+        const speedKbps = Math.round((received / 1024) / (elapsedMs / 1000));
+        return {
+          ...source,
+          ok: true,
+          latencyMs: elapsedMs,
+          speedKbps,
+        };
+      } catch {
+        return { ...source, ok: false, latencyMs: Infinity, speedKbps: 0 };
+      }
+    };
+
+    const results = await Promise.all(DOWNLOAD_SOURCES.map((s) => probeSingleSource(s)));
+    const valid = results
+      .filter((r) => r.ok)
+      .sort((a, b) => a.latencyMs - b.latencyMs || b.speedKbps - a.speedKbps);
+
+    const primary = valid[0] || { ...DOWNLOAD_SOURCES[0], ok: true, latencyMs: 0, speedKbps: 0 };
+    const fallback =
+      valid[1] ||
+      DOWNLOAD_SOURCES.find((s) => s.id !== primary.id) ||
+      DOWNLOAD_SOURCES[0];
+
+    console.log(
+      `[Subtitles] 🌐 自动测速完成: 选中 ${primary.name} (${primary.latencyMs}ms, ${primary.speedKbps} KB/s)`
+    );
+    return { primary, fallback, results };
+  }
+
+  /**
+   * 动态获取 HuggingFace 仓库文件树（确保 CoreML bundle 无遗漏），失败时平滑回退内置静态文件清单
+   */
+  async fetchRepoTreeFiles(repo, dstPrefix, baseUrl, signal) {
+    const apiUrl = `${baseUrl}/api/models/${repo}/tree/main?recursive=true`;
+    try {
+      const { res } = await this.httpRequestWithRedirects(
+        apiUrl,
+        { method: 'GET', timeout: 10000, signal },
+        3
+      );
+      if (res.statusCode !== 200) {
+        res.resume();
+        return null;
+      }
+      let raw = '';
+      for await (const chunk of res) {
+        raw += chunk.toString('utf-8');
+      }
+      const items = JSON.parse(raw);
+      if (!Array.isArray(items)) return null;
+      const files = [];
+      for (const item of items) {
+        if (item.type !== 'file') continue;
+        const p = item.path || '';
+        if (!p || p.startsWith('.') || p.endsWith('.md') || p === 'LICENSE') continue;
+        const sz = Number(item.size) || 0;
+        files.push({
+          src: p,
+          dst: dstPrefix ? `${dstPrefix}/${p}` : p,
+          minBytes: sz > 0 ? Math.max(1, Math.floor(sz * 0.95)) : 1,
+          expectedBytes: sz > 0 ? sz : 1024,
+          optional: false,
+        });
+      }
+      return files.length > 0 ? files : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 下载单个模型文件（支持 .part 断点续传与主备源自动故障切换）
+   */
+  async downloadSingleFile(repo, fileSpec, sources, progressTracker, signal) {
+    const fullDst = path.join(SUBTITLE_MODELS_DIR, fileSpec.dst);
+    if (fs.existsSync(fullDst)) {
+      try {
+        const st = fs.statSync(fullDst);
+        if (st.isFile() && st.size >= fileSpec.minBytes) {
+          progressTracker.onFileSkipped(st.size, fileSpec.expectedBytes);
+          return true;
+        }
+      } catch {}
+    }
+
+    fs.mkdirSync(path.dirname(fullDst), { recursive: true });
+    const partPath = `${fullDst}.part`;
+    const sourceOrder = [sources.primary, sources.fallback].filter(Boolean);
+
+    for (let srcIdx = 0; srcIdx < sourceOrder.length; srcIdx++) {
+      const activeSource = sourceOrder[srcIdx];
+      const maxRetries = 3;
+
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        if (signal?.aborted) throw new Error('Download cancelled');
+
+        let existingBytes = 0;
+        if (fs.existsSync(partPath)) {
+          try {
+            existingBytes = fs.statSync(partPath).size;
+          } catch {}
+        }
+
+        const headers = {};
+        if (existingBytes > 0) {
+          headers.Range = `bytes=${existingBytes}-`;
+        }
+
+        const downloadUrl = `${activeSource.baseUrl}/${repo}/resolve/main/${fileSpec.src}`;
+        try {
+          const { res } = await this.httpRequestWithRedirects(
+            downloadUrl,
+            {
+              method: 'GET',
+              headers,
+              timeout: 30000,
+              signal,
+            },
+            5
+          );
+
+          if (res.statusCode === 404 && fileSpec.optional) {
+            res.resume();
+            try {
+              if (fs.existsSync(partPath)) fs.unlinkSync(partPath);
+            } catch {}
+            return true;
+          }
+
+          if (res.statusCode === 416) {
+            // Range not satisfiable: 重置 .part 重新拉取
+            res.resume();
+            try {
+              if (fs.existsSync(partPath)) fs.unlinkSync(partPath);
+            } catch {}
+            continue;
+          }
+
+          if (res.statusCode !== 200 && res.statusCode !== 206) {
+            res.resume();
+            throw new Error(`HTTP ${res.statusCode}`);
+          }
+
+          const isResume = existingBytes > 0 && res.statusCode === 206;
+          if (!isResume && existingBytes > 0) {
+            existingBytes = 0;
+          }
+
+          const contentLen = parseInt(res.headers['content-length'] || '0', 10);
+          const fileTotalBytes =
+            contentLen > 0 ? existingBytes + contentLen : fileSpec.expectedBytes || fileSpec.minBytes;
+
+          progressTracker.onFileStart(fileSpec.dst, existingBytes, fileTotalBytes, activeSource);
+
+          await new Promise((resolve, reject) => {
+            const fileStream = fs.createWriteStream(partPath, {
+              flags: isResume ? 'a' : 'w',
+            });
+
+            let idleTimer = setTimeout(() => {
+              res.destroy(new Error('Stream read timeout'));
+            }, 30000);
+
+            res.on('data', (chunk) => {
+              clearTimeout(idleTimer);
+              idleTimer = setTimeout(() => {
+                res.destroy(new Error('Stream read timeout'));
+              }, 30000);
+              progressTracker.onChunk(chunk.length);
+            });
+
+            res.pipe(fileStream);
+
+            fileStream.on('finish', () => {
+              clearTimeout(idleTimer);
+              resolve();
+            });
+            fileStream.on('error', (err) => {
+              clearTimeout(idleTimer);
+              reject(err);
+            });
+            res.on('error', (err) => {
+              clearTimeout(idleTimer);
+              fileStream.destroy();
+              reject(err);
+            });
+          });
+
+          const finalSize = fs.existsSync(partPath) ? fs.statSync(partPath).size : 0;
+          if (finalSize >= fileSpec.minBytes) {
+            fs.renameSync(partPath, fullDst);
+            progressTracker.onFileComplete(finalSize, fileTotalBytes);
+            return true;
+          } else {
+            throw new Error(`文件校验未通过 (${finalSize} < ${fileSpec.minBytes})`);
+          }
+        } catch (err) {
+          if (signal?.aborted || err.message === 'Download cancelled') {
+            throw new Error('Download cancelled');
+          }
+          console.warn(
+            `[Subtitles] 下载 ${fileSpec.dst} 异常 (${activeSource.id} 第 ${attempt}/${maxRetries} 次): ${err.message}`
+          );
+          if (attempt < maxRetries) {
+            await new Promise((r) => setTimeout(r, 1200));
+          }
+        }
+      }
+      console.log(`[Subtitles] 源 ${activeSource.id} 下载失败，自动切换备用源重试...`);
+    }
+
+    return Boolean(fileSpec.optional);
+  }
+
+  /**
+   * 启动后台一键测速与模型下载任务（支持下载全部缺失模型或指定模型）
+   */
+  async startDownload(targetModel = 'all') {
+    if (this.downloadState.active) {
+      return this.downloadState;
+    }
+
+    const keysOrder =
+      targetModel && targetModel !== 'all' && MODEL_SPECS[targetModel]
+        ? [targetModel]
+        : ['vad', 'asr', 'translate'];
+
+    const abortController = new AbortController();
+    this.downloadAbortController = abortController;
+    const { signal } = abortController;
+
+    // 启动下载前先清理废弃的旧模型（保留有效的 .part 文件以支持断点续传）
+    this.cleanLegacyModels({ removePartFiles: false });
+    fs.mkdirSync(SUBTITLE_MODELS_DIR, { recursive: true });
+
+    this.downloadState = {
+      active: true,
+      phase: 'probing',
+      targetModel,
+      currentModelKey: null,
+      currentModelName: '',
+      currentFile: '',
+      selectedSource: null,
+      probeResults: [],
+      downloadedBytes: 0,
+      totalBytes: 0,
+      progressPercent: 0,
+      speedBps: 0,
+      etaSeconds: null,
+      error: null,
+      updatedAt: Date.now(),
+    };
+    this.broadcastStatus();
+
+    // 异步执行测速与下载流水线
+    (async () => {
+      try {
+        // 1. 自动双源并发测速
+        const sources = await this.probeBestMirror(signal);
+        if (signal.aborted) throw new Error('Download cancelled');
+
+        this.downloadState.selectedSource = {
+          id: sources.primary.id,
+          name: sources.primary.name,
+          baseUrl: sources.primary.baseUrl,
+          latencyMs: sources.primary.latencyMs,
+          speedKbps: sources.primary.speedKbps,
+        };
+        this.downloadState.probeResults = sources.results;
+        this.downloadState.phase = 'downloading';
+        this.broadcastStatus();
+
+        // 2. 构建待下载文件计划并计算预计总字节数
+        const modelPlans = [];
+        let grandTotalBytes = 0;
+
+        for (const key of keysOrder) {
+          const spec = MODEL_SPECS[key];
+          if (!spec) continue;
+          let files = spec.files;
+          if (spec.useRepoTree) {
+            const dynamicFiles = await this.fetchRepoTreeFiles(
+              spec.repo,
+              spec.dstPrefix || '',
+              sources.primary.baseUrl,
+              signal
+            );
+            if (dynamicFiles && dynamicFiles.length > 0) {
+              files = dynamicFiles;
+            }
+          }
+          modelPlans.push({ key, spec, files });
+          for (const f of files) {
+            if (!f.optional) {
+              grandTotalBytes += f.expectedBytes || f.minBytes || 0;
+            }
+          }
+        }
+
+        this.downloadState.totalBytes = grandTotalBytes;
+        let completedFilesBytes = 0;
+        let currentFileDownloaded = 0;
+        let currentFileExpected = 0;
+        let speedWindowStart = Date.now();
+        let speedWindowBytes = 0;
+        let currentSpeedBps = 0;
+        let lastBroadcastTime = 0;
+
+        const updateProgress = (force = false) => {
+          const now = Date.now();
+          const elapsedSec = (now - speedWindowStart) / 1000;
+          if (elapsedSec >= 0.5) {
+            const instantSpeed = speedWindowBytes / elapsedSec;
+            currentSpeedBps =
+              currentSpeedBps > 0 ? currentSpeedBps * 0.6 + instantSpeed * 0.4 : instantSpeed;
+            speedWindowStart = now;
+            speedWindowBytes = 0;
+          }
+
+          const totalDownloaded = completedFilesBytes + currentFileDownloaded;
+          const totalTarget = Math.max(grandTotalBytes, totalDownloaded);
+          const pct =
+            totalTarget > 0
+              ? Math.min(99.5, Number(((totalDownloaded / totalTarget) * 100).toFixed(1)))
+              : 0;
+          const remainingBytes = Math.max(0, totalTarget - totalDownloaded);
+          const etaSec =
+            currentSpeedBps > 1024 ? Math.ceil(remainingBytes / currentSpeedBps) : null;
+
+          this.downloadState.downloadedBytes = totalDownloaded;
+          this.downloadState.totalBytes = totalTarget;
+          this.downloadState.progressPercent = pct;
+          this.downloadState.speedBps = Math.round(currentSpeedBps);
+          this.downloadState.etaSeconds = etaSec;
+          this.downloadState.updatedAt = now;
+
+          if (force || now - lastBroadcastTime >= 250) {
+            lastBroadcastTime = now;
+            this.broadcastStatus();
+          }
+        };
+
+        const progressTracker = {
+          onFileSkipped: (actualSize, expectedSize) => {
+            completedFilesBytes += actualSize;
+            grandTotalBytes += actualSize - (expectedSize || actualSize);
+            currentFileDownloaded = 0;
+            currentFileExpected = 0;
+            updateProgress(true);
+          },
+          onFileStart: (dst, existingBytes, fileTotalBytes, activeSource) => {
+            this.downloadState.currentFile = dst;
+            if (activeSource && this.downloadState.selectedSource?.id !== activeSource.id) {
+              this.downloadState.selectedSource = {
+                id: activeSource.id,
+                name: activeSource.name,
+                baseUrl: activeSource.baseUrl,
+                latencyMs: activeSource.latencyMs,
+                speedKbps: activeSource.speedKbps,
+              };
+            }
+            grandTotalBytes += fileTotalBytes - (currentFileExpected || fileTotalBytes);
+            currentFileExpected = fileTotalBytes;
+            currentFileDownloaded = existingBytes;
+            updateProgress(true);
+          },
+          onChunk: (bytesLen) => {
+            currentFileDownloaded += bytesLen;
+            speedWindowBytes += bytesLen;
+            updateProgress(false);
+          },
+          onFileComplete: (finalSize, fileTotalBytes) => {
+            completedFilesBytes += finalSize;
+            grandTotalBytes += finalSize - (fileTotalBytes || finalSize);
+            currentFileDownloaded = 0;
+            currentFileExpected = 0;
+            updateProgress(true);
+          },
+        };
+
+        // 3. 按阶段顺序下载全部缺失文件
+        for (const plan of modelPlans) {
+          if (signal.aborted) throw new Error('Download cancelled');
+          this.downloadState.currentModelKey = plan.key;
+          this.downloadState.currentModelName = plan.spec.name;
+          this.broadcastStatus();
+
+          for (const fileSpec of plan.files) {
+            if (signal.aborted) throw new Error('Download cancelled');
+            const ok = await this.downloadSingleFile(
+              plan.spec.repo,
+              fileSpec,
+              sources,
+              progressTracker,
+              signal
+            );
+            if (!ok) {
+              throw new Error(`组件 ${fileSpec.dst} 下载失败，请检查网络连接后重试`);
+            }
+          }
+        }
+
+        // 4. 下载完成：自动清理所有无用临时缓存与 .part 碎片
+        this.downloadState.phase = 'cleaning';
+        this.broadcastStatus();
+        this.cleanLegacyModels({ removePartFiles: true });
+
+        this.downloadState.active = false;
+        this.downloadState.phase = 'completed';
+        this.downloadState.progressPercent = 100;
+        this.downloadState.currentFile = '';
+        this.downloadState.speedBps = 0;
+        this.downloadState.etaSeconds = 0;
+        this.downloadState.updatedAt = Date.now();
+        this.downloadAbortController = null;
+        console.log('[Subtitles] 🎉 三级流式字幕模型全部下载完成并校验通过！');
+        this.broadcastStatus();
+      } catch (err) {
+        const isCancelled = signal.aborted || err.message === 'Download cancelled';
+        this.downloadState.active = false;
+        this.downloadState.phase = isCancelled ? 'cancelled' : 'error';
+        this.downloadState.speedBps = 0;
+        this.downloadState.etaSeconds = null;
+        this.downloadState.error = isCancelled ? null : err.message || '下载失败';
+        this.downloadState.updatedAt = Date.now();
+        this.downloadAbortController = null;
+        this.broadcastStatus();
+      }
+    })();
+
+    return this.downloadState;
+  }
+
+  /**
+   * 取消正在进行的模型下载任务（保留已完成文件，清理未完成或按需续传）
+   */
+  cancelDownload() {
+    if (this.downloadAbortController) {
+      try {
+        this.downloadAbortController.abort();
+      } catch {}
+      this.downloadAbortController = null;
+    }
+    if (this.downloadState.active) {
+      this.downloadState.active = false;
+      this.downloadState.phase = 'cancelled';
+      this.downloadState.speedBps = 0;
+      this.downloadState.etaSeconds = null;
+      this.downloadState.updatedAt = Date.now();
+      this.broadcastStatus();
+    }
+    return this.downloadState;
   }
 
   init() {
@@ -521,7 +1371,8 @@ class SubtitleService {
    */
   async start() {
     const check = this.checkModelsReadiness();
-    if (!check.allReady) {
+    const runtime = this.checkRuntimeReadiness();
+    if (!check.allReady || !runtime.ready) {
       this.isRunning = false;
       this.isLoadingModels = false;
       this.modelsLoaded = false;
@@ -689,6 +1540,7 @@ class SubtitleService {
    * 随 SimpleUI 退出时同步优雅停止（与 ttfService / asrService 对齐）
    */
   shutdownSync() {
+    this.cancelDownload();
     this.sessionGeneration += 1;
     this.isRunning = false;
     this.modelsLoaded = false;
@@ -721,6 +1573,7 @@ class SubtitleService {
    * 随 SimpleUI 进程退出时强制清扫（SIGKILL 双保险）
    */
   shutdownForce() {
+    this.cancelDownload();
     this.vad.unload();
     if (this.streamAsrProc) {
       try {
@@ -759,13 +1612,7 @@ class SubtitleService {
     if (this.streamAsrProc && !this.streamAsrProc.killed && this.streamAsrReady) {
       return true;
     }
-    const possiblePaths = [
-      path.join(__dirname, '../bin/subtitle_stream_asr'),
-      path.join(__dirname, '../../bin/subtitle_stream_asr'),
-      path.join(process.cwd(), 'bin/subtitle_stream_asr'),
-      '/Applications/SimpleUI.app/Contents/Resources/bin/subtitle_stream_asr',
-    ];
-    const binPath = possiblePaths.find((p) => fs.existsSync(p));
+    const binPath = resolveStreamAsrBin();
     if (!binPath) {
       console.warn('[Subtitles] 未找到 bin/subtitle_stream_asr 可执行文件');
       return false;
@@ -898,15 +1745,24 @@ class SubtitleService {
 
     let transAlive = await this.checkHealth(1249);
     if (!transAlive && !this.transProc) {
-      const llamaBin = getLlamaServerBin();
+      const llamaRuntime = resolveLlamaRuntime();
+      if (!llamaRuntime.ready || !llamaRuntime.binPath) {
+        console.error('[Subtitles] 未找到内置 llama-server 运行时');
+        return false;
+      }
+      const fallbackLibDir = path.join(userConfigDir, 'runtime', 'llama', 'lib');
+      const dyldPath = [llamaRuntime.libDir, fallbackLibDir, process.env.DYLD_LIBRARY_PATH]
+        .filter(Boolean)
+        .join(':');
       const llamaEnv = {
         ...process.env,
-        DYLD_LIBRARY_PATH: path.join(userConfigDir, 'runtime', 'llama', 'lib'),
+        DYLD_LIBRARY_PATH: dyldPath,
+        DYLD_FALLBACK_LIBRARY_PATH: dyldPath,
       };
       const transModel = path.join(SUBTITLE_MODELS_DIR, 'index_translate_2b_q4_k_m.gguf');
       console.log(`[Subtitles] [3/3] 正在加载 Index-Translate-2B Metal 翻译服务 (端口 1249)...`);
       const proc = spawn(
-        llamaBin,
+        llamaRuntime.binPath,
         [
           '-m',
           transModel,
@@ -962,23 +1818,35 @@ class SubtitleService {
     }
   }
 
-  broadcastStatus() {
+  getFullStatusPayload() {
     const check = this.checkModelsReadiness();
-    this.broadcast('status', {
+    const runtime = this.checkRuntimeReadiness();
+    return {
       running: this.isRunning,
       paused: this.isPaused,
       loading: this.isLoadingModels,
       modelsLoaded: this.modelsLoaded,
       loadingStage: this.loadingStage,
       loadingStepKey: this.loadingStepKey,
-      allReady: check.allReady,
+      allReady: check.allReady && runtime.ready,
+      modelsReady: check.allReady,
+      runtimeReady: runtime.ready,
+      runtimeStatus: runtime,
       missingModels: check.missing,
       modelsStatus: check.status,
+      downloadState: this.downloadState,
+      storageDir: SUBTITLE_MODELS_DIR,
       sourceLang: this.config.sourceLang,
       targetLang: this.config.targetLang,
+      config: this.config,
       clientCount: this.sseClients.size,
+      historyCount: this.history.length,
       recent: this.history.slice(-20),
-    });
+    };
+  }
+
+  broadcastStatus() {
+    this.broadcast('status', this.getFullStatusPayload());
   }
 
   /**
@@ -1293,34 +2161,56 @@ class SubtitleService {
       return;
     }
 
-    // 2. 状态查询
+    // 2. 状态查询（含运行环境校验、三级模型完整状态、自动测速下载进度）
     if (pathname === '/api/subtitles/status' && req.method === 'GET') {
-      const check = this.checkModelsReadiness();
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
       });
-      res.end(
-        JSON.stringify({
-          running: this.isRunning,
-          paused: this.isPaused,
-          loading: this.isLoadingModels,
-          modelsLoaded: this.modelsLoaded,
-          loadingStage: this.loadingStage,
-          loadingStepKey: this.loadingStepKey,
-          allReady: check.allReady,
-          missingModels: check.missing,
-          modelsStatus: check.status,
-          config: this.config,
-          clientCount: this.sseClients.size,
-          historyCount: this.history.length,
-          recent: this.history.slice(-30),
-        })
-      );
+      res.end(JSON.stringify(this.getFullStatusPayload()));
       return;
     }
 
-    // 3. 清空历史记录
+    // 3. 启动自动测速与模型一键下载
+    if (pathname === '/api/subtitles/download' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', async () => {
+        let targetModel = 'all';
+        try {
+          const parsed = JSON.parse(body || '{}');
+          if (parsed && parsed.model) targetModel = parsed.model;
+        } catch {}
+        const state = await this.startDownload(targetModel);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ ok: true, downloadState: state }));
+      });
+      return;
+    }
+
+    // 4. 取消模型下载
+    if (pathname === '/api/subtitles/download/cancel' && req.method === 'POST') {
+      const state = this.cancelDownload();
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ ok: true, downloadState: state }));
+      return;
+    }
+
+    // 5. 在访达 (Finder) 中打开字幕模型标准内置存储目录
+    if (pathname === '/api/subtitles/open-dir' && req.method === 'POST') {
+      try {
+        fs.mkdirSync(SUBTITLE_MODELS_DIR, { recursive: true });
+        spawn('open', [SUBTITLE_MODELS_DIR], { detached: true, stdio: 'ignore' }).unref();
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ ok: true, path: SUBTITLE_MODELS_DIR }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+      return;
+    }
+
+    // 6. 清空历史记录
     if (pathname === '/api/subtitles/clear' && req.method === 'POST') {
       this.history = [];
       this.currentWords = [];
@@ -1333,15 +2223,15 @@ class SubtitleService {
       return;
     }
 
-    // 4. 清理旧模型与临时缓存
+    // 7. 清理旧模型与临时缓存
     if (pathname === '/api/subtitles/clean' && req.method === 'POST') {
-      const result = this.cleanLegacyModels();
+      const result = this.cleanLegacyModels({ removePartFiles: !this.downloadState.active });
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify({ ok: true, ...result }));
       return;
     }
 
-    // 5. 开启字幕窗口：按需加载全部三个模型并在就绪后启动监听
+    // 8. 开启字幕窗口：按需加载全部三个模型并在就绪后启动监听
     if (pathname === '/api/subtitles/start' && req.method === 'POST') {
       this.start().catch((err) => {
         console.error('[Subtitles] start error:', err.message);
@@ -1358,7 +2248,7 @@ class SubtitleService {
       return;
     }
 
-    // 6. 窗口内暂停/继续内录（保持模型在内存中就绪，不卸载）
+    // 9. 窗口内暂停/继续内录（保持模型在内存中就绪，不卸载）
     if (pathname === '/api/subtitles/pause' && req.method === 'POST') {
       this.pause();
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
@@ -1373,7 +2263,7 @@ class SubtitleService {
       return;
     }
 
-    // 7. 关闭字幕窗口：立刻停止并卸载全部三个模型与后台子进程
+    // 10. 关闭字幕窗口：立刻停止并卸载全部三个模型与后台子进程
     if (pathname === '/api/subtitles/stop' && req.method === 'POST') {
       this.stop();
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
@@ -1381,22 +2271,27 @@ class SubtitleService {
       return;
     }
 
-    // 8. 模型清单
+    // 11. 模型清单
     if (pathname === '/api/subtitles/models' && req.method === 'GET') {
       const check = this.checkModelsReadiness();
+      const runtime = this.checkRuntimeReadiness();
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
       res.end(
         JSON.stringify({
           ok: true,
-          allReady: check.allReady,
+          allReady: check.allReady && runtime.ready,
+          modelsReady: check.allReady,
+          runtimeReady: runtime.ready,
+          runtimeStatus: runtime,
           models: Object.entries(check.status).map(([k, v]) => ({ key: k, ...v })),
+          downloadState: this.downloadState,
           storageDir: SUBTITLE_MODELS_DIR,
         })
       );
       return;
     }
 
-    // 9. 实时 160ms 增量音频帧喂入端点（支持裸 PCM Int16LE 或 WAV）
+    // 12. 实时 160ms 增量音频帧喂入端点（支持裸 PCM Int16LE 或 WAV）
     if (pathname === '/api/subtitles/feed' && req.method === 'POST') {
       const isFinal = url.searchParams.get('is_final') === '1';
       const format = url.searchParams.get('format') || 'pcm';

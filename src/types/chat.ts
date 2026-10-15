@@ -257,3 +257,80 @@ export interface VoicePermissionStatus {
   accessibility: boolean;
   inputMonitoring: boolean;
 }
+
+/** 实时字幕服务：单个模型的完整性与磁盘状态 */
+export interface SubtitleModelItemStatus {
+  key: 'vad' | 'asr' | 'translate';
+  name: string;
+  shortName: string;
+  ready: boolean;
+  readyFilesCount: number;
+  totalRequiredFiles: number;
+  sizeBytes: number;
+  expectedBytes: number;
+  sizeMb: string;
+  sizeDesc: string;
+  path: string;
+}
+
+/** 实时字幕服务：内置运行环境状态 */
+export interface SubtitleRuntimeStatus {
+  ready: boolean;
+  onnxReady: boolean;
+  asrBinReady: boolean;
+  asrBinPath: string | null;
+  llamaBinReady: boolean;
+  llamaBinPath: string | null;
+  llamaLibDir?: string;
+  llamaBundled?: boolean;
+}
+
+/** 实时字幕服务：自动双源测速与一键下载进度状态 */
+export interface SubtitleDownloadState {
+  active: boolean;
+  phase: 'idle' | 'probing' | 'downloading' | 'cleaning' | 'completed' | 'error' | 'cancelled';
+  targetModel: string | null;
+  currentModelKey: 'vad' | 'asr' | 'translate' | null;
+  currentModelName: string;
+  currentFile: string;
+  selectedSource: {
+    id: string;
+    name: string;
+    baseUrl: string;
+    latencyMs: number;
+    speedKbps: number;
+  } | null;
+  downloadedBytes: number;
+  totalBytes: number;
+  progressPercent: number;
+  speedBps: number;
+  etaSeconds: number | null;
+  error: string | null;
+  updatedAt: number;
+}
+
+/** 实时字幕服务整体聚合状态 */
+export interface SubtitleServiceStatus {
+  running: boolean;
+  paused: boolean;
+  loading: boolean;
+  modelsLoaded: boolean;
+  loadingStage: number;
+  loadingStepKey: string;
+  allReady: boolean;
+  modelsReady: boolean;
+  runtimeReady: boolean;
+  runtimeStatus: SubtitleRuntimeStatus;
+  missingModels: string[];
+  modelsStatus: {
+    vad?: SubtitleModelItemStatus;
+    asr?: SubtitleModelItemStatus;
+    translate?: SubtitleModelItemStatus;
+  };
+  downloadState: SubtitleDownloadState;
+  storageDir: string;
+  sourceLang: string;
+  targetLang: string;
+  clientCount: number;
+  historyCount: number;
+}

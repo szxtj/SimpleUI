@@ -42,8 +42,7 @@ pnpm-debug.log*
 # Local runtime configs
 server/wiki_config.json
 
-# 语音识别运行时：二进制与内置 VAD 随包提交（与 bin/kiwix 同策略，约 14MB），
-# 但 254MB 的模型不入库——打包时用 scripts/sync_audiocpp.sh --with-model 放入。
+# 语音识别运行时：二进制与内置 VAD 随包提交（与 bin/kiwix、bin/llama 同策略），
+# 但 254MB 的模型与 108MB 的打包期 Node 缓存不入库。
 bin/audiocpp/models/
-
-
+bin/node/

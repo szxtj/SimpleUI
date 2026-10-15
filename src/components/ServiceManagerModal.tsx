@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { AppSettings, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, VoicePermissionStatus } from '../types/chat';
-import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ASRServiceAPI } from '../services/api';
+import { AppSettings, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, VoicePermissionStatus, SubtitleServiceStatus } from '../types/chat';
+import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ASRServiceAPI, SubtitleServiceAPI } from '../services/api';
 import { resolveLanguage, formatArticleCount, translations, Language, TranslationKeys } from '../i18n';
 import {
   SERVICE_STATE_CARD_DOT_CLASS,
@@ -8,7 +8,7 @@ import {
   SERVICE_STATE_LABEL_KEY,
   toServiceState,
 } from '../utils/serviceState';
-import { X, RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen, FileText } from 'lucide-react';
+import { X, RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen, FileText, Check, Loader2 } from 'lucide-react';
 
 interface ServiceManagerModalProps {
   isOpen: boolean;
@@ -18,8 +18,8 @@ interface ServiceManagerModalProps {
   onApiPortChange?: (port: number) => void;
 }
 
-// 知识库卡片默认值（ZIM 路径默认值与后端 findZimFile 的兜底路径一致）
-const KB_DEFAULT_ZIM_PATH = '/Volumes/JustinSSD/wikipedia/wikipedia_zh_all_maxi_2026-08.zim';
+// 知识库卡片默认值（默认指向标准内置文件夹 ~/Library/Application Support/SimpleUI/wiki）
+const KB_DEFAULT_ZIM_PATH = '~/Library/Application Support/SimpleUI/wiki';
 const KB_DEFAULT_PORT = 31236;
 // 基础模型服务卡片默认值（与后端 ttf_service.js DEFAULT_MODEL_CONFIG 保持一致）
 const SVC_DEFAULT_PROJECT_DIR = '~/turbo-fieldfare';
@@ -157,6 +157,10 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
   /** 原生侧回推的三件套权限快照（浏览器调试模式下为 null） */
   const [voicePerm, setVoicePerm] = useState<VoicePermissionStatus | null>(null);
 
+  // ---- 实时字幕服务（TEN-VAD + Nemotron CoreML ANE + Index-Translate-2B）----
+  const [subtitleStatus, setSubtitleStatus] = useState<SubtitleServiceStatus | null>(null);
+  const [subtitleBusy, setSubtitleBusy] = useState(false);
+
   const refreshSvcStatus = async () => {
     const s = await ModelServiceAPI.getStatus();
     setSvcStatus(s);
@@ -167,6 +171,36 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     const s = await ASRServiceAPI.getStatus();
     setAsrStatus(s);
     return s;
+  };
+
+  const refreshSubtitleStatus = async () => {
+    const s = await SubtitleServiceAPI.getStatus();
+    if (s) setSubtitleStatus(s);
+    return s;
+  };
+
+  const handleSubtitleDownload = async (model: 'all' | 'vad' | 'asr' | 'translate' = 'all') => {
+    setSubtitleBusy(true);
+    try {
+      await SubtitleServiceAPI.startDownload(model);
+      await refreshSubtitleStatus();
+    } finally {
+      setSubtitleBusy(false);
+    }
+  };
+
+  const handleSubtitleCancelDownload = async () => {
+    setSubtitleBusy(true);
+    try {
+      await SubtitleServiceAPI.cancelDownload();
+      await refreshSubtitleStatus();
+    } finally {
+      setSubtitleBusy(false);
+    }
+  };
+
+  const handleSubtitleOpenDir = async () => {
+    await SubtitleServiceAPI.openModelsDir();
   };
 
   /** 通过原生桥请求权限快照；无原生桥（浏览器）时置 null 并展示降级提示 */
@@ -237,8 +271,9 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     };
   }, []);
 
-  // 打开时拉取三个服务的状态与配置，之后 3s 轮询（弹窗打开期间）
+  // 打开时拉取各服务的状态与配置，之后 3s 轮询 + SSE 实时监听字幕与下载进度（弹窗打开期间）
   useEffect(() => {
+    let subtitleEs: EventSource | null = null;
     if (isOpen) {
       setPathMessage(null);
 
@@ -269,12 +304,24 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
         }
       });
 
+      refreshSubtitleStatus();
+      try {
+        subtitleEs = new EventSource('/api/subtitles/stream');
+        subtitleEs.addEventListener('status', (e: MessageEvent) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data) setSubtitleStatus(data);
+          } catch {}
+        });
+      } catch {}
+
       // 原生权限快照（三件套）
       requestVoicePermissions();
 
       pollTimerRef.current = setInterval(() => {
         refreshSvcStatus();
         refreshAsrStatus();
+        refreshSubtitleStatus();
         if (logsOpenRef.current) {
           ModelServiceAPI.getLogs(200, selectedEngineRef.current).then((d) => setLogLines(d?.lines ?? null));
         }
@@ -297,6 +344,10 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
       setAsrMsg(null);
     }
     return () => {
+      if (subtitleEs) {
+        subtitleEs.close();
+        subtitleEs = null;
+      }
       if (pollTimerRef.current) {
         clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;
@@ -1570,6 +1621,298 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
             </div>
 
             {cardResetButton(handleAsrCardReset)}
+          </div>
+
+          {/* 实时字幕服务卡片（无常驻开关 · 纯状态提示 + 运行环境与三级模型完备校验 + 自动双源测速一键下载） */}
+          <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
+            {/* 头部：标题 + 整体状态指示（无启停开关） */}
+            <div className="flex items-center justify-between mb-2.5">
+              <div className="flex items-center gap-2">
+                <FileText className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
+                <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
+                  {t('subtitleServiceTitle')}
+                </span>
+              </div>
+              {subtitleStatus && (
+                <div className="flex items-center gap-1.5 text-[11px]">
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      subtitleStatus.downloadState?.active || subtitleStatus.loading
+                        ? 'bg-amber-500 animate-pulse'
+                        : subtitleStatus.running
+                        ? 'bg-emerald-500 animate-pulse'
+                        : subtitleStatus.paused
+                        ? 'bg-amber-500'
+                        : subtitleStatus.allReady
+                        ? 'bg-emerald-500'
+                        : 'bg-red-500'
+                    }`}
+                  />
+                  <span
+                    className={
+                      subtitleStatus.downloadState?.active || subtitleStatus.loading || subtitleStatus.paused
+                        ? 'text-amber-600 dark:text-amber-400 font-medium'
+                        : subtitleStatus.running || subtitleStatus.allReady
+                        ? 'text-emerald-600 dark:text-emerald-400 font-medium'
+                        : 'text-red-500 font-medium'
+                    }
+                  >
+                    {subtitleStatus.downloadState?.active
+                      ? `${t('subtitleStatusDownloading')}${
+                          subtitleStatus.downloadState.phase === 'downloading'
+                            ? ` (${subtitleStatus.downloadState.progressPercent.toFixed(1)}%)`
+                            : ''
+                        }`
+                      : subtitleStatus.loading
+                      ? `${t('subtitleStatusLoading')} (${Math.min(3, (subtitleStatus.loadingStage || 0) + 1)}/3)`
+                      : subtitleStatus.running
+                      ? t('subtitleStatusActive')
+                      : subtitleStatus.paused
+                      ? t('subtitleStatusPaused')
+                      : subtitleStatus.allReady
+                      ? t('subtitleStatusStandby')
+                      : t('subtitleStatusIncomplete')}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* 按需生命周期说明 */}
+            <div className="mb-3 px-2.5 py-2 rounded-lg bg-cyan-500/5 dark:bg-cyan-500/10 border border-cyan-500/20 text-[10px] text-zinc-600 dark:text-zinc-300 leading-snug">
+              {t('subtitleServiceLifecycleHint')}
+            </div>
+
+            {/* 内置运行环境状态 */}
+            <div className="pb-2.5 mb-2.5 border-b border-black/5 dark:border-white/5 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
+                  {t('subtitleRuntimeLabel')}
+                </div>
+                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate">
+                  {t('subtitleRuntimeDesc')}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    subtitleStatus?.runtimeReady !== false ? 'bg-emerald-500' : 'bg-red-500'
+                  }`}
+                />
+                <span
+                  className={`text-[10px] font-medium ${
+                    subtitleStatus?.runtimeReady !== false
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-red-500'
+                  }`}
+                >
+                  {subtitleStatus?.runtimeReady !== false
+                    ? t('subtitleRuntimeReady')
+                    : t('subtitleRuntimeMissing')}
+                </span>
+              </div>
+            </div>
+
+            {/* 三级流式模型完备状态清单 */}
+            <div>
+              <div className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-2">
+                {t('subtitleModelsSectionTitle')}
+              </div>
+              <div className="space-y-1.5">
+                {(
+                  [
+                    { key: 'vad' as const, label: t('subtitleModelStage1'), fallbackSize: '315 KB' },
+                    { key: 'asr' as const, label: t('subtitleModelStage2'), fallbackSize: '580 MB' },
+                    { key: 'translate' as const, label: t('subtitleModelStage3'), fallbackSize: '1.25 GB' },
+                  ]
+                ).map((item) => {
+                  const m = subtitleStatus?.modelsStatus?.[item.key];
+                  const isReady = Boolean(m?.ready);
+                  const isDownloadingThis =
+                    Boolean(subtitleStatus?.downloadState?.active) &&
+                    subtitleStatus?.downloadState?.currentModelKey === item.key;
+
+                  const formatDiskSize = (bytes?: number, desc?: string) => {
+                    if (!bytes || bytes <= 0) return desc || item.fallbackSize;
+                    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+                    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+                    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+                  };
+
+                  return (
+                    <div
+                      key={item.key}
+                      className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                            isReady
+                              ? 'bg-emerald-500'
+                              : isDownloadingThis
+                              ? 'bg-cyan-500 animate-pulse'
+                              : 'bg-red-500'
+                          }`}
+                        />
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
+                            {item.label}
+                          </div>
+                          <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
+                            {isReady
+                              ? formatDiskSize(m?.sizeBytes, m?.sizeDesc)
+                              : m?.sizeDesc || item.fallbackSize}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {isReady ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
+                            <Check className="w-3 h-3" />
+                            <span>{t('subtitleModelReady')}</span>
+                          </span>
+                        ) : isDownloadingThis ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 text-[10px] font-medium">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            <span>{t('subtitleStatusDownloading')}</span>
+                          </span>
+                        ) : (
+                          <>
+                            <span className="text-[10px] text-red-500 font-medium">
+                              {t('subtitleModelMissing')}
+                            </span>
+                            {!subtitleStatus?.downloadState?.active && (
+                              <button
+                                type="button"
+                                disabled={subtitleBusy}
+                                onClick={() => handleSubtitleDownload(item.key)}
+                                className="px-2 py-0.5 rounded-md bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 text-white text-[10px] font-medium transition-colors cursor-pointer"
+                              >
+                                {t('subtitleDownloadSingleBtn')}
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 自动测速与实时下载进度面板 */}
+            {subtitleStatus?.downloadState?.active && (
+              <div className="mt-3 p-2.5 rounded-lg bg-cyan-500/5 dark:bg-cyan-500/10 border border-cyan-500/20 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0 text-[11px] font-medium text-cyan-700 dark:text-cyan-300">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" />
+                    <span className="truncate">
+                      {subtitleStatus.downloadState.phase === 'probing'
+                        ? t('subtitleProbingSource')
+                        : subtitleStatus.downloadState.phase === 'cleaning'
+                        ? t('subtitleCleaningCache')
+                        : `${subtitleStatus.downloadState.currentFile || subtitleStatus.downloadState.currentModelName}`}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={subtitleBusy}
+                    onClick={handleSubtitleCancelDownload}
+                    className="px-2 py-0.5 rounded-md border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 text-[10px] font-medium transition-colors flex-shrink-0 cursor-pointer"
+                  >
+                    {t('subtitleCancelDownloadBtn')}
+                  </button>
+                </div>
+
+                {subtitleStatus.downloadState.selectedSource && (
+                  <div className="text-[10px] text-zinc-500 dark:text-zinc-400 flex items-center justify-between">
+                    <span>
+                      {t('subtitleSelectedSourceLabel')}:{' '}
+                      <strong className="font-medium text-zinc-700 dark:text-zinc-200">
+                        {subtitleStatus.downloadState.selectedSource.name}
+                      </strong>{' '}
+                      ({subtitleStatus.downloadState.selectedSource.latencyMs}ms)
+                    </span>
+                    <span className="font-mono text-cyan-600 dark:text-cyan-400 font-semibold">
+                      {subtitleStatus.downloadState.progressPercent.toFixed(1)}%
+                    </span>
+                  </div>
+                )}
+
+                <div className="w-full h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-emerald-500 transition-all duration-200"
+                    style={{
+                      width: `${Math.max(
+                        3,
+                        Math.min(100, subtitleStatus.downloadState.progressPercent || 0)
+                      )}%`,
+                    }}
+                  />
+                </div>
+
+                {subtitleStatus.downloadState.phase === 'downloading' && (
+                  <div className="flex items-center justify-between text-[10px] font-mono text-zinc-500 dark:text-zinc-400">
+                    <span>
+                      {(subtitleStatus.downloadState.downloadedBytes / (1024 * 1024)).toFixed(1)} MB /{' '}
+                      {(subtitleStatus.downloadState.totalBytes / (1024 * 1024)).toFixed(1)} MB
+                    </span>
+                    <span>
+                      {(subtitleStatus.downloadState.speedBps / (1024 * 1024)).toFixed(2)} MB/s
+                      {subtitleStatus.downloadState.etaSeconds !== null &&
+                      subtitleStatus.downloadState.etaSeconds > 0
+                        ? ` · ETA ${Math.floor(subtitleStatus.downloadState.etaSeconds / 60)}m${String(
+                            subtitleStatus.downloadState.etaSeconds % 60
+                          ).padStart(2, '0')}s`
+                        : ''}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 下载结果提示 */}
+            {!subtitleStatus?.downloadState?.active &&
+              subtitleStatus?.downloadState?.phase === 'completed' && (
+                <div className="mt-2.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                  {t('subtitleDownloadCompleted')}
+                </div>
+              )}
+            {!subtitleStatus?.downloadState?.active &&
+              subtitleStatus?.downloadState?.phase === 'cancelled' && (
+                <div className="mt-2.5 text-[11px] text-amber-600 dark:text-amber-400">
+                  {t('subtitleDownloadCancelled')}
+                </div>
+              )}
+            {!subtitleStatus?.downloadState?.active &&
+              subtitleStatus?.downloadState?.phase === 'error' &&
+              subtitleStatus?.downloadState?.error && (
+                <div className="mt-2.5 text-[11px] text-red-500">
+                  {subtitleStatus.downloadState.error}
+                </div>
+              )}
+
+            {/* 底部操作栏：一键自动测速下载缺失模型 + 打开模型目录 */}
+            <div className="mt-3 flex items-center gap-2">
+              {subtitleStatus && !subtitleStatus.modelsReady && !subtitleStatus.downloadState?.active && (
+                <button
+                  type="button"
+                  disabled={subtitleBusy}
+                  onClick={() => handleSubtitleDownload('all')}
+                  className="flex-1 px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-700 active:scale-[0.98] disabled:opacity-50 text-white text-xs font-medium transition-all cursor-pointer"
+                >
+                  {t('subtitleDownloadAllBtn')}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleSubtitleOpenDir}
+                className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-zinc-700 dark:text-zinc-200 border border-black/10 dark:border-white/10 text-xs font-medium transition-all active:scale-95 cursor-pointer"
+              >
+                <FolderOpen className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
+                <span>{t('subtitleOpenModelsDirBtn')}</span>
+              </button>
+            </div>
           </div>
 
         </div>

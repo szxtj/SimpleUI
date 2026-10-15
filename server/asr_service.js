@@ -76,8 +76,8 @@ export const DEFAULT_ASR_CONFIG = {
   audioChunkDurationSec: 30,
   // 是否在转写结果里保留 <|event|>/<|emotion|>/<|language|> 元标签（默认关）
   keepTags: false,
-  // ---- 本体与模型位置 ----
-  projectDir: path.join(HOME, 'audio.cpp'),
+  // ---- 标准内置目录与模型位置 ----
+  projectDir: path.join(userConfigDir, 'runtime', 'asr'),
   // 留空则自动探测（见 findBinary）
   binaryPath: '',
   modelPath: path.join(MODELS_DIR, MODEL_FILENAME),
@@ -129,14 +129,16 @@ function resolveDir(dir, fallback) {
 const VAD_RELATIVE_PATH = 'assets/framework/models/silero_vad';
 
 /**
- * 打包态资源根目录（随 App 分发的 audiocpp 运行时）。
+ * 标准内置资源根目录（随 App 分发或项目内置的 audiocpp 运行时）。
  * build_mac_app.sh 会把项目里的 bin/audiocpp 拷到 Contents/Resources/asr，
- * 因此打包后结构为 Resources/asr/{bin/audiocpp_server, assets/..., models/}。
+ * 因此打包态结构为 Resources/asr/{bin/audiocpp_server, assets/..., models/}，开发态为 bin/audiocpp/。
  */
 function bundledAsrRoot() {
   const candidates = [
     path.resolve(__dirname, '../asr'), // 打包态：Resources/server → Resources/asr
     '/Applications/SimpleUI.app/Contents/Resources/asr',
+    path.resolve(__dirname, '../bin/audiocpp'), // 开发态内置目录
+    path.join(userConfigDir, 'runtime', 'asr'), // 用户级标准内置目录
   ];
   for (const p of candidates) {
     try {

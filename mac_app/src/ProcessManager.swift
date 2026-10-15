@@ -189,6 +189,8 @@ class ProcessManager {
         proc.currentDirectoryURL = URL(fileURLWithPath: projectDir)
 
         var env = ProcessInfo.processInfo.environment
+        // 移除可能从 IDE 终端继承的 NODE_OPTIONS（防止触发 Debugger attached 挂起代理进程）
+        env.removeValue(forKey: "NODE_OPTIONS")
         env["PORT"] = "\(port)"
         proc.environment = env
 
@@ -216,10 +218,29 @@ class ProcessManager {
         }
     }
 
+    private func isWorkingNodeBinary(_ path: String) -> Bool {
+        guard FileManager.default.isExecutableFile(atPath: path) else { return false }
+        let testTask = Process()
+        testTask.executableURL = URL(fileURLWithPath: path)
+        testTask.arguments = ["--version"]
+        var env = ProcessInfo.processInfo.environment
+        env.removeValue(forKey: "NODE_OPTIONS")
+        testTask.environment = env
+        testTask.standardOutput = FileHandle.nullDevice
+        testTask.standardError = FileHandle.nullDevice
+        do {
+            try testTask.run()
+            testTask.waitUntilExit()
+            return testTask.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
     private func findNodeExecutable() -> String? {
         if let resourcesDir = Bundle.main.resourcePath {
             let bundled = "\(resourcesDir)/node/bin/node"
-            if FileManager.default.isExecutableFile(atPath: bundled) {
+            if isWorkingNodeBinary(bundled) {
                 return bundled
             }
         }
@@ -243,7 +264,7 @@ class ProcessManager {
         candidates.append("\(home)/.asdf/shims/node")
 
         for path in candidates {
-            if FileManager.default.isExecutableFile(atPath: path) {
+            if isWorkingNodeBinary(path) {
                 return path
             }
         }

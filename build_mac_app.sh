@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+unset NODE_OPTIONS
+REAL_HOME="$(dscl . -read /Users/$(id -un) NFSHomeDirectory 2>/dev/null | awk '{print $2}' || echo "$HOME")"
+[ -z "$REAL_HOME" ] && REAL_HOME="$HOME"
+
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_ROOT"
 
@@ -102,10 +107,128 @@ if [ -f "mac_app/src/subtitle_stream_asr.swift" ]; then
     echo "  -> 已打包 ANE 原生流式字幕 ASR 守护进程: bin/subtitle_stream_asr"
 fi
 
+# 随包分发字幕第 3 级神经机器翻译所需的 llama-server 运行时及自包含动态库
+ensure_llama_runtime() {
+  local LOCAL_LLAMA_DIR="$REAL_HOME/Library/Application Support/SimpleUI/runtime/llama"
+  if [ ! -x "bin/llama/bin/llama-server" ] || ! bin/llama/bin/llama-server --version >/dev/null 2>&1; then
+    echo "  · 正在构建自包含的内置 llama-server 运行时 → bin/llama/"
+    safe_remove "bin/llama"
+    mkdir -p "bin/llama/bin" "bin/llama/lib"
+
+    local SRC_BIN=""
+    if [ -x "$LOCAL_LLAMA_DIR/bin/llama-server" ]; then
+      SRC_BIN="$LOCAL_LLAMA_DIR/bin/llama-server"
+    elif command -v llama-server >/dev/null 2>&1; then
+      SRC_BIN="$(command -v llama-server)"
+    fi
+
+    if [ -n "$SRC_BIN" ]; then
+      python3 - "$SRC_BIN" "bin/llama" <<'PYEOF'
+import os, sys, shutil, subprocess
+
+src_bin = os.path.realpath(sys.argv[1])
+dest_root = os.path.abspath(sys.argv[2])
+dest_bin_dir = os.path.join(dest_root, "bin")
+dest_lib_dir = os.path.join(dest_root, "lib")
+os.makedirs(dest_bin_dir, exist_ok=True)
+os.makedirs(dest_lib_dir, exist_ok=True)
+
+dest_bin = os.path.join(dest_bin_dir, "llama-server")
+shutil.copy2(src_bin, dest_bin)
+os.chmod(dest_bin, 0o755)
+
+search_dirs = [
+    os.path.abspath(os.path.join(os.path.dirname(src_bin), "..", "lib")),
+    "/opt/homebrew/lib",
+    "/opt/homebrew/opt/ggml/lib",
+    "/opt/homebrew/opt/llama.cpp/lib",
+    "/usr/local/lib",
+]
+
+def get_deps(binary_path):
+    out = subprocess.check_output(["otool", "-L", binary_path], text=True)
+    deps = []
+    for line in out.splitlines()[1:]:
+        line = line.strip()
+        if not line:
+            continue
+        dep = line.split(" (compatibility ")[0].strip()
+        if dep.startswith("/System/") or dep.startswith("/usr/lib/"):
+            continue
+        deps.append(dep)
+    return deps
+
+def resolve_dep(dep_str, origin_dir=None):
+    if dep_str.startswith("@"):
+        base = os.path.basename(dep_str)
+        dirs = ([origin_dir] if origin_dir else []) + search_dirs
+        for d in dirs:
+            if not d:
+                continue
+            cand = os.path.join(d, base)
+            if os.path.exists(cand):
+                return os.path.realpath(cand), base
+    elif os.path.exists(dep_str):
+        return os.path.realpath(dep_str), os.path.basename(dep_str)
+    return None, os.path.basename(dep_str)
+
+queue = [(dest_bin, os.path.dirname(src_bin))]
+visited = set()
+
+while queue:
+    target, origin_dir = queue.pop(0)
+    if target in visited:
+        continue
+    visited.add(target)
+    is_exe = (target == dest_bin)
+    deps = get_deps(target)
+
+    for dep in deps:
+        real_src, base_name = resolve_dep(dep, origin_dir)
+        if not real_src:
+            continue
+        dst_lib = os.path.join(dest_lib_dir, base_name)
+        if not os.path.exists(dst_lib):
+            shutil.copy2(real_src, dst_lib)
+            os.chmod(dst_lib, 0o755)
+            queue.append((dst_lib, os.path.dirname(real_src)))
+
+        new_ref = f"@loader_path/../lib/{base_name}" if is_exe else f"@loader_path/{base_name}"
+        if dep != new_ref:
+            subprocess.run(["install_name_tool", "-change", dep, new_ref, target], check=False, stderr=subprocess.DEVNULL)
+
+    if not is_exe:
+        base_name = os.path.basename(target)
+        subprocess.run(["install_name_tool", "-id", f"@loader_path/{base_name}", target], check=False, stderr=subprocess.DEVNULL)
+
+for f in os.listdir(dest_lib_dir):
+    fp = os.path.join(dest_lib_dir, f)
+    if os.path.isfile(fp):
+        subprocess.run(["codesign", "--force", "--sign", "-", fp], check=False, stderr=subprocess.DEVNULL)
+subprocess.run(["codesign", "--force", "--sign", "-", dest_bin], check=False, stderr=subprocess.DEVNULL)
+PYEOF
+    fi
+  fi
+
+  if [ -d "bin/llama" ] && [ -x "bin/llama/bin/llama-server" ]; then
+    mkdir -p "$RESOURCES_DIR/llama"
+    cp -R "bin/llama/." "$RESOURCES_DIR/llama/"
+    chmod +x "$RESOURCES_DIR/llama/bin/llama-server" 2>/dev/null || true
+    # 同步一份到用户标准内置目录，确保开发态与打包态路径完全一致
+    mkdir -p "$LOCAL_LLAMA_DIR/bin" "$LOCAL_LLAMA_DIR/lib" 2>/dev/null || true
+    cp -R "bin/llama/." "$LOCAL_LLAMA_DIR/" 2>/dev/null || true
+    chmod +x "$LOCAL_LLAMA_DIR/bin/llama-server" 2>/dev/null || true
+    echo "  -> 已打包自包含字幕翻译运行时 (llama-server): $(du -sh bin/llama | cut -f1)"
+  else
+    echo "  ⚠ 未找到 llama-server 运行时：请确认 $LOCAL_LLAMA_DIR 或 bin/llama 存在"
+  fi
+}
+ensure_llama_runtime
+
 # 语音识别运行时 + 模型（独立用于语音输入服务，保持原样不动）
 ensure_asr_assets() {
   local MODEL_FILE="sensevoice-small-q8-audiocpp-v1.gguf"
-  local LOCAL_CACHE="$HOME/Library/Application Support/SimpleUI/models/$MODEL_FILE"
+  local LOCAL_CACHE="$REAL_HOME/Library/Application Support/SimpleUI/models/$MODEL_FILE"
   if [ ! -x "bin/audiocpp/bin/audiocpp_server" ]; then
     echo "  · 未找到本地 audiocpp 运行时，自动准备..."
     ./scripts/sync_audiocpp.sh --build
@@ -137,7 +260,7 @@ else
     echo "  ⚠ bin/audiocpp 仍缺失：语音识别将不可用（请检查网络或 ~/audio.cpp 构建）"
 fi
 
-# 随包分发 Node 运行时
+# 随包分发自包含 Node 运行时（包含动态库递归打包与 @loader_path 重定位，缓存于 /tmp 不污染 Git 仓库）
 ensure_node_runtime() {
   local NODE_BIN
   NODE_BIN="$(command -v node 2>/dev/null || true)"
@@ -151,12 +274,109 @@ ensure_node_runtime() {
     echo "  ⚠ 无法定位 node 真实二进制，跳过打包"
     return 0
   fi
-  mkdir -p "$RESOURCES_DIR/node/bin"
-  cp -f "$NODE_REAL" "$RESOURCES_DIR/node/bin/node"
-  chmod +x "$RESOURCES_DIR/node/bin/node"
-  local NODE_VER
-  NODE_VER="$($RESOURCES_DIR/node/bin/node --version 2>/dev/null || echo '?')"
-  echo "  -> 已打包 Node 运行时: $NODE_VER ($(du -h "$RESOURCES_DIR/node/bin/node" | cut -f1))"
+
+  local NODE_CACHE_DIR="/tmp/simpleui_node_runtime_cache"
+  if [ ! -x "$NODE_CACHE_DIR/bin/node" ] || ! "$NODE_CACHE_DIR/bin/node" --version >/dev/null 2>&1; then
+    echo "  · 正在构建自包含的内置 Node 运行时..."
+    safe_remove "$NODE_CACHE_DIR"
+    mkdir -p "$NODE_CACHE_DIR/bin" "$NODE_CACHE_DIR/lib"
+
+    python3 - "$NODE_REAL" "$NODE_CACHE_DIR" <<'PYEOF'
+import os, sys, shutil, subprocess
+
+src_bin = os.path.realpath(sys.argv[1])
+dest_root = os.path.abspath(sys.argv[2])
+dest_bin_dir = os.path.join(dest_root, "bin")
+dest_lib_dir = os.path.join(dest_root, "lib")
+os.makedirs(dest_bin_dir, exist_ok=True)
+os.makedirs(dest_lib_dir, exist_ok=True)
+
+dest_bin = os.path.join(dest_bin_dir, "node")
+shutil.copy2(src_bin, dest_bin)
+os.chmod(dest_bin, 0o755)
+
+search_dirs = [
+    os.path.abspath(os.path.join(os.path.dirname(src_bin), "..", "lib")),
+    "/opt/homebrew/lib",
+    "/opt/homebrew/opt/node/lib",
+    "/usr/local/lib",
+]
+
+def get_deps(binary_path):
+    out = subprocess.check_output(["otool", "-L", binary_path], text=True)
+    deps = []
+    for line in out.splitlines()[1:]:
+        line = line.strip()
+        if not line:
+            continue
+        dep = line.split(" (compatibility ")[0].strip()
+        if dep.startswith("/System/") or dep.startswith("/usr/lib/"):
+            continue
+        deps.append(dep)
+    return deps
+
+def resolve_dep(dep_str, origin_dir=None):
+    if dep_str.startswith("@"):
+        base = os.path.basename(dep_str)
+        dirs = ([origin_dir] if origin_dir else []) + search_dirs
+        for d in dirs:
+            if not d:
+                continue
+            cand = os.path.join(d, base)
+            if os.path.exists(cand):
+                return os.path.realpath(cand), base
+    elif os.path.exists(dep_str):
+        return os.path.realpath(dep_str), os.path.basename(dep_str)
+    return None, os.path.basename(dep_str)
+
+queue = [(dest_bin, os.path.dirname(src_bin))]
+visited = set()
+
+while queue:
+    target, origin_dir = queue.pop(0)
+    if target in visited:
+        continue
+    visited.add(target)
+    is_exe = (target == dest_bin)
+    deps = get_deps(target)
+
+    for dep in deps:
+        real_src, base_name = resolve_dep(dep, origin_dir)
+        if not real_src:
+            continue
+        dst_lib = os.path.join(dest_lib_dir, base_name)
+        if not os.path.exists(dst_lib):
+            shutil.copy2(real_src, dst_lib)
+            os.chmod(dst_lib, 0o755)
+            queue.append((dst_lib, os.path.dirname(real_src)))
+
+        new_ref = f"@loader_path/../lib/{base_name}" if is_exe else f"@loader_path/{base_name}"
+        if dep != new_ref:
+            subprocess.run(["install_name_tool", "-change", dep, new_ref, target], check=False, stderr=subprocess.DEVNULL)
+
+    if not is_exe:
+        base_name = os.path.basename(target)
+        subprocess.run(["install_name_tool", "-id", f"@loader_path/{base_name}", target], check=False, stderr=subprocess.DEVNULL)
+
+for f in os.listdir(dest_lib_dir):
+    fp = os.path.join(dest_lib_dir, f)
+    if os.path.isfile(fp):
+        subprocess.run(["codesign", "--force", "--sign", "-", fp], check=False, stderr=subprocess.DEVNULL)
+subprocess.run(["codesign", "--force", "--sign", "-", dest_bin], check=False, stderr=subprocess.DEVNULL)
+PYEOF
+  fi
+
+  if [ -d "$NODE_CACHE_DIR" ] && "$NODE_CACHE_DIR/bin/node" --version >/dev/null 2>&1; then
+    mkdir -p "$RESOURCES_DIR/node"
+    cp -R "$NODE_CACHE_DIR/." "$RESOURCES_DIR/node/"
+    chmod +x "$RESOURCES_DIR/node/bin/node"
+    local NODE_VER
+    NODE_VER="$("$RESOURCES_DIR/node/bin/node" --version 2>/dev/null || echo '?')"
+    echo "  -> 已打包自包含 Node 运行时: $NODE_VER ($(du -sh "$RESOURCES_DIR/node" | cut -f1))"
+  else
+    echo "  ⚠ 自包含 Node 运行时校验未通过，跳过随包内置（运行时将自动使用系统 node）"
+    safe_remove "$RESOURCES_DIR/node"
+  fi
 }
 ensure_node_runtime
 

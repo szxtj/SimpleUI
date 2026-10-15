@@ -1,4 +1,4 @@
-import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus } from '../types/chat';
+import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, SubtitleServiceStatus, SubtitleDownloadState } from '../types/chat';
 import { estimateHistoryTokens, setTokenCalibration, CalibrationProvider } from '../utils/token';
 import { getImageFromDB } from './imageStore';
 
@@ -977,5 +977,63 @@ export class ASRServiceAPI {
       console.error('ASRService getLogs failed:', e);
     }
     return null;
+  }
+}
+
+/**
+ * 实时双语字幕服务（TEN-VAD + Nemotron CoreML ANE + Index-Translate-2B）。
+ *
+ * 严格按需启停（随悬浮窗开启自动加载模型，随悬浮窗关闭立即卸载），
+ * 服务管理面板负责展示整体状态、运行环境与三级模型完备状态，并提供双源自动测速一键下载与打开模型目录功能。
+ */
+export class SubtitleServiceAPI {
+  static async getStatus(): Promise<SubtitleServiceStatus | null> {
+    try {
+      const res = await fetch('/api/subtitles/status');
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('SubtitleService getStatus failed:', e);
+    }
+    return null;
+  }
+
+  static async startDownload(
+    model: 'all' | 'vad' | 'asr' | 'translate' = 'all'
+  ): Promise<{ ok: boolean; downloadState?: SubtitleDownloadState }> {
+    try {
+      const res = await fetch('/api/subtitles/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('SubtitleService startDownload failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async cancelDownload(): Promise<{ ok: boolean; downloadState?: SubtitleDownloadState }> {
+    try {
+      const res = await fetch('/api/subtitles/download/cancel', {
+        method: 'POST',
+      });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('SubtitleService cancelDownload failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async openModelsDir(): Promise<{ ok: boolean; path?: string }> {
+    try {
+      const res = await fetch('/api/subtitles/open-dir', {
+        method: 'POST',
+      });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('SubtitleService openModelsDir failed:', e);
+    }
+    return { ok: false };
   }
 }

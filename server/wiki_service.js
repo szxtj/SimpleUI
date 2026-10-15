@@ -1185,14 +1185,34 @@ class WikiService {
     this.port = stored.port;
   }
 
-  // Find ZIM file strictly by verifying path existence (no SSD specific detection)
+  // Find ZIM file strictly by verifying path existence (prioritizing standard built-in wiki folder and user config)
   findZimFile(preferredPath) {
-    const target = (
-      preferredPath ||
-      loadStoredZimPath() ||
-      '/Volumes/JustinSSD/wikipedia/wikipedia_zh_all_maxi_2026-08.zim'
-    ).trim();
-
+    const builtInWikiDir = path.join(userConfigDir, 'wiki');
+    try {
+      if (!fs.existsSync(builtInWikiDir)) fs.mkdirSync(builtInWikiDir, { recursive: true });
+    } catch {}
+    const expandTilde = (p) => {
+      if (!p || typeof p !== 'string') return '';
+      const t = p.trim();
+      if (t === '~') return process.env.HOME || '';
+      if (t.startsWith('~/')) return path.join(process.env.HOME || '', t.slice(2));
+      return t;
+    };
+    const candidates = [
+      expandTilde(preferredPath),
+      expandTilde(loadStoredZimPath()),
+      builtInWikiDir,
+      '/Volumes/JustinSSD/wikipedia/wikipedia_zh_all_maxi_2026-08.zim',
+    ].filter(Boolean);
+    const target = candidates.find((c) => {
+      try {
+        if (!fs.existsSync(c)) return false;
+        const st = fs.statSync(c);
+        if (st.isFile() && c.endsWith('.zim')) return true;
+        if (st.isDirectory()) return fs.readdirSync(c).some((f) => f.endsWith('.zim'));
+      } catch {}
+      return false;
+    }) || '';
     if (!target) return null;
 
     try {

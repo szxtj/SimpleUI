@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Play, Pause, X, GripHorizontal, ArrowDownCircle, Trash2, Check, Loader2 } from 'lucide-react';
+import { Play, Pause, X, GripHorizontal, ArrowDownCircle, Trash2, Check, Loader2, FolderOpen } from 'lucide-react';
 import { useI18n } from '../i18n';
+import { SubtitleDownloadState } from '../types/chat';
 
 interface SubtitleRecord {
   id: string;
@@ -18,6 +19,7 @@ export const SubtitleOverlay: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [loadingStage, setLoadingStage] = useState(0);
+  const [downloadState, setDownloadState] = useState<SubtitleDownloadState | null>(null);
 
   // 上方历史字幕记录列表（完整可自由滚动阅览，包含每一句的原句与下方对应翻译）
   const [history, setHistory] = useState<SubtitleRecord[]>([]);
@@ -29,6 +31,7 @@ export const SubtitleOverlay: React.FC = () => {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const isUserScrolledUpRef = useRef<boolean>(false);
   const [showScrollBottomBtn, setShowScrollBottomBtn] = useState(false);
+  const prevAllReadyRef = useRef<boolean>(true);
 
   // 通知原生端面板已就绪
   useEffect(() => {
@@ -36,6 +39,14 @@ export const SubtitleOverlay: React.FC = () => {
       (window as any).webkit?.messageHandlers?.subtitleOverlay?.postMessage({ action: 'ready' });
     } catch {}
   }, []);
+
+  // 当模型下载刚刚完成（allReady 从 false 变为 true）时，自动启动加载三级模型
+  useEffect(() => {
+    if (!prevAllReadyRef.current && allReady && !modelsLoaded && !isLoading) {
+      fetch('/api/subtitles/start', { method: 'POST' }).catch(() => {});
+    }
+    prevAllReadyRef.current = allReady;
+  }, [allReady, modelsLoaded, isLoading]);
 
   // 当三个模型全部加载完毕且处于运行状态时，自动通知原生端启动或停止 ScreenCaptureKit 音频内录
   useEffect(() => {
@@ -77,6 +88,9 @@ export const SubtitleOverlay: React.FC = () => {
           setIsLoading(Boolean(data.loading));
           setModelsLoaded(Boolean(data.modelsLoaded));
           setLoadingStage(typeof data.loadingStage === 'number' ? data.loadingStage : 0);
+          if (data.downloadState) {
+            setDownloadState(data.downloadState);
+          }
 
           if (data.recent && Array.isArray(data.recent) && data.recent.length > 0) {
             setHistory((prev) =>
@@ -278,6 +292,28 @@ export const SubtitleOverlay: React.FC = () => {
     }
   };
 
+  const handleStartDownload = async () => {
+    try {
+      await fetch('/api/subtitles/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'all' }),
+      });
+    } catch {}
+  };
+
+  const handleCancelDownload = async () => {
+    try {
+      await fetch('/api/subtitles/download/cancel', { method: 'POST' });
+    } catch {}
+  };
+
+  const handleOpenModelsDir = async () => {
+    try {
+      await fetch('/api/subtitles/open-dir', { method: 'POST' });
+    } catch {}
+  };
+
   const readyDiskCount = Math.max(0, 3 - missingModels.length);
   const showLoadingScreen = allReady && (!modelsLoaded || isLoading);
   const activeStepDisplay = Math.min(3, loadingStage + 1);
@@ -303,7 +339,7 @@ export const SubtitleOverlay: React.FC = () => {
               <span
                 className={`w-2 h-2 rounded-full ${
                   !allReady
-                    ? 'bg-amber-400'
+                    ? 'bg-amber-400 animate-pulse'
                     : showLoadingScreen
                     ? 'bg-cyan-400 animate-pulse'
                     : isRunning
@@ -313,7 +349,9 @@ export const SubtitleOverlay: React.FC = () => {
               />
               <span className="text-[11px] font-medium tracking-wide text-neutral-300">
                 {!allReady
-                  ? `${t('subtitlePreparingModels')} (${readyDiskCount}/3)`
+                  ? downloadState?.active
+                    ? `${t('subtitleStatusDownloading')} (${downloadState.progressPercent.toFixed(1)}%)`
+                    : `${t('subtitlePreparingModels')} (${readyDiskCount}/3)`
                   : showLoadingScreen
                   ? `${t('subtitleLoadingModelsTitle')} (${activeStepDisplay}/3)`
                   : isRunning
@@ -354,19 +392,75 @@ export const SubtitleOverlay: React.FC = () => {
           </div>
         </div>
 
-        {/* 主内容区域：1. 磁盘缺模型提示 / 2. 简约现代化三级模型加载进度视图 / 3. 双语流式字幕主视图 */}
+        {/* 主内容区域：1. 磁盘缺模型与一键自动测速下载视图 / 2. 简约现代化三级模型加载进度视图 / 3. 双语流式字幕主视图 */}
         {!allReady ? (
-          <div className="flex-1 p-4 flex flex-col justify-center gap-2 text-xs">
-            <div className="text-neutral-300 font-medium flex items-center gap-2">
-              <span>{t('subtitleModelsNotReady')}</span>
-              <span className="text-neutral-500 text-[11px]">({missingModels.join(', ')})</span>
+          <div className="flex-1 px-5 py-3 flex flex-col justify-center gap-2.5 text-xs">
+            <div className="text-neutral-200 font-medium flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="truncate">{t('subtitleModelsNotReady')}</span>
+                <span className="text-neutral-500 text-[11px] truncate">({missingModels.join(', ')})</span>
+              </div>
             </div>
-            <div className="text-neutral-400 text-[11px] flex items-center gap-1.5 flex-wrap">
-              <span>{t('subtitleRunDownloadScript')}</span>
-              <code className="bg-white/5 border border-white/10 px-2 py-0.5 rounded text-cyan-300 font-mono text-[11px] select-text">
-                ./scripts/download_subtitle_models.sh --all
-              </code>
-            </div>
+
+            {downloadState?.active ? (
+              <div className="space-y-1.5 bg-white/[0.03] border border-white/10 rounded-xl p-2.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <div className="flex items-center gap-1.5 text-cyan-300 truncate">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                    <span className="truncate">
+                      {downloadState.phase === 'probing'
+                        ? t('subtitleProbingSource')
+                        : downloadState.phase === 'cleaning'
+                        ? t('subtitleCleaningCache')
+                        : downloadState.currentFile || downloadState.currentModelName}
+                    </span>
+                  </div>
+                  <button
+                    onClick={handleCancelDownload}
+                    className="px-2 py-0.5 rounded bg-red-500/20 hover:bg-red-500/30 text-red-300 text-[10px] shrink-0 cursor-pointer"
+                  >
+                    {t('subtitleCancelDownloadBtn')}
+                  </button>
+                </div>
+                <div className="w-full h-1.5 rounded-full bg-white/10 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-emerald-400 transition-all duration-200"
+                    style={{ width: `${Math.max(3, Math.min(100, downloadState.progressPercent || 0))}%` }}
+                  />
+                </div>
+                <div className="flex items-center justify-between text-[10px] text-neutral-400 font-mono">
+                  <span>
+                    {downloadState.selectedSource
+                      ? `${downloadState.selectedSource.name} (${downloadState.selectedSource.latencyMs}ms)`
+                      : ''}
+                  </span>
+                  <span>
+                    {(downloadState.downloadedBytes / (1024 * 1024)).toFixed(1)} MB /{' '}
+                    {(downloadState.totalBytes / (1024 * 1024)).toFixed(1)} MB ·{' '}
+                    {(downloadState.speedBps / (1024 * 1024)).toFixed(2)} MB/s
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <span className="text-neutral-400 text-[11px]">{t('subtitleRunDownloadScript')}</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleStartDownload}
+                    className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-medium transition cursor-pointer"
+                  >
+                    {t('subtitleDownloadAllBtn')}
+                  </button>
+                  <button
+                    onClick={handleOpenModelsDir}
+                    className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-neutral-300 text-[11px] flex items-center gap-1 transition cursor-pointer"
+                  >
+                    <FolderOpen className="w-3 h-3" />
+                    <span>{t('subtitleOpenModelsDirBtn')}</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         ) : showLoadingScreen ? (
           <div className="flex-1 px-6 py-4 flex flex-col items-center justify-center gap-3.5 select-none">
