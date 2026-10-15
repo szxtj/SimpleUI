@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
 import { SettingsModal } from './components/SettingsModal';
@@ -26,6 +26,7 @@ import { SpotlightView } from './components/SpotlightView';
 import { VoiceOverlay } from './components/VoiceOverlay';
 import { SubtitleOverlay } from './components/SubtitleOverlay';
 import { WikiSidebar } from './components/WikiSidebar';
+import { StartupOverlay } from './components/StartupOverlay';
 import { I18nProvider, resolveLanguage } from './i18n';
 import { useTheme } from './hooks/useTheme';
 import { useSessionStore } from './hooks/useSessionStore';
@@ -243,6 +244,11 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
   const [asrStatus, setAsrStatus] = useState<AsrServiceStatus | null>(null);
   /** 基础模型服务状态（左下角服务行；带 status 字段，可区分启动中） */
   const [modelStatus, setModelStatus] = useState<ModelServiceStatus | null>(null);
+  /** 启动冷态遮罩展示状态（直到所需服务完全启动，再等半秒淡出） */
+  const [showStartupOverlay, setShowStartupOverlay] = useState(true);
+  const handleStartupFinished = useCallback(() => {
+    setShowStartupOverlay(false);
+  }, []);
 
   // Expose global hook for Swift wrapper showAndFocus evaluation & focus refresh
   useEffect(() => {
@@ -303,7 +309,8 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     };
 
     checkServer();
-    const timer = setInterval(checkServer, 10000);
+    const interval = showStartupOverlay ? 500 : 10000;
+    const timer = setInterval(checkServer, interval);
     return () => clearInterval(timer);
   }, [
     settings.apiProvider,
@@ -312,6 +319,7 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     settings.deepseekApiKey,
     settings.deepseekModelId,
     settings.deepseekBaseUrl,
+    showStartupOverlay,
     setSettings,
   ]);
 
@@ -329,9 +337,10 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
       setWikiStatus(status);
     };
     checkWiki();
-    const wikiTimer = setInterval(checkWiki, 6000);
+    const interval = showStartupOverlay ? 500 : 6000;
+    const wikiTimer = setInterval(checkWiki, interval);
     return () => clearInterval(wikiTimer);
-  }, []);
+  }, [showStartupOverlay]);
 
   // Poll 语音识别服务状态（左下角服务行）
   useEffect(() => {
@@ -340,9 +349,10 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
       setAsrStatus(status);
     };
     checkAsr();
-    const asrTimer = setInterval(checkAsr, 6000);
+    const interval = showStartupOverlay ? 500 : 6000;
+    const asrTimer = setInterval(checkAsr, interval);
     return () => clearInterval(asrTimer);
-  }, []);
+  }, [showStartupOverlay]);
 
   // Poll 基础模型服务状态（左下角服务行）
   useEffect(() => {
@@ -351,9 +361,10 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
       setModelStatus(status);
     };
     checkModel();
-    const modelTimer = setInterval(checkModel, 6000);
+    const interval = showStartupOverlay ? 500 : 6000;
+    const modelTimer = setInterval(checkModel, interval);
     return () => clearInterval(modelTimer);
-  }, []);
+  }, [showStartupOverlay]);
 
   // Notify native macOS wrapper to disable TitleBarDragView when a modal is open
   useEffect(() => {
@@ -621,6 +632,13 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
           settings={settings}
           onApiPortChange={handleServiceApiPortChange}
         />
+
+        {/* 应用启动遮罩（主界面进程端口初始化完成后，多等 0.5s 平滑淡出） */}
+        {showStartupOverlay && (
+          <StartupOverlay
+            onFinished={handleStartupFinished}
+          />
+        )}
       </div>
     </I18nProvider>
   );

@@ -1,12 +1,39 @@
 <!doctype html>
-<html lang="zh-CN" class="dark bg-transparent">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/icon-192.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SimpleUI</title>
+    <script>
+      (function() {
+        try {
+          var isSpotlight = window.location.hash.includes('spotlight') ||
+                            window.location.hash.includes('subtitles') ||
+                            window.location.search.includes('mode=spotlight') ||
+                            window.location.search.includes('mode=subtitles');
+          if (isSpotlight) {
+            document.documentElement.style.backgroundColor = 'transparent';
+            return;
+          }
+          var raw = localStorage.getItem('tff_chat_settings_v1');
+          var s = raw ? JSON.parse(raw) : null;
+          var pref = s && s.theme ? s.theme : 'system';
+          var isDark = pref === 'dark' || (pref === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          var root = document.documentElement;
+          if (isDark) {
+            root.classList.add('dark');
+            root.style.backgroundColor = '#18191c';
+          } else {
+            root.classList.remove('dark');
+            root.style.backgroundColor = '#f8f9fb';
+          }
+          root.style.colorScheme = isDark ? 'dark' : 'light';
+        } catch (e) {}
+      })();
+    </script>
   </head>
-  <body class="bg-transparent text-[#e0e1e4] antialiased select-none overflow-hidden h-screen w-screen">
+  <body class="bg-transparent text-[#1f2328] dark:text-[#f1f3f7] antialiased select-none overflow-hidden h-screen w-screen">
     <div id="root" class="h-full w-full bg-transparent"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
