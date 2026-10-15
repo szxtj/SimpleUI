@@ -54,6 +54,14 @@ export function useTheme(preference: ThemePreference = 'system', isSpotlight = f
       const bgColor = isDark ? '#18191c' : '#f8f9fb';
       root.style.backgroundColor = bgColor;
       document.body.style.backgroundColor = bgColor;
+      try {
+        (window as any).webkit?.messageHandlers?.setAppTheme?.postMessage?.({
+          isDark,
+          theme: resolvedTheme,
+        });
+      } catch {
+        // non-macOS or test environment
+      }
     }
   }, [isDark, isSpotlight]);
 

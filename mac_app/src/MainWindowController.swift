@@ -144,14 +144,158 @@ class TitleBarDragView: NSView {
     }
 }
 
+/// 窗口缩放时的全屏纯色尺寸指示遮罩（极速覆盖并冻结底层 WebKit 逐帧排版，彻底消除卡顿）
+class ResizeOverlayView: NSView {
+    private let pillView = NSView()
+    private let dimensionLabel = NSTextField(labelWithString: "")
+    private var fadeWorkItem: DispatchWorkItem?
+    private var appIsDark: Bool?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        autoresizingMask = [.width, .height]
+        isHidden = true
+        alphaValue = 0
+
+        pillView.wantsLayer = true
+        pillView.translatesAutoresizingMaskIntoConstraints = false
+        pillView.layer?.cornerRadius = 19.0
+        pillView.layer?.masksToBounds = false
+        addSubview(pillView)
+
+        dimensionLabel.isBezeled = false
+        dimensionLabel.drawsBackground = false
+        dimensionLabel.isEditable = false
+        dimensionLabel.isSelectable = false
+        dimensionLabel.alignment = .center
+        dimensionLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 18, weight: .semibold)
+        dimensionLabel.translatesAutoresizingMaskIntoConstraints = false
+        pillView.addSubview(dimensionLabel)
+
+        NSLayoutConstraint.activate([
+            pillView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            pillView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            pillView.heightAnchor.constraint(equalToConstant: 38),
+
+            dimensionLabel.leadingAnchor.constraint(equalTo: pillView.leadingAnchor, constant: 20),
+            dimensionLabel.trailingAnchor.constraint(equalTo: pillView.trailingAnchor, constant: -20),
+            dimensionLabel.centerYAnchor.constraint(equalTo: pillView.centerYAnchor)
+        ])
+
+        applyTheme()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    // 关键：返回 nil 绝不拦截底层边框缩放/光标追踪/拖拽事件
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        return nil
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        if appIsDark == nil {
+            applyTheme()
+        }
+    }
+
+    func setIsDarkMode(_ isDark: Bool) {
+        self.appIsDark = isDark
+        applyTheme()
+    }
+
+    private var isDarkMode: Bool {
+        if let custom = appIsDark {
+            return custom
+        }
+        if let match = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) {
+            return match == .darkAqua
+        }
+        return effectiveAppearance.name.rawValue.contains("Dark")
+    }
+
+    func update(size: NSSize) {
+        let w = Int(round(size.width))
+        let h = Int(round(size.height))
+        dimensionLabel.stringValue = "\(w) × \(h)"
+    }
+
+    private func applyTheme() {
+        let dark = isDarkMode
+        // 底色与主窗口 WebKit 背景完全保持一致（Light: #f8f9fb / Dark: #18191c）
+        layer?.backgroundColor = dark
+            ? NSColor(red: 24/255.0, green: 25/255.0, blue: 28/255.0, alpha: 1.0).cgColor
+            : NSColor(red: 248/255.0, green: 249/255.0, blue: 251/255.0, alpha: 1.0).cgColor
+
+        // 胶囊卡片（Pill Container）
+        pillView.layer?.backgroundColor = dark
+            ? NSColor(red: 34/255.0, green: 36/255.0, blue: 42/255.0, alpha: 0.95).cgColor
+            : NSColor(red: 255/255.0, green: 255/255.0, blue: 255/255.0, alpha: 0.96).cgColor
+
+        pillView.layer?.borderWidth = 1.0
+        pillView.layer?.borderColor = dark
+            ? NSColor(white: 1.0, alpha: 0.12).cgColor
+            : NSColor(white: 0.0, alpha: 0.08).cgColor
+
+        pillView.layer?.shadowColor = NSColor.black.cgColor
+        pillView.layer?.shadowOpacity = dark ? 0.35 : 0.08
+        pillView.layer?.shadowOffset = CGSize(width: 0, height: -2)
+        pillView.layer?.shadowRadius = dark ? 10.0 : 8.0
+
+        dimensionLabel.textColor = dark
+            ? NSColor(red: 241/255.0, green: 243/255.0, blue: 247/255.0, alpha: 1.0)
+            : NSColor(red: 31/255.0, green: 35/255.0, blue: 40/255.0, alpha: 1.0)
+    }
+
+    func showAnimated(size: NSSize, duration: TimeInterval = 0.10) {
+        fadeWorkItem?.cancel()
+        fadeWorkItem = nil
+        update(size: size)
+        applyTheme()
+        isHidden = false
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = duration
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            animator().alphaValue = 1.0
+        }
+    }
+
+    func hideAnimated(delay: TimeInterval = 0.08, duration: TimeInterval = 0.27, completion: (() -> Void)? = nil) {
+        fadeWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = duration
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                self.animator().alphaValue = 0.0
+            }, completionHandler: {
+                if self.alphaValue == 0.0 {
+                    self.isHidden = true
+                }
+                completion?()
+            })
+        }
+        fadeWorkItem = work
+        if delay > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        } else {
+            work.perform()
+        }
+    }
+}
+
 class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     private var webView: WKWebView!
     private var dragView: TitleBarDragView!
+    private var resizeOverlayView: ResizeOverlayView!
     var onShrinkToSpotlight: ((String?, Bool) -> Void)?
     /** 双击缩放前的原帧（自定义 zoom 态，替代 performZoom，见 toggleZoomAnimated 注释） */
     private var preZoomFrame: NSRect?
-    /** 双击缩放的步进动画定时器 */
-    private var zoomAnimationTimer: Timer?
+    /** 双击缩放的任务句柄 */
+    private var zoomWorkItem: DispatchWorkItem?
     /** 用户在全屏下点了关闭：先退全屏，退完再隐藏窗口（避免全屏 Space 残留黑屏） */
     private var pendingCloseAfterFullscreenExit = false
 
@@ -179,6 +323,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
 
         setupWebView()
         setupDragArea()
+        setupResizeOverlay()
     }
 
     required init?(coder: NSCoder) {
@@ -200,6 +345,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         userContent.add(self, name: "chooseDirectory")
         userContent.add(self, name: "chooseFile")
         userContent.add(self, name: "setAppLanguage")
+        userContent.add(self, name: "setAppTheme")
         config.userContentController = userContent
 
         // 权限状态在系统设置里被改动后，主动回推给页面刷新
@@ -240,6 +386,13 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             dragView.topAnchor.constraint(equalTo: contentView.topAnchor),
             dragView.heightAnchor.constraint(equalToConstant: 52.0)
         ])
+    }
+
+    private func setupResizeOverlay() {
+        guard let win = window, let contentView = win.contentView else { return }
+
+        resizeOverlayView = ResizeOverlayView(frame: contentView.bounds)
+        contentView.addSubview(resizeOverlayView, positioned: .above, relativeTo: dragView)
     }
 
     func updateWindowMinSize(isSidebarOpen: Bool) {
@@ -342,6 +495,13 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             AppLocale.update(lang: lang)
             (NSApp.delegate as? AppDelegate)?.setupMainMenu()
             (NSApp.delegate as? AppDelegate)?.statusBarController?.refreshMenuLanguage()
+        } else if message.name == "setAppTheme", let dict = message.body as? [String: Any] {
+            let isDark = (dict["isDark"] as? Bool) ?? false
+            resizeOverlayView.setIsDarkMode(isDark)
+            let winBg = isDark
+                ? NSColor(red: 24/255.0, green: 25/255.0, blue: 28/255.0, alpha: 1.0)
+                : NSColor(red: 248/255.0, green: 249/255.0, blue: 251/255.0, alpha: 1.0)
+            window?.backgroundColor = winBg
         }
     }
 
@@ -533,19 +693,36 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         }
     }
 
-    // MARK: - 双击缩放（自定义动画）
-    /**
-     * 双击顶部栏在「非全屏的最大尺寸」与原尺寸之间切换。
-     *
-     * 为什么不用 performZoom：它的帧动画期间 WKWebView 的远程图层不会逐帧重排，
-     * 内容被整体拉伸、边缘露底，整个界面观感异常；而用户自由拖拽边框是逐帧真实布局，
-     * 从来不糊。因此这里把帧变化拆成 ~60fps 的小步 `setFrame(display: true)`——
-     * 每一步都触发一次真实布局，观感与自由拉伸一致。
-     */
-    /// 中断进行中的缩放动画（拖拽/新一轮缩放开始前调用）
+    // MARK: - 实时窗口拉伸缩放（Live Resize）性能保护
+    func windowWillStartLiveResize(_ notification: Notification) {
+        guard let win = window else { return }
+        // 1. 暂时剥离 webView 的自适应 autoresizingMask，避免中间 60~120 次鼠标移动事件逐帧触发 WebKit 频繁重排
+        webView.autoresizingMask = []
+        // 2. 快速淡入纯色尺寸遮罩
+        resizeOverlayView.showAnimated(size: win.frame.size, duration: 0.10)
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard let win = window else { return }
+        if win.inLiveResize {
+            resizeOverlayView.update(size: win.frame.size)
+        }
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        guard let win = window, let contentView = win.contentView else { return }
+        // 1. 将 webView 一次性设置为最终尺寸并恢复自适应，整个拖拽过程仅触发 1 次最终排版
+        webView.frame = contentView.bounds
+        webView.autoresizingMask = [.width, .height]
+        // 2. 等待 WebKit 单次重排绘制完成后，平滑淡出遮罩（留存时间延长 50%，充分掩盖重排过程）
+        resizeOverlayView.hideAnimated(delay: 0.08, duration: 0.27)
+    }
+
+    // MARK: - 双击缩放（极速遮罩过渡）
+    /// 中断进行中的缩放任务
     func cancelZoomAnimation() {
-        zoomAnimationTimer?.invalidate()
-        zoomAnimationTimer = nil
+        zoomWorkItem?.cancel()
+        zoomWorkItem = nil
     }
 
     /// 是否处于自定义缩放态（双击放大后、尚未还原）
@@ -562,8 +739,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         // 原生全屏态下不做自定义缩放（全屏有自己的进出场动画）
         guard !win.styleMask.contains(.fullScreen) else { return }
 
-        zoomAnimationTimer?.invalidate()
-        zoomAnimationTimer = nil
+        cancelZoomAnimation()
 
         let startFrame = win.frame
         let targetFrame: NSRect
@@ -577,33 +753,19 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         }
         guard startFrame != targetFrame else { return }
 
-        let steps = 16
-        var step = 0
-        let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
-            guard let self = self, let win = self.window else {
-                timer.invalidate()
-                return
-            }
-            step += 1
-            let t = min(1.0, Double(step) / Double(steps))
-            // ease-in-out：节奏接近系统缩放动画
-            let eased = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
-            var frame = NSRect.zero
-            frame.origin.x = startFrame.origin.x + (targetFrame.origin.x - startFrame.origin.x) * eased
-            frame.origin.y = startFrame.origin.y + (targetFrame.origin.y - startFrame.origin.y) * eased
-            frame.size.width = startFrame.width + (targetFrame.width - startFrame.width) * eased
-            frame.size.height = startFrame.height + (targetFrame.height - startFrame.height) * eased
-            // 夹到最小尺寸，避免把窗口缩穿
-            frame.size.width = max(frame.size.width, win.minSize.width)
-            frame.size.height = max(frame.size.height, win.minSize.height)
-            win.setFrame(frame, display: true)
-            if step >= steps {
-                timer.invalidate()
-                self.zoomAnimationTimer = nil
-                win.setFrame(targetFrame, display: true)
-            }
+        // 策略 1：极速遮罩过渡（留存时间延长 50%，彻底覆盖窗口放大/还原过程中的重排卡顿）
+        webView.autoresizingMask = []
+        resizeOverlayView.showAnimated(size: targetFrame.size, duration: 0.12)
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, let win = self.window, let contentView = win.contentView else { return }
+            win.setFrame(targetFrame, display: false)
+            self.webView.frame = contentView.bounds
+            self.webView.autoresizingMask = [.width, .height]
+            self.resizeOverlayView.hideAnimated(delay: 0.08, duration: 0.24)
         }
-        zoomAnimationTimer = timer
+        zoomWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
     }
 
 
