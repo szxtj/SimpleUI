@@ -106,7 +106,7 @@ export interface TtfProviderConfig {
   topP: number;                 // 默认 0.95
   topK: number;                 // 默认 64
   repetitionPenalty: number;    // 默认 1.0
-  reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'max' | 'default';
+  reasoningEffort?: 'none' | 'on' | 'low' | 'medium' | 'high' | 'max' | 'default';
   seed?: number;
   stopStrings: string[];
   systemPrompt: string;
@@ -151,10 +151,38 @@ export interface DeepSeekProviderConfig {
   maxTokens: number;            // Default 8192
   temperature: number;          // 官网默认 1.0 (思考 0.6 / 代码 0.0 / 翻译 1.3 / 创意 1.5)
   topP: number;                 // 官网默认 1.0 (思考模式 0.95 - 1.0)
-  reasoningEffort: 'low' | 'high' | 'max'; // 深度思考推理深度
+  reasoningEffort: 'none' | 'low' | 'high' | 'max'; // 深度思考推理深度
   seed?: number;                // UInt64 seed
   stopStrings: string[];        // Stop sequence array
   systemPrompt: string;         // System instructions
+}
+
+export type TranslatorServiceMode = 'local' | 'cloud';
+
+export interface TranslatorProfileRecord {
+  id: string;
+  name: string;
+  mode: TranslatorServiceMode;
+  apiEndpoint: string;
+  apiKey: string;
+  selectedModel: string;
+  temperature: number;
+}
+
+export interface TranslatorConfig {
+  activeMode: TranslatorServiceMode;
+  localRecords: TranslatorProfileRecord[];
+  cloudRecords: TranslatorProfileRecord[];
+  activeLocalRecordId: string;
+  activeCloudRecordId: string;
+}
+
+export interface TranslatorSettingsConfig {
+  apiProvider: 'ttf' | 'mference' | 'custom' | 'deepseek';
+  ttfConfig: TtfProviderConfig;
+  mferenceConfig: MferenceProviderConfig;
+  customConfig: CustomProviderConfig;
+  deepseekConfig: DeepSeekProviderConfig;
 }
 
 export interface AppSettings {
@@ -176,7 +204,7 @@ export interface AppSettings {
   deepseekBaseUrl?: string;     // Default: "https://api.deepseek.com"
   maxContext: number;           // e.g. 32768 or 16384 or 131072
   enableThinking: boolean;      // Thinking switch (🧠)
-  reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'max' | 'default';
+  reasoningEffort: 'none' | 'on' | 'low' | 'medium' | 'high' | 'max' | 'default';
   temperature: number;          // 0.0 - 2.0 (default 0.2 / 1.0)
   topP: number;                 // 0.01 - 1.0 (default 0.95)
   topK?: number;                // 1 - 256 (default 64)
@@ -192,6 +220,8 @@ export interface AppSettings {
   enableWikiSearch?: boolean;   // Offline Wiki RAG switch (📚)
   customWikiDir?: string;       // Custom ZIM storage directory
   spotlightResetMinutes?: number; // Spotlight idle auto-reset duration in minutes (0 = never, default 15)
+  translatorSettingsConfig?: TranslatorSettingsConfig; // 快捷翻译设置 (1:1 复刻模型设置 Provider 架构)
+  translatorConfig?: TranslatorConfig; // 兼容旧版快捷翻译设置
 }
 
 export interface ServerHealthInfo {

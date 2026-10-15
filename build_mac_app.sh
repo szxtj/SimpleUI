@@ -75,6 +75,8 @@ swiftc -O \
     -framework ApplicationServices \
     -framework ScreenCaptureKit \
     -framework CoreMedia \
+    -framework SwiftUI \
+    -framework NaturalLanguage \
     mac_app/src/main.swift \
     mac_app/src/AppDelegate.swift \
     mac_app/src/HotKeyManager.swift \
@@ -85,6 +87,14 @@ swiftc -O \
     mac_app/src/VoiceInputManager.swift \
     mac_app/src/VoiceOverlayPanelController.swift \
     mac_app/src/SubtitleOverlayPanelController.swift \
+    mac_app/src/TranslationConfig.swift \
+    mac_app/src/TranslationSpeechManager.swift \
+    mac_app/src/TranslationProfileStore.swift \
+    mac_app/src/TranslationService.swift \
+    mac_app/src/TranslationViewModel.swift \
+    mac_app/src/TranslationInputTextView.swift \
+    mac_app/src/TranslationMainView.swift \
+    mac_app/src/TranslationPanelController.swift \
     -o "$MACOS_DIR/SimpleUI"
 
 # 拷贝资源

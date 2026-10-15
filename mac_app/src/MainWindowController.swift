@@ -373,6 +373,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         userContent.add(self, name: "chooseFile")
         userContent.add(self, name: "setAppLanguage")
         userContent.add(self, name: "setAppTheme")
+        userContent.add(self, name: "setTranslatorConfig")
         config.userContentController = userContent
 
         // 权限状态在系统设置里被改动后，主动回推给页面刷新
@@ -530,6 +531,10 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
                 ? NSColor(red: 24/255.0, green: 25/255.0, blue: 28/255.0, alpha: 1.0)
                 : NSColor(red: 248/255.0, green: 249/255.0, blue: 251/255.0, alpha: 1.0)
             window?.backgroundColor = winBg
+        } else if message.name == "setTranslatorConfig", let dict = message.body as? [String: Any] {
+            DispatchQueue.main.async {
+                TranslationProfileStore.shared.updateFromWebDict(dict)
+            }
         }
     }
 

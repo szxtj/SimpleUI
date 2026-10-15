@@ -26,6 +26,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusBarController: StatusBarController!
     private var voiceOverlayController: VoiceOverlayPanelController!
     private var subtitleOverlayController: SubtitleOverlayPanelController!
+    private var translationPanelController: TranslationPanelController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -38,6 +39,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         spotlightController = SpotlightPanelController()
         voiceOverlayController = VoiceOverlayPanelController()
         subtitleOverlayController = SubtitleOverlayPanelController()
+        translationPanelController = TranslationPanelController()
 
         spotlightController.onOpenMainWindow = { [weak self] in
             // Focus and trigger in-memory session sync without reloading the whole web page
@@ -59,9 +61,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Register Global HotKey (Option + Space)
+        // Register Global HotKeys (Option + Space for Spotlight, Control + Space for Translator)
         HotKeyManager.shared.onTrigger = { [weak self] in
             self?.spotlightController.toggle()
+        }
+        HotKeyManager.shared.onTranslatorTrigger = { [weak self] in
+            self?.translationPanelController.toggle()
         }
         HotKeyManager.shared.register()
 
@@ -79,6 +84,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusBarController.onOpenSpotlight = { [weak self] in
             self?.spotlightController.show()
+        }
+        statusBarController.onOpenTranslator = { [weak self] in
+            self?.translationPanelController.toggle()
         }
         statusBarController.onToggleSubtitles = { [weak self] in
             self?.subtitleOverlayController.toggle()
@@ -137,6 +145,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func teardownUI() {
         guard !didTeardownUI else { return }
         didTeardownUI = true
+        translationPanelController?.hide()
         subtitleOverlayController?.hide()
         statusBarController?.teardown()
         HotKeyManager.shared.unregister()
@@ -190,6 +199,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let toggleSpotlightItem = NSMenuItem(title: isZh ? "快捷悬浮窗" : "Mini Window", action: #selector(toggleSpotlightWindow), keyEquivalent: " ")
         toggleSpotlightItem.keyEquivalentModifierMask = [.option]
         viewMenu.addItem(toggleSpotlightItem)
+        let toggleTranslatorItem = NSMenuItem(title: isZh ? "快捷翻译" : "Quick Translate", action: #selector(toggleTranslatorWindow), keyEquivalent: " ")
+        toggleTranslatorItem.keyEquivalentModifierMask = [.control]
+        viewMenu.addItem(toggleTranslatorItem)
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
 
@@ -211,5 +223,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleSpotlightWindow() {
         spotlightController?.toggle()
+    }
+
+    @objc private func toggleTranslatorWindow() {
+        translationPanelController?.toggle()
     }
 }

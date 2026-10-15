@@ -8,6 +8,8 @@ import {
   TtfProviderConfig,
   MferenceProviderConfig,
   CustomProviderConfig,
+  TranslatorConfig,
+  TranslatorSettingsConfig,
 } from '../types/chat';
 import { saveImageToDB, getImagesFromDB } from './imageStore';
 import { uploadDataUrl } from '../utils/image';
@@ -117,6 +119,141 @@ export const DEFAULT_DEEPSEEK_CONFIG: DeepSeekProviderConfig = {
   systemPrompt: '', // 官方推荐零样本直接提问，默认空提示词
 };
 
+/** 快捷翻译默认配置 */
+export const DEFAULT_TRANSLATOR_CONFIG: TranslatorConfig = {
+  activeMode: 'local',
+  localRecords: [
+    {
+      id: 'local-simpleui',
+      name: 'SimpleUI (内置模型)',
+      mode: 'local',
+      apiEndpoint: 'http://127.0.0.1:1235/v1',
+      apiKey: '',
+      selectedModel: 'local-model',
+      temperature: 0.2,
+    },
+    {
+      id: 'local-lmstudio',
+      name: 'LM Studio',
+      mode: 'local',
+      apiEndpoint: 'http://localhost:1234/v1',
+      apiKey: '',
+      selectedModel: 'local-model',
+      temperature: 0.2,
+    },
+    {
+      id: 'local-ollama',
+      name: 'Ollama',
+      mode: 'local',
+      apiEndpoint: 'http://localhost:11434/v1',
+      apiKey: '',
+      selectedModel: 'qwen2.5:7b',
+      temperature: 0.2,
+    },
+  ],
+  cloudRecords: [
+    {
+      id: 'cloud-deepseek',
+      name: 'DeepSeek',
+      mode: 'cloud',
+      apiEndpoint: 'https://api.deepseek.com/v1',
+      apiKey: '',
+      selectedModel: 'deepseek-chat',
+      temperature: 0.2,
+    },
+    {
+      id: 'cloud-openai',
+      name: 'OpenAI',
+      mode: 'cloud',
+      apiEndpoint: 'https://api.openai.com/v1',
+      apiKey: '',
+      selectedModel: 'gpt-4o-mini',
+      temperature: 0.2,
+    },
+  ],
+  activeLocalRecordId: 'local-simpleui',
+  activeCloudRecordId: 'cloud-deepseek',
+};
+
+/** 快捷翻译全新独立 Provider 配置（1:1 复刻模型设置 Provider 架构，内置锁定提示词，默认关闭思考） */
+export const DEFAULT_TRANSLATOR_SETTINGS_CONFIG: TranslatorSettingsConfig = {
+  apiProvider: 'ttf',
+  ttfConfig: {
+    ...DEFAULT_TTF_CONFIG,
+    reasoningEffort: 'none',
+    stopStrings: [],
+    systemPrompt: '',
+  },
+  mferenceConfig: {
+    ...DEFAULT_MFERENCE_CONFIG,
+    reasoningEffort: 'none',
+    stopStrings: [],
+    systemPrompt: '',
+  },
+  customConfig: {
+    ...DEFAULT_CUSTOM_CONFIG,
+    systemPrompt: '',
+  },
+  deepseekConfig: {
+    ...DEFAULT_DEEPSEEK_CONFIG,
+    reasoningEffort: 'none',
+    stopStrings: [],
+    systemPrompt: '',
+  },
+};
+
+/** 投影快捷翻译配置为原生层所期望的活跃参数及有效请求 Payload */
+export function computeTranslatorPayload(config: TranslatorSettingsConfig) {
+  const provider = config.apiProvider || 'ttf';
+  let activeEndpoint = '';
+  let activeModel = '';
+  let activeApiKey = '';
+  let activeTemperature = 1.0;
+  let activeReasoningEffort = 'none';
+
+  if (provider === 'mference') {
+    const cfg = config.mferenceConfig;
+    activeEndpoint = cfg.apiBaseUrl?.trim() || `http://127.0.0.1:${cfg.apiPort || 1241}/v1`;
+    activeModel = cfg.modelId || 'qwen3.6-35b-a3b';
+    activeApiKey = '';
+    activeTemperature = cfg.temperature ?? 1.0;
+    activeReasoningEffort = cfg.reasoningEffort || 'none';
+  } else if (provider === 'custom') {
+    const cfg = config.customConfig;
+    activeEndpoint = cfg.apiBaseUrl?.trim() || `http://127.0.0.1:${cfg.apiPort || 11434}/v1`;
+    activeModel = cfg.modelId || 'llama3';
+    activeApiKey = '';
+    activeTemperature = cfg.temperature ?? 0.7;
+    activeReasoningEffort = 'none';
+  } else if (provider === 'deepseek') {
+    const cfg = config.deepseekConfig;
+    const base = cfg.baseUrl?.trim() || 'https://api.deepseek.com';
+    activeEndpoint = base.endsWith('/v1') ? base : `${base}/v1`;
+    activeModel = cfg.modelId || 'deepseek-flash';
+    activeApiKey = cfg.apiKey || '';
+    activeTemperature = cfg.temperature ?? 1.0;
+    activeReasoningEffort = cfg.reasoningEffort || 'none';
+  } else {
+    // TTF
+    const cfg = config.ttfConfig;
+    activeEndpoint = cfg.apiBaseUrl?.trim() || `http://127.0.0.1:${cfg.apiPort || 1235}/v1`;
+    activeModel = cfg.modelId || 'gemma-4-26b-a4b-it';
+    activeApiKey = '';
+    activeTemperature = cfg.temperature ?? 1.0;
+    activeReasoningEffort = cfg.reasoningEffort || 'none';
+  }
+
+  return {
+    ...config,
+    activeProvider: provider,
+    activeEndpoint,
+    activeModel,
+    activeApiKey,
+    activeTemperature,
+    activeReasoningEffort,
+  };
+}
+
 export const DEFAULT_SETTINGS: AppSettings = {
   apiProvider: 'ttf',
   ttfConfig: { ...DEFAULT_TTF_CONFIG },
@@ -124,6 +261,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   customConfig: { ...DEFAULT_CUSTOM_CONFIG },
   localConfig: { ...DEFAULT_LOCAL_CONFIG },
   deepseekConfig: { ...DEFAULT_DEEPSEEK_CONFIG },
+  translatorSettingsConfig: { ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG },
+  translatorConfig: { ...DEFAULT_TRANSLATOR_CONFIG },
 
   // 活跃状态扁平字段（默认与 TTF 引擎一致）
   apiPort: DEFAULT_TTF_CONFIG.apiPort,
@@ -367,6 +506,42 @@ export function loadSettings(): AppSettings {
       enableWikiSearch: parsed?.enableWikiSearch !== undefined ? parsed.enableWikiSearch : false,
       customWikiDir: parsed?.customWikiDir || '',
       spotlightResetMinutes: parsed?.spotlightResetMinutes !== undefined ? Number(parsed.spotlightResetMinutes) : 15,
+      translatorSettingsConfig: (() => {
+        const rawTr = parsed?.translatorSettingsConfig;
+        if (!rawTr) return { ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG };
+        let trProvider = rawTr.apiProvider || 'ttf';
+        if (!['ttf', 'mference', 'custom', 'deepseek'].includes(trProvider)) trProvider = 'ttf';
+        return {
+          apiProvider: trProvider,
+          ttfConfig: {
+            ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.ttfConfig,
+            ...(rawTr.ttfConfig || {}),
+            reasoningEffort: 'none',
+            stopStrings: [],
+            systemPrompt: '',
+          },
+          mferenceConfig: {
+            ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.mferenceConfig,
+            ...(rawTr.mferenceConfig || {}),
+            reasoningEffort: 'none',
+            stopStrings: [],
+            systemPrompt: '',
+          },
+          customConfig: {
+            ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.customConfig,
+            ...(rawTr.customConfig || {}),
+            systemPrompt: '',
+          },
+          deepseekConfig: {
+            ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.deepseekConfig,
+            ...(rawTr.deepseekConfig || {}),
+            reasoningEffort: 'low',
+            stopStrings: [],
+            systemPrompt: '',
+          },
+        };
+      })(),
+      translatorConfig: parsed?.translatorConfig || { ...DEFAULT_TRANSLATOR_CONFIG },
     };
   } catch (e) {
     console.error('Failed to load settings from localStorage:', e);
@@ -594,6 +769,8 @@ export function saveSettings(settings: AppSettings): void {
       enableWikiSearch: settings?.enableWikiSearch !== undefined ? settings.enableWikiSearch : false,
       customWikiDir: settings?.customWikiDir || '',
       spotlightResetMinutes: settings?.spotlightResetMinutes !== undefined ? Number(settings.spotlightResetMinutes) : 15,
+      translatorSettingsConfig: settings?.translatorSettingsConfig || existing.translatorSettingsConfig || { ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG },
+      translatorConfig: settings?.translatorConfig || existing.translatorConfig || { ...DEFAULT_TRANSLATOR_CONFIG },
     };
 
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(sanitized));

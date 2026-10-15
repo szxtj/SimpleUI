@@ -15,6 +15,7 @@ import {
   DEFAULT_LOCAL_CONFIG,
   DEFAULT_DEEPSEEK_CONFIG,
   syncChannel,
+  computeTranslatorPayload,
 } from './services/storage';
 import { TurboFieldfareAPI, WikiAPI, ASRServiceAPI, ModelServiceAPI } from './services/api';
 import type { ModelServiceStatus } from './services/api';
@@ -61,6 +62,18 @@ export const App: React.FC = () => {
       // non-macOS or test environment without native bridge
     }
   }, [settings.language]);
+
+  // Sync translator settings with native Swift translator overlay
+  useEffect(() => {
+    try {
+      if (settings.translatorSettingsConfig) {
+        const payload = computeTranslatorPayload(settings.translatorSettingsConfig);
+        (window as any).webkit?.messageHandlers?.setTranslatorConfig?.postMessage(payload);
+      }
+    } catch {
+      // non-macOS or test environment without native bridge
+    }
+  }, [settings.translatorSettingsConfig]);
 
   useEffect(() => {
     const handleStorage = (e: StorageEvent) => {

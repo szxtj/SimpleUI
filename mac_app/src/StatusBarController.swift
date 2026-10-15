@@ -15,12 +15,14 @@ class StatusBarController: NSObject, NSMenuDelegate {
     var onOpenMainWindow: (() -> Void)?
     var onOpenSpotlight: (() -> Void)?
     var onToggleSubtitles: (() -> Void)?
+    var onOpenTranslator: (() -> Void)?
 
     private var statusItem: NSStatusItem?
     private var kbStatusItem: NSMenuItem!
     private var svcStatusItem: NSMenuItem!
     private var asrStatusItem: NSMenuItem!
     private var subtitleMenuItem: NSMenuItem!
+    private var translatorMenuItem: NSMenuItem!
     private var pollTimer: Timer?
     private var pinAttempts = 0
 
@@ -55,12 +57,14 @@ class StatusBarController: NSObject, NSMenuDelegate {
     private var lblStopping: String { zh ? "停止中" : "Stopping" }
     private var lblOpenMain: String { zh ? "打开主界面" : "Open Main Window" }
     private var lblOpenSpotlight: String { zh ? "打开小窗口" : "Open Mini Window" }
+    private var lblTranslator: String { zh ? "快捷翻译" : "Quick Translate" }
     private var lblSubtitles: String { zh ? "实时双语字幕" : "Live Subtitles" }
     private var lblQuit: String { zh ? "退出并停止所有服务" : "Quit & Stop All Services" }
 
     private var tipKB: String { zh ? "点击开启或关闭知识库服务" : "Click to toggle Knowledge Base service" }
     private var tipSvc: String { zh ? "点击开启或关闭基础模型服务" : "Click to toggle Base Model service" }
     private var tipAsr: String { zh ? "点击开启或关闭语音识别服务" : "Click to toggle Speech Recognition service" }
+    private var tipTranslator: String { zh ? "唤起或隐藏快捷翻译面板 (⌃Space)" : "Toggle quick translation overlay (⌃Space)" }
     private var tipSubtitles: String { zh ? "开启或关闭实时双语字幕悬浮窗" : "Toggle live bilingual subtitle overlay" }
 
     // ----------------------------- 生命周期 -----------------------------
@@ -101,10 +105,16 @@ class StatusBarController: NSObject, NSMenuDelegate {
         openMainItem = openMain
         menu.addItem(openMain)
 
-        let openSpotlight = NSMenuItem(title: lblOpenSpotlight, action: #selector(openSpotlightWindow), keyEquivalent: "")
+        let openSpotlight = NSMenuItem(title: "\(lblOpenSpotlight)  (⌥Space)", action: #selector(openSpotlightWindow), keyEquivalent: "")
         openSpotlight.target = self
         openSpotlightItem = openSpotlight
         menu.addItem(openSpotlight)
+
+        let openTranslator = NSMenuItem(title: "\(lblTranslator)  (⌃Space)", action: #selector(openTranslatorWindow), keyEquivalent: "")
+        openTranslator.target = self
+        openTranslator.toolTip = tipTranslator
+        translatorMenuItem = openTranslator
+        menu.addItem(openTranslator)
 
         let openSubtitles = NSMenuItem(title: lblSubtitles, action: #selector(toggleSubtitles), keyEquivalent: "")
         openSubtitles.target = self
@@ -143,7 +153,9 @@ class StatusBarController: NSObject, NSMenuDelegate {
             self.svcStatusItem?.toolTip = self.tipSvc
             self.asrStatusItem?.toolTip = self.tipAsr
             self.openMainItem?.title = self.lblOpenMain
-            self.openSpotlightItem?.title = self.lblOpenSpotlight
+            self.openSpotlightItem?.title = "\(self.lblOpenSpotlight)  (⌥Space)"
+            self.translatorMenuItem?.title = "\(self.lblTranslator)  (⌃Space)"
+            self.translatorMenuItem?.toolTip = self.tipTranslator
             self.subtitleMenuItem?.title = self.lblSubtitles
             self.subtitleMenuItem?.toolTip = self.tipSubtitles
             self.quitItem?.title = self.lblQuit
@@ -235,8 +247,11 @@ class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func openSpotlightWindow() {
-        NSApp.activate(ignoringOtherApps: true)
         onOpenSpotlight?()
+    }
+
+    @objc private func openTranslatorWindow() {
+        onOpenTranslator?()
     }
 
     @objc private func toggleSubtitles() {
