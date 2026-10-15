@@ -1,7 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { ChatMessage, TurnMetrics } from '../types/chat';
 import { useI18n } from '../i18n';
-import { useFollowBottom } from '../hooks/useFollowBottom';
 import { useChatFontSize } from '../hooks/useChatFontSize';
 import { MessageItem } from './MessageItem';
 import { ChatInput } from './ChatInput';
@@ -19,6 +18,7 @@ import {
 import { isImageFile, fileToDataURL } from '../utils/image';
 
 interface ChatViewProps {
+  sessionId?: string | null;
   messages: ChatMessage[];
   input: string;
   setInput: (val: string) => void;
@@ -54,6 +54,7 @@ interface ChatViewProps {
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
+  sessionId,
   messages,
   input,
   setInput,
@@ -88,8 +89,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const { t } = useI18n();
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const prevMessagesLengthRef = useRef(messages.length);
-  const prevFirstMsgIdRef = useRef(messages[0]?.id);
+  const prevSessionIdRef = useRef<string | null | undefined>(undefined);
+  const prevLastUserMsgIdRef = useRef<string | undefined>(undefined);
   const userScrolledSinceSwitchRef = useRef(false);
   const [showModelMenu, setShowModelMenu] = useState(false);
 
@@ -101,74 +102,70 @@ export const ChatView: React.FC<ChatViewProps> = ({
     maxSize: 24,
   });
 
-  /**
-   * 消息流容器的「思考期跟随」行为（与浮窗共用同一份 hook）。
-   * 仅在思考/阶段载入中跟随底部；用户一旦手动滚动，立刻永久停止跟随。
-   * 正文开始流式输出或生成结束后完全不干预，彻底移除回正逻辑。
-   */
-  const lastMsg = messages[messages.length - 1];
-  const answerStreaming = !!lastMsg && lastMsg.role === 'assistant' && !!lastMsg.content;
-  const isThinkingPhase = isGenerating && !answerStreaming;
-  const { containerProps: streamProps, markProgrammatic } = useFollowBottom(
-    isThinkingPhase,
-    isGenerating ? lastMsg?.id : undefined,
-    scrollContainerRef
-  );
-
   const handleUserScrollAction = useCallback(() => {
     userScrolledSinceSwitchRef.current = true;
   }, []);
 
-  // 容器直接置底，彻底废弃 WebKit 异步 smooth scrollIntoView
-  // （WebKit 的平滑滚动会在 KaTeX/图片异步排版时锁定偏上的中间坐标，并在用户下拉时强行拉回）
+  /**
+   * 外层消息容器滚动策略：
+   * 1. 切换到不同对话时（sessionId 变化）：自动定位到该对话的最底部；
+   * 2. 用户刚发出新消息时（新的 user 消息插入）：定位一次到底部以露出新提问与思考手风琴头部；
+   * 3. 思考过程流式输出（由 ThinkingAccordion 内部独立跟随滚动）、正式回答流式生成中、以及平时非生成状态：
+   *    外层容器完全固定、绝不自动滚动、绝不抢夺用户的滚动条。
+   */
   useEffect(() => {
-    const isNewMessage = messages.length > prevMessagesLengthRef.current;
-    const isDifferentSession = messages[0]?.id !== prevFirstMsgIdRef.current;
-    prevMessagesLengthRef.current = messages.length;
-    prevFirstMsgIdRef.current = messages[0]?.id;
-
     const el = scrollContainerRef.current;
+    const isSessionSwitch = sessionId !== prevSessionIdRef.current;
+
+    let lastUserMsgId: string | undefined = undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        lastUserMsgId = messages[i].id;
+        break;
+      }
+    }
+    const isNewUserTurnSent =
+      !isSessionSwitch &&
+      lastUserMsgId !== undefined &&
+      lastUserMsgId !== prevLastUserMsgIdRef.current;
+
+    prevSessionIdRef.current = sessionId;
+    prevLastUserMsgIdRef.current = lastUserMsgId;
+
     if (!el) return;
 
-    if (isDifferentSession) {
+    if (isSessionSwitch) {
       userScrolledSinceSwitchRef.current = false;
-      markProgrammatic(400);
       el.scrollTop = el.scrollHeight;
 
-      // 应对 KaTeX 公式与媒体图片异步渲染撑高布局，在多帧与短定时器内安全校准。
-      // 若用户在这几百毫秒内已主动滚轮/拖拽滚动条，则绝不再强行干预。
-      requestAnimationFrame(() => {
-        if (!userScrolledSinceSwitchRef.current && el) {
-          el.scrollTop = el.scrollHeight;
+      let raf1 = 0;
+      let raf2 = 0;
+      raf1 = requestAnimationFrame(() => {
+        if (!userScrolledSinceSwitchRef.current && scrollContainerRef.current) {
+          scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
         }
-        requestAnimationFrame(() => {
-          if (!userScrolledSinceSwitchRef.current && el) {
-            el.scrollTop = el.scrollHeight;
+        raf2 = requestAnimationFrame(() => {
+          if (!userScrolledSinceSwitchRef.current && scrollContainerRef.current) {
+            scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
           }
         });
       });
 
-      const t1 = setTimeout(() => {
-        if (!userScrolledSinceSwitchRef.current && el) {
-          el.scrollTop = el.scrollHeight;
+      const timer = setTimeout(() => {
+        if (!userScrolledSinceSwitchRef.current && scrollContainerRef.current) {
+          scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
         }
-      }, 120);
-
-      const t2 = setTimeout(() => {
-        if (!userScrolledSinceSwitchRef.current && el) {
-          el.scrollTop = el.scrollHeight;
-        }
-      }, 350);
+      }, 80);
 
       return () => {
-        clearTimeout(t1);
-        clearTimeout(t2);
+        cancelAnimationFrame(raf1);
+        cancelAnimationFrame(raf2);
+        clearTimeout(timer);
       };
-    } else if (isNewMessage) {
-      markProgrammatic(300);
+    } else if (isNewUserTurnSent) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages, markProgrammatic]);
+  }, [sessionId, messages]);
 
   const quickPrompts = [
     {
@@ -325,7 +322,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         {/* Center Draggable Space */}
         <div className="flex-1 h-full min-w-4" />
 
-        {/* Right Tools: Knowledge Panel Toggle (hidden while open — panel has its own close) + Shrink to Spotlight */}
+        {/* Right Tools: Knowledge Panel Toggle + Shrink to Spotlight */}
         <div className="flex items-center gap-1.5 cq-md:gap-2 flex-shrink-0">
           {!wikiPanelOpen && (
             <button
@@ -354,40 +351,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
       </div>
 
       {/* Messages Stream Scroll Area
-          仅在思考期由 useFollowBottom 钉底；用户一动即交还控制权。
-          正文流式阶段与生成结束后完全不干预，彻底移除回正逻辑。 */}
+          外层回答容器完全固定，流式生成期间与闲置期间绝不自动滚动；仅切换会话时定位到底部。 */}
       <div
-        {...streamProps}
+        ref={scrollContainerRef}
         style={{
           '--chat-font-size': `${chatFontSize}px`,
         } as React.CSSProperties}
-        onWheel={(e) => {
-          handleUserScrollAction();
-          streamProps.onWheel?.(e);
-        }}
-        onTouchMove={(e) => {
-          handleUserScrollAction();
-          streamProps.onTouchMove?.(e);
-        }}
-        onMouseDown={(e) => {
-          handleUserScrollAction();
-          streamProps.onMouseDown?.(e);
-        }}
-        onKeyDown={(e) => {
-          handleUserScrollAction();
-          streamProps.onKeyDown?.(e);
-        }}
+        onWheel={handleUserScrollAction}
+        onTouchMove={handleUserScrollAction}
+        onMouseDown={handleUserScrollAction}
+        onKeyDown={handleUserScrollAction}
         className="flex-1 min-h-0 overflow-y-auto px-3 cq-md:px-6 cq-lg:px-8 py-3 cq-md:py-6 pb-6 cq-md:pb-8 overscroll-y-contain [overflow-anchor:none]"
       >
         {messages.length === 0 ? (
           <div className="max-w-4xl mx-auto min-h-full flex flex-col justify-center">
             <div className="my-auto py-4 cq-md:py-8 cq-lg:py-10 flex flex-col items-center text-center w-full max-w-lg mx-auto">
-              {/* App 图标。用 192px 的版本（`public/icon-192.png`）而不是 1024px 的源图：
-                  页面最大只显示 48px（Retina 下 96 物理像素），192 已留足余量，
-                  而源图有 1.17MB / 解码后 4MB，纯属浪费。两处引用同一张，运行时不再加载源图。
-                  图标自带圆角与透明外框、四角为全透明，因此**不加** border-radius（会切掉外发光）
-                  也**不加** box-shadow（阴影会沿矩形盒子走，在透明四角处露出直角）。
-                  图形本身约占画布 85%，留白即 macOS 图标的标准边距，保持原尺寸即可。 */}
               <img
                 src="/icon-192.png"
                 alt="SimpleUI"
@@ -436,7 +414,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 onOpenWiki={onOpenWiki}
                 onRetry={onRetry}
                 onDelete={onDelete}
-                // 用户气泡的重试目标：紧随其后的助手回复 id（与浮窗的用户气泡重试一致）
                 retryTargetId={
                   message.role === 'user' && messages[idx + 1]?.role === 'assistant'
                     ? messages[idx + 1].id
@@ -452,7 +429,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
       {/* Input Area (Bottom capsule + Disclaimer) */}
       <div className="w-full px-3 cq-md:px-6 cq-lg:px-8 pb-3 cq-md:pb-4 pt-1 bg-gradient-to-t from-[#f8f9fb] via-[#f8f9fb]/95 to-transparent dark:from-[#18191c] dark:via-[#18191c]/95 dark:to-transparent">
         <div className="max-w-4xl mx-auto flex flex-col items-center">
-          {/* Chat Input Capsule */}
           <ChatInput
             input={input}
             setInput={setInput}

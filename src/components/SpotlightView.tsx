@@ -45,7 +45,6 @@ import {
 import { RawMarkdownModal } from './RawMarkdownModal';
 import { useI18n } from '../i18n';
 import { useTheme } from '../hooks/useTheme';
-import { useFollowBottom } from '../hooks/useFollowBottom';
 import { estimateHistoryTokens, applyTokenCalibration } from '../utils/token';
 
 export const SpotlightView: React.FC = () => {
@@ -191,8 +190,8 @@ export const SpotlightView: React.FC = () => {
   const cursorPositionRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollEndRef = useRef<HTMLDivElement>(null);
-  const prevMessagesLengthRef = useRef(messages.length);
-  const prevFirstMsgIdRef = useRef(messages[0]?.id);
+  const prevSessionIdRef = useRef<string | null | undefined>(undefined);
+  const prevLastUserMsgIdRef = useRef<string | undefined>(undefined);
 
   const hasMessages = messages.length > 0;
   const isMultiline = input.includes('\n');
@@ -200,19 +199,6 @@ export const SpotlightView: React.FC = () => {
 
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const userScrolledSinceSwitchRef = useRef(false);
-
-  /**
-   * 消息流容器的「思考期跟随」行为 —— 与主窗口共用同一份 hook（useFollowBottom）。
-   * 仅在思考/阶段载入中跟随底部；用户一旦手动滚动，立刻永久停止跟随。
-   */
-  const lastMsg = messages[messages.length - 1];
-  const answerStreaming = !!lastMsg && lastMsg.role === 'assistant' && !!lastMsg.content;
-  const isThinkingPhase = isGenerating && !answerStreaming;
-  const { containerProps: streamProps, markProgrammatic } = useFollowBottom(
-    isThinkingPhase,
-    isGenerating ? lastMsg?.id : undefined,
-    scrollContainerRef
-  );
 
   const handleUserScrollAction = useCallback(() => {
     userScrolledSinceSwitchRef.current = true;
@@ -387,52 +373,66 @@ export const SpotlightView: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDeepSeek, isWikiPanelOpen]);
 
+  /**
+   * 浮窗外层消息容器滚动策略（与主窗口完全一致）：
+   * 1. 切换到不同对话时（currentSessionId 变化）：自动定位到该对话的最底部；
+   * 2. 用户刚发出新消息时（新的 user 消息插入）：定位一次到底部以露出新提问与思考手风琴头部；
+   * 3. 思考过程流式输出（由 ThinkingAccordion 内部独立跟随滚动）、正式回答流式生成中、以及平时非生成状态：
+   *    外层容器完全固定、绝不自动滚动、绝不抢夺用户的滚动条。
+   */
   useEffect(() => {
-    const isNewMessage = messages.length > prevMessagesLengthRef.current;
-    const isDifferentSession = messages[0]?.id !== prevFirstMsgIdRef.current;
-    prevMessagesLengthRef.current = messages.length;
-    prevFirstMsgIdRef.current = messages[0]?.id;
-
     const el = scrollContainerRef.current;
+    const isSessionSwitch = currentSessionId !== prevSessionIdRef.current;
+
+    let lastUserMsgId: string | undefined = undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        lastUserMsgId = messages[i].id;
+        break;
+      }
+    }
+    const isNewUserTurnSent =
+      !isSessionSwitch &&
+      lastUserMsgId !== undefined &&
+      lastUserMsgId !== prevLastUserMsgIdRef.current;
+
+    prevSessionIdRef.current = currentSessionId;
+    prevLastUserMsgIdRef.current = lastUserMsgId;
+
     if (!el) return;
 
-    if (isDifferentSession) {
+    if (isSessionSwitch) {
       userScrolledSinceSwitchRef.current = false;
-      markProgrammatic(400);
       el.scrollTop = el.scrollHeight;
 
-      requestAnimationFrame(() => {
-        if (!userScrolledSinceSwitchRef.current && el) {
-          el.scrollTop = el.scrollHeight;
+      let raf1 = 0;
+      let raf2 = 0;
+      raf1 = requestAnimationFrame(() => {
+        if (!userScrolledSinceSwitchRef.current && scrollContainerRef.current) {
+          scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
         }
-        requestAnimationFrame(() => {
-          if (!userScrolledSinceSwitchRef.current && el) {
-            el.scrollTop = el.scrollHeight;
+        raf2 = requestAnimationFrame(() => {
+          if (!userScrolledSinceSwitchRef.current && scrollContainerRef.current) {
+            scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
           }
         });
       });
 
-      const t1 = setTimeout(() => {
-        if (!userScrolledSinceSwitchRef.current && el) {
-          el.scrollTop = el.scrollHeight;
+      const timer = setTimeout(() => {
+        if (!userScrolledSinceSwitchRef.current && scrollContainerRef.current) {
+          scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
         }
-      }, 120);
-
-      const t2 = setTimeout(() => {
-        if (!userScrolledSinceSwitchRef.current && el) {
-          el.scrollTop = el.scrollHeight;
-        }
-      }, 350);
+      }, 80);
 
       return () => {
-        clearTimeout(t1);
-        clearTimeout(t2);
+        cancelAnimationFrame(raf1);
+        cancelAnimationFrame(raf2);
+        clearTimeout(timer);
       };
-    } else if (isNewMessage) {
-      markProgrammatic(300);
+    } else if (isNewUserTurnSent) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages, markProgrammatic]);
+  }, [currentSessionId, messages]);
 
   // Check backend health & Wiki status
   useEffect(() => {
@@ -958,23 +958,11 @@ export const SpotlightView: React.FC = () => {
 
         {/* Message Scroll Area */}
         <div
-          {...streamProps}
-          onWheel={(e) => {
-            handleUserScrollAction();
-            streamProps.onWheel?.(e);
-          }}
-          onTouchMove={(e) => {
-            handleUserScrollAction();
-            streamProps.onTouchMove?.(e);
-          }}
-          onMouseDown={(e) => {
-            handleUserScrollAction();
-            streamProps.onMouseDown?.(e);
-          }}
-          onKeyDown={(e) => {
-            handleUserScrollAction();
-            streamProps.onKeyDown?.(e);
-          }}
+          ref={scrollContainerRef}
+          onWheel={handleUserScrollAction}
+          onTouchMove={handleUserScrollAction}
+          onMouseDown={handleUserScrollAction}
+          onKeyDown={handleUserScrollAction}
           style={{
             '--chat-font-size': `${chatFontSize}px`,
           } as React.CSSProperties}

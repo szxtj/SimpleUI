@@ -1,13 +1,11 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 
 /**
- * 思考期滚动跟随 Hook：
+ * 思考过程手风琴滚动跟随 Hook：
  *
- * 1. 仅在思考期（active = true）且用户未接管时，保持容器跟随在最底部，展示最新思考内容。
- * 2. 用户一动（滚轮 / 触摸 / 键盘 / 拖动滚动条 / 手动滚动），立即永久释放控制权（单向闩锁），
- *    本轮绝不再碰滚动条，绝不抢夺、绝不反复拉回。
- * 3. 彻底去除所有保位/回正机制（绝无 restoreToProtected 或强制写 scrollTop 纠偏），
- *    正文流式阶段与生成结束后 100% 交由原生滚动，绝不干预。
+ * 1. 当处于思考流式输出阶段（active = true）且未脱离底部时，自动向下跟随滚动展示最新思考内容。
+ * 2. 当用户手动向上滚动（滚轮上滚 / 拖动滚动条 / 触摸上滑 / 向上按键）离开底部时，立即释放滚动控制权。
+ * 3. 当用户再次手动将思考内容滚动到底部贴底（距底部 <= 10px）时，自动恢复跟随滚动。
  */
 export function useFollowBottom(
   active: boolean,
@@ -17,16 +15,16 @@ export function useFollowBottom(
   const internalRef = useRef<HTMLDivElement | null>(null);
   const ref = externalRef ?? internalRef;
 
-  /** 实例级"用户已接管"闩锁（每个容器独立，避免不同实例或历史思考条相互干扰） */
+  /** 实例级"用户已脱离底部接管"状态（false = 自动跟随底部，true = 已释放给用户） */
   const userTookControlRef = useRef(false);
 
-  /** 自身写 scrollTop 的静默时间窗，避免自身触发的 scroll 事件误识别为用户操作 */
+  /** 自身写 scrollTop 的静默时间窗，区分程序化滚动与用户主动滚动 */
   const programmaticUntilRef = useRef(0);
 
   const lastTurnRef = useRef<string | null>(null);
   const prevActiveRef = useRef(active);
 
-  // 新一轮生成或 active 重新被拉起：复位闩锁
+  // 新一轮生成或手风琴重新展开进入 active 时：默认跟随底部
   useEffect(() => {
     if (turnKey) {
       if (lastTurnRef.current !== turnKey) {
@@ -34,7 +32,6 @@ export function useFollowBottom(
         userTookControlRef.current = false;
       }
     } else {
-      // 未传 turnKey 的容器（如思考折叠框）：当 active 从 false 变 true 时复位
       if (active && !prevActiveRef.current) {
         userTookControlRef.current = false;
       }
@@ -43,7 +40,8 @@ export function useFollowBottom(
     prevActiveRef.current = active;
   }, [turnKey, active]);
 
-  // 思考期跟随：rAF 钉底循环
+  // 思考期跟随：rAF 持续运行，当处于跟随状态（!userTookControlRef.current）时贴底，
+  // 一旦用户手动滚回底部将 userTookControlRef.current 置回 false，立即无缝恢复跟随
   useEffect(() => {
     if (!active) return;
 
@@ -51,62 +49,86 @@ export function useFollowBottom(
     const pin = () => {
       const el = ref.current;
       if (el && !userTookControlRef.current) {
-        const bottom = el.scrollHeight - el.clientHeight;
+        const bottom = Math.max(0, el.scrollHeight - el.clientHeight);
         if (bottom - el.scrollTop > 1) {
-          programmaticUntilRef.current = Date.now() + 50;
+          programmaticUntilRef.current = Date.now() + 60;
           el.scrollTop = bottom;
         }
-        raf = requestAnimationFrame(pin);
       }
+      raf = requestAnimationFrame(pin);
     };
 
     raf = requestAnimationFrame(pin);
     return () => cancelAnimationFrame(raf);
-  }, [active]);
+  }, [active, ref]);
 
-  /** 释放控制权：用户一动，本轮思考期立刻、彻底停止自动跟随，永不再碰滚动条 */
   const releaseToUser = useCallback(() => {
     userTookControlRef.current = true;
   }, []);
 
-  /** 供外部（如新回合跳底）标记"这段时间内的滚动是程序化的" */
+  const resumeFollow = useCallback(() => {
+    userTookControlRef.current = false;
+  }, []);
+
   const markProgrammatic = useCallback((ms = 700) => {
     programmaticUntilRef.current = Date.now() + ms;
   }, []);
 
   const containerProps = {
     ref,
-    onWheel: (_e?: React.WheelEvent) => releaseToUser(),
-    onTouchMove: (_e?: React.TouchEvent) => releaseToUser(),
-    onKeyDown: (e: React.KeyboardEvent) => {
-      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(e.key)) {
+    onWheel: (e: React.WheelEvent<HTMLDivElement>) => {
+      if (!active) return;
+      if (e.deltaY < -0.5) {
+        // 用户向上滚动，立即释放
         releaseToUser();
+      } else if (e.deltaY > 0.5) {
+        // 用户向下滚动，若已贴底则恢复跟随
+        const el = ref.current;
+        if (el) {
+          const distanceToBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
+          if (distanceToBottom <= 12) {
+            resumeFollow();
+          }
+        }
       }
     },
-    onMouseDown: (e: React.MouseEvent) => {
-      // 命中右侧滚动条（约 20px 宽）
+    onTouchMove: () => {
+      // 触摸滑动由 onScroll 根据与底部的距离实时判定释放或恢复跟随
+    },
+    onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (!active) return;
+      if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) {
+        releaseToUser();
+      } else if (e.key === 'End') {
+        resumeFollow();
+      }
+    },
+    onMouseDown: (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!active) return;
       const el = ref.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
+      // 点击右侧滚动条拖拽时先释放，待拖到底部时由 onScroll 自动恢复
       if (e.clientX >= rect.right - 24) {
         releaseToUser();
       }
     },
     onScroll: () => {
-      // 仅在思考期有效；若当前不是自己触发的滚动，则视为用户滚动，立刻交出控制权
       if (!active) return;
       const el = ref.current;
       if (!el) return;
-      const bottom = el.scrollHeight - el.clientHeight;
-      // 用户往上滚动（偏离底部 > 15px），必定是用户主动操作，立即释放控制权
-      if (bottom - el.scrollTop > 15) {
-        releaseToUser();
-        return;
-      }
       if (Date.now() < programmaticUntilRef.current) return;
-      releaseToUser();
+
+      const distanceToBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
+      if (distanceToBottom <= 10) {
+        // 用户再次手动滚回贴底位置，恢复自动跟随
+        resumeFollow();
+      } else if (distanceToBottom > 14) {
+        // 用户手动滚离底部，释放控制权
+        releaseToUser();
+      }
     },
   };
 
-  return { containerProps, releaseToUser, markProgrammatic };
+  return { containerProps, releaseToUser, resumeFollow, markProgrammatic };
 }

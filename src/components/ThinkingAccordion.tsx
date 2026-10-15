@@ -11,11 +11,10 @@ interface ThinkingAccordionProps {
 }
 
 /**
- * 思考过程折叠区（现代聊天式样，参考 Claude/GPT 的思考条）：
- *   - 折叠态只有一行：小图标 + 「深度思考 · Ns」（进行中/结束后同款，仅图标与时长的值不同）
- *     + 右向箭头，无边框无底色
- *   - 展开态：内容以左侧细竖线 + 弱化文字呈现，不再是"框中框"
- * 思考中自动展开并跟随滚动；结束后自动折叠。
+ * 思考过程折叠区（手风琴式独立滚动容器）：
+ *   - 折叠态：小图标 + 「深度思考 · Ns」+ 右向箭头
+ *   - 展开态：内容以左侧细竖线 + 弱化文字呈现
+ * 思考中自动展开并向下跟随滚动；用户手动向上滚动时释放，再次滚回贴底后自动恢复跟随；思考结束后自动折叠。
  */
 export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
   content,
@@ -30,32 +29,18 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
     setIsOpen(isThinking);
   }, [isThinking]);
 
-  /**
-   * 思考内容跟随滚动 —— 与两个窗口的消息流**共用同一份 hook**：
-   * 思考中每帧钉在最底部；**用户一旦手动滚动（滚轮/触摸/键盘/拖滚动条），本轮立即彻底停止自动聚焦**，
-   * 不再"滚回底部又自动恢复"（那样会让正在读前文的用户被反复拽动、界面抖动）。
-   * 重新展开思考条（active 由 false 变 true）时重新开始跟随。
-   */
   const { containerProps: boxProps } = useFollowBottom(isThinking && isOpen);
 
   if (!content && !isThinking) return null;
 
-  // 思考中把"细光标"字符直接拼到最后一个 token 后面——它会随文本自然移动，
-  // 真正落在正在生成的位置；而不是作为独立块挂在容器底部（那样永远在左下角，非常突兀）。
-  const CURSOR = '▏'; // U+258F LEFT ONE EIGHTH BLOCK：比常规光标细
+  const CURSOR = '▏';
   const displayContent =
     isThinking && content ? content.replace(/\n+$/, '') + CURSOR : content;
 
-  // 进行中 / 结束后**共用同一格式**（与阶段阶梯汇总行同款语法）：
-  //   进行中（转圈）: 深度思考 · 1.4s（时长随思考块实时跳动）
-  //   结束后（✦）  : 深度思考 · 3.2s
   const headerText = `${t('thinkingLabel')} · ${Math.max(0, duration).toFixed(1)}s`;
 
   return (
-    // mt-2.5 与 StageLadder 的 mb-2.5 折叠成 10px —— 必须与阶梯内部的块间距（space-y-2.5）一致，
-    // 三行（检索 / 载入上下文 / 思考）的间距才统一。按钮上不加 py，否则会再叠 2px 破坏一致性。
     <div className="my-2.5 text-sm">
-      {/* 头部行：无边框，靠留白和层级表达 */}
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="w-full flex items-center gap-2 group/select text-left cursor-pointer select-none"
@@ -81,14 +66,10 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
         />
       </button>
 
-      {/* 展开内容：左侧细竖线 + 弱化文字；生成中由 useFollowBottom 每帧钉在底部，
-          用户一滚即交还控制权（本轮不再自动聚焦）。
-          `[overflow-anchor:none]`：关掉浏览器的滚动锚定——流式追加时它会把视口锚在旧位置，
-          正是"用户滚到最后一行却被滚回去"的元凶。 */}
       {isOpen && (
         <div
           {...boxProps}
-          className="mt-1.5 mb-1 ml-[7px] pl-3.5 border-l-2 border-black/[0.07] dark:border-white/[0.09] max-h-48 overflow-y-auto select-text [overflow-anchor:none]"
+          className="mt-1.5 mb-1 ml-[7px] pl-3.5 border-l-2 border-black/[0.07] dark:border-white/[0.09] max-h-48 overflow-y-auto overscroll-contain select-text [overflow-anchor:none]"
         >
           {displayContent ? (
             <MarkdownRenderer
@@ -98,9 +79,6 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
           ) : (
             <span className="text-xs text-zinc-500 italic">{t('organizingThoughts')}</span>
           )}
-          {/* 光标以「细块字符」直接拼在内容末尾（见上方 displayContent），
-              因此它随文本自然移动、真正落在正在生成的 token 后面，
-              而不是像旧实现那样作为独立元素挂在容器底部（永远停在左下角） */}
         </div>
       )}
     </div>

@@ -16,7 +16,7 @@ interface MessageItemProps {
   retryTargetId?: string;
 }
 
-export const MessageItem: React.FC<MessageItemProps> = ({
+export const MessageItem: React.FC<MessageItemProps> = React.memo(({
   message,
   onOpenWiki,
   onRetry,
@@ -231,4 +231,6 @@ export const MessageItem: React.FC<MessageItemProps> = ({
       )}
     </div>
   );
-};
+});
+
+MessageItem.displayName = 'MessageItem';

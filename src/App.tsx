@@ -12,6 +12,7 @@ import {
 import {
   loadSettings,
   saveSettings,
+  syncSettingsFromServer,
   DEFAULT_LOCAL_CONFIG,
   DEFAULT_DEEPSEEK_CONFIG,
   syncChannel,
@@ -37,6 +38,13 @@ import { deleteUnreferencedMedia } from './services/mediaCleanup';
 export const App: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings>(loadSettings());
   const activeLang = resolveLanguage(settings.language);
+
+  // Sync settings from ~/Library/Application Support/SimpleUI/settings.json on startup
+  useEffect(() => {
+    syncSettingsFromServer((loaded) => {
+      setSettings(loaded);
+    });
+  }, []);
 
   // Real-time synchronization of settings across Main and Spotlight windows
   useEffect(() => {
@@ -76,26 +84,20 @@ export const App: React.FC = () => {
   }, [settings.translatorSettingsConfig]);
 
   useEffect(() => {
-    const handleStorage = (e: StorageEvent) => {
-      if (e.key === 'tff_chat_settings_v1') {
-        setSettings(loadSettings());
-      }
-    };
     const refreshSettings = () => {
-      const latest = loadSettings();
-      setSettings((prev) =>
-        prev.language !== latest.language || prev.theme !== latest.theme ? latest : prev
-      );
+      syncSettingsFromServer((latest) => {
+        setSettings((prev) =>
+          prev.language !== latest.language || prev.theme !== latest.theme ? latest : prev
+        );
+      });
     };
     (window as any).onSubtitleOverlayShown = refreshSettings;
-    window.addEventListener('storage', handleStorage);
     const pollId =
       window.location.hash === '#/subtitles' || window.location.hash === '#/voice'
-        ? window.setInterval(refreshSettings, 1000)
+        ? window.setInterval(refreshSettings, 2000)
         : undefined;
     return () => {
       delete (window as any).onSubtitleOverlayShown;
-      window.removeEventListener('storage', handleStorage);
       if (pollId !== undefined) window.clearInterval(pollId);
     };
   }, []);
@@ -283,16 +285,25 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     };
   }, [refreshState, setSettings]);
 
-  // Poll server health & fetch models
+  // Poll server health & fetch models (only trigger state updates when values actually change)
   useEffect(() => {
     const isDeepSeek = settings.apiProvider === 'deepseek';
     const checkServer = async () => {
       const info = await TurboFieldfareAPI.checkHealth(settings);
-      setHealthInfo(info);
+      setHealthInfo((prev) =>
+        prev.status === info.status &&
+        prev.vision === info.vision &&
+        prev.online === info.online &&
+        prev.modelId === info.modelId
+          ? prev
+          : info
+      );
       if (info.online) {
         const models = await TurboFieldfareAPI.fetchModels(settings);
         if (models.length > 0) {
-          setAvailableModels(models);
+          setAvailableModels((prev) =>
+            prev.length === models.length && prev.every((m, i) => m === models[i]) ? prev : models
+          );
           if (isDeepSeek) {
             const currentModel = settings.deepseekModelId || 'deepseek-flash';
             if (!models.includes(currentModel)) {
@@ -317,7 +328,10 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
           }
         }
       } else if (isDeepSeek) {
-        setAvailableModels(['deepseek-flash', 'deepseek-v4-pro']);
+        const fallback = ['deepseek-flash', 'deepseek-v4-pro'];
+        setAvailableModels((prev) =>
+          prev.length === fallback.length && prev.every((m, i) => m === fallback[i]) ? prev : fallback
+        );
       }
     };
 
@@ -343,11 +357,13 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     }
   }, [settings.apiProvider, isWikiPanelOpen]);
 
-  // Poll local offline Wiki status
+  // Poll local offline Wiki status (bail out if unchanged to avoid idle re-renders)
   useEffect(() => {
     const checkWiki = async () => {
       const status = await WikiAPI.getStatus();
-      setWikiStatus(status);
+      setWikiStatus((prev) =>
+        JSON.stringify(prev) === JSON.stringify(status) ? prev : status
+      );
     };
     checkWiki();
     const interval = showStartupOverlay ? 500 : 6000;
@@ -359,7 +375,9 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
   useEffect(() => {
     const checkAsr = async () => {
       const status = await ASRServiceAPI.getStatus();
-      setAsrStatus(status);
+      setAsrStatus((prev) =>
+        JSON.stringify(prev) === JSON.stringify(status) ? prev : status
+      );
     };
     checkAsr();
     const interval = showStartupOverlay ? 500 : 6000;
@@ -371,7 +389,9 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
   useEffect(() => {
     const checkModel = async () => {
       const status = await ModelServiceAPI.getStatus();
-      setModelStatus(status);
+      setModelStatus((prev) =>
+        JSON.stringify(prev) === JSON.stringify(status) ? prev : status
+      );
     };
     checkModel();
     const interval = showStartupOverlay ? 500 : 6000;
@@ -547,6 +567,7 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
 
         {/* Main Chat Interface */}
         <ChatView
+          sessionId={currentSessionId}
           messages={messages}
           input={input}
           setInput={setInput}

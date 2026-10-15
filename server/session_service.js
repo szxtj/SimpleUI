@@ -14,6 +14,7 @@ const DATA_DIR =
   process.env.SIMPLEUI_DATA_DIR ||
   path.join(HOME, 'Library', 'Application Support', 'SimpleUI');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
+const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 
 const RECORDABLE_RAG_STAGES = ['planning', 'resolving', 'sense', 'fetching', 'routing'];
 
@@ -133,6 +134,7 @@ class SessionService {
   constructor() {
     this.sessions = [];
     this.mainSessionId = null;
+    this.settings = null;
     this.calibrationFactors = {
       ttf: 1.0,
       mference: 1.0,
@@ -152,6 +154,7 @@ class SessionService {
     // Bind authoritative session reference provider to MediaService before loading
     mediaService.setReferenceProvider(() => this.getReferencedMediaFilenames());
 
+    this.loadSettingsFromDisk();
     this.loadFromDisk();
 
     // Run a single safe server-side GC after sessions are loaded on startup
@@ -345,6 +348,40 @@ class SessionService {
     }
   }
 
+  loadSettingsFromDisk() {
+    if (!fs.existsSync(SETTINGS_FILE)) {
+      this.settings = null;
+      return;
+    }
+    try {
+      const raw = fs.readFileSync(SETTINGS_FILE, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        this.settings = parsed;
+      }
+    } catch (err) {
+      console.error('[SessionService] Failed to read settings.json:', err);
+      this.settings = null;
+    }
+  }
+
+  saveSettingsToDisk(nextSettings) {
+    if (!nextSettings || typeof nextSettings !== 'object') return null;
+    this.settings = {
+      ...(this.settings || {}),
+      ...nextSettings,
+    };
+    try {
+      const tmpFile = `${SETTINGS_FILE}.tmp`;
+      fs.writeFileSync(tmpFile, JSON.stringify(this.settings, null, 2), 'utf-8');
+      fs.renameSync(tmpFile, SETTINGS_FILE);
+    } catch (err) {
+      console.error('[SessionService] Failed to write settings.json:', err);
+    }
+    this.broadcast('settings-updated', { settings: this.settings });
+    return this.settings;
+  }
+
   loadFromDisk() {
     if (!fs.existsSync(SESSIONS_FILE)) {
       const initial = this.createNewSessionObject('新对话');
@@ -451,6 +488,7 @@ class SessionService {
       generatingSessionIds,
       liveStreamingTokens,
       calibrationFactors: this.calibrationFactors,
+      settings: this.settings,
     };
   }
 
@@ -1119,7 +1157,7 @@ class SessionService {
           if (msg.content && msg.content.trim()) {
             parts.push({ type: 'text', text: msg.content.trim() });
           } else {
-            parts.push({ type: 'text', text: '请描述图片内容。' });
+            parts.push({ type: 'text', text: ' ' });
           }
           for (const imgUrl of msg.images) {
             parts.push({
@@ -1628,6 +1666,13 @@ class SessionService {
       return;
     }
 
+    // 2b. App Settings on Disk: GET /api/sessions/settings
+    if (pathname === '/api/sessions/settings' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: true, settings: this.settings }));
+      return;
+    }
+
     // Read JSON body for POST / PATCH / DELETE
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
@@ -1642,6 +1687,14 @@ class SessionService {
       }
 
       try {
+        // 2c. Save App Settings to Disk: POST /api/sessions/settings
+        if (pathname === '/api/sessions/settings' && req.method === 'POST') {
+          const saved = this.saveSettingsToDisk(body.settings || body);
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: true, settings: saved }));
+          return;
+        }
+
         // 3. Get or Create Empty Session: POST /api/sessions/empty
         if (pathname === '/api/sessions/empty' && req.method === 'POST') {
           const result = this.getOrCreateEmptySession(body.title || '新对话', body.origin || 'MAIN');

@@ -8,6 +8,7 @@ import {
   WikiCitation,
 } from '../types/chat';
 import { syncCalibrationFactors, CalibrationProvider } from '../utils/token';
+import { applyServerSettings, notifySettingsUpdate, syncSettingsFromServer } from '../services/storage';
 
 export type WindowRole = 'MAIN' | 'SPOTLIGHT';
 
@@ -17,6 +18,7 @@ interface ServerSnapshot {
   generatingSessionIds: string[];
   liveStreamingTokens: Record<string, number>;
   calibrationFactors?: Partial<Record<CalibrationProvider, number>>;
+  settings?: AppSettings | null;
 }
 
 const LEGACY_LOCALSTORAGE_KEYS = [
@@ -65,8 +67,12 @@ export function useSessionStore(
     onSpotlightSessionLoadedRef.current = onSpotlightSessionLoaded;
   }, [onSpotlightSessionLoaded]);
 
-  // Clean up any leftover legacy localStorage session keys & IndexedDB database once on mount
+  // Clean up any leftover legacy localStorage session keys & IndexedDB database once on mount,
+  // and ensure settings.json on disk is synchronized across all windows.
   useEffect(() => {
+    syncSettingsFromServer(() => {
+      notifySettingsUpdate();
+    });
     if (role !== 'MAIN') return;
     try {
       for (const k of LEGACY_LOCALSTORAGE_KEYS) {
@@ -88,6 +94,10 @@ export function useSessionStore(
       if (!snap || !Array.isArray(snap.sessions)) return;
       if (snap.calibrationFactors) {
         syncCalibrationFactors(snap.calibrationFactors);
+      }
+      if (snap.settings && typeof snap.settings === 'object') {
+        applyServerSettings(snap.settings);
+        notifySettingsUpdate();
       }
       sessionsRef.current = snap.sessions;
       setSessions(snap.sessions);
@@ -175,6 +185,18 @@ export function useSessionStore(
           applySnapshot(data);
         } catch (err) {
           console.warn('[useSessionStore] Failed to parse snapshot event:', err);
+        }
+      });
+
+      es.addEventListener('settings-updated', (e: MessageEvent) => {
+        try {
+          const data: { settings?: AppSettings } = JSON.parse(e.data);
+          if (data?.settings && typeof data.settings === 'object') {
+            applyServerSettings(data.settings);
+            notifySettingsUpdate();
+          }
+        } catch {
+          // ignore
         }
       });
 

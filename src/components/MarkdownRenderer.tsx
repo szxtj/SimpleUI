@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { Components } from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
@@ -14,64 +14,12 @@ interface MarkdownRendererProps {
   className?: string;
 }
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, className }) => {
-  const normalizedContent = useMemo(() => {
-    return preprocessMarkdown(content);
-  }, [content]);
-
-  return (
-    <div className={`markdown-body ${className || 'text-[#e0e1e4] leading-relaxed'}`}>
-      <ReactMarkdown
-        remarkPlugins={[remarkMath, remarkGfm, remarkCjkFriendly]}
-        rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
-        components={{
-          // Assistant answers routinely contain links. Without target="_blank" the
-          // WebView would navigate away from the app UI (and there is no back
-          // button) — external links are routed to the macOS default browser by
-          // the native WKUIDelegate (see MainWindowController).
-          a({ href, children, ...props }) {
-            const external = /^https?:\/\//i.test(href || '');
-            return (
-              <a
-                href={href}
-                {...(external ? { target: '_blank', rel: 'noreferrer' } : {})}
-                {...props}
-              >
-                {children}
-              </a>
-            );
-          },
-          code({ className, children, ...props }) {
-            const match = /language-(\w+)/.exec(className || '');
-            const language = match ? match[1] : '';
-            const codeString = String(children).replace(/\n$/, '');
-
-            // Multiline block code with header and copy button
-            if (match || codeString.includes('\n')) {
-              return <CodeBlock language={language} code={codeString} />;
-            }
-
-            // Inline code
-            return (
-              <code className={className} {...props}>
-                {children}
-              </code>
-            );
-          },
-        }}
-      >
-        {normalizedContent}
-      </ReactMarkdown>
-    </div>
-  );
-};
-
 interface CodeBlockProps {
   language: string;
   code: string;
 }
 
-const CodeBlock: React.FC<CodeBlockProps> = ({ language, code }) => {
+const CodeBlock: React.FC<CodeBlockProps> = React.memo(({ language, code }) => {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
 
@@ -109,9 +57,82 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ language, code }) => {
           )}
         </button>
       </div>
-      <div className="p-3.5 overflow-x-auto text-[0.88em] font-mono leading-relaxed text-[#f0f3f6]">
+      <div className="p-3.5 overflow-x-auto overflow-y-hidden text-[0.88em] font-mono leading-relaxed text-[#f0f3f6]">
         <code>{code}</code>
       </div>
     </div>
   );
+});
+
+CodeBlock.displayName = 'CodeBlock';
+
+// Hoisted static plugin & component configurations so ReactMarkdown never unmounts/remounts
+// <CodeBlock> DOM nodes across streaming chunks or parent re-renders.
+const REMARK_PLUGINS: any[] = [remarkMath, remarkGfm, remarkCjkFriendly];
+const REHYPE_PLUGINS: any[] = [[rehypeKatex, { throwOnError: false, strict: false }]];
+
+const MARKDOWN_COMPONENTS: Components = {
+  a({ href, children, ...props }) {
+    const external = /^https?:\/\//i.test(href || '');
+    return (
+      <a
+        href={href}
+        {...(external ? { target: '_blank', rel: 'noreferrer' } : {})}
+        {...props}
+      >
+        {children}
+      </a>
+    );
+  },
+  pre({ children }) {
+    // Render fenced code blocks directly without wrapping a block <div> inside <pre>
+    const child = React.Children.toArray(children)[0];
+    if (child && React.isValidElement(child)) {
+      const childProps = (child as React.ReactElement<{ className?: string; children?: React.ReactNode }>).props;
+      const childClassName = String(childProps?.className || '');
+      const match = /language-([\w+-]+)/.exec(childClassName);
+      const language = match ? match[1] : '';
+      const rawChildren = childProps?.children;
+      const codeString = String(rawChildren ?? '').replace(/\n$/, '');
+      return <CodeBlock language={language} code={codeString} />;
+    }
+    return <pre>{children}</pre>;
+  },
+  code({ className, children, ...props }) {
+    const match = /language-([\w+-]+)/.exec(className || '');
+    const codeString = String(children ?? '').replace(/\n$/, '');
+
+    // Fallback if a block code element is rendered outside <pre>
+    if (match || codeString.includes('\n')) {
+      return <CodeBlock language={match ? match[1] : ''} code={codeString} />;
+    }
+
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    );
+  },
 };
+
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = React.memo(
+  ({ content, className }) => {
+    const normalizedContent = useMemo(() => {
+      return preprocessMarkdown(content);
+    }, [content]);
+
+    return (
+      <div className={`markdown-body ${className || 'text-[#e0e1e4] leading-relaxed'}`}>
+        <ReactMarkdown
+          remarkPlugins={REMARK_PLUGINS}
+          rehypePlugins={REHYPE_PLUGINS}
+          components={MARKDOWN_COMPONENTS}
+        >
+          {normalizedContent}
+        </ReactMarkdown>
+      </div>
+    );
+  }
+);
+
+MarkdownRenderer.displayName = 'MarkdownRenderer';

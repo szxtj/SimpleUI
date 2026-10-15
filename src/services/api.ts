@@ -234,8 +234,8 @@ export class TurboFieldfareAPI {
           if (msg.content && msg.content.trim()) {
             parts.push({ type: 'text', text: msg.content.trim() });
           } else {
-            // 只有发单图片无字符的时候，默认带上简单的提示词
-            parts.push({ type: 'text', text: '请描述图片内容。' });
+            // 只有发单图片无字符的时候，默认带上单个空格，避免注入主观提示词干扰模型意图
+            parts.push({ type: 'text', text: ' ' });
           }
           for (const imgUrl of msg.images) {
             let finalUrl = imgUrl;
