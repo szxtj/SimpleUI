@@ -48,14 +48,6 @@ const DOWNLOAD_SOURCES = [
   },
 ];
 
-// 已废弃的旧版模型与目录（启动或清理时自动移除以释放磁盘空间）
-const LEGACY_MODEL_PATHS = [
-  'qwen3_asr_1.7b.gguf',
-  'mmproj_qwen3_asr_1.7b.gguf',
-  'audio_encoder.mlmodelc',
-  'punct',
-];
-
 export const MODEL_SPECS = {
   vad: {
     name: 'TEN-VAD (16ms 帧级声学活动检测)',
@@ -640,7 +632,7 @@ class SubtitleService {
   }
 
   /**
-   * 自动清理废弃的旧模型（Qwen3-ASR 1.7B、残缺 ForcedAligner、独立 Punct）与无用缓存碎片（.part / .tmp / .DS_Store）
+   * 仅清理字幕模型目录内的下载临时缓存碎片（.part / .tmp / .download），不触碰任何外部或用户正式文件
    */
   cleanLegacyModels(opts = { removePartFiles: true }) {
     if (!fs.existsSync(SUBTITLE_MODELS_DIR)) return { freedBytes: 0, removed: [] };
@@ -651,24 +643,9 @@ class SubtitleService {
       try {
         const st = fs.statSync(p);
         if (st.isFile()) return st.size;
-        if (st.isDirectory()) {
-          return fs.readdirSync(p).reduce((acc, f) => acc + getSize(path.join(p, f)), 0);
-        }
       } catch {}
       return 0;
     };
-
-    for (const rel of LEGACY_MODEL_PATHS) {
-      const fullPath = path.join(SUBTITLE_MODELS_DIR, rel);
-      if (fs.existsSync(fullPath)) {
-        const sz = getSize(fullPath);
-        try {
-          fs.rmSync(fullPath, { recursive: true, force: true });
-          freedBytes += sz;
-          removed.push(rel);
-        } catch {}
-      }
-    }
 
     const cleanTempRecursive = (dir) => {
       try {
@@ -676,12 +653,6 @@ class SubtitleService {
           const full = path.join(dir, entry.name);
           if (entry.isDirectory()) {
             cleanTempRecursive(full);
-            // 清理空目录
-            try {
-              if (fs.readdirSync(full).length === 0) {
-                fs.rmdirSync(full);
-              }
-            } catch {}
           } else if (
             (opts.removePartFiles && entry.name.endsWith('.part')) ||
             entry.name.endsWith('.tmp') ||
@@ -698,7 +669,7 @@ class SubtitleService {
 
     if (removed.length > 0) {
       console.log(
-        `[Subtitles] 🧹 已自动清理废弃模型与无用缓存 (${(freedBytes / (1024 * 1024)).toFixed(1)} MB): ${removed.join(', ')}`
+        `[Subtitles] 🧹 已自动清理下载临时缓存 (${(freedBytes / (1024 * 1024)).toFixed(1)} MB): ${removed.join(', ')}`
       );
     }
     return { freedBytes, removed };

@@ -330,19 +330,7 @@ class TtfService {
   }
 
   exportEnvFile() {
-    if (this.getActiveEngine() !== 'turbo-fieldfare') return;
-    try {
-      if (!fs.existsSync(ENV_EXPORT_DIR)) fs.mkdirSync(ENV_EXPORT_DIR, { recursive: true });
-      const env = this.buildEnv('turbo-fieldfare');
-      const lines = [
-        '# TurboFieldfare 运行配置 (由 SimpleUI 模型服务管理自动生成)',
-        ...Object.entries(env).map(([k, v]) => `export ${k}="${v}"`),
-        '',
-      ];
-      fs.writeFileSync(ENV_EXPORT_FILE, lines.join('\n'));
-    } catch (e) {
-      // ignore
-    }
+    // 所有配置已统一收敛至 ~/Library/Application Support/SimpleUI/model_config.json
   }
 
   async checkHealth(engine = this.getActiveEngine()) {

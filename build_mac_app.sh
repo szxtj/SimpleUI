@@ -214,13 +214,9 @@ PYEOF
     mkdir -p "$RESOURCES_DIR/llama"
     cp -R "bin/llama/." "$RESOURCES_DIR/llama/"
     chmod +x "$RESOURCES_DIR/llama/bin/llama-server" 2>/dev/null || true
-    # 同步一份到用户标准内置目录，确保开发态与打包态路径完全一致
-    mkdir -p "$LOCAL_LLAMA_DIR/bin" "$LOCAL_LLAMA_DIR/lib" 2>/dev/null || true
-    cp -R "bin/llama/." "$LOCAL_LLAMA_DIR/" 2>/dev/null || true
-    chmod +x "$LOCAL_LLAMA_DIR/bin/llama-server" 2>/dev/null || true
     echo "  -> 已打包自包含字幕翻译运行时 (llama-server): $(du -sh bin/llama | cut -f1)"
   else
-    echo "  ⚠ 未找到 llama-server 运行时：请确认 $LOCAL_LLAMA_DIR 或 bin/llama 存在"
+    echo "  ⚠ 未找到 llama-server 运行时：请确认 bin/llama 存在"
   fi
 }
 ensure_llama_runtime
