@@ -199,6 +199,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         userContent.add(self, name: "openExternal")
         userContent.add(self, name: "chooseDirectory")
         userContent.add(self, name: "chooseFile")
+        userContent.add(self, name: "setAppLanguage")
         config.userContentController = userContent
 
         // 权限状态在系统设置里被改动后，主动回推给页面刷新
@@ -336,6 +337,11 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             let callbackKey = dict["callbackKey"] as? String ?? "zim"
             let allowedExtensions = dict["allowedExtensions"] as? [String]
             showFilePicker(currentPath: currentPath, callbackKey: callbackKey, allowedExtensions: allowedExtensions)
+        } else if message.name == "setAppLanguage", let dict = message.body as? [String: Any] {
+            let lang = dict["lang"] as? String
+            AppLocale.update(lang: lang)
+            (NSApp.delegate as? AppDelegate)?.setupMainMenu()
+            (NSApp.delegate as? AppDelegate)?.statusBarController?.refreshMenuLanguage()
         }
     }
 
@@ -347,8 +353,8 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = false
-        panel.prompt = "选择"
-        panel.message = "请选择知识库文件 (.zim)"
+        panel.prompt = AppLocale.isZh ? "选择" : "Select"
+        panel.message = AppLocale.isZh ? "请选择知识库文件 (.zim)" : "Please select a Knowledge Base file (.zim)"
         panel.allowsOtherFileTypes = true
 
         if let exts = allowedExtensions, !exts.isEmpty {
@@ -406,8 +412,8 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
-        panel.prompt = "选择"
-        panel.message = "请选择项目所在文件夹"
+        panel.prompt = AppLocale.isZh ? "选择" : "Select"
+        panel.message = AppLocale.isZh ? "请选择项目所在文件夹" : "Please select the project directory"
 
         if let rawPath = currentPath, !rawPath.isEmpty {
             let expandedPath = (rawPath as NSString).expandingTildeInPath

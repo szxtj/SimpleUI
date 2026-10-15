@@ -42,8 +42,13 @@ export const VoiceOverlay: React.FC = () => {
       stateRef.current = p.state;
       setState(p.state);
       levelRef.current = p.level ?? 0;
-      setText(p.text);
-      setAction(p.action);
+      if (p.state === 'idle') {
+        setText(undefined);
+        setAction(undefined);
+      } else {
+        setText(p.text);
+        setAction(p.action);
+      }
     };
     // 通知原生：页面已挂载，可以下发状态（否则首批状态会丢失）
     try {
@@ -128,13 +133,14 @@ export const VoiceOverlay: React.FC = () => {
       : undefined;
 
   return (
-    <div className="h-screen w-screen bg-transparent flex flex-col items-center justify-center overflow-hidden select-none">
+    <div className="relative h-screen w-screen bg-transparent flex flex-col items-center pt-2.5 overflow-visible select-none">
       <div
-        className={`flex items-center gap-2 h-[44px] px-3 rounded-full ${state === 'recording' ? 'animate-[voicePulse_1.6s_ease-in-out_infinite]' : ''}`}
+        className={`relative flex items-center gap-2 h-[44px] px-3 rounded-full flex-shrink-0 ${state === 'recording' ? 'animate-[voicePulse_1.6s_ease-in-out_infinite]' : ''}`}
         style={{
           background: 'linear-gradient(158deg, #7ad99b 0%, #4dbd7c 48%, #35a468 100%)',
           boxShadow:
-            '0 12px 32px rgba(45,150,95,0.42), inset 0 1px 0 rgba(255,255,255,0.42), inset 0 -2px 7px rgba(0,0,0,0.14)',
+            'inset 0 1px 0 rgba(255,255,255,0.45), inset 0 -2px 6px rgba(0,0,0,0.12)',
+          border: '1px solid rgba(255,255,255,0.25)',
         }}
       >
         <div className="flex items-center gap-[4px]">{renderDots(0)}</div>
@@ -142,13 +148,14 @@ export const VoiceOverlay: React.FC = () => {
           {icon}
         </div>
         <div className="flex items-center gap-[4px]">{renderDots(4)}</div>
-      </div>
 
-      {caption && (
-        <div className="mt-2 max-w-[224px] truncate rounded-lg px-2 py-0.5 text-[9px] leading-snug bg-white/95 text-zinc-800 border border-black/10 dark:bg-[#2a2c33] dark:text-zinc-50 dark:border-white/15 shadow-lg shadow-black/20 dark:shadow-black/40 backdrop-blur">
-          {caption}
-        </div>
-      )}
+        {/* 结果小框直接在球下方绝对定位浮现，绝对不抬高或位移状态球 */}
+        {caption && (
+          <div className="absolute top-[calc(100%+6px)] left-1/2 -translate-x-1/2 max-w-[300px] whitespace-nowrap truncate rounded-lg px-2.5 py-1 text-[10.5px] leading-snug bg-white/95 text-zinc-800 border border-black/10 dark:bg-[#2a2c33] dark:text-zinc-50 dark:border-white/15 shadow-md shadow-black/15 dark:shadow-black/35 backdrop-blur z-10 pointer-events-none">
+            {caption}
+          </div>
+        )}
+      </div>
     </div>
   );
 };

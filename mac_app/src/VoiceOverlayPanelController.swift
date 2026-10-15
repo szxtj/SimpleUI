@@ -15,9 +15,9 @@ class VoiceOverlayPanel: NSPanel {
 /// `http://127.0.0.1:31235/#/voice`，由 React 渲染胶囊本体（绿色渐变 + 麦克风 +
 /// 电平点阵）。Swift 侧只负责定位、显隐与状态下发。
 class VoiceOverlayPanelController: NSWindowController, WKScriptMessageHandler, WKNavigationDelegate {
-    /// 面板尺寸（含阴影留白）；胶囊本体居中绘制（约为原始尺寸的 80%）
-    private static let panelWidth: CGFloat = 240
-    private static let panelHeight: CGFloat = 83
+    /// 面板尺寸（含阴影留白与下方文本卡片空间）；胶囊本体居中偏上绘制
+    private static let panelWidth: CGFloat = 340
+    private static let panelHeight: CGFloat = 110
     /// 距屏幕可视区底边的高度（紧贴 Dock 上方一点点）
     private static let bottomInset: CGFloat = 12
 
@@ -102,6 +102,8 @@ class VoiceOverlayPanelController: NSWindowController, WKScriptMessageHandler, W
     func hide() {
         autoHideWorkItem?.cancel()
         autoHideWorkItem = nil
+        pendingPayload = ["state": VoiceInputState.idle.rawValue, "level": 0]
+        pushState()
         window?.orderOut(nil)
     }
 
@@ -116,26 +118,26 @@ class VoiceOverlayPanelController: NSWindowController, WKScriptMessageHandler, W
 
         switch state {
         case .recording, .transcribing:
+            pushState()
             show()
         case .done:
+            pushState()
             show()
             scheduleAutoHide(after: 1.6)
         case .error:
+            pushState()
             show()
             scheduleAutoHide(after: 2.4)
         case .idle:
             hide()
             return
         }
-
-        pushState()
     }
 
     private func scheduleAutoHide(after seconds: TimeInterval) {
         autoHideWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.hide()
-            self?.pendingPayload = ["state": VoiceInputState.idle.rawValue, "level": 0]
         }
         autoHideWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)

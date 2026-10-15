@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { ChatMessage, TurnMetrics } from '../types/chat';
 import { useI18n } from '../i18n';
 import { useFollowBottom } from '../hooks/useFollowBottom';
+import { useChatFontSize } from '../hooks/useChatFontSize';
 import { MessageItem } from './MessageItem';
 import { ChatInput } from './ChatInput';
 import {
@@ -91,6 +92,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const prevFirstMsgIdRef = useRef(messages[0]?.id);
   const userScrolledSinceSwitchRef = useRef(false);
   const [showModelMenu, setShowModelMenu] = useState(false);
+
+  // 对话内容字号独立调节（大窗口快捷键 ⌘+ / ⌘-，不影响侧边栏/输入框）
+  const { fontSize: chatFontSize } = useChatFontSize({
+    storageKey: 'simpleui_main_chat_font_size',
+    defaultSize: 15,
+    minSize: 12,
+    maxSize: 24,
+  });
 
   /**
    * 消息流容器的「思考期跟随」行为（与浮窗共用同一份 hook）。
@@ -349,6 +358,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
           正文流式阶段与生成结束后完全不干预，彻底移除回正逻辑。 */}
       <div
         {...streamProps}
+        style={{
+          '--chat-font-size': `${chatFontSize}px`,
+        } as React.CSSProperties}
         onWheel={(e) => {
           handleUserScrollAction();
           streamProps.onWheel?.(e);
@@ -462,11 +474,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
             isDeepSeek={isDeepSeek}
             isMference={isMference}
           />
-
-          {/* Qianwen Style Disclaimer below input box */}
-          <div className="mt-2 text-[11px] text-zinc-400 dark:text-zinc-500 select-none">
-            {t('aiDisclaimer')}
-          </div>
         </div>
       </div>
     </div>

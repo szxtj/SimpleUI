@@ -109,7 +109,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ language, code }) => {
           )}
         </button>
       </div>
-      <div className="p-3.5 overflow-x-auto text-[13px] font-mono leading-relaxed text-[#f0f3f6]">
+      <div className="p-3.5 overflow-x-auto text-[0.88em] font-mono leading-relaxed text-[#f0f3f6]">
         <code>{code}</code>
       </div>
     </div>

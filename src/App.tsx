@@ -50,6 +50,17 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  // Sync language setting with native macOS application menu and dialogs
+  useEffect(() => {
+    try {
+      (window as any).webkit?.messageHandlers?.setAppLanguage?.postMessage({
+        lang: settings.language,
+      });
+    } catch {
+      // non-macOS or test environment without native bridge
+    }
+  }, [settings.language]);
+
   useEffect(() => {
     const handleStorage = (e: StorageEvent) => {
       if (e.key === 'tff_chat_settings_v1') {

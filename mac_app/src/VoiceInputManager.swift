@@ -68,6 +68,7 @@ class VoiceInputManager {
     private var pcmSamples: [Int16] = []
     private var samplesLock = NSLock()
     private var lastLevelEmit = Date.distantPast
+    private var isTapInstalled = false
 
     /// 落点规则（用户 2026-09-29 定，两条，不再探测焦点是否为输入框）：
     ///   焦点在本 App  → 前端桥直接插入光标处，**不动剪贴板**；
@@ -90,11 +91,29 @@ class VoiceInputManager {
             name: NSApplication.didBecomeActiveNotification,
             object: nil
         )
+        // 监听硬件音频配置（如 AirPods 连接/拔出、采样率变动），防止 Engine 底层抛出 Obj-C 崩溃
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioEngineConfigChange),
+            name: .AVAudioEngineConfigurationChange,
+            object: audioEngine
+        )
     }
 
     @objc private func applicationDidBecomeActive() {
         refreshInstallation()
         VoiceInputManager.broadcastPermissionUpdate()
+    }
+
+    @objc private func handleAudioEngineConfigChange() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if self.isCapturing {
+                self.finishCapture()
+            } else {
+                self.stopEngineIfNeeded()
+            }
+        }
     }
 
     /// 权限变化后重装监听（幂等：已就绪时直接返回）
@@ -307,9 +326,15 @@ class VoiceInputManager {
     // MARK: - 录音（AVAudioEngine → 16kHz 单声道 Int16）
 
     private func startRecording() -> Bool {
+        if isCapturing || isTapInstalled {
+            stopEngineIfNeeded()
+        }
         let input = audioEngine.inputNode
         let hwFormat = input.outputFormat(forBus: 0)
-        guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else { return false }
+        guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
+            NSLog("[VoiceInput] ⚠ 硬件音频格式无效: sampleRate=\(hwFormat.sampleRate), channels=\(hwFormat.channelCount)")
+            return false
+        }
 
         guard let targetFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
@@ -317,6 +342,7 @@ class VoiceInputManager {
             channels: 1,
             interleaved: true
         ), let conv = AVAudioConverter(from: hwFormat, to: targetFormat) else {
+            NSLog("[VoiceInput] ⚠ 创建 AVAudioConverter 失败")
             return false
         }
         converter = conv
@@ -324,30 +350,39 @@ class VoiceInputManager {
         pcmSamples.removeAll(keepingCapacity: true)
         samplesLock.unlock()
 
-        input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 2048, format: hwFormat) { [weak self] buffer, _ in
-            self?.handleAudioBuffer(buffer, hwFormat: hwFormat, targetFormat: targetFormat)
-        }
-
-        audioEngine.prepare()
         do {
+            if isTapInstalled {
+                input.removeTap(onBus: 0)
+                isTapInstalled = false
+            }
+            input.installTap(onBus: 0, bufferSize: 2048, format: hwFormat) { [weak self] buffer, _ in
+                self?.handleAudioBuffer(buffer, hwFormat: hwFormat, targetFormat: targetFormat)
+            }
+            isTapInstalled = true
+            audioEngine.prepare()
             try audioEngine.start()
+            return true
         } catch {
-            input.removeTap(onBus: 0)
+            NSLog("[VoiceInput] ⚠ 启动音频引擎异常: \(error.localizedDescription)")
+            if isTapInstalled {
+                input.removeTap(onBus: 0)
+                isTapInstalled = false
+            }
+            stopEngineIfNeeded()
             return false
         }
-        return true
     }
 
     private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer, hwFormat: AVAudioFormat, targetFormat: AVAudioFormat) {
-        guard let converter = converter else { return }
+        // 关键防护 1：局部强引用 converter，防止主线程 stopEngine 析构引发 CoreAudio 实时线程野指针崩溃 (EXC_BAD_ACCESS)
+        guard let conv = self.converter else { return }
         let ratio = targetFormat.sampleRate / hwFormat.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
         guard let out = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
 
         var consumed = false
         var convErr: NSError?
-        converter.convert(to: out, error: &convErr) { _, status in
+        conv.convert(to: out, error: &convErr) { _, status in
             if consumed {
                 status.pointee = .noDataNow
                 return nil
@@ -382,7 +417,6 @@ class VoiceInputManager {
     }
 
     private func stopRecording() -> Data? {
-        audioEngine.inputNode.removeTap(onBus: 0)
         stopEngineIfNeeded()
         samplesLock.lock()
         let samples = pcmSamples
@@ -393,11 +427,20 @@ class VoiceInputManager {
     }
 
     private func stopEngineIfNeeded() {
+        if isTapInstalled {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            isTapInstalled = false
+        }
         if audioEngine.isRunning {
             audioEngine.stop()
         }
         audioEngine.reset()
+        // 延时清空 converter，确保 CoreAudio 实时渲染队列中最后一帧完全执行完毕再释放内存
+        let oldConv = converter
         converter = nil
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.1) {
+            _ = oldConv
+        }
     }
 
     /// 把 Int16 PCM 封装为 16kHz 单声道 16bit WAV

@@ -1793,6 +1793,7 @@ class SubtitleService {
     const check = this.checkModelsReadiness();
     const runtime = this.checkRuntimeReadiness();
     return {
+      port: 1249,
       running: this.isRunning,
       paused: this.isPaused,
       loading: this.isLoadingModels,

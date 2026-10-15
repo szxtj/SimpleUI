@@ -86,7 +86,7 @@ body {
 
 /* Markdown styling in chat bubble */
 .markdown-body {
-  font-size: 0.95rem;
+  font-size: var(--chat-font-size, 0.95rem);
   line-height: 1.68;
   color: #1f2328;
 }

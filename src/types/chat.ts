@@ -311,6 +311,7 @@ export interface SubtitleDownloadState {
 
 /** 实时字幕服务整体聚合状态 */
 export interface SubtitleServiceStatus {
+  port?: number;
   running: boolean;
   paused: boolean;
   loading: boolean;

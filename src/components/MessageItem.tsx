@@ -62,7 +62,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
                 ))}
               </div>
             )}
-            <div className="whitespace-pre-wrap break-words text-[14.5px] cq-md:text-[15px] leading-relaxed">
+            <div className="whitespace-pre-wrap break-words leading-relaxed" style={{ fontSize: 'var(--chat-font-size, 15px)' }}>
               {message.content}
             </div>
           </div>
@@ -115,7 +115,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
           {/* Assistant Text / Markdown / KaTeX
               （思考中且尚无正文时不再额外渲染"Thinking..."——折叠条头部已表达同样状态） */}
           {message.content ? (
-            <div className="text-[15px] leading-relaxed">
+            <div className="leading-relaxed" style={{ fontSize: 'var(--chat-font-size, 15px)' }}>
               <MarkdownRenderer content={message.content} />
             </div>
           ) : null}

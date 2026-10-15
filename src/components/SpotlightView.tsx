@@ -23,6 +23,7 @@ import { extractImagesFromPaste, fileToDataURL, isImageFile } from '../utils/ima
 import { deleteUnreferencedMedia } from '../services/mediaCleanup';
 import { useImeInput } from '../hooks/useImeInput';
 import { useSessionStore } from '../hooks/useSessionStore';
+import { useChatFontSize } from '../hooks/useChatFontSize';
 import {
   ArrowUp,
   Square,
@@ -78,6 +79,14 @@ export const SpotlightView: React.FC = () => {
   const [isWikiPanelOpen, setIsWikiPanelOpen] = useState(false);
   /** 弹出显示原 Markdown 文本的目标内容 */
   const [rawMarkdownTarget, setRawMarkdownTarget] = useState<string | null>(null);
+
+  // 对话内容字号独立调节（小窗口快捷键 ⌘+ / ⌘-，不影响其他区域）
+  const { fontSize: chatFontSize } = useChatFontSize({
+    storageKey: 'simpleui_spotlight_chat_font_size',
+    defaultSize: 14.5,
+    minSize: 12,
+    maxSize: 22,
+  });
 
   // Track last resize payload sent to native bridge to avoid redundant postMessages
   const lastResizeSentRef = useRef<{ width: number; height: number; expanded: boolean } | null>(null);
@@ -963,6 +972,9 @@ export const SpotlightView: React.FC = () => {
             handleUserScrollAction();
             streamProps.onKeyDown?.(e);
           }}
+          style={{
+            '--chat-font-size': `${chatFontSize}px`,
+          } as React.CSSProperties}
           className="flex-1 min-h-0 overflow-y-auto p-4 pb-6 space-y-4 text-sm overscroll-y-contain [overflow-anchor:none]"
         >
           {messages.map((msg) => {
@@ -970,7 +982,10 @@ export const SpotlightView: React.FC = () => {
               const isCopied = copiedMsgId === msg.id;
               return (
                 <div key={msg.id} className="flex flex-col items-end group">
-                  <div className="max-w-[85%] bg-blue-600 text-white rounded-2xl px-4 py-2.5 text-[14.5px] leading-relaxed break-words shadow-sm">
+                  <div
+                    className="max-w-[85%] bg-blue-600 text-white rounded-2xl px-4 py-2.5 leading-relaxed break-words shadow-sm"
+                    style={{ fontSize: 'var(--chat-font-size, 14.5px)' }}
+                  >
                     {msg.images && msg.images.length > 0 && (
                       <div className="flex flex-wrap gap-2 mb-2">
                         {msg.images.map((url, i) => (
@@ -1034,7 +1049,10 @@ export const SpotlightView: React.FC = () => {
                 )}
 
                 {msg.content && (
-                  <div className="text-[14.5px] leading-relaxed text-[#1f2328] dark:text-[#ecedf1]">
+                  <div
+                    className="leading-relaxed text-[#1f2328] dark:text-[#ecedf1]"
+                    style={{ fontSize: 'var(--chat-font-size, 14.5px)' }}
+                  >
                     <MarkdownRenderer content={msg.content} />
                   </div>
                 )}

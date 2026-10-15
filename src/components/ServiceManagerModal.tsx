@@ -5,7 +5,6 @@ import { resolveLanguage, formatArticleCount, translations, Language, Translatio
 import {
   SERVICE_STATE_CARD_DOT_CLASS,
   SERVICE_STATE_CARD_TEXT_CLASS,
-  SERVICE_STATE_LABEL_KEY,
   toServiceState,
 } from '../utils/serviceState';
 import { X, RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen, FileText, Check, Loader2 } from 'lucide-react';
@@ -705,37 +704,39 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                 {t('wikiDisabledInDeepSeek')}
               </div>
             )}
-            <div className="flex items-center justify-between mb-2.5">
-              <div className="flex items-center gap-2">
-                <BookOpen className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+            <div className="flex items-start justify-between mb-2.5">
+              <div className="flex items-center gap-2 pt-0.5">
+                <BookOpen className="w-4 h-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
                 <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
                   {t('wikiKnowledgeBase')}
                 </span>
               </div>
-              {/* 状态加载后始终显示：断开（无论总开关关闭还是 ZIM 缺失）都是红点 + 红字「离线」，
-                  区别仅在是否带原因后缀（开关关闭 = 用户自己关的，无需原因） */}
               {wikiStatus && (
-                <div className="flex items-center gap-1.5 text-[11px]">
-                  <span
-                    className={`w-2 h-2 rounded-full ${
-                      SERVICE_STATE_CARD_DOT_CLASS[toServiceState(wikiStatus.status)]
-                    }`}
-                  />
-                  <span className={SERVICE_STATE_CARD_TEXT_CLASS[toServiceState(wikiStatus.status)]}>
-                    {/* 与左下角、状态栏菜单同一套三态：就绪（带端口与词条数）/ 启动中 / 离线。
-                        离线保留原因后缀：总开关开着却没连上 = 未找到 ZIM 文件；
-                        总开关关闭 = 用户自己关的，不再给原因。 */}
+                <div className="flex flex-col items-end gap-1">
+                  <div className="flex items-center gap-1.5 text-[11px]">
+                    <span
+                      className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                        SERVICE_STATE_CARD_DOT_CLASS[toServiceState(wikiStatus.status)]
+                      }`}
+                    />
+                    <span className={SERVICE_STATE_CARD_TEXT_CLASS[toServiceState(wikiStatus.status)]}>
+                      {toServiceState(wikiStatus.status) === 'online'
+                        ? `${t('statusReady')} : ${wikiStatus.port ?? 31236}`
+                        : toServiceState(wikiStatus.status) === 'starting'
+                        ? t('statusStarting')
+                        : t('statusOffline')}
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
                     {toServiceState(wikiStatus.status) === 'online'
-                      ? `${t('wikiStatusConnected')}${wikiStatus.port ?? 31236}${
-                          wikiStatus.articleCount > 0
-                            ? ` (${formatArticleCount(wikiStatus.articleCount, activeLang)})`
-                            : ''
-                        }`
+                      ? wikiStatus.articleCount > 0
+                        ? `${t('wikiDetailIndexed')} ${formatArticleCount(wikiStatus.articleCount, activeLang)}`
+                        : t('wikiDetailConnected')
                       : toServiceState(wikiStatus.status) === 'starting'
-                      ? t('statusStarting')
+                      ? t('wikiDetailStarting')
                       : wikiStatus.enabled
-                      ? t('wikiStatusDisconnected')
-                      : t('wikiStatusOffline')}
+                      ? t('wikiDetailNoZim')
+                      : t('serviceDisabled')}
                   </span>
                 </div>
               )}
@@ -861,23 +862,34 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
           {/* 基础模型服务卡片（支持 TurboFieldfare 与 Mference 双引擎自由切换与管理） */}
           <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
             {/* 头部：标题 + 状态灯/端口（精确展示当前选中引擎的运行状态与端口） */}
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <Server className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+            <div className="flex items-start justify-between mb-3">
+              <div className="flex items-center gap-2 pt-0.5">
+                <Server className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0" />
                 <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
                   {t('modelServiceTitle')}
                 </span>
               </div>
-              <div className="flex items-center gap-1.5 text-[11px]">
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    SERVICE_STATE_CARD_DOT_CLASS[toServiceState(svcStatus?.status)]
-                  }`}
-                />
-                <span className={SERVICE_STATE_CARD_TEXT_CLASS[toServiceState(svcStatus?.status)]}>
+              <div className="flex flex-col items-end gap-1">
+                <div className="flex items-center gap-1.5 text-[11px]">
+                  <span
+                    className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                      SERVICE_STATE_CARD_DOT_CLASS[toServiceState(svcStatus?.status)]
+                    }`}
+                  />
+                  <span className={SERVICE_STATE_CARD_TEXT_CLASS[toServiceState(svcStatus?.status)]}>
+                    {toServiceState(svcStatus?.status) === 'online'
+                      ? `${t('statusReady')} : ${svcStatus?.port ?? (selectedEngine === 'mference' ? 1241 : 1235)}`
+                      : toServiceState(svcStatus?.status) === 'starting'
+                      ? t('statusStarting')
+                      : t('statusOffline')}
+                  </span>
+                </div>
+                <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
                   {toServiceState(svcStatus?.status) === 'online'
-                    ? `${t('modelServiceStatusRunning')} :${svcStatus?.port ?? 1235}`
-                    : t(SERVICE_STATE_LABEL_KEY[toServiceState(svcStatus?.status)])}
+                    ? `${t('modelDetailCurrentEngine')}: ${selectedEngine === 'mference' ? 'Mference' : 'TurboFieldfare'}`
+                    : toServiceState(svcStatus?.status) === 'starting'
+                    ? t('modelDetailLoading')
+                    : t('modelDetailStopped')}
                 </span>
               </div>
             </div>
@@ -1339,24 +1351,34 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
           {/* 语音识别服务卡片（SenseVoice / audio.cpp）——与基础模型服务同构，
               紧随其下：SimpleUI 同为 audiocpp_server 的唯一管理方 */}
           <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <Mic className="w-4 h-4 text-violet-600 dark:text-violet-400" />
+            <div className="flex items-start justify-between mb-3">
+              <div className="flex items-center gap-2 pt-0.5">
+                <Mic className="w-4 h-4 text-violet-600 dark:text-violet-400 flex-shrink-0" />
                 <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
                   {t('asrServiceTitle')}
                 </span>
               </div>
-              <div className="flex items-center gap-1.5 text-[11px]">
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    SERVICE_STATE_CARD_DOT_CLASS[toServiceState(asrStatus?.status)]
-                  }`}
-                />
-                <span className={SERVICE_STATE_CARD_TEXT_CLASS[toServiceState(asrStatus?.status)]}>
-                  {/* 与左下角、状态栏菜单同一套三态：就绪（带端口）/ 启动中 / 离线 */}
+              <div className="flex flex-col items-end gap-1">
+                <div className="flex items-center gap-1.5 text-[11px]">
+                  <span
+                    className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                      SERVICE_STATE_CARD_DOT_CLASS[toServiceState(asrStatus?.status)]
+                    }`}
+                  />
+                  <span className={SERVICE_STATE_CARD_TEXT_CLASS[toServiceState(asrStatus?.status)]}>
+                    {toServiceState(asrStatus?.status) === 'online'
+                      ? `${t('statusReady')} : ${String(asrStatus?.port ?? 10095).replace(/^:/, '')}`
+                      : toServiceState(asrStatus?.status) === 'starting'
+                      ? t('statusStarting')
+                      : t('statusOffline')}
+                  </span>
+                </div>
+                <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
                   {toServiceState(asrStatus?.status) === 'online'
-                    ? `${t('asrServiceStatusRunning')}${asrStatus?.port}`
-                    : t(SERVICE_STATE_LABEL_KEY[toServiceState(asrStatus?.status)])}
+                    ? t('asrDetailReady')
+                    : toServiceState(asrStatus?.status) === 'starting'
+                    ? t('asrDetailStarting')
+                    : t('serviceDisabled')}
                 </span>
               </div>
             </div>
@@ -1626,52 +1648,55 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
           {/* 实时字幕服务卡片（无常驻开关 · 纯状态提示 + 运行环境与三级模型完备校验 + 自动双源测速一键下载） */}
           <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
             {/* 头部：标题 + 整体状态指示（无启停开关） */}
-            <div className="flex items-center justify-between mb-2.5">
-              <div className="flex items-center gap-2">
-                <FileText className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
+            <div className="flex items-start justify-between mb-2.5">
+              <div className="flex items-center gap-2 pt-0.5">
+                <FileText className="w-4 h-4 text-cyan-600 dark:text-cyan-400 flex-shrink-0" />
                 <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
                   {t('subtitleServiceTitle')}
                 </span>
               </div>
               {subtitleStatus && (
-                <div className="flex items-center gap-1.5 text-[11px]">
-                  <span
-                    className={`w-2 h-2 rounded-full ${
-                      subtitleStatus.downloadState?.active || subtitleStatus.loading
-                        ? 'bg-amber-500 animate-pulse'
-                        : subtitleStatus.running
-                        ? 'bg-emerald-500 animate-pulse'
-                        : subtitleStatus.paused
-                        ? 'bg-amber-500'
-                        : subtitleStatus.allReady
-                        ? 'bg-emerald-500'
-                        : 'bg-red-500'
-                    }`}
-                  />
-                  <span
-                    className={
-                      subtitleStatus.downloadState?.active || subtitleStatus.loading || subtitleStatus.paused
-                        ? 'text-amber-600 dark:text-amber-400 font-medium'
-                        : subtitleStatus.running || subtitleStatus.allReady
-                        ? 'text-emerald-600 dark:text-emerald-400 font-medium'
-                        : 'text-red-500 font-medium'
-                    }
-                  >
+                <div className="flex flex-col items-end gap-1">
+                  <div className="flex items-center gap-1.5 text-[11px]">
+                    <span
+                      className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                        subtitleStatus.downloadState?.active || subtitleStatus.loading
+                          ? 'bg-amber-500 animate-pulse'
+                          : subtitleStatus.running
+                          ? 'bg-emerald-500 animate-pulse shadow-[0_0_6px_rgba(16,185,129,0.8)]'
+                          : subtitleStatus.paused || subtitleStatus.allReady
+                          ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.8)]'
+                          : 'bg-red-500'
+                      }`}
+                    />
+                    <span
+                      className={
+                        subtitleStatus.downloadState?.active || subtitleStatus.loading
+                          ? 'text-amber-600 dark:text-amber-400 font-medium'
+                          : subtitleStatus.running || subtitleStatus.paused || subtitleStatus.allReady
+                          ? 'text-emerald-600 dark:text-emerald-400 font-medium'
+                          : 'text-red-500 font-medium'
+                      }
+                    >
+                      {subtitleStatus.downloadState?.active || subtitleStatus.loading
+                        ? t('statusStarting')
+                        : subtitleStatus.running || subtitleStatus.paused || subtitleStatus.allReady
+                        ? `${t('statusReady')} : ${subtitleStatus.port ?? 1249}`
+                        : t('statusOffline')}
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
                     {subtitleStatus.downloadState?.active
-                      ? `${t('subtitleStatusDownloading')}${
-                          subtitleStatus.downloadState.phase === 'downloading'
-                            ? ` (${subtitleStatus.downloadState.progressPercent.toFixed(1)}%)`
-                            : ''
-                        }`
+                      ? `${t('subtitleDetailDownloading')} (${subtitleStatus.downloadState.progressPercent.toFixed(1)}%)`
                       : subtitleStatus.loading
-                      ? `${t('subtitleStatusLoading')} (${Math.min(3, (subtitleStatus.loadingStage || 0) + 1)}/3)`
+                      ? `${t('subtitleDetailLoading')} (${Math.min(3, (subtitleStatus.loadingStage || 0) + 1)}/3)`
                       : subtitleStatus.running
-                      ? t('subtitleStatusActive')
+                      ? t('subtitleDetailActive')
                       : subtitleStatus.paused
-                      ? t('subtitleStatusPaused')
+                      ? t('subtitleDetailPaused')
                       : subtitleStatus.allReady
-                      ? t('subtitleStatusStandby')
-                      : t('subtitleStatusIncomplete')}
+                      ? t('subtitleDetailStandby')
+                      : t('subtitleDetailMissing')}
                   </span>
                 </div>
               )}

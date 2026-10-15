@@ -1,10 +1,29 @@
 import Cocoa
 import WebKit
 
+enum AppLocale {
+    static var explicitLang: String? = nil
+
+    static var isZh: Bool {
+        if let explicit = explicitLang {
+            return explicit.hasPrefix("zh")
+        }
+        return Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
+    }
+
+    static func update(lang: String?) {
+        if let l = lang, !l.isEmpty, l != "system" {
+            explicitLang = l
+        } else {
+            explicitLang = nil
+        }
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: MainWindowController!
     private var spotlightController: SpotlightPanelController!
-    private var statusBarController: StatusBarController!
+    var statusBarController: StatusBarController!
     private var voiceOverlayController: VoiceOverlayPanelController!
     private var subtitleOverlayController: SubtitleOverlayPanelController!
 
@@ -129,45 +148,46 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ProcessManager.shared.stop()
     }
 
-    private func setupMainMenu() {
+    func setupMainMenu() {
+        let isZh = AppLocale.isZh
         let mainMenu = NSMenu()
 
         // 1. Application Menu
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "关于 SimpleUI", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: isZh ? "关于 SimpleUI" : "About SimpleUI", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(NSMenuItem.separator())
-        appMenu.addItem(withTitle: "隐藏 SimpleUI", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        let hideOthers = NSMenuItem(title: "隐藏其他", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: isZh ? "隐藏 SimpleUI" : "Hide SimpleUI", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = NSMenuItem(title: isZh ? "隐藏其他" : "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
         hideOthers.keyEquivalentModifierMask = [.command, .option]
         appMenu.addItem(hideOthers)
-        appMenu.addItem(withTitle: "显示全部", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: isZh ? "显示全部" : "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
         appMenu.addItem(NSMenuItem.separator())
-        appMenu.addItem(withTitle: "退出 SimpleUI", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: isZh ? "退出 SimpleUI" : "Quit SimpleUI", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenuItem.submenu = appMenu
         mainMenu.addItem(appMenuItem)
 
         // 2. Edit Menu (Crucial for Cmd+C, Cmd+V, Cmd+A, Cmd+Z in WKWebView!)
         let editMenuItem = NSMenuItem()
-        let editMenu = NSMenu(title: "编辑")
-        editMenu.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
-        let redoItem = NSMenuItem(title: "重做", action: Selector(("redo:")), keyEquivalent: "z")
+        let editMenu = NSMenu(title: isZh ? "编辑" : "Edit")
+        editMenu.addItem(withTitle: isZh ? "撤销" : "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redoItem = NSMenuItem(title: isZh ? "重做" : "Redo", action: Selector(("redo:")), keyEquivalent: "z")
         redoItem.keyEquivalentModifierMask = [.command, .shift]
         editMenu.addItem(redoItem)
         editMenu.addItem(NSMenuItem.separator())
-        editMenu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        editMenu.addItem(withTitle: "复制", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(withTitle: isZh ? "剪切" : "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: isZh ? "复制" : "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: isZh ? "粘贴" : "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: isZh ? "全选" : "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
 
         // 3. View Menu（实时双语字幕仅在状态栏菜单中开启，不在此处重复放置）
         let viewMenuItem = NSMenuItem()
-        let viewMenu = NSMenu(title: "视图")
-        let reloadItem = NSMenuItem(title: "重新载入", action: #selector(reloadActiveWindow), keyEquivalent: "r")
+        let viewMenu = NSMenu(title: isZh ? "视图" : "View")
+        let reloadItem = NSMenuItem(title: isZh ? "重新载入" : "Reload", action: #selector(reloadActiveWindow), keyEquivalent: "r")
         viewMenu.addItem(reloadItem)
-        let toggleSpotlightItem = NSMenuItem(title: "快捷悬浮窗", action: #selector(toggleSpotlightWindow), keyEquivalent: " ")
+        let toggleSpotlightItem = NSMenuItem(title: isZh ? "快捷悬浮窗" : "Mini Window", action: #selector(toggleSpotlightWindow), keyEquivalent: " ")
         toggleSpotlightItem.keyEquivalentModifierMask = [.option]
         viewMenu.addItem(toggleSpotlightItem)
         viewMenuItem.submenu = viewMenu
@@ -175,13 +195,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 4. Window Menu
         let windowMenuItem = NSMenuItem()
-        let windowMenu = NSMenu(title: "窗口")
-        windowMenu.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
-        windowMenu.addItem(withTitle: "关闭窗口", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        let windowMenu = NSMenu(title: isZh ? "窗口" : "Window")
+        windowMenu.addItem(withTitle: isZh ? "最小化" : "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: isZh ? "关闭窗口" : "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         windowMenuItem.submenu = windowMenu
         mainMenu.addItem(windowMenuItem)
 
         NSApp.mainMenu = mainMenu
+        NSApp.windowsMenu = windowMenu
     }
 
     @objc private func reloadActiveWindow() {

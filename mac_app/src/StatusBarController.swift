@@ -38,9 +38,13 @@ class StatusBarController: NSObject, NSMenuDelegate {
         var text: String
     }
 
+    private var openMainItem: NSMenuItem?
+    private var openSpotlightItem: NSMenuItem?
+    private var quitItem: NSMenuItem?
+
     // ----------------------------- 中英文 -----------------------------
 
-    private let zh = Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
+    private var zh: Bool { AppLocale.isZh }
 
     private var lblKB: String { zh ? "知识库" : "Knowledge Base" }
     private var lblSvc: String { zh ? "基础模型" : "Base Model" }
@@ -94,10 +98,12 @@ class StatusBarController: NSObject, NSMenuDelegate {
 
         let openMain = NSMenuItem(title: lblOpenMain, action: #selector(openMainWindow), keyEquivalent: "")
         openMain.target = self
+        openMainItem = openMain
         menu.addItem(openMain)
 
         let openSpotlight = NSMenuItem(title: lblOpenSpotlight, action: #selector(openSpotlightWindow), keyEquivalent: "")
         openSpotlight.target = self
+        openSpotlightItem = openSpotlight
         menu.addItem(openSpotlight)
 
         let openSubtitles = NSMenuItem(title: lblSubtitles, action: #selector(toggleSubtitles), keyEquivalent: "")
@@ -110,6 +116,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
 
         let quit = NSMenuItem(title: lblQuit, action: #selector(quitAndStopAll), keyEquivalent: "")
         quit.target = self
+        quitItem = quit
         menu.addItem(quit)
 
         // 左键与右键都会打开这个菜单（行为一致）
@@ -126,6 +133,21 @@ class StatusBarController: NSObject, NSMenuDelegate {
     func updateSubtitleActiveState(_ active: Bool) {
         DispatchQueue.main.async { [weak self] in
             self?.subtitleMenuItem?.state = active ? .on : .off
+        }
+    }
+
+    func refreshMenuLanguage() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.kbStatusItem?.toolTip = self.tipKB
+            self.svcStatusItem?.toolTip = self.tipSvc
+            self.asrStatusItem?.toolTip = self.tipAsr
+            self.openMainItem?.title = self.lblOpenMain
+            self.openSpotlightItem?.title = self.lblOpenSpotlight
+            self.subtitleMenuItem?.title = self.lblSubtitles
+            self.subtitleMenuItem?.toolTip = self.tipSubtitles
+            self.quitItem?.title = self.lblQuit
+            self.refreshStatuses()
         }
     }
 
