@@ -20,6 +20,7 @@
 - [System Architecture](#system-architecture)
 - [Offline Wiki RAG Pipeline](#offline-wiki-rag-pipeline)
 - [Speech Recognition Service (SenseVoice · audio.cpp)](#speech-recognition-service-sensevoice--audiocpp)
+- [Real-time Bilingual Subtitles (TEN-VAD · CoreML ANE · Index-Translate)](#real-time-bilingual-subtitles-ten-vad--coreml-ane--index-translate)
 - [Context Window Management](#context-window-management)
 - [Inference Engine Compatibility](#inference-engine-compatibility)
 - [Quick Start](#quick-start)
@@ -30,14 +31,16 @@
 
 ## Overview
 
-SimpleUI is a high-performance, ultra-lightweight frontend client and native macOS desktop application purpose-built for [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) (TTF). Through full OpenAI API compatibility, it also connects seamlessly to **Ollama, vLLM, llama.cpp server, LM Studio**, and other popular local/remote inference engines.
+SimpleUI is a high-performance, ultra-lightweight frontend client and native macOS desktop application tailored for [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) (TTF) and [Mference](https://github.com/NeelM0906/Mference). Through full OpenAI API compatibility, it also connects seamlessly to **Ollama, vLLM, llama.cpp server, LM Studio**, and other popular local/remote inference engines.
 
 Compared to heavyweight solutions like Open WebUI, SimpleUI eliminates all unnecessary dependencies (no Python virtualenv, FastAPI, SQLite, or vector databases). The frontend bundle is minimal, cold start takes **< 300 ms**, and memory usage is approximately **30 MB**.
 
-The two core technical highlights:
+SimpleUI's core technical highlights span four key systems:
 
 1. **End-to-end Offline Wiki RAG Pipeline**: Zero-truncation, **direct raw-text injection** (article names planned by the primary model; injected body text is never rewritten by any model), with a single model handling all semantic decisions — running entirely on Apple Silicon, no cloud calls.
-2. **Two-Phase Dynamic Context Tracking**: Precisely distinguishes peak context usage during generation from clean persistent baseline after completion, reflected in real time on screen.
+2. **Global Voice Input (SenseVoice · audio.cpp)**: Long-press right ⌘ to dictate text directly into any focused input box. Bundled with SenseVoice-Small Q8 GGUF and Silero VAD, fully offline and ready right after installation.
+3. **Native On-Device Real-time Bilingual Subtitles**: A 3-stage streaming pipeline (TEN-VAD 16ms acoustic activity detection + CoreML ANE 160ms streaming English transcription with punctuation + Index-Translate-2B neural machine translation), strictly loaded on demand with 0 background VRAM residency, and zero-config benchmarked multi-source model downloads in the control panel.
+4. **Dual-Engine Base Model Management & Dynamic Context Tracking**: Seamlessly switch between TurboFieldfare (Gemma 4 26B) and Mference (Qwen 3.6 35B-A3B) with mutual VRAM release, while precisely tracking peak vs. clean context tokens on screen in real time.
 
 ---
 
@@ -49,14 +52,16 @@ User Input (React Frontend)
      ▼
 Node.js Proxy Server (port 31235)
      │
-     ├──► Model Service Manager (ttf_service.js)
+     ├──► Base Model Service Manager (ttf_service.js)
      │         │
-     │         └──► TurboFieldfare Inference Service (port 1235 · auto-start with app, stopped on quit)
+     │         ├──► TurboFieldfare Inference Service (port 1235 · Gemma 4 26B)
+     │         └──► Mference Inference Service (port 1241 · Qwen 3.6 35B-A3B)
+     │              (Free switching with mutual VRAM release)
      │
      ├──► Wiki RAG Service (wiki_service.js)
      │         │
      │         ├──► Kiwix Offline Wiki (port 31236 · ZIM file)
-     │         └──► Primary Model (port 1235) ← entity planning / long-article section routing
+     │         └──► Primary Model (port 1235 / 1241) ← entity planning / section routing
      │
      ├──► Speech Recognition Manager (asr_service.js)
      │         │
@@ -64,39 +69,35 @@ Node.js Proxy Server (port 31235)
      │                   ▲
      │                   └── long-press right ⌘ (Swift VoiceInputManager) → /api/asr/transcribe
      │
-     └──► Primary Inference Model (port 1235 · TTF / Ollama / vLLM etc.) ← final answer generation
+     ├──► Real-time Bilingual Subtitles Manager (subtitle_service.js)
+     │         │
+     │         ├──► Stage 1: TEN-VAD (16ms acoustic activity detection · onnxruntime-node)
+     │         ├──► Stage 2: Nemotron-Speech 0.6B (M-series ANE 160ms streaming ASR + punctuation)
+     │         └──► Stage 3: Index-Translate-2B (port 1249 · llama-server neural machine translation)
+     │              (Strictly on-demand: loaded when panel opens, terminated when closed)
+     │
+     └──► Primary Inference Model (port 1235 / 1241 · TTF / Mference / Ollama / vLLM etc.) ← final answer generation
 ```
 
 | Service | Port | Role |
 | :--- | :--- | :--- |
-| Node.js Proxy (`proxy.js`) | `31235` | SSE passthrough, static hosting, dynamic routing, knowledge-base API, model-service API, speech-recognition API |
-| Kiwix Offline Encyclopedia | `31236` | ZIM file serving, title suggestions, article HTTP |
-| Speech Recognition (audiocpp · SenseVoice) | `1236` | Local Chinese/English speech-to-text (GGUF + audio.cpp) |
-| Primary Inference Model | `1235` | Entity planning, long-article section routing, final answer generation |
+| Node.js Proxy (`proxy.js`) | `31235` | SSE passthrough, static hosting, dynamic routing, session & media store, managed service APIs |
+| Kiwix Offline Encyclopedia | `31236` | ZIM file serving, title suggestions, article HTTP (bundled runtime, 100% offline) |
+| Speech Recognition (audiocpp · SenseVoice) | `1236` | Local speech-to-text (bundled GGUF & VAD, 100% offline) |
+| Subtitle Translation Service (Index-Translate-2B) | `1249` | Neural machine translation (dedicated llama-server instance, strictly loaded on demand) |
+| Primary Inference Model (TTF / Mference) | `1235` / `1241` | Entity planning, section routing, final answer generation (upstream repo and weights prepared by user) |
 
-> **Model service management**: SimpleUI is the sole manager of the TurboFieldfare inference service —
-> the app auto-starts the service on launch (`server/ttf_service.js` invokes `ttf_server.sh` bundled
-> into Resources) and stops it on quit (same behavior as the Kiwix database service); port `1235`
-> stays shared with other frontends. The "Base Model Service" block in the Service Manager provides a
-> status light / start & stop / upstream project path / runtime parameters (context capacity, expert
-> cache, thinking mode, etc.) / log viewer. Configuration persists at
-> `~/Library/Application Support/SimpleUI/model_config.json` and is also exported in
-> TurboFieldfareBar-compatible format to `~/Library/Application Support/TurboFieldfare/config.env`.
-> Management API: `/api/model/status|start|stop|restart|config|logs`.
+> **Model Service Management**: SimpleUI serves as the unified host manager for local LLM engines —
+> supporting seamless switching between **TurboFieldfare** (default port `1235`, Gemma 4 26B) and **Mference** (default port `1241`, Qwen 3.6 35B-A3B) with strict mutual VRAM release;
+> The Service Manager provides independent status indicators, start/stop controls, project directory browsing, parameter tuning (context capacity, prompt cache, expert cache, thinking mode), and log inspection;
+> Configuration is unified at `~/Library/Application Support/SimpleUI/model_config.json`.
 >
-> **Prerequisites are up to you**: TurboFieldfare is an experimental, developer-facing project, so the
-> **upstream repo and the model weights are not distributed with this repository** — clone and prepare
-> them following the [project page](https://github.com/drumih/turbo-fieldfare). The app only *detects and
-> guides*: when the repo or the weights are missing, the Service Manager shows a matching notice plus a
-> "View setup guide" button that opens the project page in your default browser. It **no longer
-> `git clone`s anything and offers no online download**. If the repo is present but the binary is not
-> built, startup still runs `swift build` automatically.
+> **Prerequisites are prepared by developers**: Upstream LLM projects are experimental and developer-facing.
+> **Source repositories and model weights are not distributed within this repository** —
+> please clone [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) or [Mference](https://github.com/NeelM0906/Mference) locally (defaulting to `~/turbo-fieldfare` or `~/Mference`) and build them.
+> The app detects prerequisites and provides guidance when missing.
 
-> Two auxiliary services from the earlier architecture have been removed:
-> **LAYA System 1** (port 1236) intent gate — misclassified roughly 1/3 of knowledge questions as chitchat, blocking the entire pipeline;
-> **Qwen 3.5 2B** (port 1234) small model — previously handled entity planning, candidate re-ranking, and fact rewriting (MRC),
-> now replaced by primary-model planning, a deterministic article-selection rule, and direct raw-text injection.
-> The pipeline now depends on only two services: Kiwix and the primary model.
+> **Subtitle Service Quick Guide**: Subtitle runtime binaries are bundled with the app. The three required models (TEN-VAD, Nemotron ANE, Index-Translate) are not tracked in git; users simply click "Download All Missing Models" in the Service Manager's Subtitles card (with automatic latency & speed benchmarking across official and mirror sources). Once downloaded, the floating subtitle window can be opened on demand anytime. Models load when opened and unload immediately upon closing to release unified memory.
 
 ### Cross-Window Synchronization
 
@@ -554,6 +555,34 @@ model is missing the card shows an explicit amber hint and the service stays "Of
 
 ---
 
+## Real-time Bilingual Subtitles (TEN-VAD · CoreML ANE · Index-Translate)
+
+SimpleUI integrates a fourth managed service: **Native On-Device Real-time Bilingual Subtitles Pipeline**. Purpose-built for streaming videos, online conferences, and lectures, running 100% locally on Apple Silicon without any cloud API dependencies.
+
+| Stage | Engine / Model | Size | Host Process | Role |
+| :--- | :--- | :--- | :--- | :--- |
+| **Stage 1: VAD** | [`TEN-framework/ten-vad`](https://huggingface.co/TEN-framework/ten-vad) | 315 KB (`ten_vad.onnx`) | `onnxruntime-node` | 16ms frame-level acoustic voice activity detection, filtering silence and background noise |
+| **Stage 2: Streaming ASR** | [`aufklarer/Nemotron-Speech-Streaming-0.6B-CoreML-INT8`](https://huggingface.co/aufklarer/Nemotron-Speech-Streaming-0.6B-CoreML-INT8) | 580 MB (`nemotron_asr/`) | Native Swift Daemon (`subtitle_stream_asr`) | Direct Apple Neural Engine (ANE) acceleration, 160ms streaming English transcription with automated punctuation |
+| **Stage 3: Machine Translation** | [`IndexTeam/Index-Translate-2B-GGUF`](https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF) | 1.25 GB (`Index-Translate-2B.Q4_K_M.gguf`) | Bundled self-contained `llama-server` (port `1249`) | Metal GPU accelerated neural machine translation with contextual disambiguation |
+
+### Key Highlights
+
+1. **Strictly On-Demand, 0 Background Memory Residency**:
+   - The subtitle models are **never loaded on app startup**, maintaining 0 idle background VRAM/RAM consumption;
+   - Models load sequentially only when the user opens the subtitle floating overlay from the status bar menu;
+   - Closing the subtitle overlay or quitting the app immediately sends termination signals to unload all models and free unified memory.
+2. **Zero-Config Benchmarked Multi-Source Download**:
+   - Runtime binaries (`subtitle_stream_asr`, `llama-server`, and its dylibs) are bundled with the app — **no Python virtualenv or setup needed**;
+   - Dedicated model directory: `~/Library/Application Support/SimpleUI/models/subtitles_pipeline/`;
+   - The Service Manager features an automated speed & latency benchmark engine comparing the **HuggingFace mirror (hf-mirror.com)** and the **official source (huggingface.co)**, picking the fastest route to download missing models with checksum verification.
+3. **Dual-Layer Hysteresis Sentence Splitting**:
+   - Harmonizes punctuation micro-pauses (160ms), phrase-level breath pauses (480ms), and unpunctuated silence tolerance (960ms);
+   - Performs backward soft-cuts at subordinate conjunctions and grammatical boundaries on long sentences, preventing mid-phrase breaks.
+4. **Native Picture-in-Picture Floating Overlay**:
+   - Always-on-top bilingual floating overlay (dual English & Chinese lines side-by-side) with quick pause, fullscreen follow, and history reset.
+
+---
+
 ## Context Window Management
 
 ### Two-Phase Dynamic Tracking (Surge / Recede)
@@ -681,42 +710,38 @@ Compiles the Swift dual-window shell plus the frontend bundle and installs to `/
 SimpleUI/
 ├── server/
 │   ├── proxy.js              # Node.js proxy server (port 31235)
-│   │                         #   SSE passthrough, static hosting, dynamic port routing,
-│   │                         #   knowledge-base API
-│   ├── ttf_service.js        # Model service manager (SimpleUI as sole manager of the TTF service)
-│   │                         #   Auto-start with app / stop on quit, config persistence +
-│   │                         #   config.env-compatible export, /api/model/* endpoints
-│   ├── ttf_server.sh         # TTF start/stop script runtime asset (copied from turbo-fieldfare-manager)
-│   ├── ttf_log.js            # Read-only TTF log probe (real prompt tokens before generation)
-│   ├── asr_service.js        # Speech recognition manager (SenseVoice / audio.cpp)
-│   │                         #   Auto-start with app / stop on quit, generates audiocpp server.json,
-│   │                         #   persists asr_config.json, /api/asr/* (incl. transcribe + model download)
-│   ├── wiki_service.js       # Offline RAG pipeline core
-│   │                         #   Primary-model planning / sense selection / section routing
-│   │                         #   Multi-channel recall (exact probe · suggest · senses · full-text)
-│   │                         #   + namespace filtering + redirect deduplication
-│   │                         #   parseWikipediaDOM (DOM tree: structural pruning + paragraphs/
-│   │                         #   lists/tables/definition lists), assembleArticleContext
-│   │                         #   toSimplifiedChinese, getAllVariants (OpenCC)
-│   └── laya_mlx_server.py    # LAYA System 1 service (removed from the pipeline, file kept for reference)
+│   │                         #   SSE passthrough, static hosting, dynamic port routing, API aggregation
+│   ├── ttf_service.js        # Base model service manager (TTF & Mference dual-engine mutual switching)
+│   │                         #   Auto-start with app / stop on quit, persists model_config.json, /api/model/*
+│   ├── ttf_server.sh         # TurboFieldfare start/stop runtime script asset
+│   ├── mference_server.sh    # Mference start/stop runtime script asset
+│   ├── ttf_log.js            # Model log probe (pre-generation prompt token measurement & idle reset)
+│   ├── asr_service.js        # Speech recognition manager (SenseVoice / audio.cpp port 1236)
+│   │                         #   Generates audiocpp server.json, persists asr_config.json, /api/asr/*
+│   ├── subtitle_service.js   # Real-time bilingual subtitles manager (3-stage streaming, port 1249)
+│   │                         #   TEN-VAD, Nemotron ANE, Index-Translate (llama-server), multi-source benchmarked download
+│   ├── session_service.js    # Global session Single Source of Truth (SSOT), sliding window truncation, cross-window sync
+│   ├── media_service.js      # Multimodal media store (SHA-256 content-addressable storage, auto GC, model injection)
+│   ├── watchdog.js           # Unified process watchdog (terminates child processes by PID on Node exit)
+│   └── wiki_service.js       # Offline RAG core (primary-model planning / section routing / DOM parsing / OpenCC)
 │
 ├── bin/
-│   ├── kiwix/                # Kiwix runtime (shipped inside the app)
-│   └── audiocpp/             # Speech-recognition runtime (shipped as Contents/Resources/asr/)
-│       ├── bin/audiocpp_server              # populated by scripts/sync_audiocpp.sh
-│       ├── assets/framework/models/silero_vad/   # bundled VAD (needed by audio_chunk_mode=auto/fixed)
-│       └── models/                          # optional in-bundle model (.gitignored, 254MB not committed)
+│   ├── kiwix/                # Kiwix offline encyclopedia tools (kiwix-serve etc., bundled)
+│   ├── audiocpp/             # Speech recognition runtime (audiocpp_server & Silero VAD, bundled)
+│   ├── llama/                # Subtitle translation runtime (self-contained llama-server & dylibs, bundled)
+│   └── subtitle_stream_asr   # ANE native streaming English ASR daemon prebuilt binary (bundled)
 │
 ├── scripts/
-│   └── sync_audiocpp.sh      # build/sync the audiocpp runtime; --build clones+builds, --with-model fetches the model
+│   ├── sync_audiocpp.sh      # Build/sync audiocpp runtime and SenseVoice model
+│   └── test_markdown_pipeline.js # Markdown and LaTeX test suite
 │
-├── mac_app/                  # macOS native dual-window wrapper (Swift + WebKit)
-│   ├── src/                  # AppDelegate, HotKey, WindowControllers
-│   │                         #   VoiceInputManager.swift  global right-⌘ voice input
-│   │                         #     (CGEventTap hold detection / AVAudioEngine capture /
-│   │                         #      AX focus detection / ⌘V insertion)
-│   │                         #   VoiceOverlayPanelController.swift  bottom-center capsule container
-│   └── Resources/            # Info.plist (incl. microphone usage description), AppIcon.icns
+├── mac_app/                  # macOS native dual-window & overlay wrapper (Swift + WebKit)
+│   ├── src/                  # AppDelegate, ProcessManager, HotKeyManager
+│   │                         #   VoiceInputManager.swift            Global right-⌘ voice input
+│   │                         #   VoiceOverlayPanelController.swift  Bottom-center voice capsule container
+│   │                         #   SubtitleOverlayPanelController.swift Always-on-top bilingual subtitle overlay
+│   │                         #   subtitle_stream_asr.swift          ANE native streaming ASR daemon source
+│   └── Resources/            # Info.plist (incl. microphone permission), AppIcon.icns, status bar icons
 │
 └── src/
     ├── App.tsx               # Top-level state machine, session management, liveStreamingTokens, sync
@@ -751,18 +776,18 @@ SimpleUI/
         │                     #   durations, collapsing into a summary when done; shared
         ├── ContextRing.tsx   # SVG context ring (optional remaining-percent label + hover details)
         ├── ImageAttachment.tsx    # Input-area image previews and removal
-        ├── SettingsModal.tsx # Parameter config, inference port, KB master switch, language & theme
-        │                     #   + base model service card / speech recognition card (with permissions)
+        ├── SettingsModal.tsx # App settings (theme / language / Spotlight idle reset) + model settings (sampling params, system prompt)
+        ├── ServiceManagerModal.tsx # Service Manager control panel (Base model dual-engine / Knowledge Base / Speech Recognition / Subtitles)
+        ├── SubtitleOverlay.tsx   # Real-time bilingual subtitles floating UI (side-by-side lines, pause, reset)
         ├── VoiceOverlay.tsx  # Bottom-center voice capsule (green gradient + mic + level dots),
-        │                     #   hosted by the native VoiceOverlayPanelController (#/voice route)
+        │                     #   hosted by native VoiceOverlayPanelController (#/voice route)
         ├── WikiPanel.tsx     # The single knowledge-panel implementation: search + rich full article
-        │                     #   (formulas/tables/images/subheadings) + the citation chip's injected text;
-        │                     #   unified notice and zero requests when the service is unavailable
+        │                     #   (formulas/tables/images/subheadings) + citation chip injected text
         ├── WikiContextView.tsx    # Panel body renderer (formulas / tables / images / subheadings)
         ├── WikiSidebar.tsx   # Main window "docked" thin shell (→ WikiPanel)
         ├── WikiDrawer.tsx    # Spotlight "overlay" thin shell (→ WikiPanel: same radius + overall close ✖)
         ├── SpotlightView.tsx # Spotlight panel complete state machine (capsule / expanded, 🔍 panel entry)
-        └── PerformanceFooter.tsx # Legacy performance footer (currently unreferenced, kept for reference)
+        └── PerformanceFooter.tsx # Performance metrics footer component
 ```
 
 ---

@@ -52,7 +52,7 @@ export const ENGINE_METADATA = {
     binaryBasename: 'MferenceServer',
     pidFile: '/tmp/mference_server.pid',
     logFile: path.join(HOME, 'Library', 'Logs', 'mference.log'),
-    projectUrl: 'https://github.com/justinxie/Mference',
+    projectUrl: 'https://github.com/NeelM0906/Mference',
     scriptBasename: 'mference_server.sh',
   },
 };

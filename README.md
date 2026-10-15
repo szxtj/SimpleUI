@@ -19,6 +19,8 @@
 - [项目简介](#项目简介)
 - [系统架构](#系统架构)
 - [离线维基 RAG 流水线](#离线维基-rag-流水线)
+- [语音识别服务（SenseVoice · audio.cpp）](#语音识别服务sensevoice--audiocpp)
+- [实时双语字幕服务（TEN-VAD · CoreML ANE · Index-Translate）](#实时双语字幕服务ten-vad--coreml-ane--index-translate)
 - [上下文窗口管理](#上下文窗口管理)
 - [推理引擎兼容](#推理引擎兼容)
 - [快速启动](#快速启动)
@@ -29,14 +31,16 @@
 
 ## 项目简介
 
-SimpleUI 是一款专为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare)（TTF）量身打造的高性能、极致轻量的前端客户端与 macOS 原生桌面应用。同时，基于对 OpenAI 兼容规范的全面支持，SimpleUI 亦可无缝连接 **Ollama、vLLM、llama.cpp server、LM Studio** 等主流本地与远程推理引擎。
+SimpleUI 是一款专为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare)（TTF）与 [Mference](https://github.com/NeelM0906/Mference) 量身打造的高性能、极致轻量的前端客户端与 macOS 原生桌面应用。同时，基于对 OpenAI 兼容规范的全面支持，SimpleUI 亦可无缝连接 **Ollama、vLLM、llama.cpp server、LM Studio** 等主流本地与远程推理引擎。
 
 相比 Open WebUI 等重型方案，SimpleUI 剥离了一切多余依赖（无需 Python 虚拟环境、FastAPI、SQLite 或向量数据库），前端静态体积极小，冷启动耗时 **< 300 ms**，内存占用仅约 **30 MB**。
 
-SimpleUI 的核心技术亮点在于两大系统：
+SimpleUI 的核心技术亮点涵盖以下四大系统：
 
 1. **端到端离线维基 RAG 流水线**：零截断、**原文直注**（检索键由主力模型规划，注入正文不经任何模型改写）、单模型承担全部语义判断，完全在 Apple Silicon 本地运行，无需任何云端调用。
-2. **两阶段动态上下文追踪**：精确区分生成中（峰值）与生成后（稳态）的上下文占用，并在界面上实时呈现。
+2. **全局语音输入（SenseVoice · audio.cpp）**：长按右侧 ⌘ 键直接语音转文字并精准键入输入框，内置 SenseVoice-Small Q8 GGUF 模型与 Silero VAD，安装后开箱即用，断网全离线运行。
+3. **原生端侧实时双语字幕流水线**：首创三级极速流式架构（TEN-VAD 16ms 帧级声学活动检测 + CoreML ANE 原生 160ms 流式英文识别与标点 + Index-Translate-2B 神经机器翻译），纯按需加载、0 后台显存常驻，控制面板内置双源测速一键免配下载。
+4. **基础模型双引擎切换与动态上下文追踪**：支持 TurboFieldfare (Gemma 4 26B) 与 Mference (Qwen 3.6 35B-A3B) 自适应互斥切换，精确区分生成中（峰值）与生成后（稳态）的上下文占用并在界面实时呈现。
 
 ---
 
@@ -48,14 +52,16 @@ SimpleUI 的核心技术亮点在于两大系统：
      ▼
 Node.js 代理服务器 (端口 31235)
      │
-     ├──► 模型服务托管 (ttf_service.js)
+     ├──► 基础模型服务托管 (ttf_service.js)
      │         │
-     │         └──► TurboFieldfare 推理服务 (端口 1235 · 随 App 自启/退出终止)
+     │         ├──► TurboFieldfare 推理服务 (端口 1235 · Gemma 4 26B)
+     │         └──► Mference 推理服务 (端口 1241 · Qwen 3.6 35B-A3B)
+     │              (双引擎自由切换 · 统一显存严格互斥释放)
      │
      ├──► 维基 RAG 服务 (wiki_service.js)
      │         │
      │         ├──► Kiwix 离线维基 (端口 31236 · ZIM 文件)
-     │         └──► 主力模型 (端口 1235) ← 实体规划 / 长文目录路由
+     │         └──► 主力模型 (端口 1235 / 1241) ← 实体规划 / 长文目录路由
      │
      ├──► 语音识别服务托管 (asr_service.js)
      │         │
@@ -63,34 +69,34 @@ Node.js 代理服务器 (端口 31235)
      │                   ▲
      │                   └── 长按右 ⌘（Swift VoiceInputManager）→ /api/asr/transcribe
      │
-     └──► 主推理模型 (端口 1235 · TTF / Ollama / vLLM 等) ← 最终答案生成
+     ├──► 实时双语字幕服务托管 (subtitle_service.js)
+     │         │
+     │         ├──► 第 1 级：TEN-VAD (16ms 帧级声学活动检测 · onnxruntime-node)
+     │         ├──► 第 2 级：Nemotron-Speech 0.6B (M系列 ANE 160ms 原生流式英文识别 + 标点)
+     │         └──► 第 3 级：Index-Translate-2B (端口 1249 · llama-server 专精神经机器翻译)
+     │              (纯按需加载：开窗口拉起，关窗口即卸载释放显存)
+     │
+     └──► 主推理模型 (端口 1235 / 1241 · TTF / Mference / Ollama / vLLM 等) ← 最终答案生成
 ```
 
 | 服务 | 端口 | 职责 |
 | :--- | :--- | :--- |
-| Node.js 代理 (`proxy.js`) | `31235` | SSE 透传、静态托管、动态路由、知识库 API、模型服务管理 API、语音识别 API |
-| Kiwix 离线百科 | `31236` | ZIM 文件读取、标题联想、条目 HTTP 服务 |
-| 语音识别（audiocpp · SenseVoice） | `1236` | 本地中英语音转文字（GGUF + audio.cpp） |
-| 主推理模型 | `1235` | 实体规划、长文目录路由、最终答案生成 |
+| Node.js 代理 (`proxy.js`) | `31235` | SSE 透传、静态托管、动态路由、会话与多模态媒体服务、各受管服务 API |
+| Kiwix 离线百科 | `31236` | ZIM 文件读取、标题联想、条目 HTTP 服务（随包内置运行时，完全离线） |
+| 语音识别（audiocpp · SenseVoice） | `1236` | 本地中英语音转文字（随包内置 GGUF 与 VAD，完全离线） |
+| 字幕翻译服务（Index-Translate-2B） | `1249` | 专精神经机器翻译（独立 llama-server 实例，仅在开启字幕窗口时按需拉起） |
+| 主推理模型（TTF / Mference） | `1235` / `1241` | 实体规划、长文目录路由、最终答案生成（高阶用户自备外部项目与权重） |
 
-> **模型服务托管**：SimpleUI 是 TurboFieldfare 推理服务的唯一管理方——
-> App 启动时自动拉起服务（`server/ttf_service.js` 调用打包进 Resources 的 `ttf_server.sh`），
-> 退出时一并终止（与 Kiwix 数据库服务行为一致）；服务端口 `1235` 同时供其他前端使用。
-> 服务管理界面「基础模型服务」区块提供状态灯 / 启停 / 本体路径 / 运行参数（上下文容量、专家缓存、
-> 思考模式等）/ 日志查看；配置持久化于 `~/Library/Application Support/SimpleUI/model_config.json`，
-> 并同步导出 TurboFieldfareBar 兼容的 `~/Library/Application Support/TurboFieldfare/config.env`。
-> 管理 API：`/api/model/status|start|stop|restart|config|logs`。
+> **模型服务托管**：SimpleUI 作为本地模型服务的统一宿主管理方——
+> 支持在 **TurboFieldfare**（默认端口 `1235`，Gemma 4 26B）与 **Mference**（默认端口 `1241`，Qwen 3.6 35B-A3B）之间自由切换，切换时严格执行显存互斥释放；
+> 服务管理界面提供独立状态指示灯、启停控制、本体路径浏览、运行参数调优（上下文容量、前缀缓存、专家缓存、思考模式等）及日志查看；
+> 配置统一持久化于 `~/Library/Application Support/SimpleUI/model_config.json`。
 >
-> **前置条件需自行准备**：TurboFieldfare 是实验性、面向开发者的项目，**本体仓库与模型权重不随本仓库分发**，
-> 需按[项目主页](https://github.com/drumih/turbo-fieldfare)的文档自行克隆并准备。App 只做**检测与引导**——
-> 缺少本体或模型时，服务管理界面会显示对应提示，并给一个「查看安装说明」按钮用系统默认浏览器打开项目主页；
-> **不再自动 `git clone`、也不再提供在线下载**。本体已就位但二进制未编译时，启动流程仍会自动 `swift build`。
+> **前置条件需自行准备**：基础大模型项目为实验性、面向开发者的外部项目，**本体源码与大模型权重不随本仓库分发**，
+> 需分别克隆 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 或 [Mference](https://github.com/NeelM0906/Mference) 到本机（默认 `~/turbo-fieldfare` 或 `~/Mference`）并完成构建。
+> 缺少本体或模型时，服务管理界面会进行检测并提供引导。
 
-> 旧版链路中的两个辅助服务均已移除：
-> **LAYA System 1**（端口 1236）意图门禁——实测会把约 1/3 的知识类提问误判为闲聊而整条链路拦截；
-> **Qwen 3.5 2B**（端口 1234）小模型——曾承担实体规划、候选重排与事实改写（MRC），
-> 现已分别被主力模型规划、确定性取篇规则与「原文直注」取代。
-> 现在整条链路只依赖 Kiwix 与主力模型两个服务。
+> **字幕服务使用简述**：字幕服务运行时二进制已随包分发，运行所需的三个专属模型（TEN-VAD、Nemotron ANE、Index-Translate）不随包入库，用户只需在服务管理面板的「实时双语字幕」卡片中点击「一键下载全部缺失模型」（支持官方源与镜像源自动测速），下载完成后即可随时通过菜单开启字幕悬浮窗。开启时按序加载，关闭时立刻卸载并释放显存。
 
 ### 跨窗口同步
 
@@ -539,6 +545,34 @@ Q8 GGUF 量化包，由 **audio.cpp** 的 `audiocpp_server` 承载，完全本�
 
 ---
 
+## 实时双语字幕服务（TEN-VAD · CoreML ANE · Index-Translate）
+
+SimpleUI 内置第四个受管服务：**原生端侧实时双语字幕流水线**。专为看剧、在线会议、英语演讲等场景设计，完全在 Apple Silicon 端侧离线运行，无需云端 API。
+
+| 模块 | 引擎 / 模型 | 规格 | 运行时宿主 | 职责 |
+| :--- | :--- | :--- | :--- | :--- |
+| **第 1 级：VAD** | [`TEN-framework/ten-vad`](https://huggingface.co/TEN-framework/ten-vad) | 315 KB (`ten_vad.onnx`) | `onnxruntime-node` | 16ms 帧级声学活动检测，精准过滤静音与背景杂音 |
+| **第 2 级：流式 ASR** | [`aufklarer/Nemotron-Speech-Streaming-0.6B-CoreML-INT8`](https://huggingface.co/aufklarer/Nemotron-Speech-Streaming-0.6B-CoreML-INT8) | 580 MB (`nemotron_asr/`) | 原生 Swift 守护进程 (`subtitle_stream_asr`) | 直通 Apple Neural Engine (ANE)，160ms 极速流式英文识别并自动生成标点 |
+| **第 3 级：机器翻译** | [`IndexTeam/Index-Translate-2B-GGUF`](https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF) | 1.25 GB (`Index-Translate-2B.Q4_K_M.gguf`) | 内置自包含 `llama-server`（端口 `1249`） | Metal GPU 加速专精神经机器翻译，智能上下文消歧与高质量英汉互译 |
+
+### 核心特性
+
+1. **纯按需加载，0 后台显存常驻**：
+   - App 启动时**绝不拉起字幕模型**，后台保持 0 显存占用；
+   - 仅当用户从状态栏菜单点击开启字幕窗口时，服务端按阶段依次加载三级模型；
+   - 关闭字幕窗口或退出应用时，守护看门狗立即强制终止全部子进程，释放显存与内存。
+2. **一键免配置，多源并发测速下载**：
+   - 运行环境（`subtitle_stream_asr`、`llama-server` 及其动态库）已随包分发，**无需配置 Python 虚拟环境**；
+   - 模型专属隔离目录：`~/Library/Application Support/SimpleUI/models/subtitles_pipeline/`；
+   - 服务管理面板内置测速引擎，在**国内高速镜像源（hf-mirror.com）**与**官方源（huggingface.co）**之间自动比对延迟与带宽，挑选最优线路一键下载并完成大小校验。
+3. **智能双层滞回断句策略**：
+   - 结合标点微停顿检测（160ms）、短语级逗号换气停顿（480ms）与无标点静音容忍（960ms）；
+   - 在长句达到阈值时逆向沿从属连词/短语边界软切，防止字幕跨行撕裂或修饰词断裂。
+4. **原生悬浮画中画体验**：
+   - 屏幕置顶双语字幕悬浮面板（中/英双行并列展示），支持快捷暂停、全屏跟随与清空重置。
+
+---
+
 ## 上下文窗口管理
 
 ### 两阶段动态追踪（潮起 / 潮落）
@@ -668,37 +702,38 @@ Vite 开发服务器（默认 `http://127.0.0.1:5173`；`/v1`、`/health` 代理
 SimpleUI/
 ├── server/
 │   ├── proxy.js              # Node.js 代理服务器（端口 31235）
-│   │                         #   SSE 透传、静态托管、动态端口路由、知识库 API
-│   ├── ttf_service.js        # 模型服务托管（SimpleUI 作为 TTF 服务唯一管理方）
-│   │                         #   随 App 自启/退出终止、配置持久化 + config.env 兼容导出、/api/model/*
-│   ├── ttf_server.sh         # TTF 启停脚本运行时资产（复制自 turbo-fieldfare-manager）
-│   ├── ttf_log.js            # TTF 日志只读探针（生成前取真实 prompt token 数）
-│   ├── asr_service.js        # 语音识别服务托管（SenseVoice / audio.cpp）
-│   │                         #   随 App 自启/退出终止、生成 audiocpp server.json
-│   │                         #   配置持久化 asr_config.json、/api/asr/*（含 transcribe 与模型下载）
-│   ├── wiki_service.js       # 离线 RAG 流水线核心
-│   │                         #   主力模型规划 / 义项选择 / 目录路由
-│   │                         #   多通道召回（精确探针·标题联想·义项·全文检索）+ 命名空间过滤 + 重定向去重
-│   │                         #   parseWikipediaDOM（DOM 树解析：结构性剪枝 + 段落/列表/表格/定义列表）
-│   │                         #   assembleArticleContext、toSimplifiedChinese / getAllVariants (OpenCC)
-│   └── laya_mlx_server.py    # LAYA System 1 服务（已从链路移除，文件保留备查）
+│   │                         #   SSE 透传、静态托管、动态端口路由、各受管服务 API 汇聚
+│   ├── ttf_service.js        # 基础模型服务托管（TTF 与 Mference 双引擎自适应互斥管理）
+│   │                         #   随 App 自启/退出终止、配置持久化 model_config.json、/api/model/*
+│   ├── ttf_server.sh         # TurboFieldfare 启停脚本运行时资产
+│   ├── mference_server.sh    # Mference 启停脚本运行时资产
+│   ├── ttf_log.js            # 模型日志探针（生成前取真实 prompt token 数与极低负载检测）
+│   ├── asr_service.js        # 语音识别服务托管（SenseVoice / audio.cpp 端口 1236）
+│   │                         #   生成 audiocpp server.json、配置持久化 asr_config.json、/api/asr/*
+│   ├── subtitle_service.js   # 实时双语字幕服务托管（三级流式流水线，端口 1249）
+│   │                         #   TEN-VAD、Nemotron ANE、Index-Translate (llama-server)、双源自动测速下载
+│   ├── session_service.js    # 全局会话唯一真相源（SSOT）、长文滑动窗口截断、跨窗口实时同步
+│   ├── media_service.js      # 多模态媒体服务（图片 SHA-256 内容寻址持久化、自动 GC、模型上送注入）
+│   ├── watchdog.js           # 统一进程看门狗（Node 异常退出时按 PID 精确清理所有子进程）
+│   └── wiki_service.js       # 离线 RAG 流水线核心（主力模型规划 / 目录路由 / DOM 解析 / OpenCC 归一）
 │
 ├── bin/
-│   ├── kiwix/                # Kiwix 运行时（随包分发）
-│   └── audiocpp/             # 语音识别运行时（随包分发，打进 Contents/Resources/asr/）
-│       ├── bin/audiocpp_server              # 由 scripts/sync_audiocpp.sh 同步
-│       ├── assets/framework/models/silero_vad/   # 内置 VAD（audio_chunk_mode=auto/fixed 需要）
-│       └── models/                          # 可选：随包模型（.gitignore，254MB 不入库）
+│   ├── kiwix/                # Kiwix 离线百科工具集（kiwix-serve 等，随包分发）
+│   ├── audiocpp/             # 语音识别运行时（audiocpp_server 与 Silero VAD，随包分发）
+│   ├── llama/                # 字幕翻译运行时（自包含 llama-server 及其依赖 dylib，随包分发）
+│   └── subtitle_stream_asr   # ANE 原生流式英文识别守护进程预编译二进制（随包分发）
 │
 ├── scripts/
-│   └── sync_audiocpp.sh      # 编译/同步 audiocpp 运行时；--build 自动克隆编译，--with-model 拉模型
+│   ├── sync_audiocpp.sh      # 编译/同步 audiocpp 运行时与 SenseVoice 模型
+│   └── test_markdown_pipeline.js # Markdown 与数学公式测试套件
 │
-├── mac_app/                  # macOS 原生双窗口包装层（Swift + WebKit）
-│   ├── src/                  # AppDelegate、HotKey、WindowControllers
-│   │                         #   VoiceInputManager.swift      长按右 ⌘ 全局语音输入
-│   │                         #     （CGEventTap 长按判定 / AVAudioEngine 录音 / AX 落点判定 / ⌘V 写入）
-│   │                         #   VoiceOverlayPanelController.swift  底部居中悬浮胶囊容器
-│   └── Resources/            # Info.plist（含麦克风用途说明）、AppIcon.icns
+├── mac_app/                  # macOS 原生双窗口与悬浮面板包装层（Swift + WebKit）
+│   ├── src/                  # AppDelegate、ProcessManager、HotKeyManager
+│   │                         #   VoiceInputManager.swift            长按右 ⌘ 全局语音输入
+│   │                         #   VoiceOverlayPanelController.swift  底部居中录音胶囊容器
+│   │                         #   SubtitleOverlayPanelController.swift 置顶实时双语字幕悬浮窗
+│   │                         #   subtitle_stream_asr.swift          ANE 原生流式识别守护进程源码
+│   └── Resources/            # Info.plist（含麦克风等隐私说明）、AppIcon.icns、状态栏图标
 │
 └── src/
     ├── App.tsx               # 顶层状态机、会话管理、liveStreamingTokens、跨窗口同步
@@ -733,8 +768,8 @@ SimpleUI/
         ├── ContextRing.tsx   # SVG 上下文圆环（可选余量百分比 + 悬浮详情）
         ├── ImageAttachment.tsx   # 输入区图片预览与删除
         ├── SettingsModal.tsx # 应用设置（主题 / 语言 / Spotlight 空闲重置）+ 模型设置（采样参数、系统提示词）
-        ├── ServiceManagerModal.tsx # 服务管理界面：三项受管服务的启停 / 参数 / 日志
-        │                     #   （基础模型 / 知识库 / 语音识别，含语音权限三件套）
+        ├── ServiceManagerModal.tsx # 服务管理器控制面板（基础模型双引擎/知识库/语音识别/实时双语字幕四项受管服务）
+        ├── SubtitleOverlay.tsx   # 实时双语字幕悬浮渲染组件（双行并列展示、暂停、重置）
         ├── VoiceOverlay.tsx  # 屏幕底部居中语音识别胶囊（绿渐变 + 麦克风 + 电平点阵）
         │                     #   由原生 VoiceOverlayPanelController 承载（#/voice 路由）
         ├── WikiPanel.tsx     # 知识库面板**唯一实现**：搜索 + 完整条目富文本（公式/表格/图片/子标题）
@@ -743,7 +778,7 @@ SimpleUI/
         ├── WikiSidebar.tsx   # 主窗口「停靠型」薄壳（→ WikiPanel）
         ├── WikiDrawer.tsx    # 浮窗「覆盖型」薄壳（→ WikiPanel：同圆角 + 左上角整体关闭）
         ├── SpotlightView.tsx # Spotlight 浮窗完整状态机（胶囊态 / 展开态、输入框 🔍 面板入口）
-        └── PerformanceFooter.tsx # 旧版性能页脚（当前未被引用，保留备查）
+        └── PerformanceFooter.tsx # 性能监控页脚组件
 ```
 
 ---

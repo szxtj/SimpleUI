@@ -74,7 +74,7 @@ MODEL_ID="${MFERENCE_MODEL_ID:-qwen3.6-35b-a3b}"
 LOG_FILE="$HOME/Library/Logs/mference.log"
 PID_FILE="/tmp/mference_server.pid"
 BINARY="$PROJECT_DIR/.build/release/MferenceServer"
-PROJECT_URL="https://github.com/justinxie/Mference"
+PROJECT_URL="https://github.com/NeelM0906/Mference"
 
 # ==============================================================================
 
