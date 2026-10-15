@@ -27,6 +27,19 @@ safe_remove() {
   fi
 }
 
+# macOS APFS 写时复制（Copy-on-Write / clonefile）：优先克隆，零物理磁盘重复占用，回退到普通 cp
+copy_item() {
+  local src="$1"
+  local dst="$2"
+  if cp -Rc "$src" "$dst" 2>/dev/null; then
+    return 0
+  fi
+  cp -R "$src" "$dst"
+}
+
+# 构建前自动清扫打包历史遗留的临时目录碎片
+rm -rf /tmp/simpleui_stale_* 2>/dev/null || true
+
 APP_NAME="SimpleUI"
 BUNDLE_NAME="SimpleUI.app"
 BUILD_DIR="$PROJECT_ROOT/build"
@@ -42,12 +55,7 @@ echo "=========================================================="
 
 # 1. 编译前端静态资源
 echo "[1/4] 编译前端 Web 界面..."
-if [ -d dist/assets ]; then
-  _ts="$(date +%s)"
-  mkdir -p "/tmp/simpleui_stale_${_ts}"
-  mv -f dist/assets "/tmp/simpleui_stale_${_ts}/assets" 2>/dev/null || \
-    rm -rf dist/assets 2>/dev/null || true
-fi
+safe_remove "dist/assets"
 npm run build
 
 # 2. 准备 App Bundle 目录结构
@@ -92,7 +100,7 @@ if [ -f "mac_app/Resources/StatusBarIcon.svg" ]; then
 fi
 if [ -d "bin/kiwix" ]; then
     mkdir -p "$RESOURCES_DIR/bin"
-    cp -R "bin/kiwix" "$RESOURCES_DIR/bin/"
+    copy_item "bin/kiwix" "$RESOURCES_DIR/bin/"
 fi
 
 # 编译并随包分发 M系列 NPU 专属原生流式字幕 ASR 守护进程 (Nemotron-Speech-Streaming CoreML)
@@ -212,7 +220,7 @@ PYEOF
 
   if [ -d "bin/llama" ] && [ -x "bin/llama/bin/llama-server" ]; then
     mkdir -p "$RESOURCES_DIR/llama"
-    cp -R "bin/llama/." "$RESOURCES_DIR/llama/"
+    copy_item "bin/llama/." "$RESOURCES_DIR/llama/"
     chmod +x "$RESOURCES_DIR/llama/bin/llama-server" 2>/dev/null || true
     echo "  -> 已打包自包含字幕翻译运行时 (llama-server): $(du -sh bin/llama | cut -f1)"
   else
@@ -233,7 +241,7 @@ ensure_asr_assets() {
     mkdir -p "bin/audiocpp/models"
     if [ -f "$LOCAL_CACHE" ]; then
       echo "  · 复用本地已下载模型缓存 → bin/audiocpp/models/"
-      cp "$LOCAL_CACHE" "bin/audiocpp/models/$MODEL_FILE"
+      copy_item "$LOCAL_CACHE" "bin/audiocpp/models/$MODEL_FILE"
     else
       echo "  · 未找到本地模型，自动下载（约 254MB）..."
       local URL="https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp/resolve/main/$MODEL_FILE"
@@ -249,7 +257,7 @@ ensure_asr_assets() {
 ensure_asr_assets
 if [ -d "bin/audiocpp" ]; then
     mkdir -p "$RESOURCES_DIR/asr"
-    cp -R "bin/audiocpp/." "$RESOURCES_DIR/asr/"
+    copy_item "bin/audiocpp/." "$RESOURCES_DIR/asr/"
     chmod +x "$RESOURCES_DIR/asr/bin/audiocpp_server" 2>/dev/null || true
     echo "  -> 已打包语音识别运行时与模型: $(du -sh bin/audiocpp | cut -f1)"
 else
@@ -364,7 +372,7 @@ PYEOF
 
   if [ -d "$NODE_CACHE_DIR" ] && "$NODE_CACHE_DIR/bin/node" --version >/dev/null 2>&1; then
     mkdir -p "$RESOURCES_DIR/node"
-    cp -R "$NODE_CACHE_DIR/." "$RESOURCES_DIR/node/"
+    copy_item "$NODE_CACHE_DIR/." "$RESOURCES_DIR/node/"
     chmod +x "$RESOURCES_DIR/node/bin/node"
     local NODE_VER
     NODE_VER="$("$RESOURCES_DIR/node/bin/node" --version 2>/dev/null || echo '?')"
@@ -376,9 +384,9 @@ PYEOF
 }
 ensure_node_runtime
 
-cp -R dist "$RESOURCES_DIR/dist"
-cp -R server "$RESOURCES_DIR/server"
-cp package.json "$RESOURCES_DIR/package.json"
+copy_item dist "$RESOURCES_DIR/dist"
+copy_item server "$RESOURCES_DIR/server"
+copy_item package.json "$RESOURCES_DIR/package.json"
 
 SERVER_DEPS=$(node -e '
 const fs=require("fs"), path=require("path");
@@ -415,7 +423,7 @@ for dep in $SERVER_DEPS; do
     esac
     if [ -d "node_modules/$dep" ]; then
         mkdir -p "$(dirname "$RESOURCES_DIR/node_modules/$dep")"
-        cp -R "node_modules/$dep" "$RESOURCES_DIR/node_modules/$dep"
+        copy_item "node_modules/$dep" "$RESOURCES_DIR/node_modules/$dep"
     else
         echo "  ⚠ 服务端依赖 $dep 未安装，请先执行 npm install" >&2
         exit 1
@@ -471,6 +479,6 @@ if [ "$1" = "install" ]; then
     echo "正在安装至 /Applications/SimpleUI.app..."
     safe_remove "/Applications/TurboFieldfareChat.app"
     safe_remove "/Applications/SimpleUI.app"
-    cp -R "$APP_DIR" "/Applications/SimpleUI.app"
+    copy_item "$APP_DIR" "/Applications/SimpleUI.app"
     echo "🎉 安装完成！你可以在“访达” -> “应用程序”或 Spotlight 中直接搜索启动 SimpleUI。"
 fi
