@@ -52,27 +52,30 @@ public struct TranslationProfileRecord: Identifiable, Codable, Equatable, Hashab
         self.temperature = temperature
     }
 
-    public func validate() -> String? {
+    public func validate(isZh: Bool? = nil) -> String? {
+        let isZh = isZh ?? AppLocale.isZh
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedName.isEmpty {
-            return "配置名称不能为空。"
+            return isZh ? "配置名称不能为空。" : "Configuration name cannot be empty."
         }
 
         let trimmedEndpoint = apiEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedEndpoint.isEmpty {
-            return "API Base URL 不能为空。"
+            return isZh ? "API Base URL 不能为空。" : "API Base URL cannot be empty."
         }
 
         guard let url = URL(string: trimmedEndpoint),
             let scheme = url.scheme?.lowercased(),
             scheme == "http" || scheme == "https"
         else {
-            return "API Base URL 格式无效（必须以 http:// 或 https:// 开头）。"
+            return isZh
+                ? "API Base URL 格式无效（必须以 http:// 或 https:// 开头）。"
+                : "Invalid API Base URL (must start with http:// or https://)."
         }
 
         let trimmedModel = selectedModel.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedModel.isEmpty {
-            return "模型名称不能为空。"
+            return isZh ? "模型名称不能为空。" : "Model name cannot be empty."
         }
 
         return nil
@@ -133,16 +136,20 @@ public enum TranslationMode: String, CaseIterable, Identifiable, Sendable {
 
     public var id: String { rawValue }
 
-    public var title: String {
+    public func localizedTitle(isZh: Bool) -> String {
         switch self {
         case .auto:
-            return "自动"
+            return isZh ? "自动" : "Auto"
         case .zhToEn:
-            return "中 → 英"
+            return isZh ? "中 → 英" : "ZH → EN"
         case .enToZh:
-            return "英 → 中"
+            return isZh ? "英 → 中" : "EN → ZH"
         case .detail:
-            return "详解"
+            return isZh ? "详解" : "Detail"
         }
+    }
+
+    public var title: String {
+        localizedTitle(isZh: AppLocale.isZh)
     }
 }

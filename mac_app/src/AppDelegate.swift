@@ -1,21 +1,24 @@
 import Cocoa
 import WebKit
 
-enum AppLocale {
-    static var explicitLang: String? = nil
+public enum AppLocale {
+    public static let storageKey = "simpleui_app_language"
+    public static var explicitLang: String? = UserDefaults.standard.string(forKey: storageKey)
 
-    static var isZh: Bool {
+    public static var isZh: Bool {
         if let explicit = explicitLang {
             return explicit.hasPrefix("zh")
         }
         return Locale.preferredLanguages.first?.hasPrefix("zh") ?? false
     }
 
-    static func update(lang: String?) {
+    public static func update(lang: String?) {
         if let l = lang, !l.isEmpty, l != "system" {
             explicitLang = l
+            UserDefaults.standard.set(l, forKey: storageKey)
         } else {
             explicitLang = nil
+            UserDefaults.standard.removeObject(forKey: storageKey)
         }
     }
 }
@@ -26,7 +29,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusBarController: StatusBarController!
     private var voiceOverlayController: VoiceOverlayPanelController!
     private var subtitleOverlayController: SubtitleOverlayPanelController!
-    private var translationPanelController: TranslationPanelController!
+    var translationPanelController: TranslationPanelController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -40,6 +43,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         voiceOverlayController = VoiceOverlayPanelController()
         subtitleOverlayController = SubtitleOverlayPanelController()
         translationPanelController = TranslationPanelController()
+        translationPanelController.preload()
 
         spotlightController.onOpenMainWindow = { [weak self] in
             // Focus and trigger in-memory session sync without reloading the whole web page

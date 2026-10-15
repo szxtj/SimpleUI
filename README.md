@@ -21,6 +21,7 @@
 - [离线维基 RAG 流水线](#离线维基-rag-流水线)
 - [语音识别服务（SenseVoice · audio.cpp）](#语音识别服务sensevoice--audiocpp)
 - [实时双语字幕服务（TEN-VAD · CoreML ANE · Index-Translate）](#实时双语字幕服务ten-vad--coreml-ane--index-translate)
+- [快捷翻译悬浮窗](#快捷翻译悬浮窗)
 - [上下文窗口管理](#上下文窗口管理)
 - [推理引擎兼容](#推理引擎兼容)
 - [快速启动](#快速启动)
@@ -35,12 +36,13 @@ SimpleUI 是一款专为 [TurboFieldfare](https://github.com/drumih/turbo-fieldf
 
 相比 Open WebUI 等重型方案，SimpleUI 剥离了一切多余依赖（无需 Python 虚拟环境、FastAPI、SQLite 或向量数据库），前端静态体积极小，冷启动耗时 **< 300 ms**，内存占用仅约 **30 MB**。
 
-SimpleUI 的核心技术亮点涵盖以下四大系统：
+SimpleUI 的核心技术亮点涵盖以下五大系统：
 
 1. **端到端离线维基 RAG 流水线**：零截断、**原文直注**（检索键由主力模型规划，注入正文不经任何模型改写）、单模型承担全部语义判断，完全在 Apple Silicon 本地运行，无需任何云端调用。
 2. **全局语音输入（SenseVoice · audio.cpp）**：长按右侧 ⌘ 键直接语音转文字并精准键入输入框，内置 SenseVoice-Small Q8 GGUF 模型与 Silero VAD，安装后开箱即用，断网全离线运行。
 3. **原生端侧实时双语字幕流水线**：首创三级极速流式架构（TEN-VAD 16ms 帧级声学活动检测 + CoreML ANE 原生 160ms 流式英文识别与标点 + Index-Translate-2B 神经机器翻译），纯按需加载、0 后台显存常驻，控制面板内置双源测速一键免配下载。
-4. **基础模型双引擎切换与动态上下文追踪**：支持 TurboFieldfare (Gemma 4 26B) 与 Mference (Qwen 3.6 35B-A3B) 自适应互斥切换，精确区分生成中（峰值）与生成后（稳态）的上下文占用并在界面实时呈现。
+4. **快捷翻译悬浮窗（Quick Translate）**：全局快捷键 `⌃ Control + Space` 瞬时唤起，完全与主窗口解耦的独立原生非激活浮窗；支持多模式互译（自动/中英/英中/详解）、双向 TTS 语音朗读与全键盘交互；设置中提供独立的快速翻译模型配置，默认免思考秒级返回。
+5. **基础模型双引擎切换与动态上下文追踪**：支持 TurboFieldfare (Gemma 4 26B) 与 Mference (Qwen 3.6 35B-A3B) 自适应互斥切换，精确区分生成中（峰值）与生成后（稳态）的上下文占用并在界面实时呈现。
 
 ---
 
@@ -573,6 +575,18 @@ SimpleUI 内置第四个受管服务：**原生端侧实时双语字幕流水线
 
 ---
 
+## 快捷翻译悬浮窗
+
+SimpleUI 内置了专为高频查词与即时互译设计的原生 macOS 悬浮翻译面板：
+
+- **全局唤起与解耦设计**：支持通过全局快捷键 `⌃ Control + Space`、状态栏菜单（`快捷翻译 (⌃Space)`）或应用菜单（*视图 → 快捷翻译*）快速呼出/隐藏。采用 macOS 原生非激活浮窗（`nonactivatingPanel`），呼出时不抢占当前应用焦点，且与主窗口完全解耦（后台主窗口不会被意外拉起）；每次打开默认屏幕居中归位，可随意拖动位置。
+- **多模式互译与全键盘交互**：提供「自动」、「中 → 英」、「英 → 中」、「详解」4 种翻译模式；支持 `Enter` 翻译、`Shift + Enter` 换行、`Esc` 退出、`⌘ C` 一键复制结果。
+- **双向语音朗读 (TTS)**：内置原生语音合成引擎，支持对输入原文与翻译结果独立进行即时朗读。
+- **独立快速翻译配置**：在应用设置中设有独立的「快速翻译设置」卡片，对齐对话模型的 4 大 Provider 体系（SimpleUI 内置、DeepSeek、OpenAI、Mference），内置锁定专精翻译提示词，默认关闭思考以保证秒级响应。
+- **原生双语与主题跟随**：界面文案与深浅色模式实时跟随应用设置动态切换。
+
+---
+
 ## 上下文窗口管理
 
 ### 两阶段动态追踪（潮起 / 潮落）
@@ -687,7 +701,7 @@ Vite 开发服务器（默认 `http://127.0.0.1:5173`；`/v1`、`/health` 代理
 ```bash
 ./build_mac_app.sh install
 ```
-编译 Swift 双窗口外壳 + 前端产物，安装至 `/Applications/SimpleUI.app`，支持全局热键 `⌥ Option + Space` 唤起 Spotlight 浮窗，
+编译 Swift 原生窗口外壳 + 前端产物，安装至 `/Applications/SimpleUI.app`，支持全局热键 `⌥ Option + Space` 唤起 Spotlight 浮窗、`⌃ Control + Space` 唤起快捷翻译悬浮窗，
 以及**长按右侧 Command ⌘ 键**语音转文字：在 SimpleUI 内直接插入光标处，在其它 App 内粘贴（首次使用需在「系统设置 → 隐私与安全性」中授予
 麦克风、辅助功能、输入监控三项权限，服务管理界面的语音识别卡片内有直达入口）。
 
@@ -727,11 +741,16 @@ SimpleUI/
 │   ├── sync_audiocpp.sh      # 编译/同步 audiocpp 运行时与 SenseVoice 模型
 │   └── test_markdown_pipeline.js # Markdown 与数学公式测试套件
 │
-├── mac_app/                  # macOS 原生双窗口与悬浮面板包装层（Swift + WebKit）
+├── mac_app/                  # macOS 原生窗口与悬浮面板包装层（Swift + WebKit）
 │   ├── src/                  # AppDelegate、ProcessManager、HotKeyManager
 │   │                         #   VoiceInputManager.swift            长按右 ⌘ 全局语音输入
 │   │                         #   VoiceOverlayPanelController.swift  底部居中录音胶囊容器
 │   │                         #   SubtitleOverlayPanelController.swift 置顶实时双语字幕悬浮窗
+│   │                         #   TranslationPanelController.swift   快捷翻译非激活浮动面板控制器
+│   │                         #   TranslationMainView.swift          原生 SwiftUI 翻译交互主界面
+│   │                         #   TranslationViewModel.swift         翻译状态机与 TTS 控制
+│   │                         #   TranslationService.swift           专精翻译 HTTP 服务与解析引擎
+│   │                         #   TranslationProfileStore.swift      快速翻译 Provider 配置持久化
 │   │                         #   subtitle_stream_asr.swift          ANE 原生流式识别守护进程源码
 │   └── Resources/            # Info.plist（含麦克风等隐私说明）、AppIcon.icns、状态栏图标
 │
@@ -767,7 +786,7 @@ SimpleUI/
         │                     #   结束后折叠成一行汇总；两窗口共用同一组件
         ├── ContextRing.tsx   # SVG 上下文圆环（可选余量百分比 + 悬浮详情）
         ├── ImageAttachment.tsx   # 输入区图片预览与删除
-        ├── SettingsModal.tsx # 应用设置（主题 / 语言 / Spotlight 空闲重置）+ 模型设置（采样参数、系统提示词）
+        ├── SettingsModal.tsx # 应用设置 + 对话模型设置（4 大 Provider）+ 快速翻译设置（锁定提示词、免思考秒级返回）
         ├── ServiceManagerModal.tsx # 服务管理器控制面板（基础模型双引擎/知识库/语音识别/实时双语字幕四项受管服务）
         ├── SubtitleOverlay.tsx   # 实时双语字幕悬浮渲染组件（双行并列展示、暂停、重置）
         ├── VoiceOverlay.tsx  # 屏幕底部居中语音识别胶囊（绿渐变 + 麦克风 + 电平点阵）

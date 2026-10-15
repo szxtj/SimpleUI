@@ -4,7 +4,7 @@ import SwiftUI
 public final class TranslationPanelController {
     private enum Layout {
         static let width: CGFloat = 620
-        static let minHeight: CGFloat = 290
+        static let minHeight: CGFloat = 336
     }
 
     private let viewModel: TranslationViewModel
@@ -17,6 +17,28 @@ public final class TranslationPanelController {
             self.viewModel = MainActor.assumeIsolated {
                 TranslationViewModel()
             }
+        }
+    }
+
+    /// 应用启动时在后台预创建并预热面板视图，确保首次呼出时尺寸已完全计算且居中无抖动
+    public func preload() {
+        if Thread.isMainThread {
+            self.performPreload()
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.performPreload()
+            }
+        }
+    }
+
+    private func performPreload() {
+        MainActor.assumeIsolated {
+            let p = panel ?? makePanel()
+            self.panel = p
+            _ = p.contentView
+            p.contentView?.layoutSubtreeIfNeeded()
+            center(p)
+            p.orderOut(nil)
         }
     }
 
@@ -39,6 +61,10 @@ public final class TranslationPanelController {
     private func performShow() {
         let p = panel ?? makePanel()
         self.panel = p
+
+        MainActor.assumeIsolated {
+            viewModel.refreshLocaleAndTheme()
+        }
 
         // 每次重新打开均强制全屏居中归位
         center(p)
@@ -95,6 +121,12 @@ public final class TranslationPanelController {
         }
     }
 
+    public func refreshLocaleAndTheme() {
+        MainActor.assumeIsolated {
+            viewModel.refreshLocaleAndTheme()
+        }
+    }
+
     private func makePanel() -> TranslationSpotlightPanel {
         return MainActor.assumeIsolated {
             let p = TranslationSpotlightPanel(
@@ -116,6 +148,8 @@ public final class TranslationPanelController {
             p.backgroundColor = .clear
             p.isOpaque = false
             p.hasShadow = true
+            p.isRestorable = false
+            p.animationBehavior = .none
             p.onEscape = { [weak self] in
                 self?.hide()
             }

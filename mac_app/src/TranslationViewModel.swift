@@ -13,6 +13,8 @@ public final class TranslationViewModel: ObservableObject {
     @Published public var isSpeaking = false
     @Published public var isSpeakingInput = false
     @Published public var isSpeakingOutput = false
+    @Published public var isZh: Bool = AppLocale.isZh
+    @Published public var isDark: Bool = UserDefaults.standard.bool(forKey: "simpleui_is_dark")
 
     private let service: TranslationServiceProtocol
     private let speechManager = TranslationSpeechManager()
@@ -100,9 +102,14 @@ public final class TranslationViewModel: ObservableObject {
         speechManager.stop()
     }
 
+    public func refreshLocaleAndTheme() {
+        isZh = AppLocale.isZh
+        isDark = UserDefaults.standard.bool(forKey: "simpleui_is_dark")
+    }
+
     private static func message(for error: Error) -> String {
         if let translationError = error as? TranslationServiceError {
-            return translationError.errorDescription ?? "翻译失败。"
+            return translationError.errorDescription ?? (AppLocale.isZh ? "翻译失败。" : "Translation failed.")
         }
         return error.localizedDescription
     }

@@ -21,6 +21,7 @@
 - [Offline Wiki RAG Pipeline](#offline-wiki-rag-pipeline)
 - [Speech Recognition Service (SenseVoice · audio.cpp)](#speech-recognition-service-sensevoice--audiocpp)
 - [Real-time Bilingual Subtitles (TEN-VAD · CoreML ANE · Index-Translate)](#real-time-bilingual-subtitles-ten-vad--coreml-ane--index-translate)
+- [Quick Translate Overlay](#quick-translate-overlay)
 - [Context Window Management](#context-window-management)
 - [Inference Engine Compatibility](#inference-engine-compatibility)
 - [Quick Start](#quick-start)
@@ -35,12 +36,13 @@ SimpleUI is a high-performance, ultra-lightweight frontend client and native mac
 
 Compared to heavyweight solutions like Open WebUI, SimpleUI eliminates all unnecessary dependencies (no Python virtualenv, FastAPI, SQLite, or vector databases). The frontend bundle is minimal, cold start takes **< 300 ms**, and memory usage is approximately **30 MB**.
 
-SimpleUI's core technical highlights span four key systems:
+SimpleUI's core technical highlights span five key systems:
 
 1. **End-to-end Offline Wiki RAG Pipeline**: Zero-truncation, **direct raw-text injection** (article names planned by the primary model; injected body text is never rewritten by any model), with a single model handling all semantic decisions — running entirely on Apple Silicon, no cloud calls.
 2. **Global Voice Input (SenseVoice · audio.cpp)**: Long-press right ⌘ to dictate text directly into any focused input box. Bundled with SenseVoice-Small Q8 GGUF and Silero VAD, fully offline and ready right after installation.
 3. **Native On-Device Real-time Bilingual Subtitles**: A 3-stage streaming pipeline (TEN-VAD 16ms acoustic activity detection + CoreML ANE 160ms streaming English transcription with punctuation + Index-Translate-2B neural machine translation), strictly loaded on demand with 0 background VRAM residency, and zero-config benchmarked multi-source model downloads in the control panel.
-4. **Dual-Engine Base Model Management & Dynamic Context Tracking**: Seamlessly switch between TurboFieldfare (Gemma 4 26B) and Mference (Qwen 3.6 35B-A3B) with mutual VRAM release, while precisely tracking peak vs. clean context tokens on screen in real time.
+4. **Quick Translate Overlay**: Instant hotkey summoning (`⌃ Control + Space`) with a fully decoupled, non-activating native floating window; supports multi-mode translation (Auto / ZH → EN / EN → ZH / Detail), dual-direction TTS speech, and keyboard shortcuts; features dedicated quick translation provider settings with thinking disabled by default for instant responses.
+5. **Dual-Engine Base Model Management & Dynamic Context Tracking**: Seamlessly switch between TurboFieldfare (Gemma 4 26B) and Mference (Qwen 3.6 35B-A3B) with mutual VRAM release, while precisely tracking peak vs. clean context tokens on screen in real time.
 
 ---
 
@@ -583,6 +585,18 @@ SimpleUI integrates a fourth managed service: **Native On-Device Real-time Bilin
 
 ---
 
+## Quick Translate Overlay
+
+SimpleUI integrates a native macOS floating translation panel designed for fast lookup and instant translation workflows:
+
+- **Global Shortcut & Decoupled Architecture**: Summoned via global hotkey `⌃ Control + Space`, status bar menu (`Quick Translate (⌃Space)`), or application menu (*View → Quick Translate*). Engineered as a native `nonactivatingPanel` floating window that never interferes with current foreground tasks or activates the background main window. Automatically centers on every open and can be dragged freely.
+- **Multi-Mode Translation & Keyboard Workflow**: Supports *Auto*, *ZH → EN*, *EN → ZH*, and *Detail* modes; full keyboard control with `Enter` to translate, `Shift + Enter` for newlines, `Esc` to close, and `⌘ C` to copy results.
+- **Dual-Direction TTS Speech**: Built-in speech synthesis engine supporting independent playback of both source text and translation results.
+- **Dedicated Quick Translation Settings**: An independent "Quick Translation Settings" card in Settings mirrors the Chat Model Settings providers (SimpleUI Local, DeepSeek, OpenAI, Mference), with built-in locked translation prompts and thinking disabled by default for instant responses.
+- **Reactive Bilingual & Theme Sync**: UI text and light/dark theme synchronize dynamically with app preferences.
+
+---
+
 ## Context Window Management
 
 ### Two-Phase Dynamic Tracking (Surge / Recede)
@@ -697,7 +711,7 @@ Vite dev server (default `http://127.0.0.1:5173`; `/v1` and `/health` are proxie
 ```bash
 ./build_mac_app.sh install
 ```
-Compiles the Swift dual-window shell plus the frontend bundle and installs to `/Applications/SimpleUI.app`. Supports the global hotkey `⌥ Option + Space` to summon the Spotlight floating panel, plus **long-pressing the right Command ⌘ key** to dictate — inserted at the cursor inside SimpleUI, pasted in any other app (the first use requires granting Microphone, Accessibility, and Input Monitoring in System Settings → Privacy & Security; the Service Manager card links straight there).
+Compiles the Swift native window shell plus the frontend bundle and installs to `/Applications/SimpleUI.app`. Supports global hotkey `⌥ Option + Space` to summon the Spotlight floating panel, `⌃ Control + Space` to summon the Quick Translate overlay, plus **long-pressing the right Command ⌘ key** to dictate — inserted at the cursor inside SimpleUI, pasted in any other app (the first use requires granting Microphone, Accessibility, and Input Monitoring in System Settings → Privacy & Security; the Service Manager card links straight there).
 
 > The installed app is a **self-contained bundle**: `build_mac_app.sh` copies `dist/` and `server/` into `Contents/Resources`, and the runtime prefers that bundled copy.
 > Therefore **after any frontend change you must re-run `./build_mac_app.sh install`** — rebuilding only the project's `dist/` does not affect the installed app.
@@ -735,11 +749,16 @@ SimpleUI/
 │   ├── sync_audiocpp.sh      # Build/sync audiocpp runtime and SenseVoice model
 │   └── test_markdown_pipeline.js # Markdown and LaTeX test suite
 │
-├── mac_app/                  # macOS native dual-window & overlay wrapper (Swift + WebKit)
+├── mac_app/                  # macOS native window & overlay wrapper (Swift + WebKit)
 │   ├── src/                  # AppDelegate, ProcessManager, HotKeyManager
 │   │                         #   VoiceInputManager.swift            Global right-⌘ voice input
 │   │                         #   VoiceOverlayPanelController.swift  Bottom-center voice capsule container
 │   │                         #   SubtitleOverlayPanelController.swift Always-on-top bilingual subtitle overlay
+│   │                         #   TranslationPanelController.swift   Quick translate non-activating panel controller
+│   │                         #   TranslationMainView.swift          Native SwiftUI translation view
+│   │                         #   TranslationViewModel.swift         Translation state machine & TTS control
+│   │                         #   TranslationService.swift           Specialized translation HTTP & parser engine
+│   │                         #   TranslationProfileStore.swift      Quick translate provider profiles persistence
 │   │                         #   subtitle_stream_asr.swift          ANE native streaming ASR daemon source
 │   └── Resources/            # Info.plist (incl. microphone permission), AppIcon.icns, status bar icons
 │
@@ -776,7 +795,7 @@ SimpleUI/
         │                     #   durations, collapsing into a summary when done; shared
         ├── ContextRing.tsx   # SVG context ring (optional remaining-percent label + hover details)
         ├── ImageAttachment.tsx    # Input-area image previews and removal
-        ├── SettingsModal.tsx # App settings (theme / language / Spotlight idle reset) + model settings (sampling params, system prompt)
+        ├── SettingsModal.tsx # App settings + Chat Model Settings (4 providers) + Quick Translation Settings (locked prompts, zero-thinking instant translation)
         ├── ServiceManagerModal.tsx # Service Manager control panel (Base model dual-engine / Knowledge Base / Speech Recognition / Subtitles)
         ├── SubtitleOverlay.tsx   # Real-time bilingual subtitles floating UI (side-by-side lines, pause, reset)
         ├── VoiceOverlay.tsx  # Bottom-center voice capsule (green gradient + mic + level dots),

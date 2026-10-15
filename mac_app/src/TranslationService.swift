@@ -12,17 +12,18 @@ public enum TranslationServiceError: LocalizedError, Equatable {
     case requestFailed(String)
 
     public var errorDescription: String? {
+        let isZh = AppLocale.isZh
         switch self {
         case .invalidURL:
-            return "翻译服务地址无效。"
+            return isZh ? "翻译服务地址无效。" : "Invalid translation service URL."
         case .invalidResponse:
-            return "翻译服务返回了非预期的响应。"
+            return isZh ? "翻译服务返回了非预期的响应。" : "Unexpected response from translation service."
         case .serverError(let statusCode):
-            return "翻译服务返回 HTTP \(statusCode)。"
+            return isZh ? "翻译服务返回 HTTP \(statusCode)。" : "Translation service returned HTTP \(statusCode)."
         case .emptyResult:
-            return "翻译服务返回了空内容。"
+            return isZh ? "翻译服务返回了空内容。" : "Translation service returned empty content."
         case .requestFailed(let message):
-            return "翻译请求失败: \(message)"
+            return isZh ? "翻译请求失败: \(message)" : "Translation request failed: \(message)"
         }
     }
 }

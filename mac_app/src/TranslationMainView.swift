@@ -5,7 +5,7 @@ struct TranslationMainView: View {
     let onPreferredHeightChange: (CGFloat) -> Void
     let onClose: () -> Void
 
-    private var isZh: Bool { AppLocale.isZh }
+    private var isZh: Bool { viewModel.isZh }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -17,7 +17,7 @@ struct TranslationMainView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help(isZh ? "关闭" : "Close")
+                .help(isZh ? "关闭 (Esc)" : "Close (Esc)")
 
                 TranslationWindowDragView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -27,7 +27,7 @@ struct TranslationMainView: View {
             // Mode Selector
             Picker("", selection: $viewModel.selectedMode) {
                 ForEach(TranslationMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
+                    Text(mode.localizedTitle(isZh: isZh)).tag(mode)
                 }
             }
             .pickerStyle(.segmented)
@@ -100,11 +100,14 @@ struct TranslationMainView: View {
             HStack {
                 Text(
                     isZh
-                        ? "Enter 翻译，Shift+Enter 换行，Esc 退出 (快捷键: ⌃Space)"
-                        : "Enter to translate, Shift+Enter for newline, Esc to close (⌃Space)"
+                        ? "Enter 翻译 · Shift+Enter 换行 · Esc 退出 (⌃Space)"
+                        : "Enter: Translate · Shift+Enter: Newline · Esc: Close (⌃Space)"
                 )
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                .layoutPriority(1)
 
                 TranslationWindowDragView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -142,6 +145,7 @@ struct TranslationMainView: View {
                 TranslationWindowDragView()
             }
         )
+        .preferredColorScheme(viewModel.isDark ? .dark : .light)
         .onAppear {
             reportPreferredHeight()
         }
@@ -175,9 +179,9 @@ struct TranslationMainView: View {
     }
 
     private var resultHeight: CGFloat {
-        estimatedHeight(
-            for: viewModel.outputText.isEmpty
-                ? "Translation result will appear here..." : viewModel.outputText,
+        let placeholder = isZh ? "翻译结果将显示在这里…" : "Translation result will appear here..."
+        return estimatedHeight(
+            for: viewModel.outputText.isEmpty ? placeholder : viewModel.outputText,
             min: 80,
             max: 220
         )
@@ -199,7 +203,7 @@ struct TranslationMainView: View {
 
     private func reportPreferredHeight() {
         let totalHeight =
-            inputHeight + resultHeight + 120 + (viewModel.errorMessage == nil ? 0 : 22)
+            inputHeight + resultHeight + 170 + (viewModel.errorMessage == nil ? 0 : 22)
         onPreferredHeightChange(totalHeight)
     }
 }

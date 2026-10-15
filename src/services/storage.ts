@@ -516,14 +516,14 @@ export function loadSettings(): AppSettings {
           ttfConfig: {
             ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.ttfConfig,
             ...(rawTr.ttfConfig || {}),
-            reasoningEffort: 'none',
+            reasoningEffort: rawTr.ttfConfig?.reasoningEffort || 'none',
             stopStrings: [],
             systemPrompt: '',
           },
           mferenceConfig: {
             ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.mferenceConfig,
             ...(rawTr.mferenceConfig || {}),
-            reasoningEffort: 'none',
+            reasoningEffort: rawTr.mferenceConfig?.reasoningEffort || 'none',
             stopStrings: [],
             systemPrompt: '',
           },
@@ -535,7 +535,7 @@ export function loadSettings(): AppSettings {
           deepseekConfig: {
             ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.deepseekConfig,
             ...(rawTr.deepseekConfig || {}),
-            reasoningEffort: 'low',
+            reasoningEffort: rawTr.deepseekConfig?.reasoningEffort || 'none',
             stopStrings: [],
             systemPrompt: '',
           },
