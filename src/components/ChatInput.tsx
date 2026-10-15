@@ -5,7 +5,6 @@ import { ContextRing } from './ContextRing';
 import { ImageAttachment } from './ImageAttachment';
 import { extractImagesFromPaste, fileToDataURL } from '../utils/image';
 import { deleteUnreferencedMedia } from '../services/mediaCleanup';
-import { loadSessions } from '../services/storage';
 import { useImeInput } from '../hooks/useImeInput';
 
 interface ChatInputProps {
@@ -117,9 +116,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         images={images}
         onRemove={(idx) => {
           const removed = images[idx];
-          setImages((prev) => prev.filter((_, i) => i !== idx));
+          const remaining = images.filter((_, i) => i !== idx);
+          setImages(remaining);
           if (removed) {
-            deleteUnreferencedMedia([removed], loadSessions());
+            deleteUnreferencedMedia([removed], remaining);
           }
         }}
       />

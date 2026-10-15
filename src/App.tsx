@@ -32,7 +32,7 @@ import { I18nProvider, resolveLanguage } from './i18n';
 import { useTheme } from './hooks/useTheme';
 import { useSessionStore } from './hooks/useSessionStore';
 import { estimateHistoryTokens, applyTokenCalibration } from './utils/token';
-import { triggerMediaGC } from './services/mediaCleanup';
+import { deleteUnreferencedMedia } from './services/mediaCleanup';
 
 export const App: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings>(loadSettings());
@@ -397,16 +397,6 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     window.webkit?.messageHandlers?.setWikiPanelOpen?.postMessage?.(isWikiPanelOpen);
   }, [isWikiPanelOpen]);
 
-  // 后台静默执行磁盘孤立媒体文件垃圾回收（启动 3 秒后执行，5 分钟安全缓冲期）
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (sessions.length > 0) {
-        triggerMediaGC(sessions);
-      }
-    }, 3000);
-    return () => clearTimeout(timer);
-  }, []);
-
   // Persistent conversation history baseline tokens (excluding temporary RAG prompts & reasoning tokens)
   const persistentHistoryTokens = useMemo(() => {
     if (!messages || messages.length === 0) return 0;
@@ -428,14 +418,20 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
   // Clear unsendable image attachments if Mference is selected
   useEffect(() => {
     if (settings.apiProvider === 'mference' && images.length > 0) {
+      const staleDrafts = [...images];
       setImages([]);
+      deleteUnreferencedMedia(staleDrafts, []);
     }
-  }, [settings.apiProvider, images.length]);
+  }, [settings.apiProvider, images]);
 
   const handleNewSession = async () => {
+    if (images.length > 0) {
+      const staleDrafts = [...images];
+      setImages([]);
+      deleteUnreferencedMedia(staleDrafts, []);
+    }
     await createOrReuseEmptySession(defaultTitle);
     setInput('');
-    setImages([]);
   };
 
   const handleDeleteSession = async (id: string) => {

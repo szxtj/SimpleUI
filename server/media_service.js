@@ -87,6 +87,171 @@ function detectMimeAndExt(buffer, headerMime, originalFilename) {
 class MediaService {
   constructor() {
     this.mediaDir = MEDIA_DIR;
+    /** @type {(() => Iterable<string>) | null} */
+    this.referenceProvider = null;
+  }
+
+  /**
+   * Registers a callback that returns all media filenames/URLs currently referenced
+   * by authoritative server sessions.
+   */
+  setReferenceProvider(providerFn) {
+    this.referenceProvider = typeof providerFn === 'function' ? providerFn : null;
+  }
+
+  /**
+   * Extracts a clean media filename from a URL (/api/media/<filename>) or filename string.
+   */
+  extractFilename(item) {
+    if (!item || typeof item !== 'string') return '';
+    const match = item.match(/\/api\/media\/([a-zA-Z0-9_\-\.]+)/);
+    const fname = match ? match[1] : path.basename(item);
+    return /^[a-zA-Z0-9_\-\.]+$/.test(fname) ? fname : '';
+  }
+
+  /**
+   * Checks whether a media file exists on disk.
+   */
+  hasFile(urlOrFilename) {
+    const fname = this.extractFilename(urlOrFilename);
+    if (!fname) return false;
+    return fs.existsSync(path.join(this.mediaDir, fname));
+  }
+
+  /**
+   * Builds the authoritative set of all media filenames currently referenced by sessions
+   * plus any additional protected URLs/filenames (e.g. draft images in the input box).
+   */
+  getReferencedFilenames(extraProtected = []) {
+    const activeSet = new Set();
+    if (this.referenceProvider) {
+      try {
+        const refs = this.referenceProvider();
+        if (refs) {
+          for (const item of refs) {
+            const fname = this.extractFilename(item);
+            if (fname) activeSet.add(fname);
+          }
+        }
+      } catch (err) {
+        console.warn('[MediaService] Failed to query referenceProvider:', err);
+      }
+    }
+    if (Array.isArray(extraProtected)) {
+      for (const item of extraProtected) {
+        const fname = this.extractFilename(item);
+        if (fname) activeSet.add(fname);
+      }
+    }
+    return activeSet;
+  }
+
+  /**
+   * Saves a raw Buffer to the content-addressed media store using 32-char SHA-256 hash.
+   */
+  saveBuffer(buffer, headerMime = '', originalFilename = '') {
+    if (!buffer || buffer.length === 0) {
+      throw new Error('Empty file payload received');
+    }
+    const detected = detectMimeAndExt(buffer, headerMime, originalFilename);
+    const mime = detected.mime;
+    const ext = detected.ext;
+    const hash = crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 32);
+    const filename = `${hash}${ext}`;
+    const targetPath = path.join(this.mediaDir, filename);
+
+    if (!fs.existsSync(targetPath)) {
+      fs.writeFileSync(targetPath, buffer);
+      console.log(`[MediaService] Saved new media file: ${filename} (${(buffer.length / 1024).toFixed(1)} KB)`);
+    } else {
+      console.log(`[MediaService] Deduplicated existing media file: ${filename}`);
+    }
+
+    return {
+      ok: true,
+      url: `/api/media/${filename}`,
+      filename,
+      size: buffer.length,
+      mimeType: mime,
+    };
+  }
+
+  /**
+   * Deletes candidate media files ONLY if they are not referenced by any session
+   * or protected draft list.
+   */
+  deleteUnreferencedFiles(candidateUrlsOrFilenames = [], extraProtected = []) {
+    if (!Array.isArray(candidateUrlsOrFilenames) || candidateUrlsOrFilenames.length === 0) {
+      return [];
+    }
+    const protectedSet = this.getReferencedFilenames(extraProtected);
+    const candidates = new Set();
+    for (const item of candidateUrlsOrFilenames) {
+      const fname = this.extractFilename(item);
+      if (fname && !protectedSet.has(fname)) {
+        candidates.add(fname);
+      }
+    }
+
+    const deleted = [];
+    for (const fname of candidates) {
+      const targetPath = path.join(this.mediaDir, fname);
+      if (fs.existsSync(targetPath)) {
+        try {
+          fs.unlinkSync(targetPath);
+          deleted.push(fname);
+          console.log(`[MediaService] Deleted unreferenced media file: ${fname}`);
+        } catch (err) {
+          console.error(`[MediaService] Error deleting file ${fname}:`, err);
+        }
+      }
+    }
+    return deleted;
+  }
+
+  /**
+   * Runs garbage collection on disk, always protecting files referenced by server sessions
+   * as well as any recently uploaded files within the grace period.
+   */
+  runGC(extraActiveFilenames = [], gracePeriodSeconds = 300) {
+    const activeSet = this.getReferencedFilenames(extraActiveFilenames);
+    const graceMs = (typeof gracePeriodSeconds === 'number' ? gracePeriodSeconds : 300) * 1000;
+    const now = Date.now();
+
+    let deletedCount = 0;
+    let freedBytes = 0;
+    const deletedFiles = [];
+
+    if (fs.existsSync(this.mediaDir)) {
+      const files = fs.readdirSync(this.mediaDir);
+      for (const file of files) {
+        if (file.startsWith('.')) continue;
+        if (activeSet.has(file)) continue;
+
+        const filePath = path.join(this.mediaDir, file);
+        try {
+          const stat = fs.statSync(filePath);
+          if (now - stat.mtimeMs < graceMs) {
+            continue;
+          }
+          fs.unlinkSync(filePath);
+          deletedCount++;
+          freedBytes += stat.size;
+          deletedFiles.push(file);
+          console.log(`[MediaService] GC removed unreferenced media file: ${file} (${(stat.size / 1024).toFixed(1)} KB)`);
+        } catch (err) {
+          console.warn(`[MediaService] GC could not remove file ${file}:`, err);
+        }
+      }
+    }
+
+    return {
+      ok: true,
+      deletedCount,
+      freedBytes,
+      freedMB: (freedBytes / (1024 * 1024)).toFixed(2),
+      deletedFiles,
+    };
   }
 
   /**
@@ -147,8 +312,8 @@ class MediaService {
         const bodyBuffer = Buffer.concat(chunks);
 
         let finalBuffer;
-        let mime = '';
-        let ext = '';
+        let headerMime = contentType;
+        let origName = originalFilename;
 
         // Check if payload is JSON: { data: "data:image/png;base64,...", filename?: "..." }
         if (contentType.includes('application/json')) {
@@ -161,22 +326,14 @@ class MediaService {
 
           const match = json.data.match(/^data:([^;]+);base64,(.+)$/);
           if (match) {
-            mime = match[1];
+            headerMime = match[1];
             finalBuffer = Buffer.from(match[2], 'base64');
           } else {
-            // Assume raw base64 string
             finalBuffer = Buffer.from(json.data, 'base64');
           }
-
-          const detected = detectMimeAndExt(finalBuffer, mime, json.filename || originalFilename);
-          mime = detected.mime;
-          ext = detected.ext;
+          origName = json.filename || originalFilename;
         } else {
-          // Direct binary stream
           finalBuffer = bodyBuffer;
-          const detected = detectMimeAndExt(finalBuffer, contentType, originalFilename);
-          mime = detected.mime;
-          ext = detected.ext;
         }
 
         if (!finalBuffer || finalBuffer.length === 0) {
@@ -185,26 +342,7 @@ class MediaService {
           return;
         }
 
-        // Compute 32-character SHA-256 content hash
-        const hash = crypto.createHash('sha256').update(finalBuffer).digest('hex').slice(0, 32);
-        const filename = `${hash}${ext}`;
-        const targetPath = path.join(this.mediaDir, filename);
-
-        // Deduplicate: only write if not already present on disk
-        if (!fs.existsSync(targetPath)) {
-          fs.writeFileSync(targetPath, finalBuffer);
-          console.log(`[MediaService] Saved new media file: ${filename} (${(finalBuffer.length / 1024).toFixed(1)} KB)`);
-        } else {
-          console.log(`[MediaService] Deduplicated existing media file: ${filename}`);
-        }
-
-        const responsePayload = {
-          ok: true,
-          url: `/api/media/${filename}`,
-          filename,
-          size: finalBuffer.length,
-          mimeType: mime,
-        };
+        const responsePayload = this.saveBuffer(finalBuffer, headerMime, origName);
 
         res.writeHead(200, {
           'Content-Type': 'application/json',
@@ -228,7 +366,7 @@ class MediaService {
   }
 
   /**
-   * Deletes one or more media files from disk immediately.
+   * Deletes one or more media files from disk immediately, ONLY if unreferenced by sessions.
    */
   handleDelete(req, res) {
     const chunks = [];
@@ -238,32 +376,9 @@ class MediaService {
         const body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
         const filenames = Array.isArray(body.filenames) ? body.filenames : [];
         const urls = Array.isArray(body.urls) ? body.urls : (body.url ? [body.url] : []);
+        const protectedUrls = Array.isArray(body.protectedUrls) ? body.protectedUrls : [];
 
-        const toDelete = new Set();
-        for (const f of filenames) {
-          if (typeof f === 'string') toDelete.add(path.basename(f));
-        }
-        for (const u of urls) {
-          if (typeof u === 'string') {
-            const match = u.match(/\/api\/media\/([a-zA-Z0-9_\-\.]+)/);
-            if (match) toDelete.add(match[1]);
-          }
-        }
-
-        const deleted = [];
-        for (const fname of toDelete) {
-          if (!/^[a-zA-Z0-9_\-\.]+$/.test(fname)) continue;
-          const targetPath = path.join(this.mediaDir, fname);
-          if (fs.existsSync(targetPath)) {
-            try {
-              fs.unlinkSync(targetPath);
-              deleted.push(fname);
-              console.log(`[MediaService] Deleted media file: ${fname}`);
-            } catch (err) {
-              console.error(`[MediaService] Error deleting file ${fname}:`, err);
-            }
-          }
-        }
+        const deleted = this.deleteUnreferencedFiles([...filenames, ...urls], protectedUrls);
 
         res.writeHead(200, {
           'Content-Type': 'application/json',
@@ -280,68 +395,25 @@ class MediaService {
 
   /**
    * Garbage collects unreferenced media files from disk.
-   * Compares all files on disk with the active referenced filenames.
-   * Protects newly uploaded files within a configurable grace period (default 5 minutes).
+   * Always merges active session references from the server with any client-provided filenames.
    */
   handleGC(req, res) {
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
       try {
-        const body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+        const body = chunks.length > 0 ? JSON.parse(Buffer.concat(chunks).toString('utf-8')) : {};
         const activeList = Array.isArray(body.activeFilenames) ? body.activeFilenames : [];
-        const activeSet = new Set(
-          activeList.map((f) => {
-            if (typeof f !== 'string') return '';
-            const match = f.match(/\/api\/media\/([a-zA-Z0-9_\-\.]+)/);
-            return match ? match[1] : path.basename(f);
-          }).filter(Boolean)
-        );
+        const gracePeriodSeconds =
+          typeof body.gracePeriodSeconds === 'number' ? body.gracePeriodSeconds : 300;
 
-        // Grace period in seconds (default: 300 = 5 minutes)
-        const graceMs = (typeof body.gracePeriodSeconds === 'number' ? body.gracePeriodSeconds : 300) * 1000;
-        const now = Date.now();
-
-        let deletedCount = 0;
-        let freedBytes = 0;
-        const deletedFiles = [];
-
-        if (fs.existsSync(this.mediaDir)) {
-          const files = fs.readdirSync(this.mediaDir);
-          for (const file of files) {
-            if (file.startsWith('.')) continue;
-            if (activeSet.has(file)) continue;
-
-            const filePath = path.join(this.mediaDir, file);
-            try {
-              const stat = fs.statSync(filePath);
-              // Protect recently uploaded files within the grace period
-              if (now - stat.mtimeMs < graceMs) {
-                continue;
-              }
-
-              fs.unlinkSync(filePath);
-              deletedCount++;
-              freedBytes += stat.size;
-              deletedFiles.push(file);
-              console.log(`[MediaService] GC removed unreferenced media file: ${file} (${(stat.size / 1024).toFixed(1)} KB)`);
-            } catch (err) {
-              console.warn(`[MediaService] GC could not remove file ${file}:`, err);
-            }
-          }
-        }
+        const result = this.runGC(activeList, gracePeriodSeconds);
 
         res.writeHead(200, {
           'Content-Type': 'application/json',
           'Access-Control-Allow-Origin': '*',
         });
-        res.end(JSON.stringify({
-          ok: true,
-          deletedCount,
-          freedBytes,
-          freedMB: (freedBytes / (1024 * 1024)).toFixed(2),
-          deletedFiles,
-        }));
+        res.end(JSON.stringify(result));
       } catch (err) {
         console.error('[MediaService] GC failed:', err);
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -354,7 +426,6 @@ class MediaService {
    * Serves a stored media file with immutable caching headers.
    */
   handleServeFile(filename, req, res) {
-    // Validate filename against directory traversal
     if (!filename || !/^[a-zA-Z0-9_\-\.]+$/.test(filename)) {
       res.writeHead(400, { 'Content-Type': 'text/plain' });
       res.end('Invalid filename');
@@ -432,6 +503,8 @@ class MediaService {
   /**
    * Resolves any local /api/media/<filename> pointers in wire messages to full-fidelity base64 Data URLs
    * right before forwarding to the upstream LLM inference engine.
+   * If a referenced local file is missing or malformed, safely removes the invalid image_url part
+   * so upstream APIs never fail with "Unsupported image_url format".
    */
   resolveMediaUrlsInPayload(payload) {
     if (!payload || !Array.isArray(payload.messages)) return 0;
@@ -440,10 +513,10 @@ class MediaService {
     for (const msg of payload.messages) {
       if (!Array.isArray(msg.content)) continue;
 
+      const validParts = [];
       for (const part of msg.content) {
         if (part && part.type === 'image_url' && part.image_url && typeof part.image_url.url === 'string') {
           const urlStr = part.image_url.url;
-          // Matches /api/media/<filename> or http(s)://.../api/media/<filename>
           const match = urlStr.match(/\/api\/media\/([a-zA-Z0-9_\-\.]+)/);
           if (match) {
             const filename = match[1];
@@ -456,16 +529,35 @@ class MediaService {
                 const mime = MIME_MAP[ext] || 'image/png';
                 const base64 = buffer.toString('base64');
                 part.image_url.url = `data:${mime};base64,${base64}`;
+                validParts.push(part);
                 count++;
                 console.log(`[MediaService] Injected full-fidelity image ${filename} (${(buffer.length / 1024).toFixed(1)} KB) for upstream model`);
               } catch (readErr) {
-                console.error(`[MediaService] Error reading media file ${filename}:`, readErr);
+                console.error(`[MediaService] Error reading media file ${filename}, skipping part:`, readErr);
               }
             } else {
-              console.warn(`[MediaService] Media file referenced in message not found on disk: ${filePath}`);
+              console.warn(`[MediaService] Media file missing on disk (${filePath}), stripping broken image_url from wire payload`);
             }
+          } else if (
+            urlStr.startsWith('data:image/') ||
+            urlStr.startsWith('http://') ||
+            urlStr.startsWith('https://')
+          ) {
+            validParts.push(part);
+          } else {
+            console.warn(`[MediaService] Stripping unsupported image_url format from wire payload: ${urlStr.slice(0, 48)}`);
           }
+        } else {
+          validParts.push(part);
         }
+      }
+
+      if (validParts.length === 0) {
+        msg.content = '[图片已丢失]';
+      } else if (validParts.length === 1 && validParts[0].type === 'text') {
+        msg.content = validParts[0].text || '';
+      } else {
+        msg.content = validParts;
       }
     }
 

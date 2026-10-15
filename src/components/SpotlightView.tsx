@@ -358,9 +358,11 @@ export const SpotlightView: React.FC = () => {
 
   useEffect(() => {
     if (isMference && images.length > 0) {
+      const staleDrafts = [...images];
       setImages([]);
+      deleteUnreferencedMedia(staleDrafts, []);
     }
-  }, [isMference, images.length]);
+  }, [isMference, images]);
 
   const wikiSearchButton = (
     <button
@@ -701,9 +703,10 @@ export const SpotlightView: React.FC = () => {
 
   const handleRemoveDraftImage = (index: number) => {
     const removedUrl = images[index];
-    setImages((prev) => prev.filter((_, i) => i !== index));
+    const remaining = images.filter((_, i) => i !== index);
+    setImages(remaining);
     if (removedUrl) {
-      deleteUnreferencedMedia([removedUrl], sessions);
+      deleteUnreferencedMedia([removedUrl], remaining);
     }
   };
 

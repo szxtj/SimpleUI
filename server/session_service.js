@@ -133,7 +133,6 @@ class SessionService {
   constructor() {
     this.sessions = [];
     this.mainSessionId = null;
-    this.migrated = false;
     this.calibrationFactors = {
       ttf: 1.0,
       mference: 1.0,
@@ -150,7 +149,19 @@ class SessionService {
     this.saveTimer = null;
     this.lastSaveTime = 0;
 
+    // Bind authoritative session reference provider to MediaService before loading
+    mediaService.setReferenceProvider(() => this.getReferencedMediaFilenames());
+
     this.loadFromDisk();
+
+    // Run a single safe server-side GC after sessions are loaded on startup
+    setTimeout(() => {
+      try {
+        mediaService.runGC([], 300);
+      } catch (err) {
+        console.warn('[SessionService] Startup media GC skipped:', err);
+      }
+    }, 5000);
 
     // Keep SSE connections alive across WKWebView instances
     this.heartbeatTimer = setInterval(() => {
@@ -283,13 +294,35 @@ class SessionService {
 
   /**
    * Converts any inline data:image/... URLs into content-addressed files in mediaService
+   * and strips any broken or missing image references so sessions never fail on dead links.
    */
   normalizeSessionImages(sessions) {
     for (const s of sessions) {
       if (!Array.isArray(s.messages)) continue;
       for (const m of s.messages) {
         if (!Array.isArray(m.images) || m.images.length === 0) continue;
-        m.images = m.images.map((img) => this.persistDataUrlIfNeeded(img));
+        const validImages = [];
+        for (const rawImg of m.images) {
+          const persisted = this.persistDataUrlIfNeeded(rawImg);
+          if (!persisted || typeof persisted !== 'string') continue;
+          if (persisted.includes('/api/media/')) {
+            if (mediaService.hasFile(persisted)) {
+              validImages.push(persisted);
+            } else {
+              console.warn(`[SessionService] Pruning missing media reference from session ${s.id}: ${persisted}`);
+            }
+          } else if (persisted.startsWith('data:image/') || persisted.startsWith('http://') || persisted.startsWith('https://')) {
+            validImages.push(persisted);
+          }
+        }
+        if (validImages.length > 0) {
+          m.images = validImages;
+        } else {
+          delete m.images;
+          if (m.role === 'user' && (!m.content || !m.content.trim())) {
+            m.content = '[图片已丢失]';
+          }
+        }
       }
     }
   }
@@ -304,24 +337,8 @@ class SessionService {
       const mime = match[1].toLowerCase();
       const buf = Buffer.from(match[2], 'base64');
       if (!buf || buf.length === 0) return imgStr;
-      let ext = '.png';
-      if (mime.includes('jpeg') || mime.includes('jpg')) ext = '.jpg';
-      else if (mime.includes('gif')) ext = '.gif';
-      else if (mime.includes('webp')) ext = '.webp';
-      const hash = path.basename(
-        buf.subarray(0, 16).toString('hex') + buf.length.toString(16)
-      );
-      // Use SHA-256 matching MediaService
-      const crypto = awaitImportCrypto();
-      const sha = crypto
-        ? crypto.createHash('sha256').update(buf).digest('hex').slice(0, 32)
-        : hash;
-      const filename = `${sha}${ext}`;
-      const targetPath = path.join(mediaService.mediaDir, filename);
-      if (!fs.existsSync(targetPath)) {
-        fs.writeFileSync(targetPath, buf);
-      }
-      return `/api/media/${filename}`;
+      const saved = mediaService.saveBuffer(buf, mime);
+      return saved.url;
     } catch (e) {
       console.warn('[SessionService] Failed to offload inline data URL to media store:', e);
       return imgStr;
@@ -333,7 +350,6 @@ class SessionService {
       const initial = this.createNewSessionObject('新对话');
       this.sessions = [initial];
       this.mainSessionId = initial.id;
-      this.migrated = false;
       return;
     }
 
@@ -363,10 +379,6 @@ class SessionService {
           ...parsed.calibrationFactors,
         };
       }
-      // 仅当磁盘文件为 version === 2 且显式标记 migrated === true 时才算已完成 localStorage 迁移；
-      // 严禁用 sanitized.some(s => s.messages.length > 0) 推断，否则 9 月底残留的旧版测试 sessions.json
-      // 会被误判为已迁移，导致真正存储在 WebKit localStorage (tff_chat_sessions_v1) 里的历史对话被跳过！
-      this.migrated = Boolean(parsed?.version === 2 && parsed?.migrated === true);
       this.flushSync();
     } catch (err) {
       console.error('[SessionService] Corrupt sessions.json, backing up and starting clean:', err);
@@ -379,7 +391,6 @@ class SessionService {
       const initial = this.createNewSessionObject('新对话');
       this.sessions = [initial];
       this.mainSessionId = initial.id;
-      this.migrated = false;
     }
   }
 
@@ -414,7 +425,6 @@ class SessionService {
       }
       const payload = {
         version: 2,
-        migrated: this.migrated,
         mainSessionId: this.mainSessionId,
         calibrationFactors: this.calibrationFactors,
         sessions: this.sessions,
@@ -441,7 +451,6 @@ class SessionService {
       generatingSessionIds,
       liveStreamingTokens,
       calibrationFactors: this.calibrationFactors,
-      migrated: this.migrated,
     };
   }
 
@@ -457,39 +466,29 @@ class SessionService {
   }
 
   /**
-   * Deletes media files on disk that are no longer referenced by any remaining session
+   * Returns the authoritative set of all media filenames currently referenced across all sessions.
    */
-  cleanupUnreferencedMedia(candidateUrls) {
-    if (!Array.isArray(candidateUrls) || candidateUrls.length === 0) return;
+  getReferencedMediaFilenames() {
     const referenced = new Set();
     for (const s of this.sessions) {
       if (!Array.isArray(s.messages)) continue;
       for (const m of s.messages) {
         if (!Array.isArray(m.images)) continue;
         for (const imgUrl of m.images) {
-          const match = typeof imgUrl === 'string' && imgUrl.match(/\/api\/media\/([a-zA-Z0-9_\-\.]+)/);
-          if (match) referenced.add(match[1]);
+          const fname = mediaService.extractFilename(imgUrl);
+          if (fname) referenced.add(fname);
         }
       }
     }
+    return referenced;
+  }
 
-    for (const item of candidateUrls) {
-      if (!item || typeof item !== 'string') continue;
-      const match = item.match(/\/api\/media\/([a-zA-Z0-9_\-\.]+)/);
-      const filename = match ? match[1] : path.basename(item);
-      if (!filename || !/^[a-zA-Z0-9_\-\.]+$/.test(filename)) continue;
-      if (!referenced.has(filename)) {
-        const targetPath = path.join(mediaService.mediaDir, filename);
-        try {
-          if (fs.existsSync(targetPath)) {
-            fs.unlinkSync(targetPath);
-            console.log(`[SessionService] Deleted unreferenced media file: ${filename}`);
-          }
-        } catch (err) {
-          console.warn(`[SessionService] Failed to delete media file ${filename}:`, err);
-        }
-      }
-    }
+  /**
+   * Deletes media files on disk that are no longer referenced by any remaining session
+   */
+  cleanupUnreferencedMedia(candidateUrls) {
+    if (!Array.isArray(candidateUrls) || candidateUrls.length === 0) return;
+    mediaService.deleteUnreferencedFiles(candidateUrls);
   }
 
   // ==========================================================================
@@ -701,7 +700,10 @@ class SessionService {
 
     let historyMessages = Array.isArray(targetSession.messages) ? [...targetSession.messages] : [];
     let textToSend = (text || '').trim();
-    let currentImages = Array.isArray(images) ? images.map((img) => this.persistDataUrlIfNeeded(img)) : [];
+    let currentImages = Array.isArray(images)
+      ? images.map((img) => this.persistDataUrlIfNeeded(img)).filter(Boolean)
+      : [];
+    const discardedImages = [];
 
     // Handle Retry: slice history before the user message of the target assistant turn
     if (retryAssistantMessageId) {
@@ -717,13 +719,22 @@ class SessionService {
         if (userIdx !== -1) {
           const origUser = historyMessages[userIdx];
           textToSend = origUser.content || '';
-          currentImages = Array.isArray(origUser.images) ? [...origUser.images] : [];
+          currentImages = Array.isArray(origUser.images)
+            ? origUser.images.filter((u) => !u.includes('/api/media/') || mediaService.hasFile(u))
+            : [];
+          for (let i = userIdx + 1; i < historyMessages.length; i++) {
+            if (Array.isArray(historyMessages[i].images)) {
+              discardedImages.push(...historyMessages[i].images);
+            }
+          }
           historyMessages = historyMessages.slice(0, userIdx);
         }
       } else if (historyMessages.length > 0 && historyMessages[historyMessages.length - 1].role === 'user') {
         const origUser = historyMessages[historyMessages.length - 1];
         textToSend = origUser.content || '';
-        currentImages = Array.isArray(origUser.images) ? [...origUser.images] : [];
+        currentImages = Array.isArray(origUser.images)
+          ? origUser.images.filter((u) => !u.includes('/api/media/') || mediaService.hasFile(u))
+          : [];
         historyMessages = historyMessages.slice(0, -1);
       }
     }
@@ -814,6 +825,9 @@ class SessionService {
     });
 
     this.flushSync();
+    if (discardedImages.length > 0) {
+      this.cleanupUnreferencedMedia(discardedImages);
+    }
     this.broadcast('session-upserted', {
       session: updatedSession,
       mainSessionId: this.mainSessionId,
@@ -1628,39 +1642,7 @@ class SessionService {
       }
 
       try {
-        // 3. One-time Idempotent Migration from localStorage: POST /api/sessions/migrate
-        if (pathname === '/api/sessions/migrate' && req.method === 'POST') {
-          const incoming = Array.isArray(body.sessions) ? this.sanitizeLoadedSessions(body.sessions) : [];
-          this.normalizeSessionImages(incoming);
-
-          const nonEmptyIncoming = incoming.filter((s) => s.messages && s.messages.length > 0);
-          if (nonEmptyIncoming.length > 0) {
-            const incomingIds = new Set(nonEmptyIncoming.map((s) => s.id));
-            // Keep any currently active or non-empty server sessions that aren't in incoming
-            const existingNonEmpty = this.sessions.filter(
-              (s) =>
-                !incomingIds.has(s.id) &&
-                ((s.messages && s.messages.length > 0) || this.activeTurns.has(s.id))
-            );
-            this.sessions = [...existingNonEmpty, ...nonEmptyIncoming];
-
-            if (body.currentSessionId && this.sessions.some((s) => s.id === body.currentSessionId)) {
-              this.mainSessionId = body.currentSessionId;
-            } else if (this.sessions.length > 0) {
-              this.mainSessionId = this.sessions[0].id;
-            }
-          }
-
-          this.migrated = true;
-          this.flushSync();
-          const snap = this.getSnapshotPayload();
-          this.broadcast('snapshot', snap);
-          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ ok: true, ...snap }));
-          return;
-        }
-
-        // 4. Get or Create Empty Session: POST /api/sessions/empty
+        // 3. Get or Create Empty Session: POST /api/sessions/empty
         if (pathname === '/api/sessions/empty' && req.method === 'POST') {
           const result = this.getOrCreateEmptySession(body.title || '新对话', body.origin || 'MAIN');
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -1668,7 +1650,7 @@ class SessionService {
           return;
         }
 
-        // 5. Select Main Window Session or Handoff: POST /api/sessions/:id/select
+        // 4. Select Main Window Session or Handoff: POST /api/sessions/:id/select
         const selectMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/select$/);
         if (selectMatch && req.method === 'POST') {
           const sid = decodeURIComponent(selectMatch[1]);
@@ -1692,7 +1674,7 @@ class SessionService {
           return;
         }
 
-        // 6. Start a Turn (Send Message): POST /api/sessions/:id/turns
+        // 5. Start a Turn (Send Message): POST /api/sessions/:id/turns
         const turnsMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/turns$/);
         if (turnsMatch && req.method === 'POST') {
           const sid = decodeURIComponent(turnsMatch[1]);
@@ -1709,7 +1691,7 @@ class SessionService {
           return;
         }
 
-        // 7. Abort a Turn: POST /api/sessions/:id/abort
+        // 6. Abort a Turn: POST /api/sessions/:id/abort
         const abortMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/abort$/);
         if (abortMatch && req.method === 'POST') {
           const sid = decodeURIComponent(abortMatch[1]);
@@ -1725,7 +1707,7 @@ class SessionService {
           return;
         }
 
-        // 8. Retry a Turn: POST /api/sessions/:id/retry
+        // 7. Retry a Turn: POST /api/sessions/:id/retry
         const retryMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/retry$/);
         if (retryMatch && req.method === 'POST') {
           const sid = decodeURIComponent(retryMatch[1]);
@@ -1741,7 +1723,7 @@ class SessionService {
           return;
         }
 
-        // 9. Delete a Single Turn: DELETE /api/sessions/:id/turns/:messageId
+        // 8. Delete a Single Turn: DELETE /api/sessions/:id/turns/:messageId
         const deleteTurnMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/turns\/([^/]+)$/);
         if (deleteTurnMatch && req.method === 'DELETE') {
           const sid = decodeURIComponent(deleteTurnMatch[1]);
@@ -1752,7 +1734,7 @@ class SessionService {
           return;
         }
 
-        // 10. Update or Delete a Session: PATCH / DELETE /api/sessions/:id
+        // 9. Update or Delete a Session: PATCH / DELETE /api/sessions/:id
         const sessionMatch = pathname.match(/^\/api\/sessions\/([^/]+)$/);
         if (sessionMatch) {
           const sid = decodeURIComponent(sessionMatch[1]);
@@ -1779,11 +1761,6 @@ class SessionService {
       }
     });
   }
-}
-
-import crypto from 'crypto';
-function awaitImportCrypto() {
-  return crypto;
 }
 
 export const sessionService = new SessionService();

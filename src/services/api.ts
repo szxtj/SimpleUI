@@ -1,6 +1,5 @@
 import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, SubtitleServiceStatus, SubtitleDownloadState } from '../types/chat';
 import { estimateHistoryTokens, setTokenCalibration, CalibrationProvider } from '../utils/token';
-import { getImageFromDB } from './imageStore';
 
 /** 服务端 usage 的实际形状（TTF 会给出 cached / reasoning 明细） */
 interface UsagePayload {
@@ -240,16 +239,7 @@ export class TurboFieldfareAPI {
           }
           for (const imgUrl of msg.images) {
             let finalUrl = imgUrl;
-            // 1. Hydrate if it's an IndexedDB offloaded pointer
-            if (finalUrl.startsWith('__idb__:')) {
-              try {
-                const idbData = await getImageFromDB(finalUrl);
-                if (idbData) finalUrl = idbData;
-              } catch (e) {
-                console.warn('[api] Failed to hydrate image from IndexedDB:', e);
-              }
-            }
-            // 2. Convert /api/media/... or blob:... to Data URL for external API
+            // Convert /api/media/... or blob:... to Data URL for external API
             if (isExternalApi && (finalUrl.startsWith('/api/media/') || finalUrl.includes('/api/media/') || finalUrl.startsWith('blob:'))) {
               try {
                 const resp = await fetch(finalUrl);

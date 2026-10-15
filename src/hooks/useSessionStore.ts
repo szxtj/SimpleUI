@@ -7,12 +7,6 @@ import {
   TurnStageRecord,
   WikiCitation,
 } from '../types/chat';
-import {
-  loadSessions,
-  loadCurrentSessionId,
-  createNewSession,
-  hydrateSessionImages,
-} from '../services/storage';
 import { syncCalibrationFactors, CalibrationProvider } from '../utils/token';
 
 export type WindowRole = 'MAIN' | 'SPOTLIGHT';
@@ -23,10 +17,16 @@ interface ServerSnapshot {
   generatingSessionIds: string[];
   liveStreamingTokens: Record<string, number>;
   calibrationFactors?: Partial<Record<CalibrationProvider, number>>;
-  migrated?: boolean;
 }
 
-const MIGRATED_FLAG_KEY = 'tff_sessions_migrated_v2';
+const LEGACY_LOCALSTORAGE_KEYS = [
+  'tff_chat_sessions_v1',
+  'tff_chat_current_id_v1',
+  'tff_chat_sessions_backup_v1',
+  'tff_sessions_migrated_v1',
+  'tff_sessions_migrated_v2',
+  'tff_abort_request_v1',
+];
 
 /**
  * 主窗口与 Spotlight 浮窗共用的唯一会话与流式状态订阅 Hook。
@@ -43,32 +43,14 @@ export function useSessionStore(
   defaultTitle: string = '新对话',
   onSpotlightSessionLoaded?: (isExpanded: boolean) => void
 ) {
-  const [sessions, setSessions] = useState<ChatSession[]>(() => {
-    const initial = loadSessions();
-    return initial.length > 0 ? initial : [createNewSession(defaultTitle)];
-  });
-
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(() => {
-    if (role === 'SPOTLIGHT') {
-      const initial = loadSessions();
-      const empty = initial.find((s) => !s.messages || s.messages.length === 0);
-      return empty ? empty.id : null;
-    }
-    const initial = loadSessions();
-    const savedId = loadCurrentSessionId();
-    if (savedId && initial.some((s) => s.id === savedId)) {
-      return savedId;
-    }
-    return initial.length > 0 ? initial[0].id : null;
-  });
-
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [generatingSessionIds, setGeneratingSessionIds] = useState<string[]>([]);
   const [liveStreamingTokens, setLiveStreamingTokens] = useState<Record<string, number>>({});
   const [lastMetrics, setLastMetrics] = useState<TurnMetrics | undefined>(undefined);
 
   const currentSessionIdRef = useRef<string | null>(currentSessionId);
   const sessionsRef = useRef<ChatSession[]>(sessions);
-  const migrationInFlightRef = useRef(false);
   const onSpotlightSessionLoadedRef = useRef(onSpotlightSessionLoaded);
 
   useEffect(() => {
@@ -83,75 +65,20 @@ export function useSessionStore(
     onSpotlightSessionLoadedRef.current = onSpotlightSessionLoaded;
   }, [onSpotlightSessionLoaded]);
 
-  /**
-   * 首次升级幂等迁移：把旧版 localStorage + IndexedDB 中的历史会话迁移到服务端 sessions.json，
-   * 并在迁移成功后将 localStorage 的旧 key 归档备份并移除，确保不再有两处活跃存储。
-   */
-  const maybeMigrateLocalStorage = useCallback(async (snap: ServerSnapshot) => {
-    if (migrationInFlightRef.current) return;
+  // Clean up any leftover legacy localStorage session keys & IndexedDB database once on mount
+  useEffect(() => {
+    if (role !== 'MAIN') return;
     try {
-      const rawActive = localStorage.getItem('tff_chat_sessions_v1');
-      if (!rawActive) {
-        if (snap.migrated) {
-          localStorage.setItem(MIGRATED_FLAG_KEY, '1');
-        }
-        return;
+      for (const k of LEGACY_LOCALSTORAGE_KEYS) {
+        localStorage.removeItem(k);
       }
-
-      const localList = loadSessions();
-      const nonEmptyLocal = localList.filter((s) => s.messages && s.messages.length > 0);
-      if (nonEmptyLocal.length === 0) {
-        localStorage.removeItem('tff_chat_sessions_v1');
-        localStorage.removeItem('tff_chat_current_id_v1');
-        localStorage.setItem(MIGRATED_FLAG_KEY, '1');
-        return;
+      if (typeof indexedDB !== 'undefined') {
+        indexedDB.deleteDatabase('SimpleUI_Storage');
       }
-
-      const serverIds = new Set((snap.sessions || []).map((s) => s.id));
-      const hasUnmigratedSessions = nonEmptyLocal.some((s) => !serverIds.has(s.id));
-      if (
-        snap.migrated &&
-        localStorage.getItem(MIGRATED_FLAG_KEY) === '1' &&
-        !hasUnmigratedSessions
-      ) {
-        localStorage.setItem('tff_chat_sessions_backup_v1', rawActive);
-        localStorage.removeItem('tff_chat_sessions_v1');
-        localStorage.removeItem('tff_chat_current_id_v1');
-        return;
-      }
-
-      migrationInFlightRef.current = true;
-      for (const s of nonEmptyLocal) {
-        const hasOffloaded = s.messages?.some((m) =>
-          m.images?.some((img) => img.startsWith('__idb__:'))
-        );
-        if (hasOffloaded) {
-          await hydrateSessionImages(s).catch(() => false);
-        }
-      }
-
-      const savedMainId = loadCurrentSessionId();
-      const res = await fetch('/api/sessions/migrate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessions: nonEmptyLocal,
-          currentSessionId: savedMainId,
-        }),
-      });
-      if (res.ok) {
-        localStorage.setItem('tff_chat_sessions_backup_v1', rawActive);
-        localStorage.removeItem('tff_chat_sessions_v1');
-        localStorage.removeItem('tff_chat_current_id_v1');
-        localStorage.removeItem('tff_sessions_migrated_v1');
-        localStorage.setItem(MIGRATED_FLAG_KEY, '1');
-      }
-    } catch (err) {
-      console.warn('[useSessionStore] LocalStorage migration skipped:', err);
-    } finally {
-      migrationInFlightRef.current = false;
+    } catch {
+      // ignore
     }
-  }, []);
+  }, [role]);
 
   /**
    * 应用服务端全量快照
@@ -184,12 +111,8 @@ export function useSessionStore(
           setCurrentSessionId(nextId);
         }
       }
-
-      if (role === 'MAIN') {
-        maybeMigrateLocalStorage(snap);
-      }
     },
-    [role, maybeMigrateLocalStorage]
+    [role]
   );
 
   /**

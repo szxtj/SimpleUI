@@ -21,24 +21,42 @@ export function extractReferencedMedia(sessions: ChatSession[]): Set<string> {
 }
 
 /**
- * Deletes media files on disk that are no longer referenced in any session.
+ * Requests the server to delete candidate media files if and only if they are no longer
+ * referenced by any server session or any remaining draft attachments in the input box.
+ *
+ * Note: The backend MediaService automatically checks all authoritative server sessions
+ * before deleting any file on disk.
  */
 export async function deleteUnreferencedMedia(
   candidateUrlsOrFilenames: string[],
-  remainingSessions: ChatSession[]
+  remainingDraftUrlsOrSessions: string[] | ChatSession[] = []
 ): Promise<void> {
   if (!candidateUrlsOrFilenames || candidateUrlsOrFilenames.length === 0) return;
 
-  const activeSet = extractReferencedMedia(remainingSessions);
-  const toDelete: string[] = [];
+  const protectedUrls: string[] = [];
+  if (Array.isArray(remainingDraftUrlsOrSessions) && remainingDraftUrlsOrSessions.length > 0) {
+    const first = remainingDraftUrlsOrSessions[0];
+    if (typeof first === 'string') {
+      protectedUrls.push(...(remainingDraftUrlsOrSessions as string[]));
+    } else {
+      const refs = extractReferencedMedia(remainingDraftUrlsOrSessions as ChatSession[]);
+      protectedUrls.push(...Array.from(refs));
+    }
+  }
 
+  const protectedFilenames = new Set<string>();
+  for (const item of protectedUrls) {
+    if (!item) continue;
+    const match = item.match(/\/api\/media\/([a-zA-Z0-9_\-\.]+)/);
+    protectedFilenames.add(match ? match[1] : item);
+  }
+
+  const toDelete: string[] = [];
   for (const item of candidateUrlsOrFilenames) {
     if (!item) continue;
     const match = item.match(/\/api\/media\/([a-zA-Z0-9_\-\.]+)/);
     const filename = match ? match[1] : item;
-
-    // Only delete if NOT referenced in any remaining session
-    if (!activeSet.has(filename)) {
+    if (!protectedFilenames.has(filename)) {
       toDelete.push(filename);
     }
   }
@@ -49,10 +67,16 @@ export async function deleteUnreferencedMedia(
     const res = await fetch('/api/media/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filenames: toDelete }),
+      body: JSON.stringify({
+        filenames: toDelete,
+        protectedUrls: Array.from(protectedFilenames),
+      }),
     });
     if (res.ok) {
-      console.log(`[mediaCleanup] Successfully deleted ${toDelete.length} orphaned media files`);
+      const data = await res.json();
+      if (Array.isArray(data?.deleted) && data.deleted.length > 0) {
+        console.log(`[mediaCleanup] Deleted ${data.deleted.length} unreferenced draft media file(s)`);
+      }
     }
   } catch (err) {
     console.warn('[mediaCleanup] Failed to delete media files from disk:', err);
@@ -61,18 +85,18 @@ export async function deleteUnreferencedMedia(
 
 /**
  * Triggers background garbage collection of orphaned files on disk.
+ * Server-side MediaService automatically protects all files referenced by active sessions.
  */
 export async function triggerMediaGC(
-  sessions: ChatSession[],
+  extraProtectedUrls: string[] = [],
   gracePeriodSeconds: number = 300
 ): Promise<void> {
-  const activeSet = extractReferencedMedia(sessions);
   try {
     const res = await fetch('/api/media/gc', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        activeFilenames: Array.from(activeSet),
+        activeFilenames: extraProtectedUrls,
         gracePeriodSeconds,
       }),
     });
