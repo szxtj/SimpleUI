@@ -51,18 +51,22 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
           <div className="rounded-[20px] px-3.5 cq-md:px-4 py-2 cq-md:py-2.5 bg-[#e9ebf0] text-[#1f2328] dark:bg-[#2d3037] dark:text-[#f1f3f7] border border-black/5 dark:border-white/5 shadow-sm">
             {/* User image attachments */}
             {message.images && message.images.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-2">
+              <div data-copy-ignore="true" className="flex flex-wrap gap-2 mb-2 select-none">
                 {message.images.map((imgUrl, i) => (
                   <img
                     key={i}
                     src={imgUrl}
                     alt={`upload-${i}`}
-                    className="max-w-[200px] cq-md:max-w-[240px] max-h-[200px] cq-md:max-h-[240px] rounded-xl object-cover border border-black/10 dark:border-white/10 shadow-sm"
+                    draggable={false}
+                    className="max-w-[200px] cq-md:max-w-[240px] max-h-[200px] cq-md:max-h-[240px] rounded-xl object-cover border border-black/10 dark:border-white/10 shadow-sm select-none"
                   />
                 ))}
               </div>
             )}
-            <div className="whitespace-pre-wrap break-words leading-relaxed" style={{ fontSize: 'var(--chat-font-size, 15px)' }}>
+            <div
+              className="selectable-chat-content cursor-text whitespace-pre-wrap break-words leading-relaxed"
+              style={{ fontSize: 'var(--chat-font-size, 15px)' }}
+            >
               {message.content}
             </div>
           </div>

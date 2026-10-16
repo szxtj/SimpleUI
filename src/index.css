@@ -44,6 +44,33 @@ body {
   color: #e0e1e4;
 }
 
+/* 仅限主窗口与浮窗的 3 类对话内容区（发送的消息、思考过程内容、回答生成结果）开放文本划选与复制，
+   其余所有界面元素严格保持全局 select-none 不可选中状态 */
+.selectable-chat-content,
+.selectable-chat-content * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+/* 块级组件（代码框/表格/Mermaid）的顶部工具栏、KaTeX 隐藏辅助层以及公式渲染层不参与字符级划选，消除锯齿高亮条 */
+.selectable-chat-content [data-copy-ignore="true"],
+.selectable-chat-content [data-copy-ignore="true"] *,
+.selectable-chat-content .interactive-math,
+.selectable-chat-content .interactive-math *,
+.selectable-chat-content .katex,
+.selectable-chat-content .katex * {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
+.selectable-chat-content .interactive-math::selection,
+.selectable-chat-content .interactive-math *::selection,
+.selectable-chat-content .katex::selection,
+.selectable-chat-content .katex *::selection {
+  background: transparent !important;
+  color: inherit !important;
+}
+
 /* Custom modern scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

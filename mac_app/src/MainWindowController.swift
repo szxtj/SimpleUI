@@ -374,6 +374,8 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         userContent.add(self, name: "setAppLanguage")
         userContent.add(self, name: "setAppTheme")
         userContent.add(self, name: "setTranslatorConfig")
+        userContent.add(self, name: "copyWordEquation")
+        userContent.add(self, name: "copyRichData")
         config.userContentController = userContent
 
         // 权限状态在系统设置里被改动后，主动回推给页面刷新
@@ -536,6 +538,38 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         } else if message.name == "setTranslatorConfig", let dict = message.body as? [String: Any] {
             DispatchQueue.main.async {
                 TranslationProfileStore.shared.updateFromWebDict(dict)
+            }
+        } else if message.name == "copyWordEquation", let dict = message.body as? [String: Any] {
+            let mathml = dict["mathml"] as? String ?? ""
+            let html = dict["html"] as? String ?? ""
+            let plainText = dict["plainText"] as? String ?? mathml
+            DispatchQueue.main.async {
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                if !html.isEmpty {
+                    pb.setString(html, forType: .html)
+                }
+                if !mathml.isEmpty {
+                    pb.setString(mathml, forType: NSPasteboard.PasteboardType("public.mathml"))
+                    pb.setString(mathml, forType: NSPasteboard.PasteboardType("public.mathml.presentation"))
+                    pb.setString(mathml, forType: NSPasteboard.PasteboardType("application/mathml+xml"))
+                }
+                if !plainText.isEmpty {
+                    pb.setString(plainText, forType: .string)
+                }
+            }
+        } else if message.name == "copyRichData", let dict = message.body as? [String: Any] {
+            let html = dict["html"] as? String ?? ""
+            let plainText = dict["plainText"] as? String ?? ""
+            DispatchQueue.main.async {
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                if !html.isEmpty {
+                    pb.setString(html, forType: .html)
+                }
+                if !plainText.isEmpty {
+                    pb.setString(plainText, forType: .string)
+                }
             }
         }
     }

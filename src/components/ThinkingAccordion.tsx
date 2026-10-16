@@ -12,8 +12,8 @@ interface ThinkingAccordionProps {
 
 /**
  * 思考过程折叠区（手风琴式独立滚动容器）：
- *   - 折叠态：小图标 + 「深度思考 · Ns」+ 右向箭头
- *   - 展开态：内容以左侧细竖线 + 弱化文字呈现
+ *   - 折叠态：小图标 + 「深度思考 · Ns」+ 右向箭头（保持 select-none）
+ *   - 展开态：内容以左侧细竖线 + 弱化文字呈现（开放 selectable-chat-content 支持自由划选与复制 Markdown 原文）
  * 思考中自动展开并向下跟随滚动；用户手动向上滚动时释放，再次滚回贴底后自动恢复跟随；思考结束后自动折叠。
  */
 export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
@@ -40,8 +40,9 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
   const headerText = `${t('thinkingLabel')} · ${Math.max(0, duration).toFixed(1)}s`;
 
   return (
-    <div className="my-2.5 text-sm">
+    <div className="my-2.5 text-sm select-none">
       <button
+        type="button"
         onClick={() => setIsOpen(!isOpen)}
         className="w-full flex items-center gap-2 group/select text-left cursor-pointer select-none"
       >
@@ -69,7 +70,7 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
       {isOpen && (
         <div
           {...boxProps}
-          className="mt-1.5 mb-1 ml-[7px] pl-3.5 border-l-2 border-black/[0.07] dark:border-white/[0.09] max-h-48 overflow-y-auto overscroll-contain select-text [overflow-anchor:none]"
+          className="mt-1.5 mb-1 ml-[7px] pl-3.5 border-l-2 border-black/[0.07] dark:border-white/[0.09] max-h-48 overflow-y-auto overscroll-contain selectable-chat-content cursor-text [overflow-anchor:none]"
         >
           {displayContent ? (
             <MarkdownRenderer
@@ -77,7 +78,9 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
               className="markdown-thinking text-xs leading-relaxed text-zinc-600 dark:text-zinc-400"
             />
           ) : (
-            <span className="text-xs text-zinc-500 italic">{t('organizingThoughts')}</span>
+            <span className="text-xs text-zinc-500 italic select-none">
+              {t('organizingThoughts')}
+            </span>
           )}
         </div>
       )}

@@ -99,10 +99,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     ...(settings?.translatorSettingsConfig?.customConfig || {}),
   }));
 
-  const [translatorDeepseekConfig, setTranslatorDeepseekConfig] = useState<DeepSeekProviderConfig>(() => ({
-    ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.deepseekConfig,
-    ...(settings?.translatorSettingsConfig?.deepseekConfig || {}),
-  }));
+  const [translatorDeepseekConfig, setTranslatorDeepseekConfig] = useState<DeepSeekProviderConfig>(() => {
+    const saved = settings?.translatorSettingsConfig?.deepseekConfig;
+    const base = {
+      ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.deepseekConfig,
+      ...(saved || {}),
+    };
+    if (!saved?.maxContext || (saved.maxContext === 131072 && (saved.maxTokens === 65536 || !saved.maxTokens))) {
+      base.maxContext = 8192;
+      base.maxTokens = 4096;
+    }
+    return base;
+  });
 
   const [showTranslatorApiKey, setShowTranslatorApiKey] = useState(false);
 
@@ -192,10 +200,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.customConfig,
         ...(settings?.translatorSettingsConfig?.customConfig || {}),
       });
-      setTranslatorDeepseekConfig({
+      const trDsSaved = settings?.translatorSettingsConfig?.deepseekConfig;
+      const trDsBase = {
         ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.deepseekConfig,
-        ...(settings?.translatorSettingsConfig?.deepseekConfig || {}),
-      });
+        ...(trDsSaved || {}),
+      };
+      if (!trDsSaved?.maxContext || (trDsSaved.maxContext === 131072 && (trDsSaved.maxTokens === 65536 || !trDsSaved.maxTokens))) {
+        trDsBase.maxContext = 8192;
+        trDsBase.maxTokens = 4096;
+      }
+      setTranslatorDeepseekConfig(trDsBase);
     }
     prevIsOpenRef.current = isOpen;
   }, [isOpen, settings]);
@@ -313,8 +327,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const finalCustom: CustomProviderConfig = {
       ...customConfig,
     };
+    const dsMaxCtx = Number(deepseekConfig.maxContext || 131072);
     const finalDs: DeepSeekProviderConfig = {
       ...deepseekConfig,
+      maxContext: dsMaxCtx,
+      maxTokens: Math.floor(dsMaxCtx / 2),
       apiKey: cleanApiKey,
       stopStrings: dsStops,
     };
@@ -397,8 +414,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       ...translatorCustomConfig,
       systemPrompt: '',
     };
+    const trDsMaxCtx = Number(translatorDeepseekConfig.maxContext || 8192);
     const finalTrDs: DeepSeekProviderConfig = {
       ...translatorDeepseekConfig,
+      maxContext: trDsMaxCtx,
+      maxTokens: Math.floor(trDsMaxCtx / 2),
       reasoningEffort: translatorDeepseekConfig.reasoningEffort || 'none',
       stopStrings: [],
       systemPrompt: '',
@@ -707,6 +727,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         setDeepseekConfig({
                           ...deepseekConfig,
                           maxContext: val,
+                          maxTokens: Math.floor(val / 2),
                         });
                       }}
                       className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none"
@@ -877,13 +898,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         {t('maxTokensLabel')}
                       </label>
                       <span className="text-[10px] text-blue-600 dark:text-blue-400 font-medium bg-blue-500/10 px-1.5 py-0.5 rounded">
-                        {t('deepseekMaxTokensLinked')}
+                        {t('linkedHalf')}
                       </span>
                     </div>
                     <input
                       type="text"
                       readOnly
-                      value={`${deepseekConfig.maxTokens || 8192} tokens (8K)`}
+                      value={`${Math.floor((deepseekConfig.maxContext || 131072) / 2)} tokens (${Math.round(Math.floor((deepseekConfig.maxContext || 131072) / 2) / 1024)}K)`}
                       className="w-full bg-zinc-100 dark:bg-[#151619] border border-black/10 dark:border-[#2d3038] rounded-lg px-3 py-2 text-zinc-600 dark:text-[#abb0bc] cursor-not-allowed font-mono select-none"
                     />
                     <span className="text-[10px] text-zinc-500 dark:text-[#6f7582] mt-1 block">
@@ -1771,21 +1792,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       {t('maxContextLabel')}
                     </label>
                     <select
-                      value={translatorDeepseekConfig.maxContext ?? 131072}
+                      value={translatorDeepseekConfig.maxContext ?? 8192}
                       onChange={(e) => {
                         const val = Number(e.target.value);
                         setTranslatorDeepseekConfig({
                           ...translatorDeepseekConfig,
                           maxContext: val,
+                          maxTokens: Math.floor(val / 2),
                         });
                       }}
                       className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none"
                     >
+                      <option value={4096}>4,096 (4K)</option>
+                      <option value={8192}>8,192 (8K - 推荐)</option>
+                      <option value={16384}>16,384 (16K)</option>
                       <option value={32768}>32,768 (32K)</option>
                       <option value={65536}>65,536 (64K)</option>
-                      <option value={131072}>131,072 (128K - 推荐)</option>
-                      <option value={262144}>262,144 (256K)</option>
-                      <option value={1000000}>1,000,000 (1M)</option>
+                      <option value={131072}>131,072 (128K)</option>
                     </select>
                   </div>
                 </div>
@@ -1926,13 +1949,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         {t('maxTokensLabel')}
                       </label>
                       <span className="text-[10px] text-blue-600 dark:text-blue-400 font-medium bg-blue-500/10 px-1.5 py-0.5 rounded">
-                        {t('deepseekMaxTokensLinked')}
+                        {t('linkedHalf')}
                       </span>
                     </div>
                     <input
                       type="text"
                       readOnly
-                      value={`${translatorDeepseekConfig.maxTokens || 8192} tokens (8K)`}
+                      value={`${Math.floor((translatorDeepseekConfig.maxContext || 8192) / 2)} tokens (${Math.round(Math.floor((translatorDeepseekConfig.maxContext || 8192) / 2) / 1024)}K)`}
                       className="w-full bg-zinc-100 dark:bg-[#151619] border border-black/10 dark:border-[#2d3038] rounded-lg px-3 py-2 text-zinc-600 dark:text-[#abb0bc] cursor-not-allowed font-mono select-none"
                     />
                     <span className="text-[10px] text-zinc-500 dark:text-[#6f7582] mt-1 block">

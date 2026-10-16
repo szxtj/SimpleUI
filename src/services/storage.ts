@@ -98,7 +98,7 @@ export const DEFAULT_DEEPSEEK_CONFIG: DeepSeekProviderConfig = {
   baseUrl: 'https://api.deepseek.com',
   modelId: 'deepseek-flash', // 最新主力推荐模型
   maxContext: 131072, // 128K 推荐上下文
-  maxTokens: 8192, // DeepSeek 官方单次补全上限/推荐默认 8K
+  maxTokens: 65536, // Linked: half of maxContext (131072 / 2)
   temperature: 1.0, // 官网默认值 1.0（思考建议 0.6 / 代码 0.0 / 翻译 1.3 / 创意 1.5）
   topP: 1.0, // 官网默认值 1.0（思考模式有效范围 0.95 - 1.0）
   reasoningEffort: 'high', // 深度思考推荐默认 high
@@ -184,6 +184,8 @@ export const DEFAULT_TRANSLATOR_SETTINGS_CONFIG: TranslatorSettingsConfig = {
   },
   deepseekConfig: {
     ...DEFAULT_DEEPSEEK_CONFIG,
+    maxContext: 8192,
+    maxTokens: 4096,
     reasoningEffort: 'none',
     stopStrings: [],
     systemPrompt: '',
@@ -439,7 +441,7 @@ export function normalizeSettingsObject(parsed: any, fallbackApiKey: string = ''
       (provider === 'deepseek' ? parsed.deepseekModelId || parsed.modelId : undefined) ||
       DEFAULT_DEEPSEEK_CONFIG.modelId,
     maxContext: dsMaxContext,
-    maxTokens: rawDs.maxTokens || DEFAULT_DEEPSEEK_CONFIG.maxTokens,
+    maxTokens: Math.floor(dsMaxContext / 2),
     temperature:
       rawDs.temperature !== undefined ? Number(rawDs.temperature) : DEFAULT_DEEPSEEK_CONFIG.temperature,
     topP: rawDs.topP !== undefined ? Number(rawDs.topP) : DEFAULT_DEEPSEEK_CONFIG.topP,
@@ -582,6 +584,16 @@ export function normalizeSettingsObject(parsed: any, fallbackApiKey: string = ''
         deepseekConfig: {
           ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.deepseekConfig,
           ...(rawTr.deepseekConfig || {}),
+          maxContext:
+            rawTr.deepseekConfig?.maxContext &&
+            !(rawTr.deepseekConfig.maxContext === 131072 && (rawTr.deepseekConfig.maxTokens === 65536 || !rawTr.deepseekConfig.maxTokens))
+              ? rawTr.deepseekConfig.maxContext
+              : 8192,
+          maxTokens:
+            rawTr.deepseekConfig?.maxTokens &&
+            !(rawTr.deepseekConfig.maxContext === 131072 && rawTr.deepseekConfig.maxTokens === 65536)
+              ? Math.floor((rawTr.deepseekConfig.maxContext || 8192) / 2)
+              : 4096,
           reasoningEffort: rawTr.deepseekConfig?.reasoningEffort || 'none',
           stopStrings: [],
           systemPrompt: '',
@@ -755,8 +767,10 @@ export function saveSettings(settings: AppSettings): void {
       if (settings.temperature !== undefined) customConfig.temperature = settings.temperature;
       if (settings.systemPrompt !== undefined) customConfig.systemPrompt = settings.systemPrompt;
     } else if (provider === 'deepseek') {
-      if (settings.maxContext !== undefined) deepseekConfig.maxContext = settings.maxContext;
-      if (settings.maxTokens !== undefined) deepseekConfig.maxTokens = settings.maxTokens;
+      if (settings.maxContext !== undefined) {
+        deepseekConfig.maxContext = settings.maxContext;
+        deepseekConfig.maxTokens = Math.floor(settings.maxContext / 2);
+      }
       if (settings.temperature !== undefined) deepseekConfig.temperature = settings.temperature;
       if (settings.topP !== undefined) deepseekConfig.topP = settings.topP;
       if (settings.reasoningEffort !== undefined) deepseekConfig.reasoningEffort = settings.reasoningEffort as any;

@@ -183,7 +183,7 @@ export const StageLadder: React.FC<StageLadderProps> = ({
   })).filter((b) => b.rows.length > 0);
 
   return (
-    <div className="my-2.5 text-sm space-y-2.5" data-stage-ladder>
+    <div className="my-2.5 text-sm space-y-2.5 select-none" data-stage-ladder>
       {blocks.map(({ key, rows }) => {
         const single = rows.length === 1;
         if (single) {
@@ -191,7 +191,7 @@ export const StageLadder: React.FC<StageLadderProps> = ({
           const isRowActive = phasesActive && (r.endedAt === undefined || turnStage === key);
           const isRowDone = !phasesActive || (!isRowActive && r.endedAt !== undefined);
           return (
-            <div key={key} data-stage-ladder-single={key} className="flex items-center gap-2">
+            <div key={key} data-stage-ladder-single={key} className="flex items-center gap-2 select-none">
               <LadderRow
                 text={rowText(r)}
                 ms={elapsed(r, isRowActive)}
@@ -210,7 +210,7 @@ export const StageLadder: React.FC<StageLadderProps> = ({
         const totalMs = totalOf(rows);
         const summaryText = `${t('stageSummaryLabel')} · ${rows.length}${t('stageStepsUnit')}`;
         return (
-          <div key={key} data-stage-ladder-block={key}>
+          <div key={key} data-stage-ladder-block={key} className="select-none">
             <button
               onClick={() => setUserOpen((prev) => ({ ...prev, [key]: !open }))}
               data-stage-ladder-summary={key}
@@ -228,7 +228,7 @@ export const StageLadder: React.FC<StageLadderProps> = ({
             </button>
 
             {open && (
-              <div className="mt-1.5 mb-1 ml-[7px] pl-3.5 border-l-2 border-black/[0.07] dark:border-white/[0.09] space-y-1 select-text">
+              <div className="mt-1.5 mb-1 ml-[7px] pl-3.5 border-l-2 border-black/[0.07] dark:border-white/[0.09] space-y-1 select-none">
                 {rows.map((r, i) => {
                   const isCurrentStep =
                     isBlockActive && (i === rows.length - 1 || r.endedAt === undefined);
@@ -237,7 +237,7 @@ export const StageLadder: React.FC<StageLadderProps> = ({
                     <div
                       key={`${r.kind}-${i}`}
                       data-stage-ladder-row
-                      className="flex items-center gap-2 text-xs leading-relaxed"
+                      className="flex items-center gap-2 text-xs leading-relaxed select-none"
                     >
                       <LadderRow
                         text={rowText(r)}

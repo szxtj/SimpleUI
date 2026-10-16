@@ -978,18 +978,21 @@ export const SpotlightView: React.FC = () => {
                     style={{ fontSize: 'var(--chat-font-size, 14.5px)' }}
                   >
                     {msg.images && msg.images.length > 0 && (
-                      <div className="flex flex-wrap gap-2 mb-2">
+                      <div data-copy-ignore="true" className="flex flex-wrap gap-2 mb-2 select-none">
                         {msg.images.map((url, i) => (
                           <img
                             key={i}
                             src={url}
                             alt="preview"
-                            className="max-w-[180px] max-h-[180px] rounded-lg object-cover"
+                            draggable={false}
+                            className="max-w-[180px] max-h-[180px] rounded-lg object-cover select-none"
                           />
                         ))}
                       </div>
                     )}
-                    {msg.content}
+                    <div className="selectable-chat-content cursor-text whitespace-pre-wrap break-words">
+                      {msg.content}
+                    </div>
                   </div>
 
                   <div className="mt-1 flex items-center pr-1.5 opacity-60 group-hover:opacity-100 transition-opacity">
