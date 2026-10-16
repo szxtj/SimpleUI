@@ -217,7 +217,200 @@ export function serializeTableElementToMarkdown(tableEl: HTMLTableElement): stri
 }
 
 /**
- * 将 DOM 表格节点序列化为 TSV（制表符分隔，公式为 LaTeX 原文）纯文本与带标准 MathML 公式的 HTML 表格（供粘贴到 Word / Excel / Numbers / 飞书）
+ * 将单元格 DOM 序列化为带样式的富文本 HTML，公式保留为 LaTeX 原文（如 $B(\alpha, \beta)$），
+ * 避免 Mac Office / 其他软件在粘贴 HTML 表格时因无法识别 OMML/MathML 命名空间而发生公式文本破碎或分式线丢失。
+ */
+function serializeCellDomToRichHtmlWithLatex(root: Node): string {
+  if (root.nodeType === Node.TEXT_NODE) {
+    return escapeHtml((root.textContent || '').replace(/▏/g, ''));
+  }
+  if (root.nodeType !== Node.ELEMENT_NODE) return '';
+
+  const el = root as HTMLElement;
+  if (el.getAttribute('data-copy-ignore') === 'true') return '';
+
+  if (el.classList.contains('katex-display')) {
+    const ann = el.querySelector('annotation[encoding="application/x-tex"]');
+    if (ann && ann.textContent) {
+      return escapeHtml(`$$${ann.textContent.trim()}$$`);
+    }
+  }
+  if (el.classList.contains('katex')) {
+    const ann = el.querySelector('annotation[encoding="application/x-tex"]');
+    if (ann && ann.textContent) {
+      return escapeHtml(`$${ann.textContent.trim()}$`);
+    }
+  }
+  if (el.classList.contains('katex-html')) return '';
+
+  const tag = el.tagName.toLowerCase();
+  const inner = Array.from(el.childNodes).map(serializeCellDomToRichHtmlWithLatex).join('');
+
+  switch (tag) {
+    case 'strong':
+    case 'b':
+      return `<strong style="font-weight:600;">${inner}</strong>`;
+    case 'em':
+    case 'i':
+      return `<em>${inner}</em>`;
+    case 'del':
+    case 's':
+      return `<del>${inner}</del>`;
+    case 'code':
+      return `<code style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background-color:#eff1f3;padding:1px 4px;border-radius:3px;font-size:0.9em;">${inner}</code>`;
+    case 'br':
+      return '<br/>';
+    case 'a': {
+      const href = el.getAttribute('href') || '';
+      return href ? `<a href="${escapeHtml(href)}">${inner}</a>` : inner;
+    }
+    default:
+      return inner;
+  }
+}
+
+interface DocxRunStyle {
+  bold?: boolean;
+  italic?: boolean;
+  code?: boolean;
+}
+
+function escapeXml(str: string): string {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function xmlTextRun(text: string, style: DocxRunStyle = {}): string {
+  if (!text) return '';
+  const escaped = escapeXml(text);
+  let rPr = '';
+  if (style.bold) rPr += '<w:b/>';
+  if (style.italic) rPr += '<w:i/>';
+  if (style.code) {
+    rPr += '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/><w:shd w:val="clear" w:color="auto" w:fill="F0F0F0"/>';
+  }
+  const spaceAttr = text.startsWith(' ') || text.endsWith(' ') ? ' xml:space="preserve"' : '';
+  return `<w:r>${rPr ? `<w:rPr>${rPr}</w:rPr>` : ''}<w:t${spaceAttr}>${escaped}</w:t></w:r>`;
+}
+
+function serializeCellDomToDocxRuns(root: Node, currentStyle: DocxRunStyle = {}): string {
+  if (root.nodeType === Node.TEXT_NODE) {
+    const text = (root.textContent || '').replace(/▏/g, '');
+    return xmlTextRun(text, currentStyle);
+  }
+  if (root.nodeType !== Node.ELEMENT_NODE) return '';
+
+  const el = root as HTMLElement;
+  if (el.getAttribute('data-copy-ignore') === 'true') return '';
+
+  // KaTeX formula
+  if (el.classList.contains('katex-display') || el.classList.contains('katex')) {
+    const rawOmml = extractOmmlForWord(el);
+    if (rawOmml) {
+      // 关键点：剔除 KaTeX 生成的 \u2061 (Function Application) 以及零宽字符，彻底杜绝 Word 中的 [fo] 乱码框
+      // 并确保不会嵌套 block 级别的 <m:oMathPara>
+      const cleanOmml = rawOmml
+        .replace(/\u2061/g, '')
+        .replace(/[\u200B-\u200D\uFEFF]/g, '')
+        .replace(/<\/?m:oMathPara[^>]*>/g, '');
+      return cleanOmml;
+    }
+    const ann = el.querySelector('annotation[encoding="application/x-tex"]');
+    const tex = ann?.textContent?.trim() || el.textContent || '';
+    return xmlTextRun(`$${tex}$`, currentStyle);
+  }
+  if (el.classList.contains('katex-html')) return '';
+
+  const tag = el.tagName.toLowerCase();
+  let nextStyle = { ...currentStyle };
+  if (tag === 'strong' || tag === 'b') {
+    nextStyle.bold = true;
+  } else if (tag === 'em' || tag === 'i') {
+    nextStyle.italic = true;
+  } else if (tag === 'code') {
+    nextStyle.code = true;
+  } else if (tag === 'br') {
+    return '<w:r><w:br/></w:r>';
+  }
+
+  let result = '';
+  el.childNodes.forEach((child) => {
+    result += serializeCellDomToDocxRuns(child, nextStyle);
+  });
+  return result;
+}
+
+/**
+ * 将 DOM 表格节点序列化为符合 OpenXML 标准的 document.xml 字符串。
+ * 内嵌完整的原生 Word 表格边框、底纹、文字样式，并将 KaTeX 公式转换为原生的 <m:oMath> 可编辑公式块。
+ */
+export function serializeTableElementToDocxXml(tableEl: HTMLTableElement): string {
+  const rows = Array.from(tableEl.querySelectorAll('tr'));
+  if (rows.length === 0) return '';
+
+  const rowsXml: string[] = [];
+
+  rows.forEach((tr, rowIndex) => {
+    const cells = Array.from(tr.querySelectorAll('th, td')) as HTMLElement[];
+    if (cells.length === 0) return;
+
+    const cellsXml = cells.map((cell) => {
+      const isHeader = cell.tagName.toLowerCase() === 'th' || rowIndex === 0;
+      const align = (cell.style?.textAlign || cell.getAttribute('align') || 'left').toLowerCase();
+
+      let jcVal = 'left';
+      if (align === 'center') jcVal = 'center';
+      else if (align === 'right') jcVal = 'right';
+
+      let tcPr = '<w:tcPr><w:tcW w:w="0" w:type="auto"/>';
+      if (isHeader) {
+        tcPr += '<w:shd w:val="clear" w:color="auto" w:fill="F6F8FA"/>';
+      }
+      tcPr += '</w:tcPr>';
+
+      const pPr = jcVal !== 'left' ? `<w:pPr><w:jc w:val="${jcVal}"/></w:pPr>` : '';
+      const runs = serializeCellDomToDocxRuns(cell, { bold: isHeader });
+      const cellBody = runs.length > 0 ? runs : '<w:r><w:t/></w:r>';
+
+      return `<w:tc>${tcPr}<w:p>${pPr}${cellBody}</w:p></w:tc>`;
+    });
+
+    rowsXml.push(`<w:tr>${cellsXml.join('')}</w:tr>`);
+  });
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+  <w:body>
+    <w:tbl>
+      <w:tblPr>
+        <w:tblW w:w="0" w:type="auto"/>
+        <w:tblBorders>
+          <w:top w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>
+          <w:left w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>
+          <w:bottom w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>
+          <w:right w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>
+          <w:insideH w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>
+          <w:insideV w:val="single" w:sz="4" w:space="0" w:color="D0D7DE"/>
+        </w:tblBorders>
+      </w:tblPr>
+      ${rowsXml.join('')}
+    </w:tbl>
+    <w:p/>
+    <w:sectPr>
+      <w:pgSz w:w="11906" w:h="16838"/>
+      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
+    </w:sectPr>
+  </w:body>
+</w:document>`;
+}
+
+/**
+ * 将 DOM 表格节点序列化为 TSV（制表符分隔，公式为 LaTeX 原文）纯文本与保留 LaTeX 的 HTML 表格（供粘贴到 Excel / Numbers / 飞书 / 网页）
  */
 export function serializeTableElementToRichData(tableEl: HTMLTableElement): {
   tsv: string;
@@ -243,7 +436,7 @@ export function serializeTableElementToRichData(tableEl: HTMLTableElement): {
       const isHeader = cell.tagName.toLowerCase() === 'th';
       const tag = isHeader ? 'th' : 'td';
       const align = cell.style?.textAlign || cell.getAttribute('align') || 'left';
-      const richInner = serializeDomToWordCompatibleHtml(cell).trim();
+      const richInner = serializeCellDomToRichHtmlWithLatex(cell).trim();
       const style = isHeader
         ? `border:1px solid #d0d7de;padding:8px 12px;background-color:#f6f8fa;font-weight:600;text-align:${align};color:#1f2328;`
         : `border:1px solid #d0d7de;padding:8px 12px;text-align:${align};color:#1f2328;`;
@@ -252,12 +445,13 @@ export function serializeTableElementToRichData(tableEl: HTMLTableElement): {
     htmlRows.push(`<tr>${htmlCells.join('')}</tr>`);
   });
 
-  const html = `<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><head><meta charset="utf-8"/></head><body><table style="border-collapse:collapse;width:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;line-height:1.6;">${htmlRows.join('')}</table></body></html>`;
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/></head><body><table style="border-collapse:collapse;width:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;line-height:1.6;">${htmlRows.join('')}</table></body></html>`;
   return {
     tsv: tsvRows.join('\n'),
     html,
   };
 }
+
 
 /**
  * 递归将选中的 DOM 节点列表反解为干净的 Markdown 源码（包含 KaTeX 公式还原为 $...$ / $$...$$）

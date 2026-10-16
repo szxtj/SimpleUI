@@ -12,6 +12,7 @@ import {
   handleMarkdownCopyEvent,
   serializeTableElementToMarkdown,
   serializeTableElementToRichData,
+  serializeTableElementToDocxXml,
 } from '../utils/selectionToMarkdown';
 import { MermaidBlock } from './MermaidBlock';
 import { InteractiveMath } from './InteractiveMath';
@@ -93,8 +94,26 @@ const TableBlock: React.FC<TableBlockProps> = React.memo(({ children }) => {
   const tableRef = useRef<HTMLTableElement | null>(null);
   const [copiedMd, setCopiedMd] = useState(false);
   const [copiedRich, setCopiedRich] = useState(false);
+  const [openedWord, setOpenedWord] = useState(false);
 
   const isEn = lang === 'en';
+
+  const handleOpenInWord = () => {
+    if (!tableRef.current) return;
+    try {
+      const docxXml = serializeTableElementToDocxXml(tableRef.current);
+      if (!docxXml) return;
+      if ((window as any).webkit?.messageHandlers?.openTableInWord) {
+        (window as any).webkit.messageHandlers.openTableInWord.postMessage({
+          documentXml: docxXml,
+        });
+        setOpenedWord(true);
+        setTimeout(() => setOpenedWord(false), 2000);
+      }
+    } catch (e) {
+      console.error('Failed to open table in Word:', e);
+    }
+  };
 
   const handleCopyMarkdown = async () => {
     if (!tableRef.current) return;
@@ -158,12 +177,37 @@ const TableBlock: React.FC<TableBlockProps> = React.memo(({ children }) => {
         <div className="flex items-center gap-1.5">
           <button
             type="button"
+            onClick={handleOpenInWord}
+            className="flex items-center gap-1 px-2 py-0.5 rounded hover:bg-blue-50 dark:hover:bg-blue-950/40 text-blue-600 dark:text-blue-400 font-medium transition-colors cursor-pointer"
+            title={
+              isEn
+                ? 'Open native table with editable equations directly in Microsoft Word'
+                : '在 Microsoft Word 中直接打开原生表格与公式'
+            }
+          >
+            {openedWord ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
+                <span className="text-emerald-600 dark:text-emerald-400 text-[11px]">
+                  {isEn ? 'Opened' : '已在 Word 打开'}
+                </span>
+              </>
+            ) : (
+              <>
+                <FileText className="w-3.5 h-3.5" />
+                <span className="text-[11px]">{isEn ? 'Open in Word' : '在 Word 中打开'}</span>
+              </>
+            )}
+          </button>
+
+          <button
+            type="button"
             onClick={handleCopyRichTable}
             className="flex items-center gap-1 px-2 py-0.5 rounded hover:bg-black/5 dark:hover:bg-[#32363e] text-zinc-600 dark:text-[#b0b4bd] transition-colors cursor-pointer"
             title={
               isEn
-                ? 'Copy rendered table structure (for Excel / Word / Pages)'
-                : '复制渲染后的表格结构（可直接粘贴至 Excel / Word / 飞书）'
+                ? 'Copy table (formulas kept as LaTeX, for Excel / Notion / Sheets)'
+                : '复制表格（公式保留为 LaTeX，支持粘贴至 Excel / Notion / 飞书）'
             }
           >
             {copiedRich ? (

@@ -158,6 +158,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         teardownUI()
+        MainWindowController.cleanupAllTrackedWordExports()
         ProcessManager.shared.stop()
     }
 
@@ -233,3 +234,4 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         translationPanelController?.toggle()
     }
 }
+

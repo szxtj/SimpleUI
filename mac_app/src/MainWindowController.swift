@@ -376,6 +376,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         userContent.add(self, name: "setTranslatorConfig")
         userContent.add(self, name: "copyWordEquation")
         userContent.add(self, name: "copyRichData")
+        userContent.add(self, name: "openTableInWord")
         config.userContentController = userContent
 
         // 权限状态在系统设置里被改动后，主动回推给页面刷新
@@ -541,22 +542,11 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             }
         } else if message.name == "copyWordEquation", let dict = message.body as? [String: Any] {
             let mathml = dict["mathml"] as? String ?? ""
-            let html = dict["html"] as? String ?? ""
-            let plainText = dict["plainText"] as? String ?? mathml
             DispatchQueue.main.async {
                 let pb = NSPasteboard.general
                 pb.clearContents()
-                if !html.isEmpty {
-                    pb.setString(html, forType: .html)
-                }
-                if !mathml.isEmpty {
-                    pb.setString(mathml, forType: NSPasteboard.PasteboardType("public.mathml"))
-                    pb.setString(mathml, forType: NSPasteboard.PasteboardType("public.mathml.presentation"))
-                    pb.setString(mathml, forType: NSPasteboard.PasteboardType("application/mathml+xml"))
-                }
-                if !plainText.isEmpty {
-                    pb.setString(plainText, forType: .string)
-                }
+                // Claude 黄金法则：只写唯一的纯文本 MathML，绝不放任何 HTML/RTF，让 Word 内容嗅探直接命中公式转换！
+                pb.setString(mathml, forType: .string)
             }
         } else if message.name == "copyRichData", let dict = message.body as? [String: Any] {
             let html = dict["html"] as? String ?? ""
@@ -571,6 +561,89 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
                     pb.setString(plainText, forType: .string)
                 }
             }
+        } else if message.name == "openTableInWord", let dict = message.body as? [String: Any] {
+            if let docXml = dict["documentXml"] as? String {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    MainWindowController.createAndOpenDocx(documentXml: docXml)
+                }
+            }
+        }
+    }
+
+    // MARK: - Word Docx Export & Auto-cleanup
+    private static var trackedDocxFiles: [URL] = []
+
+    public static func cleanupAllTrackedWordExports() {
+        let fileManager = FileManager.default
+        let tempBase = fileManager.temporaryDirectory.appendingPathComponent("SimpleUI_Word_Exports", isDirectory: true)
+        try? fileManager.removeItem(at: tempBase)
+        trackedDocxFiles.removeAll()
+    }
+
+    public static func createAndOpenDocx(documentXml: String) {
+        let fileManager = FileManager.default
+        let tempBase = fileManager.temporaryDirectory.appendingPathComponent("SimpleUI_Word_Exports", isDirectory: true)
+
+        // 自动清理超过 1 小时的旧临时文件
+        if let existing = try? fileManager.contentsOfDirectory(at: tempBase, includingPropertiesForKeys: [.contentModificationDateKey], options: .skipsHiddenFiles) {
+            let oneHourAgo = Date().addingTimeInterval(-3600)
+            for file in existing {
+                if let attrs = try? file.resourceValues(forKeys: [.contentModificationDateKey]),
+                   let date = attrs.contentModificationDate, date < oneHourAgo {
+                    try? fileManager.removeItem(at: file)
+                }
+            }
+        }
+
+        let runId = UUID().uuidString
+        let tempFolder = tempBase.appendingPathComponent(runId, isDirectory: true)
+        let wordDir = tempFolder.appendingPathComponent("word", isDirectory: true)
+        let relsDir = tempFolder.appendingPathComponent("_rels", isDirectory: true)
+
+        do {
+            try fileManager.createDirectory(at: wordDir, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: relsDir, withIntermediateDirectories: true)
+
+            let contentTypes = """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+              <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+              <Default Extension="xml" ContentType="application/xml"/>
+              <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+            </Types>
+            """
+
+            let rels = """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+            </Relationships>
+            """
+
+            try contentTypes.data(using: .utf8)?.write(to: tempFolder.appendingPathComponent("[Content_Types].xml"))
+            try rels.data(using: .utf8)?.write(to: relsDir.appendingPathComponent(".rels"))
+            try documentXml.data(using: .utf8)?.write(to: wordDir.appendingPathComponent("document.xml"))
+
+            let timestamp = Int(Date().timeIntervalSince1970)
+            let docxFile = tempBase.appendingPathComponent("SimpleUI_Table_\(timestamp).docx")
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+            process.currentDirectoryURL = tempFolder
+            process.arguments = ["-q", "-r", docxFile.path, "[Content_Types].xml", "_rels", "word"]
+            try process.run()
+            process.waitUntilExit()
+
+            // 删除解压缩的中间目录
+            try? fileManager.removeItem(at: tempFolder)
+
+            // 直接调用 Microsoft Word 打开
+            DispatchQueue.main.async {
+                NSWorkspace.shared.open(docxFile)
+                trackedDocxFiles.append(docxFile)
+            }
+        } catch {
+            print("Failed to create docx:", error)
         }
     }
 
