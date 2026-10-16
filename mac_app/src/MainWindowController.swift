@@ -377,6 +377,8 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         userContent.add(self, name: "copyWordEquation")
         userContent.add(self, name: "copyRichData")
         userContent.add(self, name: "openTableInWord")
+        userContent.add(self, name: "openImageInPreview")
+        userContent.add(self, name: "saveImage")
         config.userContentController = userContent
 
         // 权限状态在系统设置里被改动后，主动回推给页面刷新
@@ -567,6 +569,18 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
                     MainWindowController.createAndOpenDocx(documentXml: docXml)
                 }
             }
+        } else if message.name == "openImageInPreview", let dict = message.body as? [String: Any] {
+            if let urlString = dict["url"] as? String {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    MainWindowController.openImageInSystemPreview(urlString: urlString)
+                }
+            }
+        } else if message.name == "saveImage", let dict = message.body as? [String: Any] {
+            if let urlString = dict["url"] as? String {
+                DispatchQueue.main.async {
+                    self.showSaveImagePanel(urlString: urlString)
+                }
+            }
         }
     }
 
@@ -577,6 +591,8 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         let fileManager = FileManager.default
         let tempBase = fileManager.temporaryDirectory.appendingPathComponent("SimpleUI_Word_Exports", isDirectory: true)
         try? fileManager.removeItem(at: tempBase)
+        let imgTempBase = fileManager.temporaryDirectory.appendingPathComponent("SimpleUI_Image_Previews", isDirectory: true)
+        try? fileManager.removeItem(at: imgTempBase)
         trackedDocxFiles.removeAll()
     }
 
@@ -644,6 +660,144 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             }
         } catch {
             print("Failed to create docx:", error)
+        }
+    }
+
+    // MARK: - Image Preview in macOS System (Preview.app)
+    public static func openImageInSystemPreview(urlString: String) {
+        guard !urlString.isEmpty else { return }
+
+        let fileManager = FileManager.default
+
+        // 1. 本地磁盘媒体库：/api/media/<filename>
+        if urlString.contains("/api/media/") {
+            let filename = urlString.components(separatedBy: "/api/media/").last?
+                .components(separatedBy: "?").first?
+                .components(separatedBy: "#").first ?? ""
+            if !filename.isEmpty {
+                let home = fileManager.homeDirectoryForCurrentUser
+                let mediaFile = home.appendingPathComponent("Library/Application Support/SimpleUI/media", isDirectory: true)
+                    .appendingPathComponent(filename)
+                if fileManager.fileExists(atPath: mediaFile.path) {
+                    DispatchQueue.main.async {
+                        NSWorkspace.shared.open(mediaFile)
+                    }
+                    return
+                }
+            }
+        }
+
+        // 2. Base64 Data URL (data:image/png;base64,... 或 data:image/jpeg;base64,...)
+        if urlString.hasPrefix("data:image/") {
+            let parts = urlString.components(separatedBy: ",")
+            if parts.count >= 2 {
+                let header = parts[0].lowercased()
+                let base64Data = parts[1]
+                var ext = "png"
+                if header.contains("jpeg") || header.contains("jpg") {
+                    ext = "jpg"
+                } else if header.contains("webp") {
+                    ext = "webp"
+                } else if header.contains("gif") {
+                    ext = "gif"
+                }
+
+                if let data = Data(base64Encoded: base64Data, options: .ignoreUnknownCharacters) {
+                    let tempBase = fileManager.temporaryDirectory.appendingPathComponent("SimpleUI_Image_Previews", isDirectory: true)
+                    try? fileManager.createDirectory(at: tempBase, withIntermediateDirectories: true)
+
+                    // 自动清理超过 1 小时的临时预览图片
+                    if let existing = try? fileManager.contentsOfDirectory(at: tempBase, includingPropertiesForKeys: [.contentModificationDateKey], options: .skipsHiddenFiles) {
+                        let oneHourAgo = Date().addingTimeInterval(-3600)
+                        for file in existing {
+                            if let attrs = try? file.resourceValues(forKeys: [.contentModificationDateKey]),
+                               let date = attrs.contentModificationDate, date < oneHourAgo {
+                                try? fileManager.removeItem(at: file)
+                            }
+                        }
+                    }
+
+                    let tempFile = tempBase.appendingPathComponent("SimpleUI_Preview_\(Int(Date().timeIntervalSince1970))_\(UUID().uuidString.prefix(8)).\(ext)")
+                    do {
+                        try data.write(to: tempFile)
+                        DispatchQueue.main.async {
+                            NSWorkspace.shared.open(tempFile)
+                        }
+                        return
+                    } catch {
+                        print("Failed to save temp preview image:", error)
+                    }
+                }
+            }
+        }
+
+        // 3. 网络普通链接 (http:// 或 https://)
+        if let url = URL(string: urlString), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+            DispatchQueue.main.async {
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
+
+    /// 弹出原生系统保存对话框（NSSavePanel），由用户指定保存路径将图片写到本地磁盘
+    public func showSaveImagePanel(urlString: String) {
+        guard let win = window else { return }
+        let savePanel = NSSavePanel()
+        let isZh = AppLocale.isZh
+        savePanel.title = isZh ? "保存图片" : "Save Image"
+        savePanel.prompt = isZh ? "保存" : "Save"
+        savePanel.canCreateDirectories = true
+
+        let timestamp = Int(Date().timeIntervalSince1970)
+        var defaultExt = "png"
+        var imageData: Data? = nil
+
+        if urlString.contains("/api/media/") {
+            let filename = urlString.components(separatedBy: "/api/media/").last?
+                .components(separatedBy: "?").first?
+                .components(separatedBy: "#").first ?? ""
+            if !filename.isEmpty {
+                let home = FileManager.default.homeDirectoryForCurrentUser
+                let mediaFile = home.appendingPathComponent("Library/Application Support/SimpleUI/media", isDirectory: true)
+                    .appendingPathComponent(filename)
+                let ext = mediaFile.pathExtension
+                if !ext.isEmpty { defaultExt = ext }
+                imageData = try? Data(contentsOf: mediaFile)
+            }
+        } else if urlString.hasPrefix("data:image/") {
+            let parts = urlString.components(separatedBy: ",")
+            if parts.count >= 2 {
+                let header = parts[0].lowercased()
+                if header.contains("jpeg") || header.contains("jpg") {
+                    defaultExt = "jpg"
+                } else if header.contains("webp") {
+                    defaultExt = "webp"
+                } else if header.contains("gif") {
+                    defaultExt = "gif"
+                }
+                imageData = Data(base64Encoded: parts[1], options: .ignoreUnknownCharacters)
+            }
+        } else if let url = URL(string: urlString) {
+            let ext = url.pathExtension
+            if !ext.isEmpty { defaultExt = ext }
+            imageData = try? Data(contentsOf: url)
+        }
+
+        savePanel.nameFieldStringValue = "SimpleUI_\(timestamp).\(defaultExt)"
+        if let type = UTType(filenameExtension: defaultExt) {
+            savePanel.allowedContentTypes = [type]
+        }
+
+        let handleResponse: (NSApplication.ModalResponse) -> Void = { response in
+            if response == .OK, let destinationURL = savePanel.url, let data = imageData {
+                try? data.write(to: destinationURL)
+            }
+        }
+
+        if win.attachedSheet != nil {
+            savePanel.begin { response in handleResponse(response) }
+        } else {
+            savePanel.beginSheetModal(for: win) { response in handleResponse(response) }
         }
     }
 

@@ -43,6 +43,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { RawMarkdownModal } from './RawMarkdownModal';
+import { ImagePreviewModal } from './ImagePreviewModal';
 import { useI18n } from '../i18n';
 import { useTheme } from '../hooks/useTheme';
 import { estimateHistoryTokens, applyTokenCalibration } from '../utils/token';
@@ -78,6 +79,8 @@ export const SpotlightView: React.FC = () => {
   const [isWikiPanelOpen, setIsWikiPanelOpen] = useState(false);
   /** 弹出显示原 Markdown 文本的目标内容 */
   const [rawMarkdownTarget, setRawMarkdownTarget] = useState<string | null>(null);
+  /** 弹出大图预览的目标图片列表与初始序号 */
+  const [previewImageTarget, setPreviewImageTarget] = useState<{ images: string[]; initialIndex: number } | null>(null);
 
   // 对话内容字号独立调节（小窗口快捷键 ⌘+ / ⌘-，不影响其他区域）
   const { fontSize: chatFontSize } = useChatFontSize({
@@ -985,7 +988,8 @@ export const SpotlightView: React.FC = () => {
                             src={url}
                             alt="preview"
                             draggable={false}
-                            className="max-w-[180px] max-h-[180px] rounded-lg object-cover select-none"
+                            onClick={() => setPreviewImageTarget({ images: msg.images || [], initialIndex: i })}
+                            className="max-w-[180px] max-h-[180px] rounded-lg object-cover select-none cursor-zoom-in hover:opacity-90 active:scale-[0.98] transition-all"
                           />
                         ))}
                       </div>
@@ -1286,6 +1290,14 @@ export const SpotlightView: React.FC = () => {
         isOpen={rawMarkdownTarget !== null}
         onClose={() => setRawMarkdownTarget(null)}
         content={rawMarkdownTarget || ''}
+        isSpotlight
+      />
+
+      <ImagePreviewModal
+        isOpen={previewImageTarget !== null}
+        onClose={() => setPreviewImageTarget(null)}
+        images={previewImageTarget?.images || []}
+        initialIndex={previewImageTarget?.initialIndex || 0}
         isSpotlight
       />
     </div>

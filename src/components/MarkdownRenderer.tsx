@@ -16,6 +16,7 @@ import {
 } from '../utils/selectionToMarkdown';
 import { MermaidBlock } from './MermaidBlock';
 import { InteractiveMath } from './InteractiveMath';
+import { ImagePreviewModal } from './ImagePreviewModal';
 
 interface MarkdownRendererProps {
   content: string;
@@ -266,7 +267,35 @@ const REHYPE_PLUGINS: any[] = [[rehypeKatex, { throwOnError: false, strict: fals
 
 const InsideDisplayMathContext = React.createContext(false);
 
+const MarkdownImage: React.FC<React.ImgHTMLAttributes<HTMLImageElement>> = ({ src, alt, ...props }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  if (!src) return null;
+  return (
+    <>
+      <img
+        src={src}
+        alt={alt}
+        onClick={() => setIsOpen(true)}
+        className="max-w-full rounded-xl border border-black/10 dark:border-white/10 shadow-sm cursor-zoom-in hover:opacity-95 active:scale-[0.99] transition-all my-2 select-none"
+        loading="lazy"
+        {...props}
+      />
+      {isOpen && (
+        <ImagePreviewModal
+          isOpen={isOpen}
+          onClose={() => setIsOpen(false)}
+          images={[src]}
+          initialIndex={0}
+        />
+      )}
+    </>
+  );
+};
+
 const MARKDOWN_COMPONENTS: Components = {
+  img({ src, alt, ...props }) {
+    return <MarkdownImage src={src} alt={alt} {...props} />;
+  },
   a({ href, children, ...props }) {
     const external = /^https?:\/\//i.test(href || '');
     return (

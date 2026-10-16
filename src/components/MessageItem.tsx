@@ -6,6 +6,7 @@ import { ThinkingAccordion } from './ThinkingAccordion';
 import { StageLadder } from './StageLadder';
 import { Check, Copy, AlertCircle, BookOpen, ExternalLink, RotateCcw, Trash2, FileText } from 'lucide-react';
 import { RawMarkdownModal } from './RawMarkdownModal';
+import { ImagePreviewModal } from './ImagePreviewModal';
 
 interface MessageItemProps {
   message: ChatMessage;
@@ -26,6 +27,7 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const [showRawModal, setShowRawModal] = useState(false);
+  const [previewImageIndex, setPreviewImageIndex] = useState<number | null>(null);
   const isUser = message.role === 'user';
   /**
    * 阶段是否仍在进行 —— 只看消息自身的 pending（服务端实时同步到所有窗口），
@@ -58,7 +60,8 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
                     src={imgUrl}
                     alt={`upload-${i}`}
                     draggable={false}
-                    className="max-w-[200px] cq-md:max-w-[240px] max-h-[200px] cq-md:max-h-[240px] rounded-xl object-cover border border-black/10 dark:border-white/10 shadow-sm select-none"
+                    onClick={() => setPreviewImageIndex(i)}
+                    className="max-w-[200px] cq-md:max-w-[240px] max-h-[200px] cq-md:max-h-[240px] rounded-xl object-cover border border-black/10 dark:border-white/10 shadow-sm select-none cursor-zoom-in hover:opacity-90 active:scale-[0.98] transition-all"
                   />
                 ))}
               </div>
@@ -232,6 +235,16 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
             content={message.content || ''}
           />
         </div>
+      )}
+
+      {/* 图片大图预览弹窗 */}
+      {message.images && message.images.length > 0 && previewImageIndex !== null && (
+        <ImagePreviewModal
+          isOpen={previewImageIndex !== null}
+          onClose={() => setPreviewImageIndex(null)}
+          images={message.images}
+          initialIndex={previewImageIndex}
+        />
       )}
     </div>
   );

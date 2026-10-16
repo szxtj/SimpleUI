@@ -774,18 +774,20 @@ SimpleUI/
     ├── utils/
     │   ├── token.ts          # 离线 Token 估算器（CJK + 非CJK + 图片）+ 会话级校准
     │   ├── image.ts          # 粘贴 / 拖拽图片读取为 Data URL
+    │   ├── selectionToMarkdown.ts # 选中内容智能转 Markdown 与表格精准序列化
     │   └── wikiFrame.ts      # 知识库条目外部链接构造（「在浏览器中打开」）
     └── components/
         ├── Sidebar.tsx       # 会话列表 + 左下角服务状态行 + 服务管理 / 设置入口
         ├── ChatView.tsx      # 主对话视窗（头部工具条、消息流、输入区）
         ├── ChatInput.tsx     # 主窗口复合输入框（附件、🧠 思考 / 📚 知识库开关、发送·停止、上下文圆环）
         ├── MessageItem.tsx   # 单条消息（阶段指示、思考折叠、Markdown、引用胶囊、操作与指标）
-        ├── MarkdownRenderer.tsx  # Markdown + KaTeX 渲染（中文加粗按 CJK 友好规则解析）
+        ├── MarkdownRenderer.tsx  # Markdown + KaTeX 渲染（中文加粗友好、表格一键在 Word 中打开、图片点击预览）
         ├── ThinkingAccordion.tsx # 思考过程折叠条
         ├── StageLadder.tsx   # 回合阶段阶梯：知识库 / 引擎各阶段逐行固化 + 各自耗时，
         │                     #   结束后折叠成一行汇总；两窗口共用同一组件
         ├── ContextRing.tsx   # SVG 上下文圆环（可选余量百分比 + 悬浮详情）
-        ├── ImageAttachment.tsx   # 输入区图片预览与删除
+        ├── ImageAttachment.tsx   # 输入区图片缩略展示、点击预览与删除
+        ├── ImagePreviewModal.tsx # 沉浸式图片预览模态框（平滑缩放平移、触控板优化、系统原生另存为与 Preview 预览）
         ├── SettingsModal.tsx # 应用设置 + 对话模型设置（4 大 Provider）+ 快速翻译设置（锁定提示词、免思考秒级返回）
         ├── ServiceManagerModal.tsx # 服务管理器控制面板（基础模型双引擎/知识库/语音识别/实时双语字幕四项受管服务）
         ├── SubtitleOverlay.tsx   # 实时双语字幕悬浮渲染组件（双行并列展示、暂停、重置）

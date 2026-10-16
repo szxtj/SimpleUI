@@ -1,8 +1,9 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { ArrowUp, Plus, Square, Zap, Brain, BookOpen } from 'lucide-react';
 import { useI18n } from '../i18n';
 import { ContextRing } from './ContextRing';
 import { ImageAttachment } from './ImageAttachment';
+import { ImagePreviewModal } from './ImagePreviewModal';
 import { extractImagesFromPaste, fileToDataURL } from '../utils/image';
 import { deleteUnreferencedMedia } from '../services/mediaCleanup';
 import { useImeInput } from '../hooks/useImeInput';
@@ -51,6 +52,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   isMference = false,
 }) => {
   const { t } = useI18n();
+  const [previewDraftIndex, setPreviewDraftIndex] = useState<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -114,6 +116,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       {/* Image attachments preview pill */}
       <ImageAttachment
         images={images}
+        onPreview={setPreviewDraftIndex}
         onRemove={(idx) => {
           const removed = images[idx];
           const remaining = images.filter((_, i) => i !== idx);
@@ -243,6 +246,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           <ContextRing usedTokens={usedTokens} maxContext={maxContext} showRemainingPercent={false} />
         </div>
       </div>
+
+      {/* 草稿区上传图片的大图预览 */}
+      {images && images.length > 0 && previewDraftIndex !== null && (
+        <ImagePreviewModal
+          isOpen={previewDraftIndex !== null}
+          onClose={() => setPreviewDraftIndex(null)}
+          images={images}
+          initialIndex={previewDraftIndex}
+        />
+      )}
     </div>
   );
 };

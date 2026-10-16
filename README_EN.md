@@ -783,18 +783,20 @@ SimpleUI/
     ├── utils/
     │   ├── token.ts          # Offline token estimator (CJK + non-CJK + images) + session calibration
     │   ├── image.ts          # Paste / drag-and-drop images into data URLs
+    │   ├── selectionToMarkdown.ts # Smart selection to Markdown & table serialization
     │   └── wikiFrame.ts      # Knowledge-base article external URL builder ("open in browser")
     └── components/
         ├── Sidebar.tsx       # Session list + bottom-left service status row + settings entry
         ├── ChatView.tsx      # Main conversation view (header toolbar, message stream, input area)
         ├── ChatInput.tsx     # Main-window composite input (attachments, 🧠 thinking / 📚 KB toggles, send·stop, ring)
         ├── MessageItem.tsx   # Single message (stage indicator, thinking accordion, Markdown, chips, actions, metrics)
-        ├── MarkdownRenderer.tsx   # Markdown + KaTeX rendering (CJK-friendly emphasis parsing)
+        ├── MarkdownRenderer.tsx   # Markdown + KaTeX rendering (CJK emphasis, open table in Word, click-to-preview image)
         ├── ThinkingAccordion.tsx  # Collapsible thinking process
         ├── StageLadder.tsx   # Turn stage ladder: KB/engine stages as rows with per-stage
         │                     #   durations, collapsing into a summary when done; shared
         ├── ContextRing.tsx   # SVG context ring (optional remaining-percent label + hover details)
-        ├── ImageAttachment.tsx    # Input-area image previews and removal
+        ├── ImageAttachment.tsx    # Input-area image thumbnails, preview and removal
+        ├── ImagePreviewModal.tsx  # Immersive image preview lightbox (smooth zoom & pan, trackpad tuning, native Save & Preview)
         ├── SettingsModal.tsx # App settings + Chat Model Settings (4 providers) + Quick Translation Settings (locked prompts, zero-thinking instant translation)
         ├── ServiceManagerModal.tsx # Service Manager control panel (Base model dual-engine / Knowledge Base / Speech Recognition / Subtitles)
         ├── SubtitleOverlay.tsx   # Real-time bilingual subtitles floating UI (side-by-side lines, pause, reset)

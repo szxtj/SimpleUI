@@ -125,6 +125,8 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         userContent.add(self, name: "resizePanel")
         userContent.add(self, name: "chooseDirectory")
         userContent.add(self, name: "chooseFile")
+        userContent.add(self, name: "openImageInPreview")
+        userContent.add(self, name: "saveImage")
         config.userContentController = userContent
 
         webView = WKWebView(frame: panel.contentView?.bounds ?? .zero, configuration: config)
@@ -403,6 +405,73 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             let callbackKey = dict["callbackKey"] as? String ?? "zim"
             let allowedExtensions = dict["allowedExtensions"] as? [String]
             showFilePicker(currentPath: currentPath, callbackKey: callbackKey, allowedExtensions: allowedExtensions)
+        } else if message.name == "openImageInPreview", let dict = message.body as? [String: Any] {
+            if let urlString = dict["url"] as? String {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    MainWindowController.openImageInSystemPreview(urlString: urlString)
+                }
+            }
+        } else if message.name == "saveImage", let dict = message.body as? [String: Any] {
+            if let urlString = dict["url"] as? String {
+                DispatchQueue.main.async {
+                    self.showSaveImagePanel(urlString: urlString)
+                }
+            }
+        }
+    }
+
+    /// 弹出原生系统保存对话框（NSSavePanel），由用户指定保存路径将图片写到本地磁盘
+    private func showSaveImagePanel(urlString: String) {
+        let savePanel = NSSavePanel()
+        let isZh = AppLocale.isZh
+        savePanel.title = isZh ? "保存图片" : "Save Image"
+        savePanel.prompt = isZh ? "保存" : "Save"
+        savePanel.canCreateDirectories = true
+
+        let timestamp = Int(Date().timeIntervalSince1970)
+        var defaultExt = "png"
+        var imageData: Data? = nil
+
+        if urlString.contains("/api/media/") {
+            let filename = urlString.components(separatedBy: "/api/media/").last?
+                .components(separatedBy: "?").first?
+                .components(separatedBy: "#").first ?? ""
+            if !filename.isEmpty {
+                let home = FileManager.default.homeDirectoryForCurrentUser
+                let mediaFile = home.appendingPathComponent("Library/Application Support/SimpleUI/media", isDirectory: true)
+                    .appendingPathComponent(filename)
+                let ext = mediaFile.pathExtension
+                if !ext.isEmpty { defaultExt = ext }
+                imageData = try? Data(contentsOf: mediaFile)
+            }
+        } else if urlString.hasPrefix("data:image/") {
+            let parts = urlString.components(separatedBy: ",")
+            if parts.count >= 2 {
+                let header = parts[0].lowercased()
+                if header.contains("jpeg") || header.contains("jpg") {
+                    defaultExt = "jpg"
+                } else if header.contains("webp") {
+                    defaultExt = "webp"
+                } else if header.contains("gif") {
+                    defaultExt = "gif"
+                }
+                imageData = Data(base64Encoded: parts[1], options: .ignoreUnknownCharacters)
+            }
+        } else if let url = URL(string: urlString) {
+            let ext = url.pathExtension
+            if !ext.isEmpty { defaultExt = ext }
+            imageData = try? Data(contentsOf: url)
+        }
+
+        savePanel.nameFieldStringValue = "SimpleUI_\(timestamp).\(defaultExt)"
+        if let type = UTType(filenameExtension: defaultExt) {
+            savePanel.allowedContentTypes = [type]
+        }
+
+        savePanel.begin { response in
+            if response == .OK, let destinationURL = savePanel.url, let data = imageData {
+                try? data.write(to: destinationURL)
+            }
         }
     }
 
