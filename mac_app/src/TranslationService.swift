@@ -10,6 +10,8 @@ public enum TranslationServiceError: LocalizedError, Equatable {
     case serverError(Int)
     case emptyResult
     case requestFailed(String)
+    case timeout
+    case cancelled
 
     public var errorDescription: String? {
         let isZh = AppLocale.isZh
@@ -24,6 +26,10 @@ public enum TranslationServiceError: LocalizedError, Equatable {
             return isZh ? "翻译服务返回了空内容。" : "Translation service returned empty content."
         case .requestFailed(let message):
             return isZh ? "翻译请求失败: \(message)" : "Translation request failed: \(message)"
+        case .timeout:
+            return isZh ? "连接翻译服务超时（3秒），已自动终止。" : "Connection to translation service timed out (3s)."
+        case .cancelled:
+            return isZh ? "已终止翻译。" : "Translation stopped."
         }
     }
 }
@@ -113,22 +119,56 @@ public struct TranslationService: TranslationServiceProtocol {
             ]
         }
 
+        request.timeoutInterval = 3.0
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
+        let session = self.session
+        let timeoutDuration: UInt64 = 3_000_000_000 // 3秒超时
+
         do {
-            let (data, response) = try await session.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw TranslationServiceError.invalidResponse
-            }
+            let translation = try await withThrowingTaskGroup(of: String.self) { group in
+                // 任务1：发起网络翻译请求
+                group.addTask {
+                    let (data, response) = try await session.data(for: request)
+                    try Task.checkCancellation()
 
-            guard (200..<300).contains(httpResponse.statusCode) else {
-                throw TranslationServiceError.serverError(httpResponse.statusCode)
-            }
+                    guard let httpResponse = response as? HTTPURLResponse else {
+                        throw TranslationServiceError.invalidResponse
+                    }
 
-            return try Self.extractTranslation(from: data)
+                    guard (200..<300).contains(httpResponse.statusCode) else {
+                        throw TranslationServiceError.serverError(httpResponse.statusCode)
+                    }
+
+                    return try Self.extractTranslation(from: data)
+                }
+
+                // 任务2：3秒硬超时监视器
+                group.addTask {
+                    try await Task.sleep(nanoseconds: timeoutDuration)
+                    throw TranslationServiceError.timeout
+                }
+
+                // 获取最先完成的任务结果
+                guard let result = try await group.next() else {
+                    throw TranslationServiceError.emptyResult
+                }
+                group.cancelAll()
+                return result
+            }
+            return translation
+        } catch is CancellationError {
+            throw TranslationServiceError.cancelled
         } catch let error as TranslationServiceError {
             throw error
         } catch {
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut {
+                throw TranslationServiceError.timeout
+            }
+            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+                throw TranslationServiceError.cancelled
+            }
             throw TranslationServiceError.requestFailed(error.localizedDescription)
         }
     }

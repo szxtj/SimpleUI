@@ -6,6 +6,9 @@ struct TranslationMainView: View {
     let onClose: () -> Void
 
     private var isZh: Bool { viewModel.isZh }
+    private var canSubmit: Bool {
+        !viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -46,22 +49,53 @@ struct TranslationMainView: View {
                 )
                 .frame(height: inputHeight)
 
-                Button(action: {
-                    viewModel.toggleInputSpeech()
-                }) {
-                    Image(
-                        systemName: viewModel.isSpeakingInput
-                            ? "speaker.wave.3.fill" : "speaker.wave.2.fill"
+                HStack(spacing: 6) {
+                    Button(action: {
+                        viewModel.toggleInputSpeech()
+                    }) {
+                        Image(
+                            systemName: viewModel.isSpeakingInput
+                                ? "speaker.wave.3.fill" : "speaker.wave.2.fill"
+                        )
+                        .foregroundColor(viewModel.isSpeakingInput ? .accentColor : .primary)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(
+                        viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     )
-                    .foregroundColor(viewModel.isSpeakingInput ? .accentColor : .primary)
+                    .help(isZh ? "朗读输入文本" : "Speak Input")
+
+                    Button(action: {
+                        viewModel.submit()
+                    }) {
+                        ZStack {
+                            if viewModel.isLoading {
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(Color.red)
+                                    .frame(width: 26, height: 26)
+                                Image(systemName: "stop.fill")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.white)
+                            } else {
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(canSubmit ? Color.accentColor : Color.secondary.opacity(0.18))
+                                    .frame(width: 26, height: 26)
+                                Image(systemName: "arrow.up")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(canSubmit ? .white : Color.secondary.opacity(0.6))
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!viewModel.isLoading && !canSubmit)
+                    .help(
+                        viewModel.isLoading
+                            ? (isZh ? "终止翻译 (Enter)" : "Stop Translation (Enter)")
+                            : (isZh ? "翻译 (Enter)" : "Translate (Enter)")
+                    )
                 }
-                .buttonStyle(.bordered)
-                .disabled(
-                    viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                )
                 .padding(.trailing, 6)
                 .padding(.bottom, 6)
-                .help(isZh ? "朗读输入文本" : "Speak Input")
             }
 
             // Translation Output Area
@@ -99,9 +133,13 @@ struct TranslationMainView: View {
             // Bottom action bar
             HStack {
                 Text(
-                    isZh
-                        ? "Enter 翻译 · Shift+Enter 换行 · Esc 退出 (⌃Space)"
-                        : "Enter: Translate · Shift+Enter: Newline · Esc: Close (⌃Space)"
+                    viewModel.isLoading
+                        ? (isZh
+                            ? "Enter 终止翻译 · Esc 退出"
+                            : "Enter: Stop · Esc: Close")
+                        : (isZh
+                            ? "Enter 翻译 · Shift+Enter 换行 · Esc 退出 (⌃Space)"
+                            : "Enter: Translate · Shift+Enter: Newline · Esc: Close (⌃Space)")
                 )
                 .font(.footnote)
                 .foregroundStyle(.secondary)

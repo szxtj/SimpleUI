@@ -112,8 +112,18 @@ final class InnerTranslatorTextView: NSTextView {
     override func keyDown(with event: NSEvent) {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
 
-        if modifiers.contains(.shift), event.keyCode == 36 {
-            insertText("\n", replacementRange: selectedRange())
+        // Shift + Enter: 在可编辑状态下插入换行符
+        if modifiers.contains(.shift), (event.keyCode == 36 || event.keyCode == 76) {
+            if isEditable {
+                insertText("\n", replacementRange: selectedRange())
+            }
+            return
+        }
+
+        // 单按 Enter（回车键或小键盘回车键，无 Command/Control 修饰键）：
+        // 无论是在就绪状态（触发翻译）还是在生成中（触发终止），均由 onSubmit 处理，避免禁用状态下系统发出嘟嘟报警音
+        if (event.keyCode == 36 || event.keyCode == 76) && !modifiers.contains(.command) && !modifiers.contains(.control) {
+            onSubmit?()
             return
         }
 

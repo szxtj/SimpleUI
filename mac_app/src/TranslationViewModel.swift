@@ -19,6 +19,7 @@ public final class TranslationViewModel: ObservableObject {
     private let service: TranslationServiceProtocol
     private let speechManager = TranslationSpeechManager()
     private var cancellables = Set<AnyCancellable>()
+    private var currentTranslationTask: Task<Void, Never>?
 
     public init(service: TranslationServiceProtocol = TranslationService()) {
         self.service = service
@@ -42,7 +43,29 @@ public final class TranslationViewModel: ObservableObject {
     }
 
     public func submit() {
-        Task {
+        if isLoading {
+            cancelTranslation()
+        } else {
+            startTranslation()
+        }
+    }
+
+    public func cancelTranslation() {
+        guard isLoading else { return }
+        currentTranslationTask?.cancel()
+        currentTranslationTask = nil
+        isLoading = false
+        stopSpeech()
+        errorMessage = isZh ? "已终止翻译。" : "Translation stopped."
+    }
+
+    public func startTranslation() {
+        let trimmedInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedInput.isEmpty else { return }
+        guard !isLoading else { return }
+
+        currentTranslationTask?.cancel()
+        currentTranslationTask = Task {
             await performTranslation()
         }
     }
@@ -50,7 +73,6 @@ public final class TranslationViewModel: ObservableObject {
     public func performTranslation() async {
         let trimmedInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedInput.isEmpty else { return }
-        guard !isLoading else { return }
 
         stopSpeech()
         isLoading = true
@@ -58,12 +80,17 @@ public final class TranslationViewModel: ObservableObject {
 
         do {
             outputText = try await service.translate(text: trimmedInput, mode: selectedMode)
+        } catch is CancellationError {
+            errorMessage = isZh ? "已终止翻译。" : "Translation stopped."
+        } catch let error as TranslationServiceError where error == .cancelled {
+            errorMessage = isZh ? "已终止翻译。" : "Translation stopped."
         } catch {
             outputText = ""
             errorMessage = Self.message(for: error)
         }
 
         isLoading = false
+        currentTranslationTask = nil
     }
 
     public func requestFocus() {
