@@ -138,19 +138,45 @@ export function escapeCurrencyDollars(text: string): string {
  * 4. 行内公式 \( ... \) 转换为 $...$
  */
 export function normalizeMathDelimiters(text: string): string {
-  // 1. 块级公式 \[ ... \]
+  // 1. 块级公式 \[ ... \] 转换为标准的 \n\n$$\n...$$\n\n
   let normalized = text.replace(
     /\\\[([\s\S]*?)\\\]/g,
     (_, math) => `\n\n$$\n${math.trim()}\n$$\n\n`
   );
 
-  // 2. 裸写 LaTeX 环境（未被 $$ 或 \[ 包裹的顶层环境）
+  // 2. 行内公式 \( ... \) 转换为 $...$
+  normalized = normalized.replace(
+    /\\\(([\s\S]*?)\\\)/g,
+    (_, math) => {
+      const trimmed = math.trim();
+      return trimmed ? `$${trimmed}$` : '';
+    }
+  );
+
+  // 3. 保护已有合法定界符包裹的公式块（$$ ... $$ 与 $ ... $）
+  // 核心防御：避免已有公式内部跨行书写的 \begin{cases}、\begin{aligned}、\begin{matrix} 等被错误当成“裸写环境”再次包裹 $$ 而撕裂公式
+  const protectedMathBlocks: string[] = [];
+  normalized = normalized.replace(
+    /(\$\$[\s\S]*?\$\$|\$[^\$\n]+\$)/g,
+    (match) => {
+      protectedMathBlocks.push(match);
+      return `__STANDALONE_PROTECTED_MATH_${protectedMathBlocks.length - 1}__`;
+    }
+  );
+
+  // 4. 裸写 LaTeX 环境（未被任何 $$ 或 $ 包裹的孤立顶级环境，自动补全 $$ 围栏）
   normalized = normalized.replace(
     STANDALONE_LATEX_ENV_REGEX,
     (_, env) => `\n\n$$\n${env.trim()}\n$$\n\n`
   );
 
-  // 3. 多行原生 $$ ... $$ 围栏换行规整
+  // 5. 还原保护的已有公式块
+  normalized = normalized.replace(
+    /__STANDALONE_PROTECTED_MATH_(\d+)__/g,
+    (_, idx) => protectedMathBlocks[parseInt(idx, 10)] ?? ''
+  );
+
+  // 6. 多行原生 $$ ... $$ 围栏换行规整
   normalized = normalized.replace(
     /\$\$([\s\S]*?)\$\$/g,
     (match, math) => {
@@ -158,15 +184,6 @@ export function normalizeMathDelimiters(text: string): string {
         return `\n\n$$\n${math.trim()}\n$$\n\n`;
       }
       return match;
-    }
-  );
-
-  // 4. 行内公式 \( ... \)
-  normalized = normalized.replace(
-    /\\\(([\s\S]*?)\\\)/g,
-    (_, math) => {
-      const trimmed = math.trim();
-      return trimmed ? `$${trimmed}$` : '';
     }
   );
 

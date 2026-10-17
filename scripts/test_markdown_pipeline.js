@@ -123,4 +123,37 @@ a &= b + c
   assert(out.includes("**加粗**"));
 });
 
+// TC-10: Multiline LaTeX environment (cases) inside \[ ... \] is intact and not split
+test("TC-10: Multiline LaTeX cases inside \\[ ... \\] is not split", () => {
+  const input = `均匀分布 \\(U[0,1]\\) 的概率密度函数为  
+\\[
+f(t)=
+\\begin{cases}
+1, & 0\\le t\\le 1,\\\\
+0, & \\text{其他}.
+\\end{cases}
+\\]`;
+  const out = preprocessMarkdown(input);
+  assert(out.includes("$U[0,1]$"));
+  // Ensure the whole formula is inside a single $$ ... $$ block
+  assert(out.includes("$$\nf(t)=\n\\begin{cases}"));
+  assert(out.includes("\\end{cases}\n$$"));
+  // Must NOT contain unrendered cases or split $$
+  assert(!out.includes("f(t)=\n$$\n\n\\begin{cases}"));
+});
+
+// TC-11: Multiline LaTeX environment (aligned) inside $$ ... $$ is not split
+test("TC-11: Multiline LaTeX aligned inside $$ ... $$ is not split", () => {
+  const input = `$$
+\\begin{aligned}
+x &= 1 \\\\
+y &= 2
+\\end{aligned}
+$$`;
+  const out = preprocessMarkdown(input);
+  assert(out.includes("$$\n\\begin{aligned}"));
+  assert(out.includes("\\end{aligned}\n$$"));
+  assert(!out.includes("$$\n\n$$\n\\begin{aligned}"));
+});
+
 console.log(`\n🎉 All ${passed} unit tests passed successfully!`);

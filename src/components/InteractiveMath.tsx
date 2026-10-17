@@ -1,7 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback, useId } from 'react';
 import { FileCode, Sigma, Check } from 'lucide-react';
 import { useI18n } from '../i18n';
-import { extractCleanMathMlForWord, extractOmmlForWord } from '../utils/selectionToMarkdown';
+import {
+  extractCleanMathMlForWord,
+  extractOmmlForWord,
+  combineMathMlsForWord,
+} from '../utils/selectionToMarkdown';
 
 interface FormulaEntry {
   id: string;
@@ -194,8 +198,8 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
         const ommls = formulaStore.getSelectedOmmls(id);
         if (mathmls.length === 0) return;
 
-        // Clean Presentation MathML XML payload (without HTML document wrapper)
-        const combinedMathMl = mathmls.join('\n\n');
+        // Clean Presentation MathML XML payload (合并为合法的单根 XML，支持 Word/WPS 解析多行公式)
+        const combinedMathMl = combineMathMlsForWord(mathmls);
         // Combined OMML XML blocks
         const combinedOmml = ommls.join('\n');
 

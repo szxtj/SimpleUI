@@ -61,6 +61,25 @@ export function extractOmmlForWord(katexEl: HTMLElement): string {
 }
 
 /**
+ * 将多个 MathML 公式合并为一个符合 W3C 标准的单根 XML 文档（利用 <mtable columnalign="left"> 多行对齐排版）。
+ * 杜绝在 Word / WPS / PPT 中粘贴多公式时因“多根节点 XML 语法解析错误”被降级显示为纯代码的缺陷。
+ */
+export function combineMathMlsForWord(mathmls: string[]): string {
+  if (mathmls.length === 0) return '';
+  if (mathmls.length === 1) return mathmls[0];
+
+  const rows = mathmls.map((mml) => {
+    const inner = mml
+      .replace(/^<math[^>]*>/i, '')
+      .replace(/<\/math>$/i, '')
+      .trim();
+    return `<mtr><mtd><mrow>${inner}</mrow></mtd></mtr>`;
+  });
+
+  return `<math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mtable columnalign="left">${rows.join('')}</mtable></math>`;
+}
+
+/**
  * 将 DOM 节点序列化为富文本 HTML（保留加粗、斜体、行内代码，并将 KaTeX 公式输出为 Word / WPS 原生 OMML 数学公式，
  * 使粘贴到 Word / WPS 时自动转换为原生公式块 Equation Block）
  */
