@@ -501,7 +501,21 @@ export function serializeDomNodesToMarkdown(
       continue;
     }
 
-    // 2. KaTeX 块级公式 (.katex-display)
+    // 2. 交互式公式块容器 (.interactive-math) 与 KaTeX 块级公式 (.katex-display)
+    if (el.classList.contains('interactive-math')) {
+      const annotation = el.querySelector('annotation[encoding="application/x-tex"]');
+      if (annotation && annotation.textContent) {
+        const isDisplay =
+          el.tagName.toLowerCase() === 'div' ||
+          el.classList.contains('katex-display') ||
+          el.querySelector('.katex-display') !== null;
+        result += isDisplay
+          ? `\n$$\n${annotation.textContent.trim()}\n$$\n\n`
+          : `$${annotation.textContent.trim()}$`;
+        continue;
+      }
+    }
+
     if (el.classList.contains('katex-display')) {
       const annotation = el.querySelector('annotation[encoding="application/x-tex"]');
       if (annotation && annotation.textContent) {
@@ -732,22 +746,22 @@ export function handleMarkdownCopyEvent(
       ? (range.commonAncestorContainer as HTMLElement)
       : range.commonAncestorContainer.parentElement;
 
-  // 情况 1：选区完全落在某个 KaTeX 公式内部 -> 直接提取该公式的 TeX 原文
-  const katexDisplay = ancestorEl?.closest('.katex-display') as HTMLElement | null;
-  if (katexDisplay && container.contains(katexDisplay)) {
-    const ann = katexDisplay.querySelector('annotation[encoding="application/x-tex"]');
+  // 情况 1：选区完全落在某个 KaTeX / InteractiveMath 公式内部 -> 直接提取该公式的 TeX 原文 (LaTeX)
+  const mathContainer = ancestorEl?.closest(
+    '.interactive-math, .katex-display, .katex'
+  ) as HTMLElement | null;
+  if (mathContainer && container.contains(mathContainer)) {
+    const ann = mathContainer.querySelector('annotation[encoding="application/x-tex"]');
     if (ann?.textContent) {
+      const isDisplay =
+        mathContainer.tagName.toLowerCase() === 'div' ||
+        mathContainer.classList.contains('katex-display') ||
+        mathContainer.querySelector('.katex-display') !== null;
       e.preventDefault();
-      e.clipboardData.setData('text/plain', `$$\n${ann.textContent.trim()}\n$$`);
-      return;
-    }
-  }
-  const katexInline = ancestorEl?.closest('.katex') as HTMLElement | null;
-  if (katexInline && container.contains(katexInline)) {
-    const ann = katexInline.querySelector('annotation[encoding="application/x-tex"]');
-    if (ann?.textContent) {
-      e.preventDefault();
-      e.clipboardData.setData('text/plain', `$${ann.textContent.trim()}$`);
+      e.clipboardData.setData(
+        'text/plain',
+        isDisplay ? `$$\n${ann.textContent.trim()}\n$$` : `$${ann.textContent.trim()}$`
+      );
       return;
     }
   }

@@ -977,7 +977,7 @@ export const SpotlightView: React.FC = () => {
               return (
                 <div key={msg.id} className="flex flex-col items-end group">
                   <div
-                    className="max-w-[85%] bg-blue-600 text-white rounded-2xl px-4 py-2.5 leading-relaxed break-words shadow-sm"
+                    className="max-w-[85%] rounded-[20px] px-3.5 py-2 bg-[#e9ebf0] text-[#1f2328] dark:bg-[#2d3037] dark:text-[#f1f3f7] border border-black/5 dark:border-white/5 shadow-sm leading-relaxed break-words"
                     style={{ fontSize: 'var(--chat-font-size, 14.5px)' }}
                   >
                     {msg.images && msg.images.length > 0 && (
@@ -989,13 +989,17 @@ export const SpotlightView: React.FC = () => {
                             alt="preview"
                             draggable={false}
                             onClick={() => setPreviewImageTarget({ images: msg.images || [], initialIndex: i })}
-                            className="max-w-[180px] max-h-[180px] rounded-lg object-cover select-none cursor-zoom-in hover:opacity-90 active:scale-[0.98] transition-all"
+                            className="max-w-[180px] max-h-[180px] rounded-xl object-cover border border-black/10 dark:border-white/10 shadow-sm select-none cursor-zoom-in hover:opacity-90 active:scale-[0.98] transition-all"
                           />
                         ))}
                       </div>
                     )}
-                    <div className="selectable-chat-content cursor-text whitespace-pre-wrap break-words">
-                      {msg.content}
+                    <div className="break-words leading-relaxed">
+                      <MarkdownRenderer
+                        content={msg.content}
+                        breaks={true}
+                        className="markdown-user text-[#1f2328] dark:text-[#f1f3f7]"
+                      />
                     </div>
                   </div>
 

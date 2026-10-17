@@ -9,6 +9,7 @@ import {
 
 interface FormulaEntry {
   id: string;
+  display: boolean;
   element: HTMLElement;
   getRawLatex: () => string;
   getCleanMathMl: () => string;
@@ -98,6 +99,19 @@ class FormulaSelectionStore {
     const ids = this.selectedIds.size > 0 ? Array.from(this.selectedIds) : fallbackId ? [fallbackId] : [];
     return ids.map((id) => this.entries.get(id)?.getRawLatex() || '').filter(Boolean);
   }
+
+  public getSelectedFormattedLatexs(fallbackId?: string): string[] {
+    const ids = this.selectedIds.size > 0 ? Array.from(this.selectedIds) : fallbackId ? [fallbackId] : [];
+    return ids
+      .map((id) => {
+        const entry = this.entries.get(id);
+        if (!entry) return '';
+        const raw = entry.getRawLatex();
+        if (!raw) return '';
+        return entry.display ? `$$\n${raw}\n$$` : `$${raw}$`;
+      })
+      .filter(Boolean);
+  }
 }
 
 const formulaStore = new FormulaSelectionStore();
@@ -147,6 +161,7 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
       if (!containerRef.current) return;
       formulaStore.register(id, {
         id,
+        display,
         element: containerRef.current as HTMLElement,
         getRawLatex,
         getCleanMathMl,
@@ -163,7 +178,7 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
         formulaStore.unregister(id);
         unsubscribe();
       };
-    }, [id, getRawLatex, getCleanMathMl, getOmml]);
+    }, [id, display, getRawLatex, getCleanMathMl, getOmml]);
 
     // Check if intersected by native document text selection
     useEffect(() => {
@@ -252,17 +267,31 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
       async (e?: React.MouseEvent) => {
         if (e) e.stopPropagation();
 
-        const latexs = formulaStore.getSelectedLatexs(id);
-        if (latexs.length === 0) return;
+        const formattedLatexs = formulaStore.getSelectedFormattedLatexs(id);
+        if (formattedLatexs.length === 0) return;
 
-        const combinedLatex = latexs
-          .map((raw) => (display ? `$$\n${raw}\n$$` : `$${raw}$`))
-          .join('\n\n');
+        const combinedLatex = formattedLatexs.join('\n\n');
 
+        // 1. Send to native macOS App bridge if available
+        let bridged = false;
         try {
-          await navigator.clipboard.writeText(combinedLatex);
-        } catch (err) {
-          console.error('Failed to copy LaTeX:', err);
+          if ((window as any).webkit?.messageHandlers?.copyRichData) {
+            (window as any).webkit.messageHandlers.copyRichData.postMessage({
+              plainText: combinedLatex,
+            });
+            bridged = true;
+          }
+        } catch {
+          bridged = false;
+        }
+
+        // 2. Web Clipboard API fallback
+        if (!bridged) {
+          try {
+            await navigator.clipboard.writeText(combinedLatex);
+          } catch (err) {
+            console.error('Failed to copy LaTeX:', err);
+          }
         }
 
         setCopiedType('latex');
@@ -271,7 +300,7 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
           setCopiedType(null);
         }, 2000);
       },
-      [display, id]
+      [id]
     );
 
     // Global listener: Click outside to deselect, or Cmd+C / Escape
@@ -290,13 +319,25 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
           return;
         }
 
-        // Cmd + C when formula(s) are selected and no text is selected
-        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
+        // Cmd + Shift + C: 快捷键复制 Word 原生公式块 (MathML / OMML)
+        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'c') {
           const sel = window.getSelection();
           if (formulaStore.isToolbarActive(id) && (!sel || sel.isCollapsed)) {
             e.preventDefault();
             e.stopPropagation();
             handleCopyWord();
+            return;
+          }
+        }
+
+        // Cmd + C: 默认快捷键复制 LaTeX 原文源码 ($...$ 或 $$...$$)
+        if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'c') {
+          const sel = window.getSelection();
+          if (formulaStore.isToolbarActive(id) && (!sel || sel.isCollapsed)) {
+            e.preventDefault();
+            e.stopPropagation();
+            handleCopyLatex();
+            return;
           }
         }
       };
@@ -308,7 +349,7 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
         document.removeEventListener('mousedown', handleGlobalMouseDown);
         window.removeEventListener('keydown', handleGlobalKeyDown);
       };
-    }, [id, handleCopyWord]);
+    }, [id, handleCopyLatex, handleCopyWord]);
 
     // Cleanup timeout on unmount
     useEffect(() => {
@@ -342,21 +383,21 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
         onClick={(e) => e.stopPropagation()}
         className="flex items-center gap-1 select-none"
       >
-        {/* Copy LaTeX button */}
+        {/* Copy LaTeX button (Default primary action, Cmd+C) */}
         <button
           type="button"
           onClick={handleCopyLatex}
           title={
             isEn
-              ? `Copy ${selectedCount > 1 ? selectedCount + ' ' : ''}LaTeX source`
-              : `复制 ${selectedCount > 1 ? selectedCount + ' 个 ' : ''}LaTeX 原文`
+              ? `Copy ${selectedCount > 1 ? selectedCount + ' ' : ''}LaTeX source (⌘C)`
+              : `复制 ${selectedCount > 1 ? selectedCount + ' 个 ' : ''}LaTeX 原文 (⌘C)`
           }
           className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
         >
           {copiedType === 'latex' ? (
             <>
-              <Check className="w-3.5 h-3.5 text-emerald-500" />
-              <span className="text-emerald-600 dark:text-emerald-400 font-semibold text-[10px]">
+              <Check className="w-3.5 h-3.5 text-zinc-700 dark:text-zinc-200" />
+              <span className="text-zinc-700 dark:text-zinc-200 font-semibold text-[10px]">
                 {isEn ? 'Copied' : '已复制'}
               </span>
             </>
@@ -378,27 +419,27 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
 
         <span className="w-px h-3 bg-zinc-200 dark:bg-zinc-700 mx-0.5" />
 
-        {/* Copy Word Equation block button */}
+        {/* Copy Word Equation block button (Secondary action, Shift+Cmd+C) */}
         <button
           type="button"
           onClick={handleCopyWord}
           title={
             isEn
-              ? `Copy ${selectedCount > 1 ? selectedCount + ' ' : ''}Word Equation Block(s)`
-              : `复制 ${selectedCount > 1 ? selectedCount + ' 个 ' : ''}Word 原生公式块（直接在 Word / PPT 中粘贴）`
+              ? `Copy ${selectedCount > 1 ? selectedCount + ' ' : ''}Word Equation Block(s) (⇧⌘C)`
+              : `复制 ${selectedCount > 1 ? selectedCount + ' 个 ' : ''}Word 原生公式块 (⇧⌘C)`
           }
           className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950/50 transition-colors cursor-pointer"
         >
           {copiedType === 'word' ? (
             <>
-              <Check className="w-3.5 h-3.5 text-emerald-500" />
-              <span className="text-emerald-600 dark:text-emerald-400 font-semibold text-[10px]">
+              <Check className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+              <span className="text-blue-600 dark:text-blue-400 font-semibold text-[10px]">
                 {isEn ? 'Word Copied' : '已复制公式块'}
               </span>
             </>
           ) : (
             <>
-              <Sigma className="w-3.5 h-3.5 text-blue-500" />
+              <Sigma className="w-3.5 h-3.5 text-blue-500 dark:text-blue-400" />
               <span>
                 {isEn
                   ? selectedCount > 1

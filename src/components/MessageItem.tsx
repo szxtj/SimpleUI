@@ -67,10 +67,14 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
               </div>
             )}
             <div
-              className="selectable-chat-content cursor-text whitespace-pre-wrap break-words leading-relaxed"
+              className="break-words leading-relaxed"
               style={{ fontSize: 'var(--chat-font-size, 15px)' }}
             >
-              {message.content}
+              <MarkdownRenderer
+                content={message.content}
+                breaks={true}
+                className="markdown-user text-[#1f2328] dark:text-[#f1f3f7]"
+              />
             </div>
           </div>
 

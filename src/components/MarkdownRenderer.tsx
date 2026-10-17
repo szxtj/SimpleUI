@@ -4,6 +4,7 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkCjkFriendly from 'remark-cjk-friendly';
+import remarkBreaks from 'remark-breaks';
 import { Check, Copy, Table as TableIcon, FileText } from 'lucide-react';
 import { useI18n } from '../i18n';
 
@@ -21,6 +22,7 @@ import { ImagePreviewModal } from './ImagePreviewModal';
 interface MarkdownRendererProps {
   content: string;
   className?: string;
+  breaks?: boolean;
 }
 
 interface CodeBlockProps {
@@ -263,6 +265,7 @@ TableBlock.displayName = 'TableBlock';
 // Hoisted static plugin & component configurations so ReactMarkdown never unmounts/remounts
 // <CodeBlock>, <TableBlock>, or <MermaidBlock> DOM nodes across streaming chunks or parent re-renders.
 const REMARK_PLUGINS: any[] = [remarkMath, remarkGfm, remarkCjkFriendly];
+const BREAKS_REMARK_PLUGINS: any[] = [remarkMath, remarkGfm, remarkCjkFriendly, remarkBreaks];
 const REHYPE_PLUGINS: any[] = [[rehypeKatex, { throwOnError: false, strict: false }]];
 
 const InsideDisplayMathContext = React.createContext(false);
@@ -388,10 +391,12 @@ const MARKDOWN_COMPONENTS: Components = {
 };
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = React.memo(
-  ({ content, className }) => {
+  ({ content, className, breaks = false }) => {
     const normalizedContent = useMemo(() => {
       return preprocessMarkdown(content);
     }, [content]);
+
+    const remarkPlugins = breaks ? BREAKS_REMARK_PLUGINS : REMARK_PLUGINS;
 
     return (
       <div
@@ -401,7 +406,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = React.memo(
         }`}
       >
         <ReactMarkdown
-          remarkPlugins={REMARK_PLUGINS}
+          remarkPlugins={remarkPlugins}
           rehypePlugins={REHYPE_PLUGINS}
           components={MARKDOWN_COMPONENTS}
         >

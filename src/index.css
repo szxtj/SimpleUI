@@ -158,6 +158,39 @@ body {
   padding: 0.15rem 0;
 }
 
+/* Compact Markdown styling in user chat bubble */
+.markdown-user {
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit !important;
+}
+
+.dark .markdown-user {
+  color: inherit !important;
+}
+
+.markdown-user p {
+  margin-top: 0;
+  margin-bottom: 0.35rem;
+}
+
+.markdown-user p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-user > *:first-child {
+  margin-top: 0 !important;
+}
+
+.markdown-user > *:last-child {
+  margin-bottom: 0 !important;
+}
+
+.markdown-user .katex-display {
+  margin: 0.4em 0 !important;
+  padding: 0.1rem 0;
+}
+
 /* react-markdown 会把代码块包在一层 <pre> 里，而代码块本身已由 CodeBlock 组件提供
    边框/底色/圆角/内边距——这层 <pre> 若再各自加框就会出现"双框"。故全部置空。 */
 .markdown-body pre {
