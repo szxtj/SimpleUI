@@ -247,9 +247,9 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
                 config.excludesCurrentProcessAudio = true
                 config.sampleRate = 16000
                 config.channelCount = 1
-                config.width = 100
-                config.height = 100
-                config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+                config.width = 2
+                config.height = 2
+                config.minimumFrameInterval = CMTime(value: 60, timescale: 1)
 
                 let stream = SCStream(filter: filter, configuration: config, delegate: nil)
                 try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)

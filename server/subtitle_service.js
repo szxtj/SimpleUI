@@ -103,13 +103,13 @@ const DEFAULT_CONFIG = {
   autoStart: false, // 严格按需启动：仅在打开字幕窗口时加载模型
   sampleRate: 16000,
   // R2T2 流式块大小（ms）
-  asrChunkMs: 480,
+  asrChunkMs: 640,
   // 话语边界：连续静音满该值 → 补 300ms 静音关闭 live 请求，收取 done 终稿
   utteranceEndSilenceMs: 640,
-  // 单话语最长时长：超时强制切分
-  utteranceMaxMs: 45000,
+  // 单话语最长时长上限（防止长视频背景音下会话无限累积导致 O(t) 预填充膨胀）
+  utteranceMaxMs: 12000,
   // done 事件兜底超时：关闭请求体后该时限内未收到终稿，则按已收到的增量文本定稿
-  utteranceDoneTimeoutMs: 5000,
+  utteranceDoneTimeoutMs: 4000,
   sourceLang: 'en',
   targetLang: 'zh',
 };
@@ -316,7 +316,7 @@ function stripThinkTags(text) {
  * 因此无需任何花哨频带门控或 ONNX 模型，只要系统有声音输出（rms >= 0.0005）即直接送入流式 ASR 模型！
  */
 class SystemAudioDetector {
-  detectVoice(pcmBuffer) {
+  detectVoice(pcmBuffer, activeSession = false) {
     const sampleCount = Math.floor(pcmBuffer.length / 2);
     if (sampleCount === 0) return { isSpeech: false, rms: 0, voiceScore: 0 };
 
@@ -327,7 +327,9 @@ class SystemAudioDetector {
     }
 
     const rms = Math.sqrt(sumSq / sampleCount);
-    const isSpeech = rms >= 0.0005;
+    // 未建会话时极低门限 (0.0008, -62dBFS) 立即触发录入；已建会话中将微弱视频底噪 (<0.002, -54dBFS) 视为句间停顿以便自然收尾重置上下文
+    const threshold = activeSession ? 0.002 : 0.0008;
+    const isSpeech = rms >= threshold;
     return { isSpeech, rms, voiceScore: isSpeech ? Math.min(1, rms * 20) : 0 };
   }
 }
@@ -396,9 +398,10 @@ class SubtitleAsrEngine {
           task: 'asr',
           mode: 'streaming',
           session_options: {
-            'confucius4_r2t2.chunk_size_ms': '480',
+            'confucius4_r2t2.chunk_size_ms': '640',
             'confucius4_r2t2.unfixed_chunk_num': '0',
             'confucius4_r2t2.unfixed_token_num': '1',
+            'confucius4_r2t2.rollback_punctuation': 'true',
             'confucius4_r2t2.max_tokens': '6',
           },
         },
@@ -811,7 +814,7 @@ class SubtitleService {
       if (fs.existsSync(CONFIG_FILE)) {
         const raw = fs.readFileSync(CONFIG_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
-        this.config = { ...DEFAULT_CONFIG, ...parsed, autoStart: false };
+        this.config = { ...DEFAULT_CONFIG, ...parsed, autoStart: false, utteranceMaxMs: Math.min(Number(parsed.utteranceMaxMs) || 12000, 12000) };
       }
     } catch (e) {
       console.warn('[Subtitles] 读取配置文件失败，使用默认配置:', e.message);
@@ -1595,11 +1598,15 @@ class SubtitleService {
           '1249',
           '-ngl',
           '99',
+          '-fa',
+          'on',
+          '--cache-reuse',
+          '64',
           '-np',
           '1',
           '--no-warmup',
           '-c',
-          '2048',
+          '512',
           '--jinja',
           '--chat-template-kwargs',
           '{"enable_thinking":false}',
@@ -1885,6 +1892,30 @@ class SubtitleService {
           (this.asrSession.committedCharCount || 0) + committedClause.length + 1;
       }
       this.commitSentence(committedClause, cutReason);
+
+      // 消除随时间累加的 O(t) 计算量膨胀：当完整句子/意群已切出且当前会话已持续 >= 10s、currentDraft 为空时，
+      // 立即无损轮转新会话以清空 audiocpp 内部累积的音频帧与 Prefix KV 重算开销
+      if (
+        this.asrSession &&
+        this.asrSession.state === 'open' &&
+        !this.currentDraft.trim() &&
+        Date.now() - this.utteranceStartedAt >= 4500
+      ) {
+        this.rotateSessionCleanly();
+        break;
+      }
+    }
+  }
+
+  /** 在完整句/子句定稿边界（currentDraft 为空）处无损轮转会话，彻底重置 audiocpp 随时间增长的音频与 Prefix 上下文 */
+  rotateSessionCleanly() {
+    const oldSession = this.asrSession;
+    if (!oldSession) return;
+    oldSession.abort();
+    this.asrSession = null;
+    this.currentDraft = '';
+    if (this.isRunning && this.modelsLoaded && this.asrEngine.isAlive() && this.asrEngine.ready) {
+      this.openUtterance();
     }
   }
 
@@ -2039,7 +2070,7 @@ class SubtitleService {
     if (pcmBuffer.length === 0) return { ok: true, committed: false };
 
     const durationMs = Math.round((pcmBuffer.length / 2 / 16000) * 1000);
-    const vadRes = this.vad.detectVoice(pcmBuffer);
+    const vadRes = this.vad.detectVoice(pcmBuffer, Boolean(this.asrSession));
 
     if (vadRes.isSpeech) {
       this.silenceMs = 0;
@@ -2071,12 +2102,20 @@ class SubtitleService {
     // 喂入 R2T2 流式会话
     session.write(pcmBuffer);
 
-    // 话语收尾判定：当说话人出现真实停顿（>= 640ms 静音）或单次连接满 45s 时，冲刷句尾词并开启下一轮
+    // 话语收尾判定：
+    //   1. 自然停顿（>= 640ms 静音）
+    //   2. 会话满 10s 且草稿刚好在句末标点（. ? ! …）结束且当前处于微停顿（>= 160ms）：在句界平滑收尾重置上下文，防止 O(t) 计算累积
+    //   3. 单次连接满 18s 兜底收尾重置
     const utteranceMs = Date.now() - this.utteranceStartedAt;
     const endBySilence = this.silenceMs >= (this.config.utteranceEndSilenceMs || 640) && this.speechMs > 0;
-    const endByLength = utteranceMs >= (this.config.utteranceMaxMs || 45000);
-    if (endBySilence || endByLength) {
-      this.closeUtterance(endByLength ? 'length' : 'silence');
+    const draftTrimmed = (this.currentDraft || '').trim();
+    const endBySentenceBoundary =
+      utteranceMs >= 4500 &&
+      this.silenceMs >= 160 &&
+      (!draftTrimmed || /[.?!…]["')\]}]*$/.test(draftTrimmed));
+    const endByLength = utteranceMs >= (this.config.utteranceMaxMs || 12000);
+    if (endBySilence || endBySentenceBoundary || endByLength) {
+      this.closeUtterance(endByLength ? 'length' : endBySentenceBoundary ? 'sentence-reset' : 'silence');
     }
 
     if (isFinal) {
