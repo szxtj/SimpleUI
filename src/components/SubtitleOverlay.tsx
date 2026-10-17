@@ -1,5 +1,15 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { Play, Pause, X, GripHorizontal, ArrowDownCircle, Trash2, Check, Loader2, FolderOpen } from 'lucide-react';
+import React, { useEffect, useLayoutEffect, useState, useRef, useMemo } from 'react';
+import {
+  Play,
+  Pause,
+  X,
+  Trash2,
+  Check,
+  Loader2,
+  FolderOpen,
+  Globe,
+  ChevronDown,
+} from 'lucide-react';
 import { useI18n } from '../i18n';
 import { SubtitleDownloadState } from '../types/chat';
 
@@ -9,6 +19,41 @@ interface SubtitleRecord {
   zh: string;
   status?: 'translating' | 'finalized';
 }
+
+type FontSizePreset = 'small' | 'medium' | 'large';
+
+// 顶部控制栏 38px + 内容区上下内边距 22px = 60px；开启原文时双轨间距 8px -> 68px
+const CHROME_HEIGHT_BOTH = 68;
+const CHROME_HEIGHT_ZH_ONLY = 60;
+
+const FONT_CONFIG: Record<
+  FontSizePreset,
+  {
+    enFontSize: number;
+    enLineHeight: number;
+    zhFontSize: number;
+    zhLineHeight: number;
+  }
+> = {
+  small: {
+    enFontSize: 15,
+    enLineHeight: 22,
+    zhFontSize: 16,
+    zhLineHeight: 24,
+  },
+  medium: {
+    enFontSize: 17.5,
+    enLineHeight: 26,
+    zhFontSize: 18.5,
+    zhLineHeight: 28,
+  },
+  large: {
+    enFontSize: 20,
+    enLineHeight: 30,
+    zhFontSize: 21,
+    zhLineHeight: 32,
+  },
+};
 
 export const SubtitleOverlay: React.FC = () => {
   const { t } = useI18n();
@@ -21,26 +66,89 @@ export const SubtitleOverlay: React.FC = () => {
   const [loadingStage, setLoadingStage] = useState(0);
   const [downloadState, setDownloadState] = useState<SubtitleDownloadState | null>(null);
 
-  // 上方历史字幕记录列表（完整可自由滚动阅览，包含每一句的原句与下方对应翻译）
+  // 工具栏状态：是否显示英文原文、字体大小档位
+  const [showOriginal, setShowOriginal] = useState<boolean>(true);
+  const [fontSize, setFontSize] = useState<FontSizePreset>('medium');
+  const [showFontMenu, setShowFontMenu] = useState<boolean>(false);
+
+  // 严格一致的行数档位 N（2 表示 2+2 行，3 表示 3+3 行，4 表示 4+4 行...）
+  const [linePairs, setLinePairs] = useState<number>(2);
+
+  // 当前会话已定稿句子列表（每次新开窗口均自动清空）
   const [history, setHistory] = useState<SubtitleRecord[]>([]);
 
-  // 下方正在实时流式吐字的当前句（160ms 极低延迟增量上屏）
-  const [draft, setDraft] = useState<{ stable: string; pending: string }>({ stable: '', pending: '' });
+  // 正在实时流式吐字的当前句尾部
+  const [draft, setDraft] = useState<{ stable: string; pending: string }>({
+    stable: '',
+    pending: '',
+  });
 
-  // 滚动容器与自由滚动/吸底状态控制
-  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
-  const isUserScrolledUpRef = useRef<boolean>(false);
-  const [showScrollBottomBtn, setShowScrollBottomBtn] = useState(false);
+  const enStreamRef = useRef<HTMLDivElement | null>(null);
+  const zhStreamRef = useRef<HTMLDivElement | null>(null);
   const prevAllReadyRef = useRef<boolean>(true);
 
-  // 通知原生端面板已就绪
+  const fontCfg = FONT_CONFIG[fontSize];
+  const chromeHeight = showOriginal ? CHROME_HEIGHT_BOTH : CHROME_HEIGHT_ZH_ONLY;
+  const pairHeight = showOriginal
+    ? fontCfg.enLineHeight + fontCfg.zhLineHeight
+    : fontCfg.zhLineHeight;
+
+  // 注册原生面板回调：新开字幕窗口时立即清空旧历史，拖拽改变档位时同步 N+N 行数
   useEffect(() => {
+    (window as any).onSubtitleOverlayShown = (initialPairs?: number) => {
+      setHistory([]);
+      setDraft({ stable: '', pending: '' });
+      if (typeof initialPairs === 'number' && initialPairs >= 2) {
+        setLinePairs(initialPairs);
+      } else {
+        setLinePairs(2);
+      }
+    };
+
+    (window as any).onSubtitleLinePairsChanged = (nextPairs: number) => {
+      if (typeof nextPairs === 'number' && nextPairs >= 2) {
+        setLinePairs(nextPairs);
+      }
+    };
+
     try {
       (window as any).webkit?.messageHandlers?.subtitleOverlay?.postMessage({ action: 'ready' });
     } catch {}
+
+    return () => {
+      delete (window as any).onSubtitleOverlayShown;
+      delete (window as any).onSubtitleLinePairsChanged;
+    };
   }, []);
 
-  // 当模型下载刚刚完成（allReady 从 false 变为 true）时，自动启动加载三级模型
+  // 当切换字体大小、开关原文或模型加载完成进入字幕态时，通知原生端按当前档位 N (2+2, 3+3, 4+4) 自适应调节窗体高度
+  useEffect(() => {
+    if (!allReady || !modelsLoaded || isLoading) return;
+    try {
+      (window as any).webkit?.messageHandlers?.subtitleOverlay?.postMessage({
+        action: 'syncLayoutMetrics',
+        chromeHeight,
+        pairHeight,
+        linePairs,
+      });
+    } catch {}
+  }, [showOriginal, fontSize, allReady, modelsLoaded, isLoading, chromeHeight, pairHeight]);
+
+  // 窗口宽度变化时保持双轨自动滚到底部最新行
+  useEffect(() => {
+    const handleResize = () => {
+      if (enStreamRef.current) {
+        enStreamRef.current.scrollTop = enStreamRef.current.scrollHeight;
+      }
+      if (zhStreamRef.current) {
+        zhStreamRef.current.scrollTop = zhStreamRef.current.scrollHeight;
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // 当模型下载刚刚完成（allReady 从 false 变为 true）时，自动启动加载两级模型
   useEffect(() => {
     if (!prevAllReadyRef.current && allReady && !modelsLoaded && !isLoading) {
       fetch('/api/subtitles/start', { method: 'POST' }).catch(() => {});
@@ -48,7 +156,7 @@ export const SubtitleOverlay: React.FC = () => {
     prevAllReadyRef.current = allReady;
   }, [allReady, modelsLoaded, isLoading]);
 
-  // 当三个模型全部加载完毕且处于运行状态时，自动通知原生端启动或停止 ScreenCaptureKit 音频内录
+  // 当两个模型全部加载完毕且处于运行状态时，自动通知原生端启动或停止 ScreenCaptureKit 音频内录
   useEffect(() => {
     try {
       if (modelsLoaded && isRunning && !isPaused) {
@@ -63,12 +171,40 @@ export const SubtitleOverlay: React.FC = () => {
     } catch {}
   }, [modelsLoaded, isRunning, isPaused]);
 
-  // 监听并保持自动吸底滚动（用户未手动上滚查阅历史时，新句子上推或流式吐字自动平滑吸底）
-  useEffect(() => {
-    if (!isUserScrolledUpRef.current && scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+  // 拼接连续英文流（已定稿句子 + 正在说的实时尾部无缝处于同一段落，commit 瞬间 0 跳变）
+  const continuousEnText = useMemo(() => {
+    const committedPart = history
+      .slice(-60)
+      .map((item) => item.en.trim())
+      .filter(Boolean)
+      .join(' ');
+    const draftPart = [draft.stable, draft.pending].filter(Boolean).join(' ').trim();
+    if (committedPart && draftPart) return `${committedPart} ${draftPart}`;
+    return committedPart || draftPart;
+  }, [history, draft.stable, draft.pending]);
+
+  // 拼接连续中文流（按完整子句/句子以前句为上文参考翻译后依次往后堆叠，绝不闪烁或输出英文）
+  const continuousZhText = useMemo(() => {
+    return history
+      .slice(-60)
+      .filter((item) => Boolean(item.zh && item.zh.trim()))
+      .map((item) => item.zh.trim())
+      .join('');
+  }, [history]);
+
+  // 英文流更新或行数档位变化时滚至最新 N 行
+  useLayoutEffect(() => {
+    if (enStreamRef.current) {
+      enStreamRef.current.scrollTop = enStreamRef.current.scrollHeight;
     }
-  }, [history, draft]);
+  }, [continuousEnText, fontSize, showOriginal, linePairs]);
+
+  // 中文流追加新译文或行数档位变化时滚至最新 N 行
+  useLayoutEffect(() => {
+    if (zhStreamRef.current) {
+      zhStreamRef.current.scrollTop = zhStreamRef.current.scrollHeight;
+    }
+  }, [continuousZhText, fontSize, showOriginal, linePairs]);
 
   // 连接 SSE 服务端实时数据流
   useEffect(() => {
@@ -92,7 +228,9 @@ export const SubtitleOverlay: React.FC = () => {
             setDownloadState(data.downloadState);
           }
 
-          if (data.recent && Array.isArray(data.recent) && data.recent.length > 0) {
+          if (data.historyCount === 0) {
+            setHistory([]);
+          } else if (data.recent && Array.isArray(data.recent) && data.recent.length > 0) {
             setHistory((prev) =>
               prev.length === 0
                 ? data.recent.map((r: any, idx: number) => ({
@@ -107,7 +245,13 @@ export const SubtitleOverlay: React.FC = () => {
         } catch {}
       });
 
-      // 底部实时流式增量吐字
+      // 会话重置/新开窗口清空事件
+      es.addEventListener('clear', () => {
+        setHistory([]);
+        setDraft({ stable: '', pending: '' });
+      });
+
+      // 实时流式增量吐字
       es.addEventListener('draft', (e: MessageEvent) => {
         try {
           const data = JSON.parse(e.data);
@@ -118,7 +262,7 @@ export const SubtitleOverlay: React.FC = () => {
         } catch {}
       });
 
-      // 句末或意群边界触发：第 0ms 乐观上推原句至上方，下方立即清空继续吐新词
+      // 句读/停止符触发：原句无感汇入 history
       es.addEventListener('commit', (e: MessageEvent) => {
         try {
           const data = JSON.parse(e.data);
@@ -137,7 +281,7 @@ export const SubtitleOverlay: React.FC = () => {
         } catch {}
       });
 
-      // 极速翻译完成回填：按 id 将中文译文填入刚刚推上去的原句下方
+      // 上下文参考翻译完成回填：将中文直接往后追加到连续流末尾
       const handleTranslated = (e: MessageEvent) => {
         try {
           const data = JSON.parse(e.data);
@@ -149,7 +293,7 @@ export const SubtitleOverlay: React.FC = () => {
               next[idx] = {
                 ...next[idx],
                 en: data.source_text,
-                zh: data.target_text || data.source_text,
+                zh: data.target_text || '',
                 status: 'finalized',
               };
               return next;
@@ -159,7 +303,7 @@ export const SubtitleOverlay: React.FC = () => {
               {
                 id: data.id || `sub_${Date.now()}`,
                 en: data.source_text,
-                zh: data.target_text || data.source_text,
+                zh: data.target_text || '',
                 status: 'finalized',
               },
             ];
@@ -184,25 +328,12 @@ export const SubtitleOverlay: React.FC = () => {
     };
   }, []);
 
-  // 容器滚动监听：判断用户是否往上滚轮自由查阅历史记录
-  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 35;
-    isUserScrolledUpRef.current = !isAtBottom;
-    setShowScrollBottomBtn(!isAtBottom);
-  };
-
-  const scrollToBottom = () => {
-    if (scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTo({ top: scrollContainerRef.current.scrollHeight, behavior: 'smooth' });
-      isUserScrolledUpRef.current = false;
-      setShowScrollBottomBtn(false);
-    }
-  };
-
   // 窗口位置拖动
   const handleMouseDownOnHeader = (e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest('button')) return;
+    if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('[data-no-drag]')) {
+      return;
+    }
+    setShowFontMenu(false);
     e.preventDefault();
     let lastX = e.screenX;
     let lastY = e.screenY;
@@ -230,12 +361,18 @@ export const SubtitleOverlay: React.FC = () => {
     window.addEventListener('mouseup', handleMouseUp);
   };
 
-  // 窗口右下角尺寸拉伸
+  // 窗口右下角尺寸拉伸（宽度平滑缩放，高度按 2+2、3+3、4+4... 行数档位自动吸附）
   const handleMouseDownOnResize = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     let lastX = e.screenX;
     let lastY = e.screenY;
+
+    try {
+      (window as any).webkit?.messageHandlers?.subtitleOverlay?.postMessage({
+        action: 'resizeStart',
+      });
+    } catch {}
 
     const handleMouseMove = (moveEvent: MouseEvent) => {
       const dw = moveEvent.screenX - lastX;
@@ -260,8 +397,10 @@ export const SubtitleOverlay: React.FC = () => {
     window.addEventListener('mouseup', handleMouseUp);
   };
 
-  // 关闭悬浮窗（原生端将同时发送 stop 卸载全部三个模型）
+  // 关闭悬浮窗（原生端将同时发送 stop 卸载全部三个模型并清空历史）
   const handleClose = () => {
+    setHistory([]);
+    setDraft({ stable: '', pending: '' });
     try {
       (window as any).webkit?.messageHandlers?.subtitleOverlay?.postMessage({ action: 'close' });
     } catch {
@@ -279,7 +418,7 @@ export const SubtitleOverlay: React.FC = () => {
     } catch {}
   };
 
-  // 窗口内切换暂停/继续监听状态（不卸载模型，仅暂停内录）
+  // 窗口内切换暂停/继续监听状态
   const toggleListening = async () => {
     const endpoint = isRunning ? 'pause' : 'resume';
     try {
@@ -314,59 +453,147 @@ export const SubtitleOverlay: React.FC = () => {
     } catch {}
   };
 
-  const readyDiskCount = Math.max(0, 3 - missingModels.length);
+  const readyDiskCount = Math.max(0, 2 - missingModels.length);
   const showLoadingScreen = allReady && (!modelsLoaded || isLoading);
-  const activeStepDisplay = Math.min(3, loadingStage + 1);
-  const progressPercent = modelsLoaded ? 100 : Math.min(92, Math.max(15, loadingStage * 33 + 22));
+  const activeStepDisplay = Math.min(2, loadingStage + 1);
+  const progressPercent = modelsLoaded ? 100 : Math.min(92, Math.max(20, loadingStage * 45 + 30));
 
   const stages = [
-    { key: 'vad', label: t('subtitleLoadingStageVad') },
     { key: 'asr', label: t('subtitleLoadingStageAsr') },
     { key: 'trans', label: t('subtitleLoadingStageTrans') },
   ];
 
+  const fontSizeLabel =
+    fontSize === 'small'
+      ? t('subtitleFontSmall')
+      : fontSize === 'large'
+      ? t('subtitleFontLarge')
+      : t('subtitleFontMedium');
+
+  const hasAnyContent = Boolean(continuousEnText || continuousZhText);
+
   return (
-    <div className="w-full h-full flex flex-col select-none bg-transparent font-sans antialiased box-border">
-      <div className="relative w-full h-full rounded-[20px] flex flex-col bg-[#1b1c21]/95 text-white overflow-hidden">
-        {/* 顶部状态栏与拖动把手 */}
+    <div
+      className="w-full h-full flex flex-col select-none bg-transparent font-sans antialiased box-border"
+      onClick={() => {
+        if (showFontMenu) setShowFontMenu(false);
+      }}
+    >
+      <div className="relative w-full h-full rounded-[16px] flex flex-col bg-[#222327]/95 text-white overflow-hidden border border-white/[0.08]">
+        {/* 顶部控制栏（固定 38px 高度） */}
         <div
           onMouseDown={handleMouseDownOnHeader}
-          className="flex items-center justify-between px-4 py-2 border-b border-white/10 text-xs cursor-move select-none shrink-0 bg-white/[0.02]"
+          className="h-[38px] flex items-center justify-between px-4 border-b border-white/[0.08] text-[12px] cursor-move select-none shrink-0"
         >
-          <div className="flex items-center gap-2 text-neutral-400">
-            <GripHorizontal className="w-3.5 h-3.5 opacity-50" />
-            <div className="flex items-center gap-1.5">
+          {/* 左侧：翻译目标语言 / 关闭原文 / 字体大小 */}
+          <div className="flex items-center gap-4 text-neutral-200">
+            <div className="flex items-center gap-1.5 font-medium text-neutral-100">
+              <Globe className="w-3.5 h-3.5 text-neutral-300" />
+              <span>{t('subtitleTranslateToZh')}</span>
+              <ChevronDown className="w-3 h-3 text-neutral-400" />
               <span
-                className={`w-2 h-2 rounded-full ${
+                title={
+                  !allReady
+                    ? `${t('subtitlePreparingModels')} (${readyDiskCount}/2)`
+                    : showLoadingScreen
+                    ? `${t('subtitleLoadingModelsTitle')} (${activeStepDisplay}/2)`
+                    : isRunning
+                    ? t('subtitleRunningTitle')
+                    : t('subtitlePaused')
+                }
+                className={`w-1.5 h-1.5 rounded-full ml-0.5 ${
                   !allReady
                     ? 'bg-amber-400 animate-pulse'
                     : showLoadingScreen
                     ? 'bg-cyan-400 animate-pulse'
                     : isRunning
-                    ? 'bg-emerald-400 animate-pulse'
+                    ? 'bg-emerald-400'
                     : 'bg-neutral-500'
                 }`}
               />
-              <span className="text-[11px] font-medium tracking-wide text-neutral-300">
-                {!allReady
-                  ? downloadState?.active
-                    ? `${t('subtitleStatusDownloading')} (${downloadState.progressPercent.toFixed(1)}%)`
-                    : `${t('subtitlePreparingModels')} (${readyDiskCount}/3)`
-                  : showLoadingScreen
-                  ? `${t('subtitleLoadingModelsTitle')} (${activeStepDisplay}/3)`
-                  : isRunning
-                  ? t('subtitleRunningTitle')
-                  : t('subtitlePaused')}
+            </div>
+
+            {/* 关闭原文 / 开启原文 开关 */}
+            <button
+              type="button"
+              onClick={() => setShowOriginal((prev) => !prev)}
+              className="flex items-center gap-1.5 px-1.5 py-0.5 rounded hover:bg-white/10 text-neutral-200 hover:text-white transition cursor-pointer"
+            >
+              <span className="relative inline-flex items-center justify-center px-1 py-[1px] text-[9px] font-bold leading-none rounded-[3px] border border-neutral-300/80 text-neutral-200">
+                cc
+                <span
+                  className={`absolute -bottom-0.5 -right-0.5 w-1.5 h-1.5 rounded-full border border-[#222327] ${
+                    showOriginal ? 'bg-emerald-400' : 'bg-neutral-500'
+                  }`}
+                />
               </span>
+              <span>{showOriginal ? t('subtitleHideOriginal') : t('subtitleShowOriginal')}</span>
+            </button>
+
+            {/* Aa 字体大小下拉菜单 */}
+            <div className="relative" data-no-drag>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowFontMenu((prev) => !prev);
+                }}
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-white/10 text-neutral-200 hover:text-white transition cursor-pointer"
+              >
+                <span className="text-[12px] font-semibold tracking-tight">Aa</span>
+                <span>{fontSizeLabel}</span>
+                <ChevronDown className="w-3 h-3 text-neutral-400" />
+              </button>
+
+              {showFontMenu && (
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  className="absolute left-0 top-full mt-1 w-28 rounded-lg bg-[#2b2d33] border border-white/15 py-1 shadow-xl z-50 text-[12px]"
+                >
+                  {(['small', 'medium', 'large'] as FontSizePreset[]).map((preset) => {
+                    const label =
+                      preset === 'small'
+                        ? t('subtitleFontSmall')
+                        : preset === 'large'
+                        ? t('subtitleFontLarge')
+                        : t('subtitleFontMedium');
+                    const active = fontSize === preset;
+                    return (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => {
+                          setFontSize(preset);
+                          setShowFontMenu(false);
+                        }}
+                        className={`w-full px-3 py-1 text-left flex items-center justify-between hover:bg-white/10 cursor-pointer ${
+                          active ? 'text-emerald-400 font-medium' : 'text-neutral-200'
+                        }`}
+                      >
+                        <span>{label}</span>
+                        {active && <Check className="w-3 h-3" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
 
-          <div className="flex items-center gap-1">
-            {modelsLoaded && history.length > 0 && (
+          {/* 右侧：行数档位标签 / 清空 / 暂停 / 关闭 */}
+          <div className="flex items-center gap-2">
+            {allReady && modelsLoaded && !showLoadingScreen && (
+              <span className="text-[10px] font-mono text-neutral-500 px-1 select-none">
+                {showOriginal ? `${linePairs}+${linePairs}` : `${linePairs}L`}
+              </span>
+            )}
+
+            {modelsLoaded && hasAnyContent && (
               <button
+                type="button"
                 onClick={handleClearHistory}
                 title={t('subtitleClearHistory')}
-                className="p-1 rounded-md text-neutral-400 hover:text-white hover:bg-white/10 active:scale-95 transition cursor-pointer"
+                className="p-1 rounded hover:bg-white/10 text-neutral-400 hover:text-white transition cursor-pointer"
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
@@ -374,25 +601,27 @@ export const SubtitleOverlay: React.FC = () => {
 
             {allReady && modelsLoaded && !showLoadingScreen && (
               <button
+                type="button"
                 onClick={toggleListening}
                 title={isRunning ? t('subtitlePauseCapture') : t('subtitleResumeCapture')}
-                className="p-1 rounded-md text-neutral-400 hover:text-white hover:bg-white/10 active:scale-95 transition cursor-pointer"
+                className="p-1 rounded hover:bg-white/10 text-neutral-400 hover:text-white transition cursor-pointer"
               >
                 {isRunning ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
               </button>
             )}
 
             <button
+              type="button"
               onClick={handleClose}
               title={t('subtitleClose')}
-              className="p-1 rounded-md text-neutral-400 hover:text-white hover:bg-white/10 active:scale-95 transition cursor-pointer"
+              className="w-5 h-5 rounded-full bg-white/15 hover:bg-white/25 text-neutral-200 hover:text-white flex items-center justify-center transition cursor-pointer ml-0.5"
             >
-              <X className="w-3.5 h-3.5" />
+              <X className="w-3 h-3" strokeWidth={2.5} />
             </button>
           </div>
         </div>
 
-        {/* 主内容区域：1. 磁盘缺模型与一键自动测速下载视图 / 2. 简约现代化三级模型加载进度视图 / 3. 双语流式字幕主视图 */}
+        {/* 主内容区域 */}
         {!allReady ? (
           <div className="flex-1 px-5 py-3 flex flex-col justify-center gap-2.5 text-xs">
             <div className="text-neutral-200 font-medium flex items-center justify-between gap-2">
@@ -463,16 +692,15 @@ export const SubtitleOverlay: React.FC = () => {
             )}
           </div>
         ) : showLoadingScreen ? (
-          <div className="flex-1 px-6 py-4 flex flex-col items-center justify-center gap-3.5 select-none">
-            {/* 现代极简进度条 */}
-            <div className="w-full max-w-[520px] flex flex-col gap-2">
+          <div className="flex-1 px-6 py-3 flex flex-col items-center justify-center gap-3 select-none">
+            <div className="w-full max-w-[520px] flex flex-col gap-1.5">
               <div className="flex items-center justify-between text-xs text-neutral-300">
                 <div className="flex items-center gap-2 font-medium">
                   <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
                   <span>{t('subtitleLoadingModelsTitle')}</span>
                 </div>
                 <span className="text-[11px] font-mono text-cyan-300/90">
-                  {activeStepDisplay} / 3
+                  {activeStepDisplay} / 2
                 </span>
               </div>
               <div className="w-full h-1.5 rounded-full bg-white/[0.07] overflow-hidden">
@@ -483,8 +711,7 @@ export const SubtitleOverlay: React.FC = () => {
               </div>
             </div>
 
-            {/* 三级模型阶段胶囊 */}
-            <div className="w-full max-w-[520px] grid grid-cols-3 gap-2">
+            <div className="w-full max-w-[520px] grid grid-cols-2 gap-2">
               {stages.map((st, idx) => {
                 const isDone = loadingStage > idx;
                 const isCurrent = loadingStage === idx;
@@ -513,70 +740,47 @@ export const SubtitleOverlay: React.FC = () => {
             </div>
           </div>
         ) : (
-          <div
-            ref={scrollContainerRef}
-            onScroll={handleScroll}
-            className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-2.5 scroll-smooth scrollbar-thin scrollbar-thumb-white/10 hover:scrollbar-thumb-white/20 select-text"
-          >
-            {/* 上方已定稿历史列表：每句原文与中文译文上下成块排列，支持滚轮自由翻阅 */}
-            {history.map((item) => (
-              <div
-                key={item.id}
-                className="flex flex-col gap-0.5 border-b border-white/[0.06] pb-2 last:border-b-0 transition-opacity duration-150"
-              >
-                <div className="text-[14px] text-neutral-100 font-normal leading-snug break-words">
-                  {item.en}
-                </div>
-                {item.zh ? (
-                  <div className="text-[13.5px] text-emerald-400 font-medium leading-snug break-words">
-                    {item.zh}
-                  </div>
-                ) : (
-                  <div className="text-[12px] text-cyan-400/70 italic animate-pulse">
-                    {t('subtitleTranslating')}
-                  </div>
-                )}
-              </div>
-            ))}
-
-            {/* 下方实时流式吐字区：随语音实时蹦词，成句瞬间推至上方并清空此处 */}
-            {(draft.stable || draft.pending) && (
-              <div className="flex flex-col gap-0.5 pt-1 border-t border-white/5">
-                <div className="text-[15px] font-medium tracking-normal leading-relaxed break-words">
-                  <span className="text-cyan-300">
-                    {draft.stable}
-                  </span>
-                  {draft.pending && (
-                    <span className="text-cyan-200/80">
-                      {draft.stable ? ' ' : ''}
-                      {draft.pending}
-                    </span>
-                  )}
-                  <span className="inline-block w-1.5 h-3.5 bg-cyan-400 rounded-[1px] ml-1 align-middle animate-pulse" />
-                </div>
-              </div>
-            )}
-
-            {history.length === 0 && !draft.stable && !draft.pending && (
-              <div className="h-full min-h-[60px] flex items-center justify-center text-neutral-500 text-xs italic select-none">
+          /* 严格等行双轨提词器流：原文 linePairs 行 + 译文 linePairs 行（2+2、3+3、4+4...），窗体高度由行高自适应决定 */
+          <div className="flex-1 px-4 pt-[10px] pb-[12px] flex flex-col justify-between gap-[8px] overflow-hidden select-text">
+            {!hasAnyContent ? (
+              <div className="h-full flex items-center justify-center text-neutral-400/80 text-[13px] select-none">
                 {isRunning ? t('subtitleWaitingAudio') : t('subtitleCapturePaused')}
               </div>
+            ) : (
+              <>
+                {/* 上轨：linePairs 行英文连续流 */}
+                {showOriginal && (
+                  <div
+                    ref={enStreamRef}
+                    style={{
+                      height: `${fontCfg.enLineHeight * linePairs}px`,
+                      fontSize: `${fontCfg.enFontSize}px`,
+                      lineHeight: `${fontCfg.enLineHeight}px`,
+                    }}
+                    className="w-full overflow-y-hidden font-semibold text-[#a6aab3] tracking-normal break-words scroll-smooth shrink-0"
+                  >
+                    {continuousEnText}
+                  </div>
+                )}
+
+                {/* 下轨：linePairs 行中文连续流（与原文行数严格相等） */}
+                <div
+                  ref={zhStreamRef}
+                  style={{
+                    height: `${fontCfg.zhLineHeight * linePairs}px`,
+                    fontSize: `${fontCfg.zhFontSize}px`,
+                    lineHeight: `${fontCfg.zhLineHeight}px`,
+                  }}
+                  className="w-full overflow-y-hidden font-bold text-white tracking-wide break-words scroll-smooth shrink-0"
+                >
+                  {continuousZhText}
+                </div>
+              </>
             )}
           </div>
         )}
 
-        {/* 悬浮回到底部快捷按钮（当用户手动向上滚轮翻阅历史时出现） */}
-        {showScrollBottomBtn && modelsLoaded && !showLoadingScreen && (
-          <button
-            onClick={scrollToBottom}
-            className="absolute bottom-3.5 right-4 p-1.5 rounded-full bg-[#24262d] border border-white/20 text-neutral-200 hover:text-white hover:bg-[#2d3039] transition-all cursor-pointer flex items-center gap-1 text-[11px] px-2.5"
-          >
-            <ArrowDownCircle className="w-3.5 h-3.5 text-cyan-400" />
-            <span>{t('subtitleScrollToBottom')}</span>
-          </button>
-        )}
-
-        {/* 右下角极简尺寸调整手柄 */}
+        {/* 右下角尺寸调整手柄 */}
         <div
           onMouseDown={handleMouseDownOnResize}
           className="absolute bottom-1 right-1 w-4 h-4 cursor-nwse-resize opacity-40 hover:opacity-100 flex items-end justify-end p-0.5 select-none"

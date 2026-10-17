@@ -20,7 +20,7 @@
 - [系统架构](#系统架构)
 - [离线维基 RAG 流水线](#离线维基-rag-流水线)
 - [语音识别服务（SenseVoice · audio.cpp）](#语音识别服务sensevoice--audiocpp)
-- [实时双语字幕服务（TEN-VAD · CoreML ANE · Index-Translate）](#实时双语字幕服务ten-vad--coreml-ane--index-translate)
+- [实时双语字幕服务（Confucius4-R2T2 · Index-Translate）](#实时双语字幕服务confucius4-r2t2--index-translate)
 - [快捷翻译悬浮窗](#快捷翻译悬浮窗)
 - [上下文窗口管理](#上下文窗口管理)
 - [推理引擎兼容](#推理引擎兼容)
@@ -40,7 +40,7 @@ SimpleUI 的核心技术亮点涵盖以下五大系统：
 
 1. **端到端离线维基 RAG 流水线**：零截断、**原文直注**（检索键由主力模型规划，注入正文不经任何模型改写）、单模型承担全部语义判断，完全在 Apple Silicon 本地运行，无需任何云端调用。
 2. **全局语音输入（SenseVoice · audio.cpp）**：长按右侧 ⌘ 键直接语音转文字并精准键入输入框，内置 SenseVoice-Small Q8 GGUF 模型与 Silero VAD，安装后开箱即用，断网全离线运行。
-3. **原生端侧实时双语字幕流水线**：首创三级极速流式架构（TEN-VAD 16ms 帧级声学活动检测 + CoreML ANE 原生 160ms 流式英文识别与标点 + Index-Translate-2B 神经机器翻译），纯按需加载、0 后台显存常驻，控制面板内置双源测速一键免配下载。
+3. **原生端侧实时双语字幕流水线**：两级极速流式架构（Confucius4-R2T2 `audio.cpp` Metal 追加式流式英文识别 + Index-Translate-2B 神经机器翻译），采用大厂级双轨连续提词器界面与 `2+2 / 3+3 / 4+4` 等行自适应高度吸附，纯按需加载、0 后台显存常驻，控制面板内置双源测速与断点续传下载。
 4. **快捷翻译悬浮窗（Quick Translate）**：全局快捷键 `⌃ Control + Space` 瞬时唤起，完全与主窗口解耦的独立原生非激活浮窗；支持多模式互译（自动/中英/英中/详解）、双向 TTS 语音朗读与全键盘交互；设置中提供独立的快速翻译模型配置，默认免思考秒级返回。
 5. **基础模型双引擎切换与动态上下文追踪**：支持 TurboFieldfare (Gemma 4 26B) 与 Mference (Qwen 3.6 35B-A3B) 自适应互斥切换，精确区分生成中（峰值）与生成后（稳态）的上下文占用并在界面实时呈现。
 
@@ -73,9 +73,8 @@ Node.js 代理服务器 (端口 31235)
      │
      ├──► 实时双语字幕服务托管 (subtitle_service.js)
      │         │
-     │         ├──► 第 1 级：TEN-VAD (16ms 帧级声学活动检测 · onnxruntime-node)
-     │         ├──► 第 2 级：Nemotron-Speech 0.6B (M系列 ANE 160ms 原生流式英文识别 + 标点)
-     │         └──► 第 3 级：Index-Translate-2B (端口 1249 · llama-server 专精神经机器翻译)
+     │         ├──► 第 1 级：Confucius4-R2T2 Q8_0 (端口 1250 · audiocpp_server Metal 追加式流式识别 + 原生标点)
+     │         └──► 第 2 级：Index-Translate-2B (端口 1249 · llama-server 专精神经机器翻译)
      │              (纯按需加载：开窗口拉起，关窗口即卸载释放显存)
      │
      └──► 主推理模型 (端口 1235 / 1241 · TTF / Mference / Ollama / vLLM 等) ← 最终答案生成
@@ -86,7 +85,8 @@ Node.js 代理服务器 (端口 31235)
 | Node.js 代理 (`proxy.js`) | `31235` | SSE 透传、静态托管、动态路由、会话与多模态媒体服务、各受管服务 API |
 | Kiwix 离线百科 | `31236` | ZIM 文件读取、标题联想、条目 HTTP 服务（随包内置运行时，完全离线） |
 | 语音识别（audiocpp · SenseVoice） | `1236` | 本地中英语音转文字（随包内置 GGUF 与 VAD，完全离线） |
-| 字幕翻译服务（Index-Translate-2B） | `1249` | 专精神经机器翻译（独立 llama-server 实例，仅在开启字幕窗口时按需拉起） |
+| 字幕流式识别（audiocpp · Confucius4-R2T2） | `1250` | 英文实时追加式流式识别与原生标点（独立 audiocpp_server 实例，按需拉起） |
+| 字幕翻译服务（Index-Translate-2B） | `1249` | 专精神经机器翻译（独立 llama-server 单并发槽位实例，按需拉起） |
 | 主推理模型（TTF / Mference） | `1235` / `1241` | 实体规划、长文目录路由、最终答案生成（高阶用户自备外部项目与权重） |
 
 > **模型服务托管**：SimpleUI 作为本地模型服务的统一宿主管理方——
@@ -98,7 +98,7 @@ Node.js 代理服务器 (端口 31235)
 > 需分别克隆 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 或 [Mference](https://github.com/NeelM0906/Mference) 到本机（默认 `~/turbo-fieldfare` 或 `~/Mference`）并完成构建。
 > 缺少本体或模型时，服务管理界面会进行检测并提供引导。
 
-> **字幕服务使用简述**：字幕服务运行时二进制已随包分发，运行所需的三个专属模型（TEN-VAD、Nemotron ANE、Index-Translate）不随包入库，用户只需在服务管理面板的「实时双语字幕」卡片中点击「一键下载全部缺失模型」（支持官方源与镜像源自动测速），下载完成后即可随时通过菜单开启字幕悬浮窗。开启时按序加载，关闭时立刻卸载并释放显存。
+> **字幕服务使用简述**：字幕服务运行时二进制（`audiocpp_server` 与 `llama-server`）已随包分发，运行所需的两个专属模型（Confucius4-R2T2、Index-Translate-2B）不随包入库，用户只需在服务管理面板的「实时字幕服务」卡片中点击「一键测速并下载缺失模型」（支持官方源与镜像源自动测速、故障自动切换与断点续传），下载完成后即可随时通过菜单开启字幕悬浮窗。开启时按序加载并清空旧记录，关闭时立刻卸载并释放显存。
 
 ### 跨窗口同步
 
@@ -547,31 +547,31 @@ Q8 GGUF 量化包，由 **audio.cpp** 的 `audiocpp_server` 承载，完全本�
 
 ---
 
-## 实时双语字幕服务（TEN-VAD · CoreML ANE · Index-Translate）
+## 实时双语字幕服务（Confucius4-R2T2 · Index-Translate）
 
 SimpleUI 内置第四个受管服务：**原生端侧实时双语字幕流水线**。专为看剧、在线会议、英语演讲等场景设计，完全在 Apple Silicon 端侧离线运行，无需云端 API。
 
 | 模块 | 引擎 / 模型 | 规格 | 运行时宿主 | 职责 |
 | :--- | :--- | :--- | :--- | :--- |
-| **第 1 级：VAD** | [`TEN-framework/ten-vad`](https://huggingface.co/TEN-framework/ten-vad) | 315 KB (`ten_vad.onnx`) | `onnxruntime-node` | 16ms 帧级声学活动检测，精准过滤静音与背景杂音 |
-| **第 2 级：流式 ASR** | [`aufklarer/Nemotron-Speech-Streaming-0.6B-CoreML-INT8`](https://huggingface.co/aufklarer/Nemotron-Speech-Streaming-0.6B-CoreML-INT8) | 580 MB (`nemotron_asr/`) | 原生 Swift 守护进程 (`subtitle_stream_asr`) | 直通 Apple Neural Engine (ANE)，160ms 极速流式英文识别并自动生成标点 |
-| **第 3 级：机器翻译** | [`IndexTeam/Index-Translate-2B-GGUF`](https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF) | 1.25 GB (`Index-Translate-2B.Q4_K_M.gguf`) | 内置自包含 `llama-server`（端口 `1249`） | Metal GPU 加速专精神经机器翻译，智能上下文消歧与高质量英汉互译 |
+| **第 1 级：流式 ASR** | [`davidxifeng/Confucius4-R2T2-gguf`](https://huggingface.co/davidxifeng/Confucius4-R2T2-gguf) | 2.31 GB (`r2t2-q8_0.gguf`) | 内置 `audiocpp_server`（端口 `1250`） | Metal GPU 加速，Longest Stable Prefix 追加式流式识别，原生输出大小写与标点 |
+| **第 2 级：机器翻译** | [`IndexTeam/Index-Translate-2B-GGUF`](https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF) | 1.25 GB (`index_translate_2b_q4_k_m.gguf`) | 内置自包含 `llama-server`（端口 `1249`） | Metal GPU 加速专精神经机器翻译，结合前句上下文消歧并实时协调中英文标点 |
 
 ### 核心特性
 
 1. **纯按需加载，0 后台显存常驻**：
    - App 启动时**绝不拉起字幕模型**，后台保持 0 显存占用；
-   - 仅当用户从状态栏菜单点击开启字幕窗口时，服务端按阶段依次加载三级模型；
-   - 关闭字幕窗口或退出应用时，守护看门狗立即强制终止全部子进程，释放显存与内存。
-2. **一键免配置，多源并发测速下载**：
-   - 运行环境（`subtitle_stream_asr`、`llama-server` 及其动态库）已随包分发，**无需配置 Python 虚拟环境**；
+   - 仅当用户从状态栏菜单点击开启字幕窗口时，服务端按阶段依次加载两级模型，并自动清空历史记录；
+   - 关闭字幕窗口或退出应用时，守护看门狗立即终止 `1250` 与 `1249` 两个子进程（与 `1236` 语音输入服务完全隔离），释放显存与内存。
+2. **一键免配置，多源并发测速与断点续传下载**：
+   - 运行环境（`audiocpp_server`、`llama-server` 及其动态库）已随包分发，**无需配置 Python 虚拟环境**；
    - 模型专属隔离目录：`~/Library/Application Support/SimpleUI/models/subtitles_pipeline/`；
-   - 服务管理面板内置测速引擎，在**国内高速镜像源（hf-mirror.com）**与**官方源（huggingface.co）**之间自动比对延迟与带宽，挑选最优线路一键下载并完成大小校验。
-3. **智能双层滞回断句策略**：
-   - 结合标点微停顿检测（160ms）、短语级逗号换气停顿（480ms）与无标点静音容忍（960ms）；
-   - 在长句达到阈值时逆向沿从属连词/短语边界软切，防止字幕跨行撕裂或修饰词断裂。
-4. **原生悬浮画中画体验**：
-   - 屏幕置顶双语字幕悬浮面板（中/英双行并列展示），支持快捷暂停、全屏跟随与清空重置。
+   - 服务管理面板内置测速引擎，在**国内高速镜像源（hf-mirror.com）**与**官方源（huggingface.co）**之间自动比对延迟与带宽，支持 HTTP Range 断点续传与源故障自动切换。
+3. **追加式稳定前缀流 + 标点触发增量翻译**：
+   - 基于 R2T2 的 Longest Stable Prefix 特性，已输出英文词与标点永不回滚闪烁，连续音频流不设激进静音门控，杜绝吞字漏词；
+   - 实时监测句号、问号、感叹号或完整逗号子句，以前一句英文与译文为上文参考送入单并发槽位的 Index-Translate-2B 翻译并依次向后堆叠，具备防英文复读回退与掉线即时自愈能力。
+4. **大厂级双轨提词器界面与 `N+N` 等行自适应高度**：
+   - 采用上下双轨连续流设计（上轨英文实时流、下轨中文译文流），支持三档字号（小/中/大）与一键隐藏原文；
+   - 窗体高度按当前字号行高自动吸附至 `2+2`、`3+3`、`4+4` 等严格等行档位（最小容纳 `2+2` 共 4 行，最大宽度锁定当前屏幕宽度，最大高度锁定当前屏幕高度的 2/3）。
 
 ---
 
@@ -724,8 +724,8 @@ SimpleUI/
 │   ├── ttf_log.js            # 模型日志探针（生成前取真实 prompt token 数与极低负载检测）
 │   ├── asr_service.js        # 语音识别服务托管（SenseVoice / audio.cpp 端口 1236）
 │   │                         #   生成 audiocpp server.json、配置持久化 asr_config.json、/api/asr/*
-│   ├── subtitle_service.js   # 实时双语字幕服务托管（三级流式流水线，端口 1249）
-│   │                         #   TEN-VAD、Nemotron ANE、Index-Translate (llama-server)、双源自动测速下载
+│   ├── subtitle_service.js   # 实时双语字幕服务托管（两级流式流水线，端口 1250 / 1249）
+│   │                         #   Confucius4-R2T2 (audio.cpp)、Index-Translate-2B (llama-server)、双源测速下载
 │   ├── session_service.js    # 全局会话唯一真相源（SSOT）、长文滑动窗口截断、跨窗口实时同步
 │   ├── media_service.js      # 多模态媒体服务（图片 SHA-256 内容寻址持久化、自动 GC、模型上送注入）
 │   ├── watchdog.js           # 统一进程看门狗（Node 异常退出时按 PID 精确清理所有子进程）
@@ -733,9 +733,8 @@ SimpleUI/
 │
 ├── bin/
 │   ├── kiwix/                # Kiwix 离线百科工具集（kiwix-serve 等，随包分发）
-│   ├── audiocpp/             # 语音识别运行时（audiocpp_server 与 Silero VAD，随包分发）
-│   ├── llama/                # 字幕翻译运行时（自包含 llama-server 及其依赖 dylib，随包分发）
-│   └── subtitle_stream_asr   # ANE 原生流式英文识别守护进程预编译二进制（随包分发）
+│   ├── audiocpp/             # 语音识别与流式字幕 ASR 运行时（audiocpp_server 与 Silero VAD，随包分发）
+│   └── llama/                # 字幕翻译运行时（自包含 llama-server 及其依赖 dylib，随包分发）
 │
 ├── scripts/
 │   ├── sync_audiocpp.sh      # 编译/同步 audiocpp 运行时与 SenseVoice 模型
@@ -745,13 +744,12 @@ SimpleUI/
 │   ├── src/                  # AppDelegate、ProcessManager、HotKeyManager
 │   │                         #   VoiceInputManager.swift            长按右 ⌘ 全局语音输入
 │   │                         #   VoiceOverlayPanelController.swift  底部居中录音胶囊容器
-│   │                         #   SubtitleOverlayPanelController.swift 置顶实时双语字幕悬浮窗
+│   │                         #   SubtitleOverlayPanelController.swift 置顶双语字幕悬浮窗（N+N 等行自适应高度与音频内录）
 │   │                         #   TranslationPanelController.swift   快捷翻译非激活浮动面板控制器
 │   │                         #   TranslationMainView.swift          原生 SwiftUI 翻译交互主界面
 │   │                         #   TranslationViewModel.swift         翻译状态机与 TTS 控制
 │   │                         #   TranslationService.swift           专精翻译 HTTP 服务与解析引擎
 │   │                         #   TranslationProfileStore.swift      快速翻译 Provider 配置持久化
-│   │                         #   subtitle_stream_asr.swift          ANE 原生流式识别守护进程源码
 │   └── Resources/            # Info.plist（含麦克风等隐私说明）、AppIcon.icns、状态栏图标
 │
 └── src/
@@ -790,7 +788,7 @@ SimpleUI/
         ├── ImagePreviewModal.tsx # 沉浸式图片预览模态框（平滑缩放平移、触控板优化、系统原生另存为与 Preview 预览）
         ├── SettingsModal.tsx # 应用设置 + 对话模型设置（4 大 Provider）+ 快速翻译设置（锁定提示词、免思考秒级返回）
         ├── ServiceManagerModal.tsx # 服务管理器控制面板（基础模型双引擎/知识库/语音识别/实时双语字幕四项受管服务）
-        ├── SubtitleOverlay.tsx   # 实时双语字幕悬浮渲染组件（双行并列展示、暂停、重置）
+        ├── SubtitleOverlay.tsx   # 实时双语字幕悬浮渲染组件（双轨连续提词器、N+N 等行档位、字号切换与清空重置）
         ├── VoiceOverlay.tsx  # 屏幕底部居中语音识别胶囊（绿渐变 + 麦克风 + 电平点阵）
         │                     #   由原生 VoiceOverlayPanelController 承载（#/voice 路由）
         ├── WikiPanel.tsx     # 知识库面板**唯一实现**：搜索 + 完整条目富文本（公式/表格/图片/子标题）

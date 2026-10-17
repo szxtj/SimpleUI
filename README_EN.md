@@ -20,7 +20,7 @@
 - [System Architecture](#system-architecture)
 - [Offline Wiki RAG Pipeline](#offline-wiki-rag-pipeline)
 - [Speech Recognition Service (SenseVoice · audio.cpp)](#speech-recognition-service-sensevoice--audiocpp)
-- [Real-time Bilingual Subtitles (TEN-VAD · CoreML ANE · Index-Translate)](#real-time-bilingual-subtitles-ten-vad--coreml-ane--index-translate)
+- [Real-time Bilingual Subtitles (Confucius4-R2T2 · Index-Translate)](#real-time-bilingual-subtitles-confucius4-r2t2--index-translate)
 - [Quick Translate Overlay](#quick-translate-overlay)
 - [Context Window Management](#context-window-management)
 - [Inference Engine Compatibility](#inference-engine-compatibility)
@@ -40,7 +40,7 @@ SimpleUI's core technical highlights span five key systems:
 
 1. **End-to-end Offline Wiki RAG Pipeline**: Zero-truncation, **direct raw-text injection** (article names planned by the primary model; injected body text is never rewritten by any model), with a single model handling all semantic decisions — running entirely on Apple Silicon, no cloud calls.
 2. **Global Voice Input (SenseVoice · audio.cpp)**: Long-press right ⌘ to dictate text directly into any focused input box. Bundled with SenseVoice-Small Q8 GGUF and Silero VAD, fully offline and ready right after installation.
-3. **Native On-Device Real-time Bilingual Subtitles**: A 3-stage streaming pipeline (TEN-VAD 16ms acoustic activity detection + CoreML ANE 160ms streaming English transcription with punctuation + Index-Translate-2B neural machine translation), strictly loaded on demand with 0 background VRAM residency, and zero-config benchmarked multi-source model downloads in the control panel.
+3. **Native On-Device Real-time Bilingual Subtitles**: A 2-stage streaming pipeline (Confucius4-R2T2 `audio.cpp` Metal append-only streaming English transcription + Index-Translate-2B neural machine translation) with a dual-track continuous teleprompter UI and `2+2 / 3+3 / 4+4` equal-line adaptive height snapping, strictly loaded on demand with 0 background VRAM residency, and benchmarked multi-source downloads with breakpoint resume.
 4. **Quick Translate Overlay**: Instant hotkey summoning (`⌃ Control + Space`) with a fully decoupled, non-activating native floating window; supports multi-mode translation (Auto / ZH → EN / EN → ZH / Detail), dual-direction TTS speech, and keyboard shortcuts; features dedicated quick translation provider settings with thinking disabled by default for instant responses.
 5. **Dual-Engine Base Model Management & Dynamic Context Tracking**: Seamlessly switch between TurboFieldfare (Gemma 4 26B) and Mference (Qwen 3.6 35B-A3B) with mutual VRAM release, while precisely tracking peak vs. clean context tokens on screen in real time.
 
@@ -73,9 +73,8 @@ Node.js Proxy Server (port 31235)
      │
      ├──► Real-time Bilingual Subtitles Manager (subtitle_service.js)
      │         │
-     │         ├──► Stage 1: TEN-VAD (16ms acoustic activity detection · onnxruntime-node)
-     │         ├──► Stage 2: Nemotron-Speech 0.6B (M-series ANE 160ms streaming ASR + punctuation)
-     │         └──► Stage 3: Index-Translate-2B (port 1249 · llama-server neural machine translation)
+     │         ├──► Stage 1: Confucius4-R2T2 Q8_0 (port 1250 · audiocpp_server Metal streaming ASR + native punctuation)
+     │         └──► Stage 2: Index-Translate-2B (port 1249 · llama-server neural machine translation)
      │              (Strictly on-demand: loaded when panel opens, terminated when closed)
      │
      └──► Primary Inference Model (port 1235 / 1241 · TTF / Mference / Ollama / vLLM etc.) ← final answer generation
@@ -86,7 +85,8 @@ Node.js Proxy Server (port 31235)
 | Node.js Proxy (`proxy.js`) | `31235` | SSE passthrough, static hosting, dynamic routing, session & media store, managed service APIs |
 | Kiwix Offline Encyclopedia | `31236` | ZIM file serving, title suggestions, article HTTP (bundled runtime, 100% offline) |
 | Speech Recognition (audiocpp · SenseVoice) | `1236` | Local speech-to-text (bundled GGUF & VAD, 100% offline) |
-| Subtitle Translation Service (Index-Translate-2B) | `1249` | Neural machine translation (dedicated llama-server instance, strictly loaded on demand) |
+| Subtitle Streaming ASR (audiocpp · Confucius4-R2T2) | `1250` | Append-only streaming English ASR with native punctuation (dedicated audiocpp_server instance, loaded on demand) |
+| Subtitle Translation Service (Index-Translate-2B) | `1249` | Neural machine translation (dedicated single-slot llama-server instance, loaded on demand) |
 | Primary Inference Model (TTF / Mference) | `1235` / `1241` | Entity planning, section routing, final answer generation (upstream repo and weights prepared by user) |
 
 > **Model Service Management**: SimpleUI serves as the unified host manager for local LLM engines —
@@ -99,7 +99,7 @@ Node.js Proxy Server (port 31235)
 > please clone [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) or [Mference](https://github.com/NeelM0906/Mference) locally (defaulting to `~/turbo-fieldfare` or `~/Mference`) and build them.
 > The app detects prerequisites and provides guidance when missing.
 
-> **Subtitle Service Quick Guide**: Subtitle runtime binaries are bundled with the app. The three required models (TEN-VAD, Nemotron ANE, Index-Translate) are not tracked in git; users simply click "Download All Missing Models" in the Service Manager's Subtitles card (with automatic latency & speed benchmarking across official and mirror sources). Once downloaded, the floating subtitle window can be opened on demand anytime. Models load when opened and unload immediately upon closing to release unified memory.
+> **Subtitle Service Quick Guide**: Subtitle runtime binaries (`audiocpp_server` and `llama-server`) are bundled with the app. The two required models (Confucius4-R2T2, Index-Translate-2B) are not tracked in git; users simply click "Auto Speed-Test & Download Missing Models" in the Service Manager's Live Subtitle Service card (with automatic latency & speed benchmarking, mirror failover, and HTTP Range breakpoint resume). Once downloaded, the floating subtitle window can be opened on demand anytime. Models load when opened (clearing stale history) and unload immediately upon closing to release unified memory.
 
 ### Cross-Window Synchronization
 
@@ -557,31 +557,31 @@ model is missing the card shows an explicit amber hint and the service stays "Of
 
 ---
 
-## Real-time Bilingual Subtitles (TEN-VAD · CoreML ANE · Index-Translate)
+## Real-time Bilingual Subtitles (Confucius4-R2T2 · Index-Translate)
 
 SimpleUI integrates a fourth managed service: **Native On-Device Real-time Bilingual Subtitles Pipeline**. Purpose-built for streaming videos, online conferences, and lectures, running 100% locally on Apple Silicon without any cloud API dependencies.
 
 | Stage | Engine / Model | Size | Host Process | Role |
 | :--- | :--- | :--- | :--- | :--- |
-| **Stage 1: VAD** | [`TEN-framework/ten-vad`](https://huggingface.co/TEN-framework/ten-vad) | 315 KB (`ten_vad.onnx`) | `onnxruntime-node` | 16ms frame-level acoustic voice activity detection, filtering silence and background noise |
-| **Stage 2: Streaming ASR** | [`aufklarer/Nemotron-Speech-Streaming-0.6B-CoreML-INT8`](https://huggingface.co/aufklarer/Nemotron-Speech-Streaming-0.6B-CoreML-INT8) | 580 MB (`nemotron_asr/`) | Native Swift Daemon (`subtitle_stream_asr`) | Direct Apple Neural Engine (ANE) acceleration, 160ms streaming English transcription with automated punctuation |
-| **Stage 3: Machine Translation** | [`IndexTeam/Index-Translate-2B-GGUF`](https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF) | 1.25 GB (`Index-Translate-2B.Q4_K_M.gguf`) | Bundled self-contained `llama-server` (port `1249`) | Metal GPU accelerated neural machine translation with contextual disambiguation |
+| **Stage 1: Streaming ASR** | [`davidxifeng/Confucius4-R2T2-gguf`](https://huggingface.co/davidxifeng/Confucius4-R2T2-gguf) | 2.31 GB (`r2t2-q8_0.gguf`) | Bundled `audiocpp_server` (port `1250`) | Metal GPU acceleration, Longest Stable Prefix append-only streaming ASR with native casing and punctuation |
+| **Stage 2: Machine Translation** | [`IndexTeam/Index-Translate-2B-GGUF`](https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF) | 1.25 GB (`index_translate_2b_q4_k_m.gguf`) | Bundled self-contained `llama-server` (port `1249`) | Metal GPU accelerated neural machine translation with previous-sentence contextual disambiguation and punctuation harmonization |
 
 ### Key Highlights
 
 1. **Strictly On-Demand, 0 Background Memory Residency**:
    - The subtitle models are **never loaded on app startup**, maintaining 0 idle background VRAM/RAM consumption;
-   - Models load sequentially only when the user opens the subtitle floating overlay from the status bar menu;
-   - Closing the subtitle overlay or quitting the app immediately sends termination signals to unload all models and free unified memory.
-2. **Zero-Config Benchmarked Multi-Source Download**:
-   - Runtime binaries (`subtitle_stream_asr`, `llama-server`, and its dylibs) are bundled with the app — **no Python virtualenv or setup needed**;
+   - Models load sequentially only when the user opens the subtitle floating overlay from the status bar menu, automatically clearing previous session history;
+   - Closing the subtitle overlay or quitting the app immediately terminates both port `1250` and `1249` processes (strictly isolated from port `1236` voice input), freeing unified memory.
+2. **Zero-Config Benchmarked Multi-Source Download with Breakpoint Resume**:
+   - Runtime binaries (`audiocpp_server`, `llama-server`, and its dylibs) are bundled with the app — **no Python virtualenv or setup needed**;
    - Dedicated model directory: `~/Library/Application Support/SimpleUI/models/subtitles_pipeline/`;
-   - The Service Manager features an automated speed & latency benchmark engine comparing the **HuggingFace mirror (hf-mirror.com)** and the **official source (huggingface.co)**, picking the fastest route to download missing models with checksum verification.
-3. **Dual-Layer Hysteresis Sentence Splitting**:
-   - Harmonizes punctuation micro-pauses (160ms), phrase-level breath pauses (480ms), and unpunctuated silence tolerance (960ms);
-   - Performs backward soft-cuts at subordinate conjunctions and grammatical boundaries on long sentences, preventing mid-phrase breaks.
-4. **Native Picture-in-Picture Floating Overlay**:
-   - Always-on-top bilingual floating overlay (dual English & Chinese lines side-by-side) with quick pause, fullscreen follow, and history reset.
+   - The Service Manager features an automated speed & latency benchmark engine comparing the **HuggingFace mirror (hf-mirror.com)** and the **official source (huggingface.co)**, supporting HTTP Range breakpoint resume and automatic mirror failover.
+3. **Append-Only Stable Prefix Stream & Punctuation-Triggered Contextual Translation**:
+   - Powered by R2T2's Longest Stable Prefix streaming, committed English words and punctuation never roll back or flicker, and continuous un-gated audio streaming prevents dropped syllables;
+   - Sentences and complete clauses are extracted in real time as punctuation arrives and translated sequentially using the immediately preceding bilingual sentence pair as context, with built-in anti-echo fallback and instant crash self-healing.
+4. **Dual-Track Teleprompter UI & `N+N` Quantized Adaptive Window Height**:
+   - Features a dual-track continuous stream layout (top track for live English stream, bottom track for Chinese translation stream) with three font size presets (Small / Medium / Large) and an instant Hide Original toggle;
+   - Window height automatically snaps to strictly equal `2+2`, `3+3`, `4+4` line-pair tiers based on active font line height (minimum `2+2` = 4 lines, maximum width locked to current screen width, maximum height locked to 2/3 of current screen height).
 
 ---
 
@@ -732,8 +732,8 @@ SimpleUI/
 │   ├── ttf_log.js            # Model log probe (pre-generation prompt token measurement & idle reset)
 │   ├── asr_service.js        # Speech recognition manager (SenseVoice / audio.cpp port 1236)
 │   │                         #   Generates audiocpp server.json, persists asr_config.json, /api/asr/*
-│   ├── subtitle_service.js   # Real-time bilingual subtitles manager (3-stage streaming, port 1249)
-│   │                         #   TEN-VAD, Nemotron ANE, Index-Translate (llama-server), multi-source benchmarked download
+│   ├── subtitle_service.js   # Real-time bilingual subtitles manager (2-stage streaming, ports 1250 / 1249)
+│   │                         #   Confucius4-R2T2 (audio.cpp), Index-Translate-2B (llama-server), benchmarked download
 │   ├── session_service.js    # Global session Single Source of Truth (SSOT), sliding window truncation, cross-window sync
 │   ├── media_service.js      # Multimodal media store (SHA-256 content-addressable storage, auto GC, model injection)
 │   ├── watchdog.js           # Unified process watchdog (terminates child processes by PID on Node exit)
@@ -741,9 +741,8 @@ SimpleUI/
 │
 ├── bin/
 │   ├── kiwix/                # Kiwix offline encyclopedia tools (kiwix-serve etc., bundled)
-│   ├── audiocpp/             # Speech recognition runtime (audiocpp_server & Silero VAD, bundled)
-│   ├── llama/                # Subtitle translation runtime (self-contained llama-server & dylibs, bundled)
-│   └── subtitle_stream_asr   # ANE native streaming English ASR daemon prebuilt binary (bundled)
+│   ├── audiocpp/             # Speech recognition & subtitle streaming ASR runtime (audiocpp_server & Silero VAD, bundled)
+│   └── llama/                # Subtitle translation runtime (self-contained llama-server & dylibs, bundled)
 │
 ├── scripts/
 │   ├── sync_audiocpp.sh      # Build/sync audiocpp runtime and SenseVoice model
@@ -753,13 +752,12 @@ SimpleUI/
 │   ├── src/                  # AppDelegate, ProcessManager, HotKeyManager
 │   │                         #   VoiceInputManager.swift            Global right-⌘ voice input
 │   │                         #   VoiceOverlayPanelController.swift  Bottom-center voice capsule container
-│   │                         #   SubtitleOverlayPanelController.swift Always-on-top bilingual subtitle overlay
+│   │                         #   SubtitleOverlayPanelController.swift Always-on-top subtitle overlay (N+N adaptive height & audio capture)
 │   │                         #   TranslationPanelController.swift   Quick translate non-activating panel controller
 │   │                         #   TranslationMainView.swift          Native SwiftUI translation view
 │   │                         #   TranslationViewModel.swift         Translation state machine & TTS control
 │   │                         #   TranslationService.swift           Specialized translation HTTP & parser engine
 │   │                         #   TranslationProfileStore.swift      Quick translate provider profiles persistence
-│   │                         #   subtitle_stream_asr.swift          ANE native streaming ASR daemon source
 │   └── Resources/            # Info.plist (incl. microphone permission), AppIcon.icns, status bar icons
 │
 └── src/
@@ -799,7 +797,7 @@ SimpleUI/
         ├── ImagePreviewModal.tsx  # Immersive image preview lightbox (smooth zoom & pan, trackpad tuning, native Save & Preview)
         ├── SettingsModal.tsx # App settings + Chat Model Settings (4 providers) + Quick Translation Settings (locked prompts, zero-thinking instant translation)
         ├── ServiceManagerModal.tsx # Service Manager control panel (Base model dual-engine / Knowledge Base / Speech Recognition / Subtitles)
-        ├── SubtitleOverlay.tsx   # Real-time bilingual subtitles floating UI (side-by-side lines, pause, reset)
+        ├── SubtitleOverlay.tsx   # Real-time bilingual subtitles floating UI (dual-track teleprompter, N+N line tiers, font sizing & reset)
         ├── VoiceOverlay.tsx  # Bottom-center voice capsule (green gradient + mic + level dots),
         │                     #   hosted by native VoiceOverlayPanelController (#/voice route)
         ├── WikiPanel.tsx     # The single knowledge-panel implementation: search + rich full article

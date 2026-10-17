@@ -317,6 +317,8 @@ class AsrService {
       // 单模型常驻即可，首次请求时加载（约 280MB，加载 <1s）
       lazy_load: true,
       max_loaded_models: 1,
+      idle_unload_ms: 0,
+      min_free_memory_mb: 0,
       ui: false,
       models: [modelEntry],
     };
@@ -826,7 +828,7 @@ class AsrService {
 
 // ----------------------------- 工具函数 -----------------------------
 
-// 在目录下递归搜第一个 *.gguf（限制深度，避免扫到大目录）
+// 在目录下递归搜 SenseVoice *.gguf（严格排除实时字幕专属隔离目录 subtitles_pipeline）
 function findGgufRecursive(dir, depth) {
   if (depth < 0) return null;
   let entries;
@@ -835,14 +837,19 @@ function findGgufRecursive(dir, depth) {
   } catch (e) {
     return null;
   }
-  // 先找文件，再递归子目录（优先浅层命中）
+  // 优先匹配 sensevoice 命名的模型，再兜底同目录非字幕 GGUF
+  for (const e of entries) {
+    if (e.isFile() && e.name.toLowerCase().includes('sensevoice') && e.name.toLowerCase().endsWith('.gguf')) {
+      return path.join(dir, e.name);
+    }
+  }
   for (const e of entries) {
     if (e.isFile() && e.name.toLowerCase().endsWith('.gguf')) {
       return path.join(dir, e.name);
     }
   }
   for (const e of entries) {
-    if (e.isDirectory()) {
+    if (e.isDirectory() && e.name !== 'subtitles_pipeline') {
       const hit = findGgufRecursive(path.join(dir, e.name), depth - 1);
       if (hit) return hit;
     }

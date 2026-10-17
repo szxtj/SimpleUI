@@ -971,10 +971,10 @@ export class ASRServiceAPI {
 }
 
 /**
- * 实时双语字幕服务（TEN-VAD + Nemotron CoreML ANE + Index-Translate-2B）。
+ * 实时双语字幕服务（Confucius4-R2T2 Metal + Index-Translate-2B）。
  *
  * 严格按需启停（随悬浮窗开启自动加载模型，随悬浮窗关闭立即卸载），
- * 服务管理面板负责展示整体状态、运行环境与三级模型完备状态，并提供双源自动测速一键下载与打开模型目录功能。
+ * 服务管理面板负责展示整体状态、运行环境与两级模型完备状态，并提供双源自动测速一键下载与打开模型目录功能。
  */
 export class SubtitleServiceAPI {
   static async getStatus(): Promise<SubtitleServiceStatus | null> {
@@ -988,7 +988,7 @@ export class SubtitleServiceAPI {
   }
 
   static async startDownload(
-    model: 'all' | 'vad' | 'asr' | 'translate' = 'all'
+    model: 'all' | 'asr' | 'translate' = 'all'
   ): Promise<{ ok: boolean; downloadState?: SubtitleDownloadState }> {
     try {
       const res = await fetch('/api/subtitles/download', {

@@ -113,17 +113,9 @@ if [ -d "bin/kiwix" ]; then
     copy_item "bin/kiwix" "$RESOURCES_DIR/bin/"
 fi
 
-# 编译并随包分发 M系列 NPU 专属原生流式字幕 ASR 守护进程 (Nemotron-Speech-Streaming CoreML)
-if [ -f "mac_app/src/subtitle_stream_asr.swift" ]; then
-    mkdir -p "$RESOURCES_DIR/bin" "bin"
-    echo "  · 编译 ANE 原生流式字幕 ASR 守护进程 (Swift + CoreML + Accelerate)..."
-    swiftc -O -target arm64-apple-macos13.0 \
-        -framework CoreML -framework Foundation -framework Accelerate \
-        mac_app/src/subtitle_stream_asr.swift -o bin/subtitle_stream_asr
-    cp -f "bin/subtitle_stream_asr" "$RESOURCES_DIR/bin/subtitle_stream_asr"
-    chmod +x "$RESOURCES_DIR/bin/subtitle_stream_asr" "bin/subtitle_stream_asr"
-    echo "  -> 已打包 ANE 原生流式字幕 ASR 守护进程: bin/subtitle_stream_asr"
-fi
+# 清理旧架构遗留的 subtitle_stream_asr 二进制（现已统一由 bin/audiocpp/bin/audiocpp_server 承载 Confucius4-R2T2）
+safe_remove "bin/subtitle_stream_asr"
+safe_remove "$RESOURCES_DIR/bin/subtitle_stream_asr"
 
 # 随包分发字幕第 3 级神经机器翻译所需的 llama-server 运行时及自包含动态库
 ensure_llama_runtime() {
@@ -440,21 +432,6 @@ for dep in $SERVER_DEPS; do
     fi
 done
 
-ORT_DST="$RESOURCES_DIR/node_modules/onnxruntime-node"
-if [ -d "$ORT_DST/bin" ]; then
-    for napidir in "$ORT_DST"/bin/napi-v*/; do
-        [ -d "$napidir" ] || continue
-        for osdir in "$napidir"*/; do
-            [ -d "$osdir" ] || continue
-            [ "$(basename "$osdir")" = "darwin" ] || safe_remove "$osdir"
-        done
-        for archdir in "$napidir"darwin/*/; do
-            [ -d "$archdir" ] || continue
-            [ "$(basename "$archdir")" = "arm64" ] || safe_remove "$archdir"
-        done
-    done
-    echo "  -> 已裁剪 onnxruntime-node 至 darwin/arm64: $(du -sh "$ORT_DST" | cut -f1)"
-fi
 echo "  -> 服务端运行时依赖: $SERVER_DEPS"
 
 # 4. 代码签名

@@ -156,7 +156,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
   /** 原生侧回推的三件套权限快照（浏览器调试模式下为 null） */
   const [voicePerm, setVoicePerm] = useState<VoicePermissionStatus | null>(null);
 
-  // ---- 实时字幕服务（TEN-VAD + Nemotron CoreML ANE + Index-Translate-2B）----
+  // ---- 实时字幕服务（Confucius4-R2T2 Metal + Index-Translate-2B）----
   const [subtitleStatus, setSubtitleStatus] = useState<SubtitleServiceStatus | null>(null);
   const [subtitleBusy, setSubtitleBusy] = useState(false);
 
@@ -178,7 +178,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     return s;
   };
 
-  const handleSubtitleDownload = async (model: 'all' | 'vad' | 'asr' | 'translate' = 'all') => {
+  const handleSubtitleDownload = async (model: 'all' | 'asr' | 'translate' = 'all') => {
     setSubtitleBusy(true);
     try {
       await SubtitleServiceAPI.startDownload(model);
@@ -1645,7 +1645,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
             {cardResetButton(handleAsrCardReset)}
           </div>
 
-          {/* 实时字幕服务卡片（无常驻开关 · 纯状态提示 + 运行环境与三级模型完备校验 + 自动双源测速一键下载） */}
+          {/* 实时字幕服务卡片（无常驻开关 · 纯状态提示 + 运行环境与两级模型完备校验 + 自动双源测速一键下载） */}
           <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
             {/* 头部：标题 + 整体状态指示（无启停开关） */}
             <div className="flex items-start justify-between mb-2.5">
@@ -1681,7 +1681,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                       {subtitleStatus.downloadState?.active || subtitleStatus.loading
                         ? t('statusStarting')
                         : subtitleStatus.running || subtitleStatus.paused || subtitleStatus.allReady
-                        ? `${t('statusReady')} : ${subtitleStatus.port ?? 1249}`
+                        ? `${t('statusReady')} : ${subtitleStatus.asrPort ?? 1250}/${subtitleStatus.port ?? 1249}`
                         : t('statusOffline')}
                     </span>
                   </div>
@@ -1689,7 +1689,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                     {subtitleStatus.downloadState?.active
                       ? `${t('subtitleDetailDownloading')} (${subtitleStatus.downloadState.progressPercent.toFixed(1)}%)`
                       : subtitleStatus.loading
-                      ? `${t('subtitleDetailLoading')} (${Math.min(3, (subtitleStatus.loadingStage || 0) + 1)}/3)`
+                      ? `${t('subtitleDetailLoading')} (${Math.min(2, (subtitleStatus.loadingStage || 0) + 1)}/2)`
                       : subtitleStatus.running
                       ? t('subtitleDetailActive')
                       : subtitleStatus.paused
@@ -1737,7 +1737,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
               </div>
             </div>
 
-            {/* 三级流式模型完备状态清单 */}
+            {/* 两级流式模型完备状态清单 */}
             <div>
               <div className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-2">
                 {t('subtitleModelsSectionTitle')}
@@ -1745,9 +1745,8 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
               <div className="space-y-1.5">
                 {(
                   [
-                    { key: 'vad' as const, label: t('subtitleModelStage1'), fallbackSize: '315 KB' },
-                    { key: 'asr' as const, label: t('subtitleModelStage2'), fallbackSize: '580 MB' },
-                    { key: 'translate' as const, label: t('subtitleModelStage3'), fallbackSize: '1.25 GB' },
+                    { key: 'asr' as const, label: t('subtitleModelStage1'), fallbackSize: '2.31 GB' },
+                    { key: 'translate' as const, label: t('subtitleModelStage2'), fallbackSize: '1.25 GB' },
                   ]
                 ).map((item) => {
                   const m = subtitleStatus?.modelsStatus?.[item.key];

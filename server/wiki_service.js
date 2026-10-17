@@ -6,11 +6,13 @@ import { fileURLToPath } from 'url';
 import { parse as parseHtml } from 'node-html-parser';
 import * as OpenCC from 'opencc-js';
 import { ttfService } from './ttf_service.js';
+import { startWatchdog } from './watchdog.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const DEFAULT_KIWIX_PORT = 31236;
+const KIWIX_PID_FILE = '/tmp/simpleui_kiwix.pid';
 
 // 主力模型（支持 TurboFieldfare 1235 与 Mference 1241 双引擎自适应）。承担实体规划、长文目录路由等辅助任务。
 // 注意：本地引擎不支持多路并发，禁止在并行分支里调用。
@@ -1365,17 +1367,40 @@ class WikiService {
         zimPath,
       ];
 
+      if (!this.watchdog) {
+        try {
+          this.watchdog = startWatchdog({
+            pidFile: KIWIX_PID_FILE,
+            binaryBasename: 'kiwix-serve',
+          });
+        } catch (e) {
+          // ignore
+        }
+      }
+
       const child = spawn(bin, args, {
         detached: false,
         stdio: 'ignore',
       });
 
       this.kiwixProcess = child;
+      try {
+        if (child.pid) fs.writeFileSync(KIWIX_PID_FILE, String(child.pid));
+      } catch (e) {
+        // ignore
+      }
 
       child.on('exit', (code) => {
         console.log(`[WikiService] kiwix-serve exited with code: ${code}`);
         this.isOnline = false;
-        this.kiwixProcess = null;
+        if (this.kiwixProcess === child) {
+          this.kiwixProcess = null;
+          try {
+            if (fs.existsSync(KIWIX_PID_FILE)) fs.unlinkSync(KIWIX_PID_FILE);
+          } catch (e) {
+            // ignore
+          }
+        }
       });
 
       // Poll until ready (up to 4 seconds)
@@ -1417,9 +1442,68 @@ class WikiService {
       }
       this.kiwixProcess = null;
     }
+    try {
+      if (fs.existsSync(KIWIX_PID_FILE)) {
+        const pid = parseInt(fs.readFileSync(KIWIX_PID_FILE, 'utf-8').trim(), 10);
+        if (Number.isInteger(pid) && pid > 1) {
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch (e) {
+            // ignore
+          }
+        }
+        fs.unlinkSync(KIWIX_PID_FILE);
+      }
+    } catch (e) {
+      // ignore
+    }
     this.isOnline = false;
     this.isStarting = false;
     return true;
+  }
+
+  shutdownSync() {
+    if (this.scanInterval) {
+      clearInterval(this.scanInterval);
+      this.scanInterval = null;
+    }
+    if (this.kiwixProcess) {
+      try {
+        this.kiwixProcess.kill('SIGTERM');
+      } catch (e) {
+        // ignore
+      }
+    }
+  }
+
+  shutdownForce() {
+    if (this.scanInterval) {
+      clearInterval(this.scanInterval);
+      this.scanInterval = null;
+    }
+    if (this.kiwixProcess) {
+      try {
+        this.kiwixProcess.kill('SIGKILL');
+      } catch (e) {
+        // ignore
+      }
+      this.kiwixProcess = null;
+    }
+    try {
+      if (fs.existsSync(KIWIX_PID_FILE)) {
+        const pid = parseInt(fs.readFileSync(KIWIX_PID_FILE, 'utf-8').trim(), 10);
+        if (Number.isInteger(pid) && pid > 1) {
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch (e) {
+            // ignore
+          }
+        }
+        fs.unlinkSync(KIWIX_PID_FILE);
+      }
+    } catch (e) {
+      // ignore
+    }
   }
 
   // 重启服务（应用新路径 / 端口后调用）：先停后起，避免旧端口上的存活实例造成端口冲突

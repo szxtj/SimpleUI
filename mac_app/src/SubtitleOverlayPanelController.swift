@@ -13,35 +13,41 @@ class SubtitleOverlayPanel: NSPanel {
 
 /// 屏幕底部半透明双语字幕面板控制器。
 /// 承载 `http://127.0.0.1:31235/#/subtitles`。
-/// 采用 ScreenCaptureKit 原生无损系统音频流内录（Audio Loopback），
-/// 按 160ms (2560 samples @ 16kHz) 增量切片无损流式推送至服务端 ANE 流式引擎。
+/// 特性：
+/// 1. 窗体高度按行数档位（2+2、3+3、4+4...）与当前字号严格量化吸附，确保原文与译文行数始终一致，绝不留多余空白；
+/// 2. 最大宽度锁死为当前所在屏幕宽度，最大高度锁死为当前所在屏幕高度的 2/3，最小宽度 520px，最小高度为当前字号下容纳 2+2 行的高度；
+/// 3. ScreenCaptureKit 音频流无门控连续输送（仅在完全静音超时后休眠），消除轻音或句首漏字。
 class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler, WKNavigationDelegate, SCStreamOutput {
-    private static let panelWidth: CGFloat = 800
-    private static let panelHeight: CGFloat = 195
+    private static let defaultPanelWidth: CGFloat = 780
+    private static let minPanelWidth: CGFloat = 520
     private static let bottomInset: CGFloat = 48
 
     private var webView: WKWebView!
     private var webReady = false
     var onVisibilityChanged: ((Bool) -> Void)?
 
-    // MARK: - 系统音频 160ms 增量流式内录状态
+    // MARK: - 量化行数（2+2、3+3、4+4...）与排版高度自适应状态
+    // 默认中号字体：顶部栏 38 + 上下内边距 22 + 间距 8 = 68；单对行高 = 26(英) + 28(中) = 54；2+2 行 = 176
+    private var chromeHeight: CGFloat = 68
+    private var pairHeight: CGFloat = 54
+    private var currentLinePairs: Int = 2
+    private var dragRawHeight: CGFloat = 176
+
+    // MARK: - 系统音频 160ms 无门控连续流式内录状态
     private var scStream: SCStream?
     private var isRecording = false
     private let audioQueue = DispatchQueue(label: "com.simpleui.systemAudioCapture", qos: .userInitiated)
     private var samplesLock = NSLock()
 
-    // 160ms @ 16kHz = 2560 采样点（与 Nemotron Streaming 160ms 帧严格对齐）
+    // 160ms @ 16kHz = 2560 采样点
     private let chunkSamples = 2560
-    // 160ms 前置环形缓冲：静默期持续保留最近 160ms 音频，人声触发瞬间一并送入，防止吞掉句首辅音
-    private var preRollBuffer: [Int16] = []
     private var pendingSamples: [Int16] = []
-    private var isSpeaking = false
-    private var trailingSilentChunks = 0
-    // 方案 B：9 * 160ms = 1440ms 尾随静音后发送 is_final=1，避免慢语速句中停顿误触发硬切与状态重置
-    private let maxTrailingSilentChunks = 9
-    private let energyThreshold: Double = 0.010
+    private var consecutiveDeadZeroChunks = 0
+    // 仅当系统音频完全数字零静音（无任何视频/音频播放）连续满 25 帧 (4.0s) 时才标记休眠，有声音即 100% 连续无损流式推送
+    private let maxDeadZeroChunks = 25
+    private let deadSilenceEpsilon: Double = 0.00005
 
-    // 严格 FIFO 串行发送队列，确保 160ms 增量音频帧绝不乱序或并发踩踏
+    // FIFO 串行发送队列（支持合并积压切片，杜绝丢帧漏字）
     private var outboundQueue: [(samples: [Int16], isFinal: Bool)] = []
     private var isSendingFrame = false
 
@@ -50,14 +56,15 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
     }
 
     init() {
+        let initialHeight: CGFloat = 176
         let panel = SubtitleOverlayPanel(
-            contentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.panelHeight),
+            contentRect: NSRect(x: 0, y: 0, width: Self.defaultPanelWidth, height: initialHeight),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
-        panel.minSize = NSSize(width: 480, height: 140)
-        panel.maxSize = NSSize(width: 1920, height: 1080)
+        panel.minSize = NSSize(width: Self.minPanelWidth, height: 110)
+        panel.maxSize = NSSize(width: 4096, height: 2160)
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
@@ -99,18 +106,94 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
         webView.load(URLRequest(url: url))
     }
 
-    // MARK: - 定位与显隐
+    // MARK: - 屏幕边界与 2+2 / 3+3 / 4+4 量化尺寸计算
 
-    private func currentScreen() -> NSScreen {
+    private func activeScreen() -> NSScreen {
+        if let panel = window, let s = panel.screen {
+            return s
+        }
         let mouse = NSEvent.mouseLocation
         return NSScreen.screens.first(where: { NSPointInRect(mouse, $0.frame) }) ?? NSScreen.main ?? NSScreen.screens[0]
     }
 
+    /// 计算当前所在屏幕允许的最大行数档位（锁死最大高度 <= 当前屏幕高度的 2/3，最小行数档位 = 2 即 2+2 行）
+    private func maxAllowedLinePairs(on screen: NSScreen) -> Int {
+        let maxScreenH = floor(screen.frame.height * (2.0 / 3.0))
+        let safePairH = max(20.0, pairHeight)
+        let maxPairs = Int(floor((maxScreenH - chromeHeight) / safePairH))
+        return max(2, maxPairs)
+    }
+
+    /// 计算指定行数档位 N 对应的精确窗口像素高度
+    private func exactHeightForLinePairs(_ pairs: Int, on screen: NSScreen) -> (clampedPairs: Int, height: CGFloat) {
+        let maxPairs = maxAllowedLinePairs(on: screen)
+        let clamped = max(2, min(maxPairs, pairs))
+        let h = round(chromeHeight + CGFloat(clamped) * pairHeight)
+        return (clamped, h)
+    }
+
+    /// 将当前行数档位同步通知前端，确保原文与译文始终渲染完全一致的 N+N 行
+    private func notifyFrontendLinePairs(_ pairs: Int) {
+        webView.evaluateJavaScript("window.onSubtitleLinePairsChanged && window.onSubtitleLinePairsChanged(\(pairs))") { _, _ in }
+    }
+
     private func bottomCenterFrame(on screen: NSScreen) -> NSRect {
         let v = screen.visibleFrame
-        let x = v.origin.x + (v.width - Self.panelWidth) / 2
+        let maxW = v.width
+        let w = min(max(Self.minPanelWidth, Self.defaultPanelWidth), maxW)
+        let (clampedPairs, h) = exactHeightForLinePairs(currentLinePairs, on: screen)
+        currentLinePairs = clampedPairs
+        dragRawHeight = h
+        let x = v.origin.x + (v.width - w) / 2
         let y = v.origin.y + Self.bottomInset
-        return NSRect(x: x, y: y, width: Self.panelWidth, height: Self.panelHeight)
+        return NSRect(x: x, y: y, width: w, height: h)
+    }
+
+    /// 根据当前字号排版参数与档位，自适应调整窗体尺寸并严格限制在当前屏幕范围内
+    private func applyQuantizedFrame(targetPairs: Int, customWidth: CGFloat? = nil, anchorTop: Bool = false, animate: Bool = false) {
+        guard let panel = window else { return }
+        let screen = activeScreen()
+        let sFrame = screen.frame
+        let maxW = sFrame.width
+        let minW = min(Self.minPanelWidth, maxW)
+
+        let (clampedPairs, snappedH) = exactHeightForLinePairs(targetPairs, on: screen)
+        currentLinePairs = clampedPairs
+
+        let (minPairs, minH) = exactHeightForLinePairs(2, on: screen)
+        _ = minPairs
+        let (_, maxH) = exactHeightForLinePairs(maxAllowedLinePairs(on: screen), on: screen)
+        panel.minSize = NSSize(width: minW, height: minH)
+        panel.maxSize = NSSize(width: maxW, height: max(minH, maxH))
+
+        var frame = panel.frame
+        let topY = frame.origin.y + frame.size.height
+        let newW = max(minW, min(maxW, customWidth ?? frame.size.width))
+        let newH = snappedH
+
+        frame.size.width = newW
+        frame.size.height = newH
+        if anchorTop {
+            frame.origin.y = topY - newH
+        }
+
+        // 确保窗口水平方向不超出当前屏幕边界
+        if frame.origin.x + newW > sFrame.maxX {
+            frame.origin.x = max(sFrame.minX, sFrame.maxX - newW)
+        }
+        if frame.origin.x < sFrame.minX {
+            frame.origin.x = sFrame.minX
+        }
+        // 确保窗口垂直方向不超出当前屏幕上下边界
+        if frame.origin.y < sFrame.minY {
+            frame.origin.y = sFrame.minY
+        }
+        if frame.origin.y + newH > sFrame.maxY {
+            frame.origin.y = max(sFrame.minY, sFrame.maxY - newH)
+        }
+
+        panel.setFrame(frame, display: true, animate: animate)
+        notifyFrontendLinePairs(clampedPairs)
     }
 
     func show() {
@@ -118,19 +201,22 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
         if !webReady {
             loadContent()
         }
+        let screen = activeScreen()
         if !isVisible {
-            panel.setFrame(bottomCenterFrame(on: currentScreen()), display: true)
+            currentLinePairs = 2
+            panel.setFrame(bottomCenterFrame(on: screen), display: true)
+        } else {
+            applyQuantizedFrame(targetPairs: currentLinePairs, animate: false)
         }
         panel.orderFrontRegardless()
         onVisibilityChanged?(true)
-        webView.evaluateJavaScript("window.onSubtitleOverlayShown && window.onSubtitleOverlayShown()") { _, _ in }
-        // 触发服务端按阶段加载三个模型；待三个模型全部加载完成，前端将下发 startCapture 启动内录
+        // 通知前端清空上一轮历史记录并同步当前行数档位
+        webView.evaluateJavaScript("window.onSubtitleOverlayShown && window.onSubtitleOverlayShown(\(currentLinePairs))") { _, _ in }
         postControl(action: "start")
     }
 
     func hide() {
         stopAudioCapture()
-        // 关闭窗口时立刻通知服务端停止并卸载全部三个字幕模型与子进程
         postControl(action: "stop")
         window?.orderOut(nil)
         onVisibilityChanged?(false)
@@ -144,7 +230,7 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
         }
     }
 
-    // MARK: - 系统音频内录 (ScreenCaptureKit Loopback)
+    // MARK: - 系统音频内录 (ScreenCaptureKit 无门控连续流)
 
     func startAudioCapture() {
         guard !isRecording, isVisible else { return }
@@ -172,18 +258,16 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
 
                 self.audioQueue.async {
                     self.samplesLock.lock()
-                    self.preRollBuffer.removeAll()
                     self.pendingSamples.removeAll()
                     self.outboundQueue.removeAll()
-                    self.isSpeaking = false
-                    self.trailingSilentChunks = 0
+                    self.consecutiveDeadZeroChunks = 0
                     self.isSendingFrame = false
                     self.samplesLock.unlock()
                 }
 
                 self.scStream = stream
                 self.isRecording = true
-                NSLog("[SubtitleOverlay] ✅ 系统音频 160ms 流式内录已启动 (ScreenCaptureKit Loopback)")
+                NSLog("[SubtitleOverlay] ✅ 系统音频 160ms 无门控连续内录已启动")
             } catch {
                 NSLog("[SubtitleOverlay] ❌ 启动系统音频内录失败: \(error)")
             }
@@ -195,11 +279,9 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
         isRecording = false
         self.audioQueue.async {
             self.samplesLock.lock()
-            self.preRollBuffer.removeAll()
             self.pendingSamples.removeAll()
             self.outboundQueue.removeAll()
-            self.isSpeaking = false
-            self.trailingSilentChunks = 0
+            self.consecutiveDeadZeroChunks = 0
             self.isSendingFrame = false
             self.samplesLock.unlock()
         }
@@ -212,7 +294,7 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
         }
     }
 
-    // SCStreamOutput: 接收系统内部音频 PCM 缓冲区并按 160ms 切片流式发送
+    // SCStreamOutput: 无门控连续流式推送系统内部音频，杜绝吞字与漏字
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio, isRecording else { return }
         guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
@@ -257,7 +339,6 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
             let slice = Array(pendingSamples.prefix(chunkSamples))
             pendingSamples.removeFirst(chunkSamples)
 
-            // 计算该 160ms 切片的 RMS 能量
             var sumSq: Double = 0
             for s in slice {
                 let f = Double(s) / 32768.0
@@ -265,38 +346,17 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
             }
             let rms = sqrt(sumSq / Double(slice.count))
 
-            if rms >= energyThreshold {
-                if !isSpeaking {
-                    isSpeaking = true
-                    trailingSilentChunks = 0
-                    // 将触发前 160ms 的前置缓冲一并推入，防止吞掉句首辅音
-                    if !preRollBuffer.isEmpty {
-                        outboundQueue.append((samples: preRollBuffer, isFinal: false))
-                        preRollBuffer.removeAll(keepingCapacity: true)
-                    }
-                } else {
-                    trailingSilentChunks = 0
-                }
+            // 只要不是连续 4 秒以上的纯数字零静音（即有任何视频/会议声音），100% 连续推送给 ASR 模型
+            if rms >= deadSilenceEpsilon {
+                consecutiveDeadZeroChunks = 0
                 outboundQueue.append((samples: slice, isFinal: false))
             } else {
-                if isSpeaking {
-                    trailingSilentChunks += 1
-                    let reachedFinalSilence = trailingSilentChunks >= maxTrailingSilentChunks
-                    outboundQueue.append((samples: slice, isFinal: reachedFinalSilence))
-                    if reachedFinalSilence {
-                        isSpeaking = false
-                        trailingSilentChunks = 0
-                    }
-                } else {
-                    // 静默期仅更新 160ms 前置环形缓冲，不向服务端发无效请求
-                    preRollBuffer = slice
+                consecutiveDeadZeroChunks += 1
+                if consecutiveDeadZeroChunks <= maxDeadZeroChunks {
+                    let reachedIdle = consecutiveDeadZeroChunks == maxDeadZeroChunks
+                    outboundQueue.append((samples: slice, isFinal: reachedIdle))
                 }
             }
-        }
-
-        // 限制积压队列上限（超过 25 帧即 4s 时丢弃最旧的非 final 帧防滞后）
-        if outboundQueue.count > 25 {
-            outboundQueue.removeFirst(outboundQueue.count - 15)
         }
         samplesLock.unlock()
 
@@ -310,15 +370,29 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
             return
         }
         isSendingFrame = true
-        let item = outboundQueue.removeFirst()
+
+        // 合并队列中待发的最多 4 个 160ms 切片（640ms），既保证 160ms 实时性，又彻底避免 HTTP 排队丢帧
+        let batchCount = min(4, outboundQueue.count)
+        var combinedSamples: [Int16] = []
+        combinedSamples.reserveCapacity(batchCount * chunkSamples)
+        var batchIsFinal = false
+
+        for _ in 0..<batchCount {
+            let item = outboundQueue.removeFirst()
+            combinedSamples.append(contentsOf: item.samples)
+            if item.isFinal {
+                batchIsFinal = true
+                break
+            }
+        }
         samplesLock.unlock()
 
-        var rawData = Data(capacity: item.samples.count * 2)
-        item.samples.withUnsafeBytes { raw in
+        var rawData = Data(capacity: combinedSamples.count * 2)
+        combinedSamples.withUnsafeBytes { raw in
             rawData.append(contentsOf: raw)
         }
 
-        let endpoint = item.isFinal
+        let endpoint = batchIsFinal
             ? "\(ProcessManager.baseURLString)/api/subtitles/feed?format=pcm&is_final=1"
             : "\(ProcessManager.baseURLString)/api/subtitles/feed?format=pcm"
         guard let url = URL(string: endpoint) else {
@@ -359,6 +433,7 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
         if action == "ready" {
             webReady = true
             if isVisible {
+                notifyFrontendLinePairs(currentLinePairs)
                 postControl(action: "start")
             }
         } else if action == "close" {
@@ -367,6 +442,21 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
             startAudioCapture()
         } else if action == "stopCapture" {
             stopAudioCapture()
+        } else if action == "syncLayoutMetrics" {
+            // 前端切换字号或开关原文时同步行高参数，窗体按当前行数档位（2+2、3+3、4+4...）自动吸附高度
+            if let ch = dict["chromeHeight"] as? Double, ch > 20 {
+                chromeHeight = CGFloat(ch)
+            }
+            if let ph = dict["pairHeight"] as? Double, ph > 16 {
+                pairHeight = CGFloat(ph)
+            }
+            if let pairs = dict["linePairs"] as? Int, pairs >= 2 {
+                currentLinePairs = pairs
+            }
+            applyQuantizedFrame(targetPairs: currentLinePairs, animate: true)
+            if let panel = self.window {
+                dragRawHeight = panel.frame.size.height
+            }
         } else if action == "moveWindow",
                   let dx = dict["dx"] as? Double,
                   let dy = dict["dy"] as? Double {
@@ -376,19 +466,23 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
                 origin.y -= CGFloat(dy)
                 panel.setFrameOrigin(origin)
             }
+        } else if action == "resizeStart" {
+            if let panel = self.window {
+                dragRawHeight = panel.frame.size.height
+            }
         } else if action == "resizeWindow",
                   let dw = dict["dw"] as? Double,
                   let dh = dict["dh"] as? Double {
             if let panel = self.window {
-                var frame = panel.frame
-                let topY = frame.origin.y + frame.size.height
-                let newW = max(panel.minSize.width, min(panel.maxSize.width, frame.size.width + CGFloat(dw)))
-                // 鼠标向下拖拽时 dh > 0，窗口高度应随之增大（frame.size.height + CGFloat(dh)），并锚定顶部边缘 topY 不动
-                let newH = max(panel.minSize.height, min(panel.maxSize.height, frame.size.height + CGFloat(dh)))
-                frame.origin.y = topY - newH
-                frame.size.width = newW
-                frame.size.height = newH
-                panel.setFrame(frame, display: true)
+                let screen = activeScreen()
+                let maxW = screen.frame.width
+                let minW = min(Self.minPanelWidth, maxW)
+                let newW = max(minW, min(maxW, panel.frame.size.width + CGFloat(dw)))
+
+                // 累积用户垂直拖拽量，但窗体高度不任意停留，而是按 (2+2, 3+3, 4+4...) 阶梯自适应吸附
+                dragRawHeight += CGFloat(dh)
+                let rawPairs = Int(round((dragRawHeight - chromeHeight) / max(20.0, pairHeight)))
+                applyQuantizedFrame(targetPairs: rawPairs, customWidth: newW, anchorTop: true, animate: false)
             }
         }
     }

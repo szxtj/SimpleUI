@@ -14,12 +14,14 @@ class ProcessManager {
     /// 代理退出后，detached 兜底 watchdog 最多再活一个轮询周期（0.5s），留 1s 余量
     private let watchdogGrace: TimeInterval = 1.0
 
-    /// 全部受管服务的 PID 文件清单（基础模型 / 语音识别 / 实时双语字幕）
+    /// 全部受管服务的 PID 文件清单（基础模型 / 知识库 / 语音识别 / 实时双语字幕）
     private let managedPidFiles: [String] = [
         "/tmp/turbo_fieldfare_server.pid",
         "/tmp/mference_server.pid",
+        "/tmp/simpleui_kiwix.pid",
         "/tmp/simpleui_audiocpp.pid",
         "/tmp/simpleui_subtitle_asr.pid",
+        "/tmp/simpleui_subtitle_audiocpp.pid",
         "/tmp/simpleui_subtitle_trans.pid"
     ]
 

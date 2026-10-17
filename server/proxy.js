@@ -264,7 +264,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 实时双语字幕服务 API（TEN-VAD + Qwen3-ASR + Aligner + Index-Translate 端侧离线流）
+  // 实时双语字幕服务 API（TEN-VAD + Confucius4-R2T2 + Index-Translate-2B 端侧离线流）
   if (req.url.startsWith('/api/subtitles/')) {
     subtitleService.handleApi(req, res);
     return;
@@ -359,9 +359,9 @@ function cleanupAndExit(code = 0) {
       // ignore
     }
   }
-  if (wikiService && wikiService.kiwixProcess) {
+  if (wikiService) {
     try {
-      wikiService.kiwixProcess.kill('SIGTERM');
+      wikiService.shutdownSync();
     } catch (e) {
       // ignore
     }
@@ -397,9 +397,9 @@ process.on('SIGINT', () => cleanupAndExit(0));
 process.on('SIGTERM', () => cleanupAndExit(0));
 process.on('exit', () => {
   if (!ownsServices) return;
-  if (wikiService && wikiService.kiwixProcess) {
+  if (wikiService) {
     try {
-      wikiService.kiwixProcess.kill('SIGKILL');
+      wikiService.shutdownForce();
     } catch (e) {
       // ignore
     }

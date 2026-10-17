@@ -290,7 +290,7 @@ export interface VoicePermissionStatus {
 
 /** 实时字幕服务：单个模型的完整性与磁盘状态 */
 export interface SubtitleModelItemStatus {
-  key: 'vad' | 'asr' | 'translate';
+  key: 'asr' | 'translate';
   name: string;
   shortName: string;
   ready: boolean;
@@ -306,7 +306,6 @@ export interface SubtitleModelItemStatus {
 /** 实时字幕服务：内置运行环境状态 */
 export interface SubtitleRuntimeStatus {
   ready: boolean;
-  onnxReady: boolean;
   asrBinReady: boolean;
   asrBinPath: string | null;
   llamaBinReady: boolean;
@@ -320,7 +319,7 @@ export interface SubtitleDownloadState {
   active: boolean;
   phase: 'idle' | 'probing' | 'downloading' | 'cleaning' | 'completed' | 'error' | 'cancelled';
   targetModel: string | null;
-  currentModelKey: 'vad' | 'asr' | 'translate' | null;
+  currentModelKey: 'asr' | 'translate' | null;
   currentModelName: string;
   currentFile: string;
   selectedSource: {
@@ -342,6 +341,7 @@ export interface SubtitleDownloadState {
 /** 实时字幕服务整体聚合状态 */
 export interface SubtitleServiceStatus {
   port?: number;
+  asrPort?: number;
   running: boolean;
   paused: boolean;
   loading: boolean;
@@ -354,7 +354,6 @@ export interface SubtitleServiceStatus {
   runtimeStatus: SubtitleRuntimeStatus;
   missingModels: string[];
   modelsStatus: {
-    vad?: SubtitleModelItemStatus;
     asr?: SubtitleModelItemStatus;
     translate?: SubtitleModelItemStatus;
   };

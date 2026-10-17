@@ -19,7 +19,6 @@
     "lucide-react": "^1.16.0",
     "mathml2omml": "^0.5.0",
     "node-html-parser": "^9.0.4",
-    "onnxruntime-node": "^1.30.0",
     "opencc-js": "^1.4.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
