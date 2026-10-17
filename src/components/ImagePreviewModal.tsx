@@ -22,6 +22,52 @@ interface ImagePreviewModalProps {
   isSpotlight?: boolean;
 }
 
+// 辅助函数：计算当前缩放和尺寸下的有效平移边界
+const getPanBounds = (
+  targetZoom: number,
+  containerW: number,
+  containerH: number,
+  natW: number,
+  natH: number,
+  fitScale: number
+) => {
+  const renderedW = natW * fitScale * targetZoom;
+  const renderedH = natH * fitScale * targetZoom;
+
+  let minX = 0;
+  let maxX = 0;
+  if (renderedW > containerW) {
+    const overflowX = (renderedW - containerW) / 2;
+    minX = -overflowX;
+    maxX = overflowX;
+  }
+
+  let minY = 0;
+  let maxY = 0;
+  if (renderedH > containerH) {
+    const overflowY = (renderedH - containerH) / 2;
+    minY = -overflowY;
+    maxY = overflowY;
+  }
+
+  return { minX, maxX, minY, maxY, renderedW, renderedH };
+};
+
+// 弹性阻尼：超出边界时产生平滑的橡皮筋拉伸手感
+const applyRubberBand = (val: number, min: number, max: number, factor = 0.28) => {
+  if (val < min) {
+    return min - (min - val) * factor;
+  }
+  if (val > max) {
+    return max + (val - max) * factor;
+  }
+  return val;
+};
+
+const clamp = (val: number, min: number, max: number) => {
+  return Math.min(max, Math.max(min, val));
+};
+
 export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
   isOpen,
   onClose,
@@ -34,53 +80,196 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
-  const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [containerSize, setContainerSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const transformRef = useRef({ x: 0, y: 0, zoom: 1 });
+  const isDraggingRef = useRef(false);
+  const dragStartRef = useRef({ clientX: 0, clientY: 0, startPanX: 0, startPanY: 0 });
+  const rafIdRef = useRef<number | null>(null);
+  const wheelEndTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const inSpotlight =
     isSpotlight ??
     (typeof window !== 'undefined' &&
       (window.location.hash === '#/spotlight' || window.location.search.includes('mode=spotlight')));
 
-  // Sync initialIndex when modal opens or initialIndex changes
+  const currentUrl = images[currentIndex] || '';
+
+  // 监听容器真实尺寸变化
+  useEffect(() => {
+    if (!isOpen || !containerRef.current) return;
+    const updateSize = () => {
+      if (!containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        setContainerSize({ width: rect.width, height: rect.height });
+      }
+    };
+    updateSize();
+
+    const ro = new ResizeObserver(() => {
+      updateSize();
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, [isOpen]);
+
+  // 计算适合视口的基础缩放比（Fit Scale）
+  const getFitScale = useCallback(
+    (natW: number, natH: number, contW: number, contH: number) => {
+      if (!natW || !natH || !contW || !contH) return 1;
+      const availW = contW * 0.94;
+      const availH = contH * 0.94;
+      const fitRatio = Math.min(availW / natW, availH / natH);
+      // 若原图小于容器，最多适度缩放 1.5x，避免微小图标失真；若大图则缩小至适合容器
+      return fitRatio < 1 ? fitRatio : Math.min(fitRatio, 1.5);
+    },
+    []
+  );
+
+  // 直接驱动 DOM 变换（硬件加速 3D 合成，彻底避免 React 每帧重渲染导致的卡顿）
+  const applyTransform = useCallback(
+    (x: number, y: number, currentZoom: number, animate = false) => {
+      transformRef.current = { x, y, zoom: currentZoom };
+      if (!imgRef.current || !naturalSize || !containerSize.width) return;
+
+      const fitScale = getFitScale(
+        naturalSize.width,
+        naturalSize.height,
+        containerSize.width,
+        containerSize.height
+      );
+      const actualScale = fitScale * currentZoom;
+
+      imgRef.current.style.transition = animate
+        ? 'transform 0.22s cubic-bezier(0.16, 1, 0.3, 1)'
+        : 'none';
+      imgRef.current.style.transform = `translate3d(${x}px, ${y}px, 0px) scale(${actualScale})`;
+    },
+    [naturalSize, containerSize, getFitScale]
+  );
+
+  // 重置变换状态
+  const resetTransform = useCallback(() => {
+    applyTransform(0, 0, 1, true);
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, [applyTransform]);
+
+  // 弹窗开启或切换索引时同步初始化
   useEffect(() => {
     if (isOpen) {
       setCurrentIndex(Math.max(0, Math.min(initialIndex, images.length - 1)));
+      transformRef.current = { x: 0, y: 0, zoom: 1 };
       setZoom(1);
       setPan({ x: 0, y: 0 });
       setNaturalSize(null);
     }
   }, [isOpen, initialIndex, images]);
 
-  // Reset zoom and pan when switching images
-  const resetTransform = useCallback(() => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
-  }, []);
+  // 预读并同步图片原始物理尺寸（支持缓存立即命中）
+  useEffect(() => {
+    if (!isOpen || !currentUrl) return;
+    const img = new Image();
+    img.src = currentUrl;
+    if (img.complete && img.naturalWidth && img.naturalHeight) {
+      setNaturalSize({ width: img.naturalWidth, height: img.naturalHeight });
+    } else {
+      img.onload = () => {
+        setNaturalSize({ width: img.naturalWidth, height: img.naturalHeight });
+      };
+    }
+  }, [isOpen, currentUrl]);
+
+  // 当尺寸或图片就绪时校准渲染
+  useEffect(() => {
+    if (isOpen && naturalSize && containerSize.width && containerSize.height) {
+      applyTransform(
+        transformRef.current.x,
+        transformRef.current.y,
+        transformRef.current.zoom,
+        false
+      );
+    }
+  }, [isOpen, naturalSize, containerSize, applyTransform]);
 
   const handlePrev = useCallback(() => {
     if (images.length <= 1) return;
     setCurrentIndex((prev) => (prev > 0 ? prev - 1 : images.length - 1));
     resetTransform();
+    setNaturalSize(null);
   }, [images.length, resetTransform]);
 
   const handleNext = useCallback(() => {
     if (images.length <= 1) return;
     setCurrentIndex((prev) => (prev < images.length - 1 ? prev + 1 : 0));
     resetTransform();
+    setNaturalSize(null);
   }, [images.length, resetTransform]);
 
+  // 按钮放大：平滑递增 0.35x
   const handleZoomIn = useCallback(() => {
-    setZoom((prev) => Math.min(prev + 0.25, 5));
-  }, []);
+    if (!naturalSize || !containerSize.width) return;
+    const currentZoom = transformRef.current.zoom;
+    const nextZoom = Math.min(currentZoom + 0.35, 8);
 
+    const fitScale = getFitScale(
+      naturalSize.width,
+      naturalSize.height,
+      containerSize.width,
+      containerSize.height
+    );
+    const bounds = getPanBounds(
+      nextZoom,
+      containerSize.width,
+      containerSize.height,
+      naturalSize.width,
+      naturalSize.height,
+      fitScale
+    );
+
+    const clampedX = clamp(transformRef.current.x, bounds.minX, bounds.maxX);
+    const clampedY = clamp(transformRef.current.y, bounds.minY, bounds.maxY);
+
+    applyTransform(clampedX, clampedY, nextZoom, true);
+    setZoom(nextZoom);
+    setPan({ x: clampedX, y: clampedY });
+  }, [naturalSize, containerSize, getFitScale, applyTransform]);
+
+  // 按钮缩小：平滑递减 0.35x，缩小到 1x 时平滑归中
   const handleZoomOut = useCallback(() => {
-    setZoom((prev) => Math.max(prev - 0.25, 0.25));
-  }, []);
+    if (!naturalSize || !containerSize.width) return;
+    const currentZoom = transformRef.current.zoom;
+    const nextZoom = Math.max(currentZoom - 0.35, 0.25);
 
-  // Keyboard navigation & shortcuts
+    const fitScale = getFitScale(
+      naturalSize.width,
+      naturalSize.height,
+      containerSize.width,
+      containerSize.height
+    );
+    const bounds = getPanBounds(
+      nextZoom,
+      containerSize.width,
+      containerSize.height,
+      naturalSize.width,
+      naturalSize.height,
+      fitScale
+    );
+
+    const clampedX = nextZoom <= 1.05 ? 0 : clamp(transformRef.current.x, bounds.minX, bounds.maxX);
+    const clampedY = nextZoom <= 1.05 ? 0 : clamp(transformRef.current.y, bounds.minY, bounds.maxY);
+
+    applyTransform(clampedX, clampedY, nextZoom, true);
+    setZoom(nextZoom);
+    setPan({ x: clampedX, y: clampedY });
+  }, [naturalSize, containerSize, getFitScale, applyTransform]);
+
+  // 快捷键支持
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -114,76 +303,239 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, [isOpen, onClose, handlePrev, handleNext, handleZoomIn, handleZoomOut, resetTransform]);
 
-  // Mouse wheel & trackpad pinch zoom
+  // 滚轮与触控板双指缩放：以鼠标焦点为中心（Focal-point Zoom），杜绝画面漂移
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
+    if (!containerRef.current || !naturalSize || !containerSize.width) return;
+
+    const containerRect = containerRef.current.getBoundingClientRect();
+    const cursorRelX = e.clientX - (containerRect.left + containerRect.width / 2);
+    const cursorRelY = e.clientY - (containerRect.top + containerRect.height / 2);
+
+    const fitScale = getFitScale(
+      naturalSize.width,
+      naturalSize.height,
+      containerSize.width,
+      containerSize.height
+    );
+    const currentZoom = transformRef.current.zoom;
+    const currentPan = { x: transformRef.current.x, y: transformRef.current.y };
+
     if (e.ctrlKey) {
-      // 触控板两指缩放手势（Trackpad Pinch）：大幅降低灵敏度，平滑阻尼变焦
-      const factor = 1 - e.deltaY * 0.003;
-      setZoom((prev) => {
-        const next = Math.max(0.25, Math.min(prev * factor, 5));
-        if (next === 1) setPan({ x: 0, y: 0 });
-        return next;
-      });
-    } else if (zoom > 1) {
-      // 放大状态下，两指滑动平滑平移画面 (Pan)
-      setPan((prev) => ({
-        x: prev.x - e.deltaX * 0.8,
-        y: prev.y - e.deltaY * 0.8,
-      }));
+      // 触控板双指捏合（Trackpad Pinch）：平滑阻尼变焦，以鼠标光标所在点放大
+      const factor = 1 - e.deltaY * 0.006;
+      const nextZoom = clamp(currentZoom * factor, 0.25, 8);
+
+      const zoomRatio = nextZoom / currentZoom;
+      const targetPanX = cursorRelX - (cursorRelX - currentPan.x) * zoomRatio;
+      const targetPanY = cursorRelY - (cursorRelY - currentPan.y) * zoomRatio;
+
+      const bounds = getPanBounds(
+        nextZoom,
+        containerSize.width,
+        containerSize.height,
+        naturalSize.width,
+        naturalSize.height,
+        fitScale
+      );
+      const clampedX = clamp(targetPanX, bounds.minX, bounds.maxX);
+      const clampedY = clamp(targetPanY, bounds.minY, bounds.maxY);
+
+      applyTransform(clampedX, clampedY, nextZoom, false);
+    } else if (currentZoom > 1.05 && (Math.abs(e.deltaX) > 0 || Math.abs(e.deltaY) > 0)) {
+      // 放大状态下双指平移画面（Pan）
+      const nextPanX = currentPan.x - e.deltaX * 0.9;
+      const nextPanY = currentPan.y - e.deltaY * 0.9;
+
+      const bounds = getPanBounds(
+        currentZoom,
+        containerSize.width,
+        containerSize.height,
+        naturalSize.width,
+        naturalSize.height,
+        fitScale
+      );
+      const clampedX = clamp(nextPanX, bounds.minX, bounds.maxX);
+      const clampedY = clamp(nextPanY, bounds.minY, bounds.maxY);
+
+      applyTransform(clampedX, clampedY, currentZoom, false);
     } else {
-      // 普通鼠标滚轮：轻微平滑变焦
-      const delta = -Math.sign(e.deltaY) * 0.1;
-      setZoom((prev) => {
-        const next = Math.max(0.25, Math.min(prev + delta, 5));
-        if (next === 1) setPan({ x: 0, y: 0 });
-        return next;
-      });
+      // 普通鼠标滚轮：轻微平滑变焦（以鼠标光标为焦点）
+      const step = -Math.sign(e.deltaY) * 0.15;
+      const nextZoom = clamp(currentZoom + step, 0.25, 8);
+
+      const zoomRatio = nextZoom / currentZoom;
+      const targetPanX = cursorRelX - (cursorRelX - currentPan.x) * zoomRatio;
+      const targetPanY = cursorRelY - (cursorRelY - currentPan.y) * zoomRatio;
+
+      const bounds = getPanBounds(
+        nextZoom,
+        containerSize.width,
+        containerSize.height,
+        naturalSize.width,
+        naturalSize.height,
+        fitScale
+      );
+      const clampedX = clamp(targetPanX, bounds.minX, bounds.maxX);
+      const clampedY = clamp(targetPanY, bounds.minY, bounds.maxY);
+
+      applyTransform(clampedX, clampedY, nextZoom, false);
+    }
+
+    // 防抖同步 React 状态，保持顶栏缩放文字精确更新
+    if (wheelEndTimeoutRef.current) {
+      clearTimeout(wheelEndTimeoutRef.current);
+    }
+    wheelEndTimeoutRef.current = setTimeout(() => {
+      setZoom(transformRef.current.zoom);
+      setPan({ x: transformRef.current.x, y: transformRef.current.y });
+    }, 100);
+  };
+
+  // 指针拖拽（Pointer Capture 保证移出容器外仍平稳追踪，橡皮筋边界+吸附归中）
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    isDraggingRef.current = true;
+    setIsDragging(true);
+
+    dragStartRef.current = {
+      clientX: e.clientX,
+      clientY: e.clientY,
+      startPanX: transformRef.current.x,
+      startPanY: transformRef.current.y,
+    };
+
+    if (imgRef.current) {
+      imgRef.current.style.transition = 'none';
     }
   };
 
-  // Mouse drag to pan
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (zoom <= 1) return;
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!isDraggingRef.current || !naturalSize || !containerSize.width) return;
     e.preventDefault();
-    setIsDragging(true);
-    dragStartRef.current = {
-      x: e.clientX,
-      y: e.clientY,
-      panX: pan.x,
-      panY: pan.y,
-    };
-  };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging) return;
-    e.preventDefault();
-    const dx = e.clientX - dragStartRef.current.x;
-    const dy = e.clientY - dragStartRef.current.y;
-    setPan({
-      x: dragStartRef.current.panX + dx,
-      y: dragStartRef.current.panY + dy,
+    const dx = e.clientX - dragStartRef.current.clientX;
+    const dy = e.clientY - dragStartRef.current.clientY;
+
+    const targetX = dragStartRef.current.startPanX + dx;
+    const targetY = dragStartRef.current.startPanY + dy;
+
+    const fitScale = getFitScale(
+      naturalSize.width,
+      naturalSize.height,
+      containerSize.width,
+      containerSize.height
+    );
+    const bounds = getPanBounds(
+      transformRef.current.zoom,
+      containerSize.width,
+      containerSize.height,
+      naturalSize.width,
+      naturalSize.height,
+      fitScale
+    );
+
+    const rubberX = applyRubberBand(targetX, bounds.minX, bounds.maxX);
+    const rubberY = applyRubberBand(targetY, bounds.minY, bounds.maxY);
+
+    if (rafIdRef.current) {
+      cancelAnimationFrame(rafIdRef.current);
+    }
+
+    rafIdRef.current = requestAnimationFrame(() => {
+      applyTransform(rubberX, rubberY, transformRef.current.zoom, false);
     });
   };
 
-  const handleMouseUp = () => {
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (!isDraggingRef.current) return;
+    isDraggingRef.current = false;
     setIsDragging(false);
+
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {}
+
+    if (rafIdRef.current) {
+      cancelAnimationFrame(rafIdRef.current);
+    }
+
+    if (!naturalSize || !containerSize.width) return;
+
+    const fitScale = getFitScale(
+      naturalSize.width,
+      naturalSize.height,
+      containerSize.width,
+      containerSize.height
+    );
+    const bounds = getPanBounds(
+      transformRef.current.zoom,
+      containerSize.width,
+      containerSize.height,
+      naturalSize.width,
+      naturalSize.height,
+      fitScale
+    );
+
+    const clampedX = clamp(transformRef.current.x, bounds.minX, bounds.maxX);
+    const clampedY = clamp(transformRef.current.y, bounds.minY, bounds.maxY);
+
+    const needsSnap =
+      clampedX !== transformRef.current.x || clampedY !== transformRef.current.y;
+    applyTransform(clampedX, clampedY, transformRef.current.zoom, needsSnap);
+
+    setPan({ x: clampedX, y: clampedY });
   };
 
-  // Double click to toggle between fit (1x) and 2x
-  const handleDoubleClick = () => {
-    if (zoom === 1) {
-      setZoom(2);
-    } else {
+  // 双击交互：在 1x 适合视口与 2.5x（或原图 1:1 像素级清晰度）之间平滑切换
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    if (!containerRef.current || !naturalSize || !containerSize.width) return;
+
+    const currentZoom = transformRef.current.zoom;
+    if (currentZoom > 1.05) {
       resetTransform();
+    } else {
+      const containerRect = containerRef.current.getBoundingClientRect();
+      const cursorRelX = e.clientX - (containerRect.left + containerRect.width / 2);
+      const cursorRelY = e.clientY - (containerRect.top + containerRect.height / 2);
+
+      const fitScale = getFitScale(
+        naturalSize.width,
+        naturalSize.height,
+        containerSize.width,
+        containerSize.height
+      );
+
+      // 若原图被大幅缩小展示，双击还原至接近 1:1 真实像素显示，最高 4x
+      const targetZoom = fitScale < 0.5 ? Math.min(4, Math.max(2, 1 / fitScale)) : 2.5;
+
+      const zoomRatio = targetZoom / currentZoom;
+      const targetPanX = cursorRelX - cursorRelX * zoomRatio;
+      const targetPanY = cursorRelY - cursorRelY * zoomRatio;
+
+      const bounds = getPanBounds(
+        targetZoom,
+        containerSize.width,
+        containerSize.height,
+        naturalSize.width,
+        naturalSize.height,
+        fitScale
+      );
+      const clampedX = clamp(targetPanX, bounds.minX, bounds.maxX);
+      const clampedY = clamp(targetPanY, bounds.minY, bounds.maxY);
+
+      applyTransform(clampedX, clampedY, targetZoom, true);
+      setZoom(targetZoom);
+      setPan({ x: clampedX, y: clampedY });
     }
   };
 
   if (!isOpen || images.length === 0) return null;
 
-  const currentUrl = images[currentIndex] || '';
-
-  // Copy Image to clipboard
+  // 复制图片到剪贴板
   const handleCopyImage = async () => {
     if (!currentUrl) return;
     try {
@@ -204,7 +556,9 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
         canvas.height = img.naturalHeight;
         const ctx = canvas.getContext('2d');
         ctx?.drawImage(img, 0, 0);
-        const pngBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+        const pngBlob = await new Promise<Blob | null>((resolve) =>
+          canvas.toBlob(resolve, 'image/png')
+        );
         if (pngBlob) {
           await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })]);
         } else {
@@ -225,7 +579,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
     }
   };
 
-  // Download Image (via macOS Native NSSavePanel or web fallback)
+  // 下载图片
   const handleDownloadImage = () => {
     if (!currentUrl) return;
     try {
@@ -239,7 +593,6 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
       console.warn('Native saveImage failed, falling back to browser download:', err);
     }
 
-    // Web fallback
     const link = document.createElement('a');
     link.href = currentUrl;
     link.download = `SimpleUI_Image_${Date.now()}.png`;
@@ -248,7 +601,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
     document.body.removeChild(link);
   };
 
-  // Open with macOS Native Preview.app
+  // 使用 macOS 原生「预览」应用打开
   const handleOpenSystemPreview = () => {
     if (!currentUrl) return;
     try {
@@ -261,7 +614,6 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
     } catch (err) {
       console.warn('Native openImageInPreview failed:', err);
     }
-    // Web browser fallback
     window.open(currentUrl, '_blank');
   };
 
@@ -272,6 +624,18 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
     .filter(Boolean)
     .join(' · ');
 
+  const fitScale =
+    naturalSize && containerSize.width
+      ? getFitScale(
+          naturalSize.width,
+          naturalSize.height,
+          containerSize.width,
+          containerSize.height
+        )
+      : 1;
+
+  const actualScale = fitScale * zoom;
+
   return (
     <div
       className={`fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 select-none animate-in fade-in duration-150 ${
@@ -280,7 +644,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
     >
       {/* Backdrop */}
       <div
-        className="absolute inset-0 bg-black/60 dark:bg-black/75 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/55 dark:bg-black/75 backdrop-blur-sm"
         onClick={onClose}
       />
 
@@ -313,7 +677,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
             </div>
           </div>
 
-          {/* Right: Actions (统一全为方形图标按钮，hover 显示原生 Tooltip，彻底消除窄窗口重叠) */}
+          {/* Right: Actions */}
           <div className="flex items-center gap-1 sm:gap-1.5 flex-shrink-0">
             {/* Zoom Controls */}
             <div className="flex items-center rounded-lg bg-black/5 dark:bg-white/5 p-0.5 border border-black/5 dark:border-white/5">
@@ -337,7 +701,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
               <button
                 type="button"
                 onClick={handleZoomIn}
-                disabled={zoom >= 5}
+                disabled={zoom >= 8}
                 className="w-7 h-7 sm:w-8 sm:h-8 rounded flex items-center justify-center text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200 disabled:opacity-30 transition-colors cursor-pointer"
                 title={t('zoomIn')}
               >
@@ -345,8 +709,8 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
               </button>
             </div>
 
-            {/* Reset ratio (shown if zoomed) */}
-            {zoom !== 1 && (
+            {/* Reset ratio button (shown if zoomed or panned) */}
+            {(zoom !== 1 || pan.x !== 0 || pan.y !== 0) && (
               <button
                 type="button"
                 onClick={resetTransform}
@@ -357,7 +721,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
               </button>
             )}
 
-            {/* Copy image (Square Icon Button) */}
+            {/* Copy image */}
             <button
               type="button"
               onClick={handleCopyImage}
@@ -375,7 +739,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
               )}
             </button>
 
-            {/* Download Image (Square Icon Button) */}
+            {/* Download Image */}
             <button
               type="button"
               onClick={handleDownloadImage}
@@ -385,7 +749,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
               <Download className="w-3.5 h-3.5" />
             </button>
 
-            {/* Open in macOS System Preview (Square Icon Button) */}
+            {/* Open in macOS System Preview */}
             <button
               type="button"
               onClick={handleOpenSystemPreview}
@@ -395,7 +759,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
               <ExternalLink className="w-3.5 h-3.5" />
             </button>
 
-            {/* Close Button (Square Icon Button) */}
+            {/* Close Button */}
             <button
               type="button"
               onClick={onClose}
@@ -407,36 +771,52 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
           </div>
         </div>
 
-        {/* Content Body Container */}
+        {/* Content Body Container：画板背景随深浅色模式自动切换 */}
         <div className="flex-1 min-h-0 p-3 flex flex-col">
           <div
             ref={containerRef}
             onWheel={handleWheel}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
             onDoubleClick={handleDoubleClick}
-            className={`flex-1 min-h-0 rounded-xl border border-black/5 dark:border-white/5 bg-[#0f1013] dark:bg-[#0c0d10] overflow-hidden flex items-center justify-center relative select-none ${
-              zoom > 1 ? (isDragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-zoom-in'
+            className={`relative flex-1 min-h-0 rounded-xl preview-canvas-bg overflow-hidden flex items-center justify-center select-none border border-black/5 dark:border-white/5 ${
+              zoom > 1.05 ? (isDragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-zoom-in'
             }`}
+            style={{ touchAction: 'none' }}
           >
-            {/* The Image Element */}
+            {/* The Image Element：以原图物理像素布局，硬件加速无损清晰放大 */}
             {currentUrl && (
               <img
+                ref={imgRef}
                 src={currentUrl}
                 alt="preview"
                 draggable={false}
                 onLoad={(e) => {
                   const target = e.currentTarget;
-                  setNaturalSize({ width: target.naturalWidth, height: target.naturalHeight });
+                  if (target.naturalWidth && target.naturalHeight) {
+                    setNaturalSize({
+                      width: target.naturalWidth,
+                      height: target.naturalHeight,
+                    });
+                  }
                 }}
                 style={{
-                  transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-                  transition: isDragging ? 'none' : 'transform 0.15s ease-out',
+                  width: naturalSize ? `${Math.min(naturalSize.width, 6144)}px` : 'auto',
+                  height: naturalSize ? `${Math.min(naturalSize.height, 6144)}px` : 'auto',
+                  maxWidth: naturalSize ? 'none' : '94%',
+                  maxHeight: naturalSize ? 'none' : '94%',
+                  objectFit: 'contain',
+                  transform: naturalSize
+                    ? `translate3d(${pan.x}px, ${pan.y}px, 0px) scale(${actualScale})`
+                    : undefined,
                   transformOrigin: 'center center',
+                  WebkitBackfaceVisibility: 'hidden',
+                  backfaceVisibility: 'hidden',
+                  imageRendering: 'auto',
                 }}
-                className="max-w-[94%] max-h-[94%] object-contain select-none pointer-events-none drop-shadow-md"
+                className="select-none pointer-events-none rounded-xs shadow-[0_2px_12px_rgba(0,0,0,0.08)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.45)] border border-black/5 dark:border-white/5"
               />
             )}
 
@@ -448,7 +828,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
                   e.stopPropagation();
                   handlePrev();
                 }}
-                className="absolute left-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/40 hover:bg-black/70 text-white backdrop-blur-md transition-all shadow-lg cursor-pointer border border-white/10"
+                className="absolute left-3.5 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/85 hover:bg-white text-zinc-700 dark:bg-black/50 dark:hover:bg-black/80 dark:text-white backdrop-blur-md transition-all shadow-md hover:shadow-lg cursor-pointer border border-black/10 dark:border-white/10 z-20"
                 title="Previous (←)"
               >
                 <ChevronLeft className="w-4 h-4" />
@@ -463,7 +843,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
                   e.stopPropagation();
                   handleNext();
                 }}
-                className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/40 hover:bg-black/70 text-white backdrop-blur-md transition-all shadow-lg cursor-pointer border border-white/10"
+                className="absolute right-3.5 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/85 hover:bg-white text-zinc-700 dark:bg-black/50 dark:hover:bg-black/80 dark:text-white backdrop-blur-md transition-all shadow-md hover:shadow-lg cursor-pointer border border-black/10 dark:border-white/10 z-20"
                 title="Next (→)"
               >
                 <ChevronRight className="w-4 h-4" />
@@ -472,7 +852,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
           </div>
         </div>
 
-        {/* Subtle Footer Hint: 仅在大窗口显示，小窗口 (inSpotlight) 下彻底去除，防止文字折叠挤压 */}
+        {/* Subtle Footer Hint */}
         {!inSpotlight && (
           <div className="px-4 pb-3 flex items-center justify-between text-[11px] text-zinc-400 dark:text-zinc-500 select-none">
             <span className="truncate mr-2">{t('imagePreviewHint')}</span>
