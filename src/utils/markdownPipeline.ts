@@ -33,7 +33,7 @@ const LATEX_ENV_NAMES = [
 ].join('|');
 
 const STANDALONE_LATEX_ENV_REGEX = new RegExp(
-  `(?:^|\\n)[ \\t]*(\\\\begin\\{(${LATEX_ENV_NAMES})\\}[\\s\\S]*?\\\\end\\{\\2\\})[ \\t]*(?=\\n|$)`,
+  `(?:^|\\n)([ \\t]*)(\\\\begin\\{(${LATEX_ENV_NAMES})\\}[\\s\\S]*?\\\\end\\{\\3\\})[ \\t]*(?=\\n|$)`,
   'g'
 );
 
@@ -131,6 +131,55 @@ export function escapeCurrencyDollars(text: string): string {
 }
 
 /**
+ * 判断块级公式的缩进是否位于列表项内部：
+ * 若是，返回该列表项的内容列（例如 "2.  " 返回 4），否则返回 null。
+ *
+ * 背景：公式若被提升到顶格，会切断所在列表项；而模型紧随其后、
+ * 仍按 4 空格缩进的正文会被 CommonMark 解析成“缩进代码块”。
+ */
+function enclosingListContentIndent(textBefore: string, indent: string): number | null {
+  if (!indent) return null;
+  const lines = textBefore.split('\n');
+  // 当前行只剩行首缩进（已被正则消耗），去掉这个空片段
+  if (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    const marker = /^([ \t]*)(?:[-*+]|\d{1,9}[.)])([ \t]+)/.exec(line);
+    if (marker) {
+      // 公式缩进比列表标记还浅，说明它已经不在该列表项内部
+      return marker[1].length < indent.length ? marker[0].length : null;
+    }
+    const lineIndent = /^[ \t]*/.exec(line)?.[0].length ?? 0;
+    if (lineIndent < indent.length) return null;
+  }
+  return null;
+}
+
+/**
+ * 按给定缩进整体缩进多行公式内容（空行保持为空行）；
+ * 已带相同缩进的行原样保留，保证重复预处理时不会越缩越深。
+ */
+function indentBlockContent(content: string, indent: string): string {
+  const trimmed = content.trim();
+  if (!indent) return trimmed;
+  return trimmed
+    .split('\n')
+    .map((line) => (!line.trim() ? '' : line.startsWith(indent) ? line : indent + line))
+    .join('\n');
+}
+
+/**
+ * 把块级公式规整为独立围栏：列表项内的公式保留在列表项内部，
+ * 其余情况仍提升到顶格。
+ */
+function formatBlockMath(content: string, textBefore: string, indent: string): string {
+  const listContentIndent = enclosingListContentIndent(textBefore, indent);
+  const keep = listContentIndent === null ? '' : ' '.repeat(listContentIndent);
+  return `\n\n${keep}$$\n${indentBlockContent(content, keep)}\n${keep}$$\n\n`;
+}
+
+/**
  * 标准化 LaTeX 公式定界符与环境：
  * 1. 块级公式 \[ ... \] 转换为独立的 \n\n$$\n...$$\n\n
  * 2. 裸写 LaTeX 常见矩阵/方程环境自动补全 $$ 围栏
@@ -138,10 +187,11 @@ export function escapeCurrencyDollars(text: string): string {
  * 4. 行内公式 \( ... \) 转换为 $...$
  */
 export function normalizeMathDelimiters(text: string): string {
-  // 1. 块级公式 \[ ... \] 转换为标准的 \n\n$$\n...$$\n\n
+  // 1. 块级公式 \[ ... \] 转换为标准的 \n\n$$\n...$$\n\n（列表项内保留缩进）
   let normalized = text.replace(
-    /\\\[([\s\S]*?)\\\]/g,
-    (_, math) => `\n\n$$\n${math.trim()}\n$$\n\n`
+    /(^[ \t]*)?\\\[([\s\S]*?)\\\]/gm,
+    (_match, indent: string | undefined, math: string, offset: number, whole: string) =>
+      formatBlockMath(math, whole.slice(0, offset), indent ?? '')
   );
 
   // 2. 行内公式 \( ... \) 转换为 $...$
@@ -167,7 +217,8 @@ export function normalizeMathDelimiters(text: string): string {
   // 4. 裸写 LaTeX 环境（未被任何 $$ 或 $ 包裹的孤立顶级环境，自动补全 $$ 围栏）
   normalized = normalized.replace(
     STANDALONE_LATEX_ENV_REGEX,
-    (_, env) => `\n\n$$\n${env.trim()}\n$$\n\n`
+    (_match, indent: string | undefined, env: string, _envName: string, offset: number, whole: string) =>
+      formatBlockMath(env, whole.slice(0, offset), indent ?? '')
   );
 
   // 5. 还原保护的已有公式块
@@ -176,14 +227,12 @@ export function normalizeMathDelimiters(text: string): string {
     (_, idx) => protectedMathBlocks[parseInt(idx, 10)] ?? ''
   );
 
-  // 6. 多行原生 $$ ... $$ 围栏换行规整
+  // 6. 多行原生 $$ ... $$ 围栏换行规整（列表项内保留缩进）
   normalized = normalized.replace(
-    /\$\$([\s\S]*?)\$\$/g,
-    (match, math) => {
-      if (math.includes('\n')) {
-        return `\n\n$$\n${math.trim()}\n$$\n\n`;
-      }
-      return match;
+    /(^[ \t]*)?\$\$([\s\S]*?)\$\$/gm,
+    (match, indent: string | undefined, math: string, offset: number, whole: string) => {
+      if (!math.includes('\n')) return match;
+      return formatBlockMath(math, whole.slice(0, offset), indent ?? '');
     }
   );
 

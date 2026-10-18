@@ -244,6 +244,33 @@ class SessionService {
   }
 
   /**
+   * Recency used to order the sidebar list: the timestamp of the last message.
+   * Metadata-only changes (rename / per-session toggles / deleting a turn) must not
+   * move a chat, so empty sessions fall back to their creation time.
+   */
+  getSessionRecency(session) {
+    const messages = Array.isArray(session?.messages) ? session.messages : [];
+    const last = messages.length > 0 ? messages[messages.length - 1] : null;
+    return (
+      (last && typeof last.timestamp === 'number' ? last.timestamp : 0) ||
+      session?.createdAt ||
+      session?.updatedAt ||
+      0
+    );
+  }
+
+  /**
+   * Moves a session to the head of the list. The sidebar renders `this.sessions`
+   * in array order, so every write that makes a chat "newer" must update it.
+   */
+  promoteSessionToFront(sessionId) {
+    const idx = this.sessions.findIndex((s) => s.id === sessionId);
+    if (idx <= 0) return;
+    const [session] = this.sessions.splice(idx, 1);
+    this.sessions.unshift(session);
+  }
+
+  /**
    * Cleans up any stale pending/thinking flags from interrupted runs on startup
    */
   sanitizeLoadedSessions(list) {
@@ -396,6 +423,9 @@ class SessionService {
       const rawList = Array.isArray(parsed) ? parsed : (parsed?.sessions || []);
       const sanitized = this.sanitizeLoadedSessions(rawList);
       this.normalizeSessionImages(sanitized);
+      // Normalize the order once on load: older builds left a chat in its old slot
+      // when it received new messages, so the persisted array may be out of recency order.
+      sanitized.sort((a, b) => this.getSessionRecency(b) - this.getSessionRecency(a));
 
       if (sanitized.length === 0) {
         const initial = this.createNewSessionObject('新对话');
@@ -840,6 +870,8 @@ class SessionService {
     } else {
       this.sessions.unshift(updatedSession);
     }
+    // A chat that receives a new message is now the most recent one and leads the list.
+    this.promoteSessionToFront(sessionId);
 
     // If user initiated send from Spotlight, automatically focus this session in Main Window too
     const selectInMain = origin === 'SPOTLIGHT' || this.mainSessionId === sessionId;
@@ -870,6 +902,7 @@ class SessionService {
       session: updatedSession,
       mainSessionId: this.mainSessionId,
       selectInMain,
+      moveToTop: true,
     });
     this.broadcast('turn-progress', {
       sessionId,

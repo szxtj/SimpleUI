@@ -467,7 +467,7 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
               ? 'border border-solid border-blue-500 bg-blue-50/70 dark:border-blue-400 dark:bg-blue-950/40 shadow-xs'
               : isHovered
               ? 'border border-dashed border-zinc-400 dark:border-zinc-500 bg-black/[0.02] dark:bg-white/[0.02]'
-              : 'border border-transparent'
+              : 'border border-dashed border-transparent'
           }`}
         >
           {showToolbar && (
@@ -491,7 +491,7 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
             ? 'border border-solid border-blue-500 bg-blue-50/80 dark:border-blue-400 dark:bg-blue-950/40 shadow-xs'
             : isHovered
             ? 'border border-dashed border-zinc-400 dark:border-zinc-500 bg-black/[0.02] dark:bg-white/[0.02]'
-            : 'border border-transparent'
+            : 'border border-dashed border-transparent'
         }`}
       >
         {showToolbar && (

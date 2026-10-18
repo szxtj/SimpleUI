@@ -2,7 +2,10 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { ChatMessage, TurnMetrics } from '../types/chat';
 import { useI18n } from '../i18n';
 import { useChatFontSize } from '../hooks/useChatFontSize';
+import { useTurnWindow } from '../hooks/useTurnWindow';
+import { disableScrollAnchor } from '../utils/scrollAnchor';
 import { MessageItem } from './MessageItem';
+import { TurnRail } from './TurnRail';
 import { ChatInput } from './ChatInput';
 import {
   HelpCircle,
@@ -107,6 +110,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
   }, []);
 
   /**
+   * 对话窗口化：只挂载"当前轮 ± 2"（默认 5 轮），随滚动重算、离开即释放，
+   * 同时提供右侧定位横线的跳转能力。详见 useTurnWindow。
+   */
+  const { visibleTurns, turns, centerIndex, startIndex, endIndex, centerOnLatest, jumpTo } =
+    useTurnWindow({ messages, sessionId, containerRef: scrollContainerRef });
+
+  /**
    * 外层消息容器滚动策略：
    * 1. 切换到不同对话时（sessionId 变化）：自动定位到该对话的最底部；
    * 2. 用户刚发出新消息时（新的 user 消息插入）：定位一次到底部以露出新提问与思考手风琴头部；
@@ -136,6 +146,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
     if (isSessionSwitch) {
       userScrolledSinceSwitchRef.current = false;
+      centerOnLatest();
+      disableScrollAnchor(el, 600);
       el.scrollTop = el.scrollHeight;
 
       let raf1 = 0;
@@ -163,9 +175,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
         clearTimeout(timer);
       };
     } else if (isNewUserTurnSent) {
+      centerOnLatest();
+      disableScrollAnchor(el, 600);
       el.scrollTop = el.scrollHeight;
     }
-  }, [sessionId, messages]);
+  }, [sessionId, messages, centerOnLatest]);
 
   const quickPrompts = [
     {
@@ -351,79 +365,104 @@ export const ChatView: React.FC<ChatViewProps> = ({
       </div>
 
       {/* Messages Stream Scroll Area
-          外层回答容器完全固定，流式生成期间与闲置期间绝不自动滚动；仅切换会话时定位到底部。 */}
-      <div
-        ref={scrollContainerRef}
-        style={{
-          '--chat-font-size': `${chatFontSize}px`,
-        } as React.CSSProperties}
-        onWheel={handleUserScrollAction}
-        onTouchMove={handleUserScrollAction}
-        onMouseDown={handleUserScrollAction}
-        onKeyDown={handleUserScrollAction}
-        className="flex-1 min-h-0 overflow-y-auto px-3 cq-md:px-6 cq-lg:px-8 py-3 cq-md:py-6 pb-6 cq-md:pb-8 overscroll-y-contain [overflow-anchor:none]"
-      >
-        {messages.length === 0 ? (
-          <div className="max-w-4xl mx-auto min-h-full flex flex-col justify-center">
-            <div className="my-auto py-4 cq-md:py-8 cq-lg:py-10 flex flex-col items-center text-center w-full max-w-lg mx-auto">
-              <img
-                src="/icon-192.png"
-                alt="SimpleUI"
-                draggable={false}
-                className="w-10 h-10 cq-md:w-12 cq-md:h-12 mb-3 cq-md:mb-4 flex-shrink-0 select-none"
-              />
-              <h1 className="text-lg cq-md:text-xl font-semibold text-[#1f2328] dark:text-[#f3f5f8] mb-1.5 cq-md:mb-2 tracking-tight">
-                {t('greetingTitle')}
-              </h1>
-              <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-4 cq-md:mb-6 max-w-md px-2">
-                {t('greetingSubtitle')}
-              </p>
+          外层回答容器完全固定，流式生成期间与闲置期间绝不自动滚动；仅切换会话时定位到底部。
+          只挂载"当前轮 ± 2"，右侧定位横线承担定位与长距离滚动（原生滚动条已隐去）。 */}
+      <div className="relative flex-1 min-h-0">
+        <div
+          ref={scrollContainerRef}
+          style={{
+            '--chat-font-size': `${chatFontSize}px`,
+          } as React.CSSProperties}
+          onWheel={handleUserScrollAction}
+          onTouchMove={handleUserScrollAction}
+          onMouseDown={handleUserScrollAction}
+          onKeyDown={handleUserScrollAction}
+          className="h-full overflow-y-auto scrollbar-invisible px-3 cq-md:px-6 cq-lg:px-8 py-3 cq-md:py-6 pb-6 cq-md:pb-8 overscroll-y-contain"
+        >
+          {messages.length === 0 ? (
+            <div className="max-w-4xl mx-auto min-h-full flex flex-col justify-center">
+              <div className="my-auto py-4 cq-md:py-8 cq-lg:py-10 flex flex-col items-center text-center w-full max-w-lg mx-auto">
+                <img
+                  src="/icon-192.png"
+                  alt="SimpleUI"
+                  draggable={false}
+                  className="w-10 h-10 cq-md:w-12 cq-md:h-12 mb-3 cq-md:mb-4 flex-shrink-0 select-none"
+                />
+                <h1 className="text-lg cq-md:text-xl font-semibold text-[#1f2328] dark:text-[#f3f5f8] mb-1.5 cq-md:mb-2 tracking-tight">
+                  {t('greetingTitle')}
+                </h1>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-4 cq-md:mb-6 max-w-md px-2">
+                  {t('greetingSubtitle')}
+                </p>
 
-              {/* Quick suggestion cards */}
-              <div className="w-full grid grid-cols-1 gap-2 cq-md:gap-2.5 text-left">
-                {quickPrompts.map((p, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => {
-                      setInput(p.prompt);
-                    }}
-                    className="flex items-start gap-2.5 cq-md:gap-3 p-2.5 cq-md:p-3.5 rounded-xl cq-md:rounded-2xl border border-black/5 dark:border-white/5 bg-white dark:bg-[#202126]/60 hover:bg-[#f3f4f7] dark:hover:bg-[#25272e] hover:border-black/10 dark:hover:border-white/10 shadow-sm transition-all text-left group"
-                  >
-                    <div className="mt-0.5 p-1 cq-md:p-1.5 rounded-xl bg-black/5 dark:bg-white/5 group-hover:scale-105 transition-transform flex-shrink-0">
-                      {p.icon}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-medium text-zinc-800 group-hover:text-zinc-950 dark:text-zinc-200 dark:group-hover:text-white truncate">
-                        {p.title}
+                {/* Quick suggestion cards */}
+                <div className="w-full grid grid-cols-1 gap-2 cq-md:gap-2.5 text-left">
+                  {quickPrompts.map((p, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => {
+                        setInput(p.prompt);
+                      }}
+                      className="flex items-start gap-2.5 cq-md:gap-3 p-2.5 cq-md:p-3.5 rounded-xl cq-md:rounded-2xl border border-black/5 dark:border-white/5 bg-white dark:bg-[#202126]/60 hover:bg-[#f3f4f7] dark:hover:bg-[#25272e] hover:border-black/10 dark:hover:border-white/10 shadow-sm transition-all text-left group"
+                    >
+                      <div className="mt-0.5 p-1 cq-md:p-1.5 rounded-xl bg-black/5 dark:bg-white/5 group-hover:scale-105 transition-transform flex-shrink-0">
+                        {p.icon}
                       </div>
-                      <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5 line-clamp-1 cq-md:line-clamp-2">
-                        {p.desc}
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-medium text-zinc-800 group-hover:text-zinc-950 dark:text-zinc-200 dark:group-hover:text-white truncate">
+                          {p.title}
+                        </div>
+                        <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5 line-clamp-1 cq-md:line-clamp-2">
+                          {p.desc}
+                        </div>
                       </div>
-                    </div>
-                  </button>
-                ))}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
-          </div>
-        ) : (
-          <div className="max-w-4xl mx-auto space-y-4 text-sm pb-2">
-            {messages.map((message, idx) => (
-              <MessageItem
-                key={message.id}
-                message={message}
-                onOpenWiki={onOpenWiki}
-                onRetry={onRetry}
-                onDelete={onDelete}
-                retryTargetId={
-                  message.role === 'user' && messages[idx + 1]?.role === 'assistant'
-                    ? messages[idx + 1].id
-                    : undefined
-                }
-              />
-            ))}
-            <div ref={messagesEndRef} className="h-6 flex-shrink-0" />
-          </div>
-        )}
+          ) : (
+            <div
+              className={`max-w-4xl mx-auto space-y-4 text-sm pb-2 ${
+                turns.length >= 2 ? 'pr-[24px]' : ''
+              }`}
+            >
+              {visibleTurns.map((turn) => (
+                <div
+                  key={turn.key}
+                  data-turn-key={turn.key}
+                  data-turn-index={turn.index}
+                  className="space-y-4"
+                >
+                  {messages
+                    .slice(turn.startMessageIndex, turn.endMessageIndex + 1)
+                    .map((message) => (
+                      <MessageItem
+                        key={message.id}
+                        message={message}
+                        onOpenWiki={onOpenWiki}
+                        onRetry={onRetry}
+                        onDelete={onDelete}
+                        retryTargetId={
+                          message.role === 'user' ? turn.assistant?.id : undefined
+                        }
+                      />
+                    ))}
+                </div>
+              ))}
+              <div ref={messagesEndRef} className="h-6 flex-shrink-0" />
+            </div>
+          )}
+        </div>
+
+        {/* 右侧定位横线：每轮一枚刻度，悬停预览、点击贴顶跳转、上下拖动连续翻轮 */}
+        <TurnRail
+          turns={turns}
+          centerIndex={centerIndex}
+          startIndex={startIndex}
+          endIndex={endIndex}
+          onJump={jumpTo}
+        />
       </div>
 
       {/* Input Area (Bottom capsule + Disclaimer) */}

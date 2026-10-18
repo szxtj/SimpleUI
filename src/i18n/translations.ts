@@ -45,6 +45,11 @@ export const translations = {
     defaultPrompt3Desc: '深入浅出讲解多模态与专家模型原理',
     defaultPrompt3Content: '简述混合专家模型 (MoE) 的路由机制与稀疏激活原理，为什么它能在 2GB 内存下高效运行？',
 
+    // 定位横线 (TurnRail)
+    turnRailLabel: '对话定位横线',
+    turnPreviewNoQuestion: '（无提问）',
+    turnPreviewEmpty: '暂无回答',
+
     // ChatInput
     placeholderInitial: '向 LLM 提问...',
     placeholderFollowUp: '追问 LLM ...',
@@ -579,6 +584,11 @@ export const translations = {
     defaultPrompt3Title: 'Science & AI Concepts',
     defaultPrompt3Desc: 'Understand Multimodal & Mixture-of-Experts architecture',
     defaultPrompt3Content: 'Explain the routing mechanism and sparse activation of Mixture-of-Experts (MoE) models, and how they run efficiently in constrained memory.',
+
+    // Turn rail
+    turnRailLabel: 'Conversation minimap',
+    turnPreviewNoQuestion: '(no question)',
+    turnPreviewEmpty: 'No answer yet',
 
     // ChatInput
     placeholderInitial: 'Ask anything...',

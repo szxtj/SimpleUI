@@ -20,6 +20,44 @@
   container-type: inline-size;
 }
 
+/**
+ * 隐藏原生滚动条（保留滚动手感与键盘/触控板滚动）。
+ *
+ * 对话区去掉了可见滚动条，长距离定位交给右侧「定位横线」：
+ * 拖横线即拖动轮次，悬停出问题与回答预览。
+ */
+.scrollbar-invisible {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollbar-invisible::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/**
+ * 定位横线两端渐隐：刻度滑进滑出时不会硬切在边界上。
+ * 用 mask 而不是 backdrop-filter —— 横线背后是空白留白，模糊透明层看不见效果。
+ */
+.rail-fade {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 15%,
+    #000 85%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 15%,
+    #000 85%,
+    transparent 100%
+  );
+}
+
 html.dark {
   color-scheme: dark;
 }

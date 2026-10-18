@@ -24,6 +24,9 @@ import { deleteUnreferencedMedia } from '../services/mediaCleanup';
 import { useImeInput } from '../hooks/useImeInput';
 import { useSessionStore } from '../hooks/useSessionStore';
 import { useChatFontSize } from '../hooks/useChatFontSize';
+import { useTurnWindow } from '../hooks/useTurnWindow';
+import { disableScrollAnchor } from '../utils/scrollAnchor';
+import { TurnRail } from './TurnRail';
 import {
   ArrowUp,
   Square,
@@ -206,6 +209,10 @@ export const SpotlightView: React.FC = () => {
   const handleUserScrollAction = useCallback(() => {
     userScrolledSinceSwitchRef.current = true;
   }, []);
+
+  /** 与主窗口同一套窗口化 + 定位横线（浮窗用紧凑刻度） */
+  const { visibleTurns, turns, centerIndex, startIndex, endIndex, centerOnLatest, jumpTo } =
+    useTurnWindow({ messages, sessionId: currentSessionId, containerRef: scrollContainerRef });
 
   /**
    * 自动切入空白会话（复用已有空会话，若无则新建）。
@@ -406,6 +413,8 @@ export const SpotlightView: React.FC = () => {
 
     if (isSessionSwitch) {
       userScrolledSinceSwitchRef.current = false;
+      centerOnLatest();
+      disableScrollAnchor(el, 600);
       el.scrollTop = el.scrollHeight;
 
       let raf1 = 0;
@@ -433,9 +442,11 @@ export const SpotlightView: React.FC = () => {
         clearTimeout(timer);
       };
     } else if (isNewUserTurnSent) {
+      centerOnLatest();
+      disableScrollAnchor(el, 600);
       el.scrollTop = el.scrollHeight;
     }
-  }, [currentSessionId, messages]);
+  }, [currentSessionId, messages, centerOnLatest]);
 
   // Check backend health & Wiki status
   useEffect(() => {
@@ -959,7 +970,8 @@ export const SpotlightView: React.FC = () => {
           </div>
         </div>
 
-        {/* Message Scroll Area */}
+        {/* Message Scroll Area（只挂载当前轮 ± 2 轮，右侧紧凑版定位横线） */}
+        <div className="relative flex-1 min-h-0">
         <div
           ref={scrollContainerRef}
           onWheel={handleUserScrollAction}
@@ -969,9 +981,11 @@ export const SpotlightView: React.FC = () => {
           style={{
             '--chat-font-size': `${chatFontSize}px`,
           } as React.CSSProperties}
-          className="flex-1 min-h-0 overflow-y-auto p-4 pb-6 space-y-4 text-sm overscroll-y-contain [overflow-anchor:none]"
+          className="h-full overflow-y-auto scrollbar-invisible p-4 pb-6 space-y-4 text-sm overscroll-y-contain"
         >
-          {messages.map((msg) => {
+          {visibleTurns.map((turn) => (
+          <div key={turn.key} data-turn-key={turn.key} data-turn-index={turn.index} className="space-y-4">
+          {messages.slice(turn.startMessageIndex, turn.endMessageIndex + 1).map((msg) => {
             if (msg.role === 'user') {
               const isCopied = copiedMsgId === msg.id;
               return (
@@ -1148,7 +1162,19 @@ export const SpotlightView: React.FC = () => {
               </div>
             );
           })}
+          </div>
+          ))}
           <div ref={scrollEndRef} className="h-6 flex-shrink-0" />
+        </div>
+
+        <TurnRail
+          turns={turns}
+          centerIndex={centerIndex}
+          startIndex={startIndex}
+          endIndex={endIndex}
+          onJump={jumpTo}
+          compact
+        />
         </div>
 
         {/* Bottom Input Capsule */}

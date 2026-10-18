@@ -206,13 +206,15 @@ export function useSessionStore(
             session: ChatSession;
             mainSessionId?: string | null;
             selectInMain?: boolean;
+            moveToTop?: boolean;
           } = JSON.parse(e.data);
           if (!data?.session) return;
 
           const prev = sessionsRef.current;
           const idx = prev.findIndex((s) => s.id === data.session.id);
-          const next =
-            idx >= 0
+          const next = data.moveToTop
+            ? [data.session, ...prev.filter((s) => s.id !== data.session.id)]
+            : idx >= 0
               ? prev.map((s, i) => (i === idx ? data.session : s))
               : [data.session, ...prev];
           sessionsRef.current = next;
@@ -729,14 +731,12 @@ export function useSessionStore(
           } = await res.json();
           if (data?.session) {
             setSessions((prev) => {
-              const idx = prev.findIndex((s) => s.id === data.session!.id);
-              if (idx >= 0) {
-                const next = [...prev];
-                next[idx] = mergeSessionPreservingProgress(prev[idx], data.session!);
-                sessionsRef.current = next;
-                return next;
-              }
-              const next = [data.session!, ...prev];
+              const existing = prev.find((s) => s.id === data.session!.id);
+              const merged = existing
+                ? mergeSessionPreservingProgress(existing, data.session!)
+                : data.session!;
+              // Sending a message makes this chat the most recent one, so it leads the list.
+              const next = [merged, ...prev.filter((s) => s.id !== merged.id)];
               sessionsRef.current = next;
               return next;
             });
@@ -807,11 +807,12 @@ export function useSessionStore(
           const data: { session?: ChatSession; sessionId?: string } = await res.json();
           if (data?.session) {
             setSessions((prev) => {
-              const next = prev.map((s) =>
-                s.id === data.session!.id
-                  ? mergeSessionPreservingProgress(s, data.session!)
-                  : s
-              );
+              const existing = prev.find((s) => s.id === data.session!.id);
+              const merged = existing
+                ? mergeSessionPreservingProgress(existing, data.session!)
+                : data.session!;
+              // Retrying counts as new activity, so the chat moves back to the top.
+              const next = [merged, ...prev.filter((s) => s.id !== merged.id)];
               sessionsRef.current = next;
               return next;
             });

@@ -156,4 +156,46 @@ $$`;
   assert(!out.includes("$$\n\n$$\n\\begin{aligned}"));
 });
 
+// TC-12: \[ ... \] inside a list item must not turn following text into an indented code block
+test("TC-12: \\[ ... \\] inside a list item keeps following text out of a code block", () => {
+  const input = `2.  前面的系数 \\(A e^{\\frac{1}{4}}\\) 对应 \\(\\frac{1}{\\sqrt{2\\pi}\\sigma}\\)。
+    已知 \\(\\sigma = \\frac{1}{\\sqrt{2}}\\)，代入右边：
+    \\[
+\\frac{1}{\\sqrt{2\\pi} \\cdot \\frac{1}{\\sqrt{2}}} = \\frac{1}{\\sqrt{\\pi}}
+\\]
+    所以：\\(A e^{\\frac{1}{4}} = \\frac{1}{\\sqrt{\\pi}}\\)。
+    解得：**\\(A = \\frac{1}{\\sqrt{\\pi}} e^{-\\frac{1}{4}}\\)**。（第一空搞定！）`;
+  const out = preprocessMarkdown(input);
+  // 公式块留在列表项内容列（4 空格），后续正文也保留缩进，不会被当成缩进代码块
+  assert(out.includes("    $$\n    \\frac{1}{\\sqrt{2\\pi} \\cdot \\frac{1}{\\sqrt{2}}} = \\frac{1}{\\sqrt{\\pi}}\n    $$"));
+  assert(out.includes("    所以：$A e^{\\frac{1}{4}} = \\frac{1}{\\sqrt{\\pi}}$。"));
+  assert(out.includes("    解得：**$A = \\frac{1}{\\sqrt{\\pi}} e^{-\\frac{1}{4}}$**。（第一空搞定！）"));
+  assert(!/\n\$\$\n/.test(out.replace(/\n    \$\$/g, '')));
+});
+
+// TC-13: native multiline $$ block inside a list item keeps its indentation
+test("TC-13: native $$ block inside a list item keeps indentation", () => {
+  const input = `1.  已知：
+    $$
+    x^2
+    $$
+    所以 x = 0。`;
+  const out = preprocessMarkdown(input);
+  assert(out.includes("    $$\n    x^2\n    $$"));
+  assert(out.includes("    所以 x = 0。"));
+});
+
+// TC-14: bare LaTeX environment inside a list item keeps indentation
+test("TC-14: bare LaTeX env inside a list item keeps indentation", () => {
+  const input = `1.  矩阵：
+    \\begin{pmatrix}
+1 & 0 \\\\
+0 & 1
+\\end{pmatrix}
+    说明文字。`;
+  const out = preprocessMarkdown(input);
+  assert(out.includes("    $$\n    \\begin{pmatrix}\n    1 & 0 \\\\\n    0 & 1\n    \\end{pmatrix}\n    $$"));
+  assert(out.includes("    说明文字。"));
+});
+
 console.log(`\n🎉 All ${passed} unit tests passed successfully!`);
