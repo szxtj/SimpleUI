@@ -262,7 +262,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       {/* Top 52px Header Bar */}
       <div
-        className={`h-[52px] border-b border-black/5 dark:border-white/5 bg-[#f8f9fb]/80 dark:bg-[#18191c]/80 backdrop-blur flex items-center justify-between flex-shrink-0 select-none transition-all duration-200 ${
+        className={`relative z-20 h-[52px] border-b border-black/5 dark:border-white/5 bg-[#f8f9fb]/80 dark:bg-[#18191c]/80 backdrop-blur flex items-center justify-between flex-shrink-0 select-none transition-all duration-200 ${
           !isSidebarOpen ? 'pl-[78px] pr-4 cq-md:pr-6' : 'px-4 cq-md:px-6'
         }`}
       >
@@ -427,7 +427,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       </div>
 
       {/* Input Area (Bottom capsule + Disclaimer) */}
-      <div className="w-full px-3 cq-md:px-6 cq-lg:px-8 pb-3 cq-md:pb-4 pt-1 bg-gradient-to-t from-[#f8f9fb] via-[#f8f9fb]/95 to-transparent dark:from-[#18191c] dark:via-[#18191c]/95 dark:to-transparent">
+      <div className="relative z-10 w-full px-3 cq-md:px-6 cq-lg:px-8 pb-3 cq-md:pb-4 pt-1 bg-gradient-to-t from-[#f8f9fb] via-[#f8f9fb]/95 to-transparent dark:from-[#18191c] dark:via-[#18191c]/95 dark:to-transparent">
         <div className="max-w-4xl mx-auto flex flex-col items-center">
           <ChatInput
             input={input}

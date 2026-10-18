@@ -988,7 +988,7 @@ export class SubtitleServiceAPI {
   }
 
   static async startDownload(
-    model: 'all' | 'asr' | 'translate' = 'all'
+    model: 'all' | 'asr' | 'translate' | 'segment' | 'turn' = 'all'
   ): Promise<{ ok: boolean; downloadState?: SubtitleDownloadState }> {
     try {
       const res = await fetch('/api/subtitles/download', {

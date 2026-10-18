@@ -46,3 +46,6 @@ server/wiki_config.json
 # 但 254MB 的模型与 108MB 的打包期 Node 缓存不入库。
 bin/audiocpp/models/
 bin/node/
+
+# 字幕 CoreML helper 构建产物（由 build_mac_app.sh 编译）
+bin/subtitle_ml_helper

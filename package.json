@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "start": "node server/proxy.js",
     "build:app": "./build_mac_app.sh",
-    "build:install": "./build_mac_app.sh install"
+    "build:install": "./build_mac_app.sh install",
+    "test:subtitles": "node scripts/test_subtitle_segmentation.js"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -28,7 +29,8 @@
     "remark-cjk-friendly": "^2.3.1",
     "remark-gfm": "^4.0.0",
     "remark-math": "^6.0.0",
-    "tailwind-merge": "^3.0.2"
+    "tailwind-merge": "^3.0.2",
+    "tokenizers": "^0.23.2"
   },
   "devDependencies": {
     "@types/katex": "^0.16.7",

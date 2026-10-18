@@ -264,7 +264,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 实时双语字幕服务 API（TEN-VAD + Confucius4-R2T2 + Index-Translate-2B 端侧离线流）
+  // 实时双语字幕服务 API（R2T2 + SaT 断句 + Index-Translate-2B + Smart Turn 端侧离线流）
   if (req.url.startsWith('/api/subtitles/')) {
     subtitleService.handleApi(req, res);
     return;
@@ -382,7 +382,7 @@ function cleanupAndExit(code = 0) {
       // ignore
     }
   }
-  // 实时字幕服务与三级模型子进程随退出一并终止
+  // 实时字幕服务与模型/helper 子进程随退出一并终止
   if (subtitleService) {
     try {
       subtitleService.shutdownSync();

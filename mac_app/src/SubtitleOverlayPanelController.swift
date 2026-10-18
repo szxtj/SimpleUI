@@ -42,13 +42,9 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
     // 160ms @ 16kHz = 2560 采样点
     private let chunkSamples = 2560
     private var pendingSamples: [Int16] = []
-    private var consecutiveDeadZeroChunks = 0
-    // 仅当系统音频完全数字零静音（无任何视频/音频播放）连续满 25 帧 (4.0s) 时才标记休眠，有声音即 100% 连续无损流式推送
-    private let maxDeadZeroChunks = 25
-    private let deadSilenceEpsilon: Double = 0.00005
-
-    // FIFO 串行发送队列（支持合并积压切片，杜绝丢帧漏字）
-    private var outboundQueue: [(samples: [Int16], isFinal: Bool)] = []
+    // 无 VAD、无静音门控：所有 PCM 都进入 FIFO。队列有上限，溢出直接 fatal。
+    private let maxOutboundBatches = 64
+    private var outboundQueue: [[Int16]] = []
     private var isSendingFrame = false
 
     var isVisible: Bool {
@@ -238,7 +234,7 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
             do {
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
                 guard let display = content.displays.first else {
-                    NSLog("[SubtitleOverlay] 未找到活动显示器")
+                    self.notifyFatal(stage: "capture", code: "NO_DISPLAY", message: "未找到活动显示器")
                     return
                 }
                 let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
@@ -260,7 +256,6 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
                     self.samplesLock.lock()
                     self.pendingSamples.removeAll()
                     self.outboundQueue.removeAll()
-                    self.consecutiveDeadZeroChunks = 0
                     self.isSendingFrame = false
                     self.samplesLock.unlock()
                 }
@@ -269,7 +264,7 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
                 self.isRecording = true
                 NSLog("[SubtitleOverlay] ✅ 系统音频 160ms 无门控连续内录已启动")
             } catch {
-                NSLog("[SubtitleOverlay] ❌ 启动系统音频内录失败: \(error)")
+                self.notifyFatal(stage: "capture", code: "CAPTURE_START_FAILED", message: "启动系统音频内录失败: \(error.localizedDescription)")
             }
         }
     }
@@ -281,7 +276,6 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
             self.samplesLock.lock()
             self.pendingSamples.removeAll()
             self.outboundQueue.removeAll()
-            self.consecutiveDeadZeroChunks = 0
             self.isSendingFrame = false
             self.samplesLock.unlock()
         }
@@ -307,7 +301,10 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
         var dataPointer: UnsafeMutablePointer<Int8>?
         var actualLength = 0
         CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &actualLength, dataPointerOut: &dataPointer)
-        guard let ptr = dataPointer, actualLength > 0 else { return }
+        guard let ptr = dataPointer, actualLength > 0 else {
+            notifyFatal(stage: "capture", code: "AUDIO_BUFFER_EMPTY", message: "系统音频缓冲区为空")
+            return
+        }
 
         let isFloat = (asbd.pointee.mFormatFlags & kAudioFormatFlagIsFloat) != 0
         let bitsPerChannel = Int(asbd.pointee.mBitsPerChannel)
@@ -330,7 +327,10 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
             }
         }
 
-        guard !samples.isEmpty else { return }
+        guard !samples.isEmpty else {
+            notifyFatal(stage: "capture", code: "AUDIO_FORMAT_UNSUPPORTED", message: "系统音频格式不受支持")
+            return
+        }
 
         samplesLock.lock()
         pendingSamples.append(contentsOf: samples)
@@ -338,28 +338,15 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
         while pendingSamples.count >= chunkSamples {
             let slice = Array(pendingSamples.prefix(chunkSamples))
             pendingSamples.removeFirst(chunkSamples)
-
-            var sumSq: Double = 0
-            for s in slice {
-                let f = Double(s) / 32768.0
-                sumSq += f * f
-            }
-            let rms = sqrt(sumSq / Double(slice.count))
-
-            // 只要不是连续 4 秒以上的纯数字零静音（即有任何视频/会议声音），100% 连续推送给 ASR 模型
-            if rms >= deadSilenceEpsilon {
-                consecutiveDeadZeroChunks = 0
-                outboundQueue.append((samples: slice, isFinal: false))
-            } else {
-                consecutiveDeadZeroChunks += 1
-                if consecutiveDeadZeroChunks <= maxDeadZeroChunks {
-                    let reachedIdle = consecutiveDeadZeroChunks == maxDeadZeroChunks
-                    outboundQueue.append((samples: slice, isFinal: reachedIdle))
-                }
-            }
+            outboundQueue.append(slice)
         }
+        let overflow = outboundQueue.count > maxOutboundBatches
         samplesLock.unlock()
 
+        if overflow {
+            notifyFatal(stage: "capture", code: "CAPTURE_BACKLOG", message: "系统音频发送队列积压超过上限")
+            return
+        }
         drainOutboundQueue()
     }
 
@@ -371,19 +358,12 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
         }
         isSendingFrame = true
 
-        // 合并队列中待发的最多 4 个 160ms 切片（640ms），既保证 160ms 实时性，又彻底避免 HTTP 排队丢帧
+        // 合并队列中待发的最多 4 个 160ms 切片（640ms），既保证实时性，又避免 HTTP 排队。
         let batchCount = min(4, outboundQueue.count)
         var combinedSamples: [Int16] = []
         combinedSamples.reserveCapacity(batchCount * chunkSamples)
-        var batchIsFinal = false
-
         for _ in 0..<batchCount {
-            let item = outboundQueue.removeFirst()
-            combinedSamples.append(contentsOf: item.samples)
-            if item.isFinal {
-                batchIsFinal = true
-                break
-            }
+            combinedSamples.append(contentsOf: outboundQueue.removeFirst())
         }
         samplesLock.unlock()
 
@@ -392,9 +372,7 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
             rawData.append(contentsOf: raw)
         }
 
-        let endpoint = batchIsFinal
-            ? "\(ProcessManager.baseURLString)/api/subtitles/feed?format=pcm&is_final=1"
-            : "\(ProcessManager.baseURLString)/api/subtitles/feed?format=pcm"
+        let endpoint = "\(ProcessManager.baseURLString)/api/subtitles/feed?format=pcm"
         guard let url = URL(string: endpoint) else {
             samplesLock.lock()
             isSendingFrame = false
@@ -408,13 +386,39 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
         req.httpBody = rawData
         req.timeoutInterval = 5.0
 
-        URLSession.shared.dataTask(with: req) { [weak self] _, _, _ in
+        URLSession.shared.dataTask(with: req) { [weak self] data, response, error in
             guard let self = self else { return }
             self.samplesLock.lock()
             self.isSendingFrame = false
             self.samplesLock.unlock()
+            if let error = error {
+                self.notifyFatal(stage: "feed", code: "FEED_REQUEST_FAILED", message: "音频上传失败: \(error.localizedDescription)")
+                return
+            }
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                self.notifyFatal(stage: "feed", code: "FEED_HTTP_ERROR", message: "音频上传返回 HTTP \(code)")
+                return
+            }
+            if let data = data,
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               (obj["ok"] as? Bool) != true {
+                self.notifyFatal(stage: "feed", code: "FEED_REJECTED", message: "字幕服务拒绝音频帧")
+                return
+            }
             self.drainOutboundQueue()
         }.resume()
+    }
+
+    private func notifyFatal(stage: String, code: String, message: String) {
+        NSLog("[SubtitleOverlay] ❌ FATAL \(stage)/\(code): \(message)")
+        stopAudioCapture()
+        let payload: [String: Any] = ["stage": stage, "code": code, "message": message]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return }
+        DispatchQueue.main.async {
+            self.webView?.evaluateJavaScript("window.onSubtitleFatalError && window.onSubtitleFatalError(\(json))")
+        }
     }
 
     private func postControl(action: String) {

@@ -178,7 +178,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     return s;
   };
 
-  const handleSubtitleDownload = async (model: 'all' | 'asr' | 'translate' = 'all') => {
+  const handleSubtitleDownload = async (model: 'all' | 'asr' | 'translate' | 'segment' | 'turn' = 'all') => {
     setSubtitleBusy(true);
     try {
       await SubtitleServiceAPI.startDownload(model);
@@ -1689,7 +1689,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                     {subtitleStatus.downloadState?.active
                       ? `${t('subtitleDetailDownloading')} (${subtitleStatus.downloadState.progressPercent.toFixed(1)}%)`
                       : subtitleStatus.loading
-                      ? `${t('subtitleDetailLoading')} (${Math.min(2, (subtitleStatus.loadingStage || 0) + 1)}/2)`
+                      ? `${t('subtitleDetailLoading')} (${Math.min(3, (subtitleStatus.loadingStage || 0) + 1)}/3)`
                       : subtitleStatus.running
                       ? t('subtitleDetailActive')
                       : subtitleStatus.paused
@@ -1746,7 +1746,9 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                 {(
                   [
                     { key: 'asr' as const, label: t('subtitleModelStage1'), fallbackSize: '2.31 GB' },
-                    { key: 'translate' as const, label: t('subtitleModelStage2'), fallbackSize: '1.25 GB' },
+                    { key: 'segment' as const, label: t('subtitleModelStage2'), fallbackSize: '250 MB' },
+                    { key: 'translate' as const, label: t('subtitleModelStage3'), fallbackSize: '1.25 GB' },
+                    { key: 'turn' as const, label: t('subtitleModelStage4'), fallbackSize: '16.8 MB' },
                   ]
                 ).map((item) => {
                   const m = subtitleStatus?.modelsStatus?.[item.key];

@@ -288,9 +288,18 @@ export interface VoicePermissionStatus {
   inputMonitoring: boolean;
 }
 
+export type SubtitleModelKey = 'asr' | 'translate' | 'segment' | 'turn';
+
+export interface SubtitleFatalError {
+  stage: string;
+  code: string;
+  message: string;
+  detail?: string | null;
+}
+
 /** 实时字幕服务：单个模型的完整性与磁盘状态 */
 export interface SubtitleModelItemStatus {
-  key: 'asr' | 'translate';
+  key: SubtitleModelKey;
   name: string;
   shortName: string;
   ready: boolean;
@@ -319,7 +328,7 @@ export interface SubtitleDownloadState {
   active: boolean;
   phase: 'idle' | 'probing' | 'downloading' | 'cleaning' | 'completed' | 'error' | 'cancelled';
   targetModel: string | null;
-  currentModelKey: 'asr' | 'translate' | null;
+  currentModelKey: SubtitleModelKey | null;
   currentModelName: string;
   currentFile: string;
   selectedSource: {
@@ -353,10 +362,10 @@ export interface SubtitleServiceStatus {
   runtimeReady: boolean;
   runtimeStatus: SubtitleRuntimeStatus;
   missingModels: string[];
-  modelsStatus: {
-    asr?: SubtitleModelItemStatus;
-    translate?: SubtitleModelItemStatus;
-  };
+  modelsStatus: Partial<Record<SubtitleModelKey, SubtitleModelItemStatus>>;
+  state?: 'idle' | 'loading' | 'listening' | 'finishing' | 'paused' | 'error';
+  mlReady?: boolean;
+  fatalError?: SubtitleFatalError | null;
   downloadState: SubtitleDownloadState;
   storageDir: string;
   sourceLang: string;

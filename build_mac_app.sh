@@ -67,7 +67,7 @@ mkdir -p "$RESOURCES_DIR"
 # 3. 编译 Swift 原生源码
 echo "[3/4] 编译 Swift 原生双窗口应用..."
 swiftc -O \
-    -target arm64-apple-macos13.0 \
+    -target arm64-apple-macos15.0 \
     -framework Cocoa \
     -framework WebKit \
     -framework Carbon \
@@ -96,6 +96,18 @@ swiftc -O \
     mac_app/src/TranslationMainView.swift \
     mac_app/src/TranslationPanelController.swift \
     -o "$MACOS_DIR/SimpleUI"
+
+# 编译字幕 CoreML helper（SaT 断句 + Smart Turn 端点）
+echo "  · 编译字幕 CoreML helper..."
+mkdir -p "bin" "$RESOURCES_DIR/bin"
+swiftc -O \
+    -target arm64-apple-macos15.0 \
+    -framework CoreML \
+    -framework Foundation \
+    mac_app/helper/SubtitleMLHelper.swift \
+    -o "bin/subtitle_ml_helper"
+chmod +x "bin/subtitle_ml_helper"
+copy_item "bin/subtitle_ml_helper" "$RESOURCES_DIR/bin/subtitle_ml_helper"
 
 # 拷贝资源
 cp mac_app/Resources/Info.plist "$CONTENTS_DIR/Info.plist"
@@ -393,14 +405,28 @@ copy_item package.json "$RESOURCES_DIR/package.json"
 SERVER_DEPS=$(node -e '
 const fs=require("fs"), path=require("path");
 const specs=new Set();
-for (const f of fs.readdirSync("server").filter(f=>f.endsWith(".js"))) {
-  const src=fs.readFileSync(path.join("server",f),"utf8");
+const walkServer=(dir)=>{
+  const out=[];
+  for (const ent of fs.readdirSync(dir,{withFileTypes:true})) {
+    const full=path.join(dir,ent.name);
+    if (ent.isDirectory()) out.push(...walkServer(full));
+    else if (ent.name.endsWith(".js")) out.push(full);
+  }
+  return out;
+};
+for (const f of walkServer("server")) {
+  const src=fs.readFileSync(f,"utf8");
   for (const m of src.matchAll(/(?:^|\n)\s*import\s+[^;\n]*?from\s*["\x27]([^"\x27]+)["\x27]/g)) {
     const s=m[1];
     if (s.startsWith(".")||s.startsWith("/")||s.startsWith("node:")) continue;
     specs.add(s.startsWith("@") ? s.split("/").slice(0,2).join("/") : s.split("/")[0]);
   }
   for (const m of src.matchAll(/\bimport\s*\(\s*["\x27]([^"\x27]+)["\x27]\s*\)/g)) {
+    const s=m[1];
+    if (s.startsWith(".")||s.startsWith("/")||s.startsWith("node:")) continue;
+    specs.add(s.startsWith("@") ? s.split("/").slice(0,2).join("/") : s.split("/")[0]);
+  }
+  for (const m of src.matchAll(/\brequire\s*\(\s*["\x27]([^"\x27]+)["\x27]\s*\)/g)) {
     const s=m[1];
     if (s.startsWith(".")||s.startsWith("/")||s.startsWith("node:")) continue;
     specs.add(s.startsWith("@") ? s.split("/").slice(0,2).join("/") : s.split("/")[0]);

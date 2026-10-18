@@ -1,23 +1,22 @@
-// 实时双语字幕服务端托管模块 (Subtitle Service — 两级极速流式架构 · 纯按需启停与统一进程看门狗管理)
-// 纯端侧离线两级专属流水线（与语音输入服务 1236 完全独立）：
+// 实时双语字幕服务端托管模块（Continuous ASR + SaT SOTA segmentation + Index-Translate）
+// 纯端侧离线流水线（与语音输入服务 1236 完全独立）：
 //   - 专属存储目录：~/Library/Application Support/SimpleUI/models/subtitles_pipeline/
-//   - 第 1 级：davidxifeng/Confucius4-R2T2-gguf (Q8_0)            -> r2t2-q8_0.gguf
-//             (audio.cpp `confucius4_r2t2` 家族，Metal 后端，Longest Stable Prefix 追加式流式识别)
-//             由内置 audiocpp_server (端口 1250) 托管；每个话语一个 /v1/audio/transcriptions/live 请求，
-//             chunked PCM 流入、SSE `transcript.text.delta/done` 流出；done 即话语权威终稿。
-//   - 第 2 级：IndexTeam/Index-Translate-2B-GGUF                  -> index_translate_2b_q4_k_m.gguf (llama-server 1249 极速翻译)
+//   - 第 1 级：davidxifeng/Confucius4-R2T2-gguf (Q8_0) -> r2t2-q8_0.gguf
+//             audio.cpp `confucius4_r2t2`（Metal），Longest Stable Prefix 追加式流式识别；
+//             audiocpp_server 端口 1250，每条长 live 请求持续接收 PCM。
+//   - 第 2 级：IndexTeam/Index-Translate-2B-GGUF Q4_K_M -> llama-server 端口 1249。
+//   - 断句：segment-any-text/sat-3l-sm CoreML FP16（240MB），Swift helper 跑 ANE/CPU；
+//           XLM-R fast tokenizer 提供 offset mapping，模型概率直接切原文。
+//   - 语义端点：Smart Turn v3.2 CoreML FP16（16.8MB），旁路判断“这一轮说完了”，只触发 live 收尾。
 //
-// 与旧架构的关键差异：
-//   - R2T2 的 Longest Stable Prefix 保证「已提交文字永不回改」（append-only），标点/大小写由模型原生输出。
-//   - 话语（utterance）由系统数字音频静音计时驱动：有声开启 live 请求，静音满 utteranceEndSilenceMs
-//     补 300ms 静音后关闭请求体，done 事件带回整句终稿 → 按句末标点切分定稿并送翻译。
-//   - 两个后台服务（audiocpp_server / llama-server）均有健康巡检 + 崩溃自愈（限次重拉），翻译失败有重试与可见化。
+// 关键契约：
+//   - 无 VAD：所有 PCM 都直连 R2T2，不做 RMS/静音门控、不丢帧。
+//   - R2T2 的 delta 是 append-only 稳定前缀；done 只在主动 close 时返回未提交尾部。
+//   - 不自动重试、不自动重启、不自动重连；任何环失败 -> fatal 并停止链路。
+//   - 原文只追加显示；译文只按完整句追加，收尾尾部是唯一允许的“半句”。
 //
-// 生命周期契约：
-//   - App 启动时绝不自动拉起字幕模型（0 后台常驻显存/内存），且启动时自动清扫上次残留的旧进程与无用缓存；
-//   - 仅当用户从状态栏菜单开启字幕窗口（POST /api/subtitles/start）时，按阶段依次加载两级模型并实时广播加载进度；
-//   - 两个模型全部就绪（modelsLoaded = true）后，才进入就绪监听态；
-//   - 关闭字幕窗口（POST /api/subtitles/stop）或退出 App（shutdownSync / shutdownForce）时，立刻终止并卸载全部模型与子进程。
+// 生命周期：App 启动不加载模型；打开字幕窗口 start() 按 ASR -> 翻译 -> CoreML helper 三阶段加载；
+// 关闭窗口 stop() 立刻卸载全部模型与子进程。
 
 import http from 'http';
 import https from 'https';
@@ -27,6 +26,9 @@ import os from 'os';
 import { spawn, execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { startWatchdog } from './watchdog.js';
+import { SubtitleError, SubtitleMlHelper } from './subtitles/ml_helper.js';
+import { SatSegmenter } from './subtitles/segmenter.js';
+import { TranslationEngine } from './subtitles/translation.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,6 +40,7 @@ const CONFIG_FILE = path.join(userConfigDir, 'subtitles_config.json');
 // PID 文件（与 ttf_service / asr_service 统一纳入 watchdog 与启动/退出清扫体系）
 const ASR_PID_FILE = '/tmp/simpleui_subtitle_audiocpp.pid'; // audiocpp_server (R2T2 流式 ASR, 端口 1250)
 const TRANS_PID_FILE = '/tmp/simpleui_subtitle_trans.pid'; // llama-server (Index-Translate, 端口 1249)
+const ML_PID_FILE = '/tmp/simpleui_subtitle_ml.pid'; // Swift CoreML helper (SaT / Smart Turn)
 
 // 字幕 ASR 服务（audio.cpp）端口与派生配置文件
 const ASR_SERVER_PORT = 1250;
@@ -94,31 +97,129 @@ export const MODEL_SPECS = {
       },
     ],
   },
+  /**
+   * SaT-3l-sm (Segment Any Text, SOTA) CoreML FP16 断句模型。
+   * 权重与 CoreML 转换均来自 HuggingFace；分词器使用 XLM-R SentencePiece。
+   * 该模型目录必须完整下载；Node 侧通过 Swift CoreML helper 调用，跑在 ANE/CPU 上。
+   */
+  segment: {
+    name: 'SaT-3l-sm CoreML (SOTA 智能断句)',
+    shortName: 'SaT-3l-sm (CoreML)',
+    repo: 'smdesai/SaT',
+    sizeDesc: '250 MB',
+    expectedBytes: 249999974,
+    dstPrefix: 'SaT.mlmodelc',
+    files: [
+      {
+        src: 'SaT.mlmodelc/coremldata.bin',
+        dst: 'SaT.mlmodelc/coremldata.bin',
+        minBytes: 200,
+        expectedBytes: 347,
+        optional: false,
+      },
+      {
+        src: 'SaT.mlmodelc/analytics/coremldata.bin',
+        dst: 'SaT.mlmodelc/analytics/coremldata.bin',
+        minBytes: 100,
+        expectedBytes: 241,
+        optional: false,
+      },
+      {
+        src: 'SaT.mlmodelc/model.mil',
+        dst: 'SaT.mlmodelc/model.mil',
+        minBytes: 30000,
+        expectedBytes: 39576,
+        optional: false,
+      },
+      {
+        src: 'SaT.mlmodelc/metadata.json',
+        dst: 'SaT.mlmodelc/metadata.json',
+        minBytes: 1000,
+        expectedBytes: 2228,
+        optional: true,
+      },
+      {
+        src: 'SaT.mlmodelc/weights/weight.bin',
+        dst: 'SaT.mlmodelc/weights/weight.bin',
+        minBytes: 229 * 1024 * 1024,
+        expectedBytes: 240860864,
+        optional: false,
+      },
+      {
+        // XLM-R fast tokenizer（含 SentencePiece 词表与 offset mapping）
+        src: 'tokenizer.json',
+        dst: 'xlmr_tokenizer.json',
+        repo: 'FacebookAI/xlm-roberta-base',
+        minBytes: 8 * 1024 * 1024,
+        expectedBytes: 9096718,
+        optional: false,
+      },
+    ],
+  },
+  /**
+   * Smart Turn v3.2 CoreML FP16 语义端点模型。
+   * 只做“这一轮说完了没有”的概率判断；不门控音频、不切句。
+   */
+  turn: {
+    name: 'Smart Turn v3.2 CoreML (语义端点检测)',
+    shortName: 'Smart Turn v3.2 (CoreML)',
+    repo: 'aufklarer/Smart-Turn-v3.2-CoreML',
+    sizeDesc: '16.8 MB',
+    expectedBytes: 16775094,
+    dstPrefix: 'smart_turn.mlmodelc',
+    files: [
+      {
+        src: 'smart_turn.mlmodelc/coremldata.bin',
+        dst: 'smart_turn.mlmodelc/coremldata.bin',
+        minBytes: 400,
+        expectedBytes: 643,
+        optional: false,
+      },
+      {
+        src: 'smart_turn.mlmodelc/analytics/coremldata.bin',
+        dst: 'smart_turn.mlmodelc/analytics/coremldata.bin',
+        minBytes: 100,
+        expectedBytes: 243,
+        optional: false,
+      },
+      {
+        src: 'smart_turn.mlmodelc/model.mil',
+        dst: 'smart_turn.mlmodelc/model.mil',
+        minBytes: 50000,
+        expectedBytes: 69968,
+        optional: false,
+      },
+      {
+        src: 'smart_turn.mlmodelc/weights/weight.bin',
+        dst: 'smart_turn.mlmodelc/weights/weight.bin',
+        minBytes: 15 * 1024 * 1024,
+        expectedBytes: 16714240,
+        optional: false,
+      },
+    ],
+  },
 };
 
 export const REQUIRED_MODELS = MODEL_SPECS;
 
+// 面板/下载/状态统一按实际链路顺序：ASR -> SaT 断句 -> 翻译；Smart Turn 为旁路端点，列最后。
+export const MODEL_ORDER = ['asr', 'segment', 'translate', 'turn'];
+
 const DEFAULT_CONFIG = {
   enabled: true,
   autoStart: false, // 严格按需启动：仅在打开字幕窗口时加载模型
-  sampleRate: 16000,
-  // R2T2 流式块大小（ms）
-  asrChunkMs: 640,
-  // 话语边界：连续静音满该值 → 补 300ms 静音关闭 live 请求，收取 done 终稿
-  utteranceEndSilenceMs: 640,
-  // 单话语最长时长上限（防止长视频背景音下会话无限累积导致 O(t) 预填充膨胀）
-  utteranceMaxMs: 12000,
-  // done 事件兜底超时：关闭请求体后该时限内未收到终稿，则按已收到的增量文本定稿
-  utteranceDoneTimeoutMs: 4000,
+  // live 流硬上限：超过直接报错，不半句强切
+  utteranceMaxMs: 90000,
+  // 关闭请求体后等待 done 的硬超时；超时直接 fatal
+  utteranceDoneTimeoutMs: 15000,
+  // SaT 句界阈值（0~1）；0.5 为官方默认附近，避免在逗号处过切
+  segmentThreshold: 0.5,
+  segmentLookaheadTokens: 4,
+  // Smart Turn 语义端点阈值
+  turnThreshold: 0.5,
   sourceLang: 'en',
   targetLang: 'zh',
 };
-
-function cleanWordToken(w) {
-  return String(w || '')
-    .toLowerCase()
-    .replace(/^[^a-z0-9']+|[^a-z0-9']+$/g, '');
-}
 
 function readPidFile(pidFile) {
   try {
@@ -191,95 +292,6 @@ function resolveLlamaRuntime() {
   };
 }
 
-const ABBREVIATIONS_WITH_DOT = new Set([
-  'mr.',
-  'mrs.',
-  'ms.',
-  'dr.',
-  'prof.',
-  'sr.',
-  'jr.',
-  'vs.',
-  'st.',
-  'etc.',
-  'e.g.',
-  'i.e.',
-  'u.s.',
-  'u.k.',
-  'fig.',
-  'inc.',
-  'ltd.',
-  'co.',
-  'no.',
-]);
-
-const FALSE_PUNCT_HANGING_WORDS = new Set([
-  'a',
-  'an',
-  'the',
-  'this',
-  'that',
-  'these',
-  'those',
-  'my',
-  'your',
-  'his',
-  'her',
-  'its',
-  'our',
-  'their',
-  'to',
-  'of',
-  'in',
-  'on',
-  'for',
-  'with',
-  'at',
-  'by',
-  'from',
-  'about',
-  'into',
-  'up',
-  'and',
-  'or',
-  'but',
-  'so',
-  'because',
-  'if',
-  'when',
-  'while',
-  'is',
-  'am',
-  'are',
-  'was',
-  'were',
-  'be',
-  'been',
-  'have',
-  'has',
-  'had',
-  'do',
-  'does',
-  'did',
-  'will',
-  'would',
-  'can',
-  'could',
-  'should',
-  'very',
-  'too',
-  'more',
-  'most',
-  'hundred',
-  'thousand',
-  'million',
-  'billion',
-]);
-
-/**
- * 解析标准内置文件夹中的 audio.cpp 服务端 (audiocpp_server) 及其运行时根目录。
- * 兼容开发态 (../bin/audiocpp)、build/SimpleUI.app 打包态 (../asr) 与 /Applications 安装态。
- */
 function resolveAudiocppRuntime() {
   const roots = [
     path.resolve(__dirname, '../bin/audiocpp'),
@@ -308,30 +320,6 @@ function stripThinkTags(text) {
     out = out.split('</think>').pop();
   }
   return out.replace(/^<think>/i, '').trim();
-}
-
-/**
- * 系统数字音频有声检测器：
- * ScreenCaptureKit 采集的是纯净数字内录流，无系统音频播放时为绝对静音（RMS 接近 0）。
- * 因此无需任何花哨频带门控或 ONNX 模型，只要系统有声音输出（rms >= 0.0005）即直接送入流式 ASR 模型！
- */
-class SystemAudioDetector {
-  detectVoice(pcmBuffer, activeSession = false) {
-    const sampleCount = Math.floor(pcmBuffer.length / 2);
-    if (sampleCount === 0) return { isSpeech: false, rms: 0, voiceScore: 0 };
-
-    let sumSq = 0;
-    for (let i = 0; i < sampleCount; i++) {
-      const s = pcmBuffer.readInt16LE(i * 2) / 32768.0;
-      sumSq += s * s;
-    }
-
-    const rms = Math.sqrt(sumSq / sampleCount);
-    // 未建会话时极低门限 (0.0008, -62dBFS) 立即触发录入；已建会话中将微弱视频底噪 (<0.002, -54dBFS) 视为句间停顿以便自然收尾重置上下文
-    const threshold = activeSession ? 0.002 : 0.0008;
-    const isSpeech = rms >= threshold;
-    return { isSpeech, rms, voiceScore: isSpeech ? Math.min(1, rms * 20) : 0 };
-  }
 }
 
 /**
@@ -398,11 +386,13 @@ class SubtitleAsrEngine {
           task: 'asr',
           mode: 'streaming',
           session_options: {
+            // M4 折中：640ms + unfixed 2/3 + max_tokens 16 + rollback false。
+            // 官方默认 2/5/32 更准，但长流 final flush 更慢；B 在保持标点正确的同时避免积压。
             'confucius4_r2t2.chunk_size_ms': '640',
-            'confucius4_r2t2.unfixed_chunk_num': '0',
-            'confucius4_r2t2.unfixed_token_num': '1',
-            'confucius4_r2t2.rollback_punctuation': 'true',
-            'confucius4_r2t2.max_tokens': '6',
+            'confucius4_r2t2.unfixed_chunk_num': '2',
+            'confucius4_r2t2.unfixed_token_num': '3',
+            'confucius4_r2t2.rollback_punctuation': 'false',
+            'confucius4_r2t2.max_tokens': '16',
           },
         },
       ],
@@ -533,7 +523,9 @@ class SubtitleAsrEngine {
     // 预热：以标准 chunked 编码喂 480ms 静音，预热 Metal 计算图（即便预热超时也不误杀已就绪服务）
     const warmOk = await this.warmup();
     if (!warmOk) {
-      console.warn('[Subtitles] ⚠ R2T2 预热请求未返回 200，但 /health 已就绪，继续启用流式识别');
+      console.error('[Subtitles] ❌ R2T2 预热失败，拒绝进入就绪态');
+      this.stopServer();
+      return false;
     }
     this.ready = true;
     this.respawnAttempts = 0;
@@ -623,7 +615,7 @@ class SubtitleAsrEngine {
    * 开启一个话语会话（live 请求）。返回 session 对象；调用方通过 session.write(pcm) 喂流，
    * 通过 session.finish() 补 300ms 静音并结束请求体，之后等待 onDone/onError 回调。
    */
-  createSession({ onDelta, onDone, onError }) {
+  createSession({ language, onDelta, onDone, onError }) {
     const session = {
       state: 'open', // open -> finishing -> done / error
       abandoned: false, // 被主动放弃（暂停/停止/重启）：不再触发任何回调
@@ -635,11 +627,13 @@ class SubtitleAsrEngine {
       onError,
     };
 
+    const asrLang = language || 'English';
+
     const req = http.request(
       {
         hostname: '127.0.0.1',
         port: ASR_SERVER_PORT,
-        path: `/v1/audio/transcriptions/live?model=${ASR_SERVER_MODEL_ID}&sample_rate=16000&channels=1&sample_format=s16le&language=English`,
+        path: `/v1/audio/transcriptions/live?model=${ASR_SERVER_MODEL_ID}&sample_rate=16000&channels=1&sample_format=s16le&language=${asrLang}`,
         method: 'POST',
         headers: {
           'Transfer-Encoding': 'chunked',
@@ -690,9 +684,10 @@ class SubtitleAsrEngine {
         res.on('end', () => {
           if (session.abandoned) return;
           if (session.state === 'open' || session.state === 'finishing') {
-            // 请求体已结束但未收到 done：按已累积增量定稿（兜底）
-            session.state = 'done';
-            session.onDone?.(session.text, null);
+            // R2T2 协议要求请求体结束后必须收到 transcript.text.done。
+            // 缺失 done 属于协议错误，绝不拿 delta 兜底。
+            session.state = 'error';
+            session.onError?.(new Error('live stream ended without transcript.text.done'));
           }
         });
       }
@@ -722,7 +717,7 @@ class SubtitleAsrEngine {
       session.state = 'finishing';
       try {
         // 官方已知问题：句尾词需要 ~300ms trailing silence 才会吐出
-        req.write(Buffer.alloc(16000 * 2 * 0.3));
+        req.write(Buffer.alloc(16000 * 2 * 1.0));
         req.end();
       } catch {}
     };
@@ -752,37 +747,50 @@ class SubtitleService {
     this.sessionGeneration = 0; // 防止加载途中用户关闭窗口导致异步回写重新拉起模型
 
     this.sseClients = new Set();
-    this.history = [];
     this.seqId = 1;
+
+    // 运行状态：idle | loading | listening | finishing | paused | error
+    this.state = 'idle';
+    this.fatalError = null;
 
     // 后台服务与推理状态
     this.asrEngine = new SubtitleAsrEngine();
     this.transProc = null;
-    this.vad = new SystemAudioDetector();
+    this.transStartingPromise = null;
     this.watchdogs = new Map();
-
-    // 翻译健康巡检与自愈
     this.healthTimer = null;
     this.transAlive = false;
-    this.transRespawnAttempts = 0;
-    this.translationFailures = 0;
 
-    // 串行处理锁，杜绝并发帧乱序
+    // CoreML helper + SOTA 断句 + 单句翻译
+    this.mlHelper = null;
+    this.segmenter = null;
+    this.translator = new TranslationEngine({ port: 1249, timeoutMs: 15000 });
+
+    // 连续的 ASR 流状态
+    this.asrSession = null;
+    this.asrStreamText = ''; // 所有 delta 的精确拼接（用于原文显示 + done 前缀校验）
+    this.draft = ''; // 尚未提交给翻译的尾部
+    this.sourceText = ''; // 前端原文流快照（最多保留最近 200k 字符）
+    this.targetRecords = []; // 前端译文记录（最多 200 条）
+    this.pendingFrames = []; // 收尾 waiting done 期间缓存的 PCM
+    this.turnRing = []; // 最近 8s PCM Buffer 列表
+    this.turnSamples = 0;
+    this.lastDeltaAt = 0;
+    this.lastTurnProbeAt = 0;
+    this.turnProbeInFlight = false;
+    this.segmentationInFlight = false;
+    this.segmentationQueued = false;
+    this.sessionStartedAt = 0;
+    this.sentencesSinceSession = 0;
+    this.finishTimer = null;
+    this.turnTimer = null;
+    this.rotationTimer = null;
+    this.asrDoneTimeoutMs = 15000;
+
+    // 串行队列
     this.processingChain = Promise.resolve();
-
-    // 串行翻译锁（llama-server 单实例，串行避免并发争用）
     this.translateChain = Promise.resolve();
     this.translatePending = 0;
-
-    // 流式断句状态机（话语级）
-    this.asrSession = null; // 当前话语会话
-    this.currentDraft = ''; // 当前话语已提交的增量文本（英文连续流尾部）
-    this.silenceMs = 0; // 连续静音毫秒数
-    this.speechMs = 0; // 当前话语累积人声毫秒数
-    this.utteranceStartedAt = 0;
-    this.lastCommittedEn = ''; // 上一句定稿英文（供翻译模型做上下文消歧）
-    this.lastCommittedZh = ''; // 上一句定稿中文
-    this.pendingResumeFrames = []; // 话语关闭等待 done 期间缓存的音频帧（防丢字）
 
     // 内置模型自动测速与下载管理器状态
     this.downloadAbortController = null;
@@ -814,7 +822,14 @@ class SubtitleService {
       if (fs.existsSync(CONFIG_FILE)) {
         const raw = fs.readFileSync(CONFIG_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
-        this.config = { ...DEFAULT_CONFIG, ...parsed, autoStart: false, utteranceMaxMs: Math.min(Number(parsed.utteranceMaxMs) || 12000, 12000) };
+        const merged = { ...DEFAULT_CONFIG, ...parsed, autoStart: false };
+        // 旧版本的 12s/4s 配置是“短话语 + 兜底定稿”时代的值；新流水线使用硬上限与 10s done 超时。
+        merged.utteranceMaxMs = 90000;
+        merged.utteranceDoneTimeoutMs = 15000;
+        delete merged.utteranceEndSilenceMs;
+        delete merged.asrChunkMs;
+        delete merged.sampleRate;
+        this.config = merged;
       }
     } catch (e) {
       console.warn('[Subtitles] 读取配置文件失败，使用默认配置:', e.message);
@@ -861,6 +876,9 @@ class SubtitleService {
     } catch {}
     try {
       execSync('pkill -f "llama-server.*--port 1249"', { stdio: 'ignore' });
+    } catch {}
+    try {
+      execSync('pkill -x "subtitle_ml_helper"', { stdio: 'ignore' });
     } catch {}
   }
 
@@ -963,27 +981,32 @@ class SubtitleService {
   checkRuntimeReadiness() {
     const asrRuntime = resolveAudiocppRuntime();
     const llamaRuntime = resolveLlamaRuntime();
+    const mlHelperPath = path.resolve(__dirname, '../bin/subtitle_ml_helper');
+    const mlHelperReady = fs.existsSync(mlHelperPath);
 
     return {
-      ready: asrRuntime.ready && llamaRuntime.ready,
+      ready: asrRuntime.ready && llamaRuntime.ready && mlHelperReady,
       asrBinReady: asrRuntime.ready,
       asrBinPath: asrRuntime.binPath,
       llamaBinReady: llamaRuntime.ready,
       llamaBinPath: llamaRuntime.binPath,
       llamaLibDir: llamaRuntime.libDir,
       llamaBundled: llamaRuntime.bundled,
+      mlHelperReady,
+      mlHelperPath,
     };
   }
 
   /**
-   * 完整校验三级流式字幕模型的每一个必需文件是否完整就绪
+   * 完整校验四级字幕模型/运行时资产的每一个必需文件是否完整就绪
    */
   checkModelsReadiness() {
     const status = {};
     let allReady = true;
     const missing = [];
 
-    for (const [key, spec] of Object.entries(MODEL_SPECS)) {
+    for (const key of MODEL_ORDER) {
+      const spec = MODEL_SPECS[key];
       const requiredFiles = spec.files.filter((f) => !f.optional);
       let readyFilesCount = 0;
       let totalSizeBytes = 0;
@@ -1101,9 +1124,9 @@ class SubtitleService {
    * 并发对官方源 (huggingface.co) 与国内镜像源 (hf-mirror.com) 进行真实数据块拉取测速，
    * 选出延迟最低、吞吐最快的源作为主下载源，另一源作为故障自动切换备份。
    */
-  async probeBestMirror(signal) {
+  async probeBestMirror(signal, probeRelative = 'IndexTeam/Index-Translate-2B-GGUF/resolve/main/Index-Translate-2B.Q4_K_M.gguf') {
     const probeSingleSource = async (source) => {
-      const testUrl = `${source.baseUrl}/IndexTeam/Index-Translate-2B-GGUF/resolve/main/Index-Translate-2B.Q4_K_M.gguf`;
+      const testUrl = `${source.baseUrl}/${probeRelative}`;
       const startTime = Date.now();
       try {
         const { res } = await this.httpRequestWithRedirects(
@@ -1182,7 +1205,19 @@ class SubtitleService {
     this.broadcastStatus();
 
     try {
-      const best = await this.probeBestMirror(signal);
+      const specsToDownload =
+        targetModel === 'all'
+          ? MODEL_ORDER.map((key) => [key, MODEL_SPECS[key]])
+          : MODEL_SPECS[targetModel]
+          ? [[targetModel, MODEL_SPECS[targetModel]]]
+          : [];
+      const probeSpec = specsToDownload[0]?.[1] || MODEL_SPECS.translate;
+      const probeFile = probeSpec.files.reduce((a, b) =>
+        (Number(b.expectedBytes) || 0) > (Number(a.expectedBytes) || 0) ? b : a
+      );
+      const probeRelative = `${probeFile.repo || probeSpec.repo}/resolve/main/${probeFile.src}`;
+
+      const best = await this.probeBestMirror(signal, probeRelative);
       if (signal.aborted) throw new Error('cancelled');
       if (!best) throw new Error('所有下载源均不可达，请检查网络后重试');
       this.downloadState.selectedSource = {
@@ -1192,11 +1227,6 @@ class SubtitleService {
         speedKbps: best.speedKbps,
       };
       this.broadcastStatus();
-
-      const specsToDownload = Object.entries(MODEL_SPECS).filter(([key]) => {
-        if (targetModel === 'all') return true;
-        return key === targetModel;
-      });
 
       const backupSources = DOWNLOAD_SOURCES.filter((s) => s.id !== best.id);
       const candidateSources = [best, ...backupSources];
@@ -1223,7 +1253,7 @@ class SubtitleService {
 
           for (const srcNode of candidateSources) {
             if (signal.aborted) throw new Error('cancelled');
-            const url = `${srcNode.baseUrl}/${spec.repo}/resolve/main/${file.src}`;
+            const url = `${srcNode.baseUrl}/${file.repo || spec.repo}/resolve/main/${file.src}`;
             let existingBytes = 0;
             try {
               if (fs.existsSync(partPath)) {
@@ -1370,108 +1400,163 @@ class SubtitleService {
   /**
    * 彻底清空当前会话的字幕历史与上下文缓存（在每次新开或关闭字幕窗口时调用）
    */
-  resetSessionHistory() {
+  resetSessionHistory({ broadcastEvent = true } = {}) {
     this.clearGeneration = (this.clearGeneration || 0) + 1;
     this.translatePending = 0;
-    this.history = [];
-    this.currentDraft = '';
-    this.silenceMs = 0;
-    this.speechMs = 0;
-    this.lastCommittedEn = '';
-    this.lastCommittedZh = '';
-    this.translationFailures = 0;
-    this.pendingResumeFrames = [];
-    this.preRollFrames = [];
-    this.broadcast('clear', { cleared: true });
-    this.broadcastDraft();
+    this.sourceText = '';
+    this.targetRecords = [];
+    this.asrStreamText = '';
+    this.draft = '';
+    this.pendingFrames = [];
+    this.turnRing = [];
+    this.turnSamples = 0;
+    this.lastDeltaAt = 0;
+    this.lastTurnProbeAt = 0;
+    this.turnProbeInFlight = false;
+    this.segmentationInFlight = false;
+    this.segmentationQueued = false;
+    this.sessionStartedAt = 0;
+    this.clearSessionTimers();
+    this.abortAsrSession();
+    if (broadcastEvent) this.broadcast('clear', { cleared: true });
+  }
+
+  clearSessionTimers() {
+    if (this.finishTimer) {
+      clearTimeout(this.finishTimer);
+      this.finishTimer = null;
+    }
+    if (this.turnTimer) {
+      clearInterval(this.turnTimer);
+      this.turnTimer = null;
+    }
+    if (this.rotationTimer) {
+      clearInterval(this.rotationTimer);
+      this.rotationTimer = null;
+    }
+  }
+
+  startSessionTimers() {
+    this.clearSessionTimers();
+    this.turnTimer = setInterval(() => {
+      this.maybeProbeTurn().catch((err) => this.fail(err));
+    }, 250);
+    this.rotationTimer = setInterval(() => {
+      this.checkStreamRotation();
+    }, 1000);
+  }
+
+  fail(err) {
+    if (this.state === 'error') return;
+    const e =
+      err instanceof SubtitleError
+        ? err
+        : new SubtitleError('lifecycle', 'UNEXPECTED', err?.message || String(err));
+    this.state = 'error';
+    this.fatalError = {
+      stage: e.stage,
+      code: e.code,
+      message: e.message,
+      detail: e.detail ?? null,
+    };
+    this.isRunning = false;
+    this.isPaused = false;
+    this.modelsLoaded = false;
+    this.isLoadingModels = false;
+    this.loadingStepKey = 'error';
+    this.clearSessionTimers();
+    this.abortAsrSession();
+    console.error(`[Subtitles] ❌ FATAL ${e.stage}/${e.code}: ${e.message}`);
+    this.broadcast('fatal', this.fatalError);
+    this.broadcastStatus();
   }
 
   /**
-   * 打开字幕窗口时调用：首先清空上次残留历史，再依次加载 3 个模型并实时广播加载阶段
+   * 打开字幕窗口：加载 ASR、翻译、CoreML helper（SaT + Smart Turn）。
    */
   async start() {
-    // 若当前已在加载模型途中（例如窗口刚打开时 show() 与 WebView ready 同时触发 start），
-    // 直接广播当前加载进度并返回，绝不重复触发第二轮进程拉起或中途清空！
-    if (this.isLoadingModels) {
+    if (this.state === 'loading') {
       this.broadcastStatus();
       return true;
     }
-
-    // 每次新开字幕框必须清理历史记录与旧上下文
-    this.resetSessionHistory();
+    if (this.modelsLoaded && (this.state === 'listening' || this.state === 'finishing')) {
+      this.broadcastStatus();
+      return true;
+    }
+    if (this.modelsLoaded && this.state === 'paused') {
+      this.resume();
+      return true;
+    }
+    this.resetSessionHistory({ broadcastEvent: true });
 
     const check = this.checkModelsReadiness();
     const runtime = this.checkRuntimeReadiness();
-    if (!check.allReady || !runtime.ready) {
+    if (!check.allReady) {
+      this.state = 'idle';
+      this.modelsLoaded = false;
       this.isRunning = false;
       this.isLoadingModels = false;
-      this.modelsLoaded = false;
       this.loadingStage = 0;
       this.loadingStepKey = 'error';
+      this.fatalError = null;
       this.broadcastStatus();
       return false;
     }
-
-    // 若两个模型均已就绪且进程存活，直接恢复监听
-    if (
-      this.modelsLoaded &&
-      this.asrEngine.isAlive() &&
-      this.asrEngine.ready &&
-      (await this.checkHealth(1249))
-    ) {
-      this.isPaused = false;
-      this.isRunning = true;
-      this.isLoadingModels = false;
-      this.loadingStage = 2;
-      this.loadingStepKey = 'ready';
-      this.startHealthMonitor();
-      this.broadcastStatus();
-      return true;
+    if (!runtime.ready) {
+      this.fail(
+        new SubtitleError(
+          'lifecycle',
+          'RUNTIME_NOT_READY',
+          '字幕运行环境缺失（audiocpp_server / llama-server / CoreML helper）',
+          runtime
+        )
+      );
+      return false;
     }
 
-    const myGen = ++this.sessionGeneration;
+    this.state = 'loading';
+    this.fatalError = null;
     this.isPaused = false;
     this.isRunning = false;
-    this.isLoadingModels = true;
     this.modelsLoaded = false;
+    this.isLoadingModels = true;
     this.loadingStage = 0;
     this.loadingStepKey = 'asr';
     this.broadcastStatus();
 
+    const myGen = ++this.sessionGeneration;
     const ok = await this.ensureServersRunning(myGen);
     if (myGen !== this.sessionGeneration) {
       this.stopServers();
       return false;
     }
-
     if (!ok) {
-      this.isLoadingModels = false;
-      this.modelsLoaded = false;
-      this.isRunning = false;
-      this.loadingStepKey = 'error';
       this.stopServers();
-      this.broadcastStatus();
+      this.fail(
+        new SubtitleError('lifecycle', 'START_FAILED', '字幕模型或 CoreML helper 加载失败')
+      );
       return false;
     }
 
-    // 关键修复：必须将 modelsLoaded 置为 true，否则前端将卡在加载界面且拒绝启动音频内录
     this.modelsLoaded = true;
+    this.isLoadingModels = false;
     this.isRunning = true;
     this.isPaused = false;
-    this.isLoadingModels = false;
-    this.loadingStage = 2;
+    this.state = 'listening';
+    this.loadingStage = 3;
     this.loadingStepKey = 'ready';
     this.startHealthMonitor();
-    console.log('[Subtitles] ✅ 双级流式字幕模型 (Confucius4-R2T2 + Index-Translate-2B) 已全部就绪');
+    this.startSessionTimers();
+    this.openAsrSession();
     this.broadcastStatus();
+    console.log('[Subtitles] ✅ R2T2 + SaT + Index-Translate + Smart Turn 已全部就绪');
     return true;
   }
 
-  /**
-   * 关闭字幕窗口时调用：立刻清空历史记录并停止卸载全部模型与子进程，释放全部内存/显存
-   */
   stop() {
     this.sessionGeneration += 1;
+    this.state = 'idle';
+    this.fatalError = null;
     this.isRunning = false;
     this.isPaused = false;
     this.isLoadingModels = false;
@@ -1479,31 +1564,47 @@ class SubtitleService {
     this.loadingStage = 0;
     this.loadingStepKey = 'idle';
     this.stopHealthMonitor();
-    this.resetSessionHistory();
+    this.resetSessionHistory({ broadcastEvent: true });
     this.stopServers();
-    console.log('[Subtitles] ⏹ 字幕窗口已关闭，历史已清空，双级模型与后台子进程已全部停止并卸载');
+    console.log('[Subtitles] ⏹ 字幕窗口已关闭，模型与子进程已全部停止');
     this.broadcastStatus();
   }
 
   pause() {
+    if (this.state !== 'listening' && this.state !== 'finishing') return;
+    this.state = 'paused';
     this.isRunning = false;
     this.isPaused = true;
-    this.abortCurrentSession('paused');
+    this.clearSessionTimers();
+    this.abortAsrSession();
     this.broadcastStatus();
   }
 
   resume() {
+    if (this.state !== 'paused') return;
     if (!this.modelsLoaded) {
-      return this.start();
+      this.fail(new SubtitleError('lifecycle', 'MODELS_NOT_LOADED', '模型未加载，不能继续'));
+      return;
     }
+    this.state = 'listening';
     this.isRunning = true;
     this.isPaused = false;
+    this.startSessionTimers();
+    this.openAsrSession();
     this.broadcastStatus();
   }
 
   stopServers() {
-    this.abortCurrentSession('stop');
-    if (this.asrEngine) this.asrEngine.stopServer();
+    this.clearSessionTimers();
+    this.abortAsrSession();
+    if (this.mlHelper) {
+      try {
+        this.mlHelper.close();
+      } catch {}
+      this.mlHelper = null;
+    }
+    this.segmenter = null;
+    this.asrEngine.stopServer();
     if (this.transProc) {
       try {
         this.transProc.kill('SIGKILL');
@@ -1511,31 +1612,67 @@ class SubtitleService {
       this.transProc = null;
     }
     this.transAlive = false;
+    this.transStartingPromise = null;
+    try {
+      if (fs.existsSync(ML_PID_FILE)) fs.unlinkSync(ML_PID_FILE);
+    } catch {}
     this.cleanStaleProcesses();
   }
 
-  /**
-   * 随 SimpleUI 退出时同步优雅停止（供 server/proxy.js 调用）
-   */
-  shutdownSync() {
+  async shutdownSync() {
     this.cancelDownload();
     this.sessionGeneration += 1;
-    this.isRunning = false;
+    this.state = 'idle';
     this.modelsLoaded = false;
     this.stopHealthMonitor();
     this.stopServers();
   }
 
-  /**
-   * 随 SimpleUI 进程退出时强制清扫（供 server/proxy.js 调用）
-   */
-  shutdownForce() {
+  async shutdownForce() {
     this.cancelDownload();
     this.stopHealthMonitor();
     this.stopServers();
   }
 
-  async checkHealth(port) {
+  async ensureMlHelper() {
+    if (this.mlHelper?.ready) return true;
+    if (this.mlHelper) {
+      try {
+        this.mlHelper.close();
+      } catch {}
+      this.mlHelper = null;
+      this.segmenter = null;
+    }
+    const runtime = this.checkRuntimeReadiness();
+    if (!runtime.mlHelperReady) {
+      throw new SubtitleError(
+        'segmentation',
+        'ML_HELPER_MISSING',
+        `CoreML helper 不存在: ${runtime.mlHelperPath}`
+      );
+    }
+    const helper = new SubtitleMlHelper({
+      helperPath: runtime.mlHelperPath,
+      modelsDir: SUBTITLE_MODELS_DIR,
+      onFatal: (err) => this.fail(err),
+    });
+    await helper.start();
+    try {
+      if (helper.proc?.pid) fs.writeFileSync(ML_PID_FILE, String(helper.proc.pid));
+    } catch {}
+    const segmenter = new SatSegmenter({
+      tokenizerPath: path.join(SUBTITLE_MODELS_DIR, 'xlmr_tokenizer.json'),
+      helper,
+      threshold: this.config.segmentThreshold ?? 0.5,
+      lookaheadTokens: this.config.segmentLookaheadTokens ?? 4,
+    });
+    await segmenter.init();
+    this.mlHelper = helper;
+    this.segmenter = segmenter;
+    return true;
+  }
+
+  checkHealth(port) {
     return new Promise((resolve) => {
       const req = http.get(`http://127.0.0.1:${port}/health`, { timeout: 1000 }, (res) => {
         res.resume();
@@ -1549,16 +1686,12 @@ class SubtitleService {
     });
   }
 
-  /**
-   * 拉起 Index-Translate-2B (llama-server 端口 1249)，带单飞并发锁
-   */
   async ensureTransServer() {
     if (this.transProc && !this.transProc.killed && (await this.checkHealth(1249))) {
       this.transAlive = true;
       return true;
     }
     if (this.transStartingPromise) return this.transStartingPromise;
-
     this.transStartingPromise = this._ensureTransServerInternal().finally(() => {
       this.transStartingPromise = null;
     });
@@ -1567,6 +1700,10 @@ class SubtitleService {
 
   async _ensureTransServerInternal() {
     let transAlive = await this.checkHealth(1249);
+    if (transAlive && !this.transProc) {
+      this.transAlive = true;
+      return true;
+    }
     if (!transAlive && !this.transProc) {
       try {
         execSync('pkill -f "llama-server.*--port 1249"', { stdio: 'ignore' });
@@ -1580,13 +1717,8 @@ class SubtitleService {
       const dyldPath = [llamaRuntime.libDir, fallbackLibDir, process.env.DYLD_LIBRARY_PATH]
         .filter(Boolean)
         .join(':');
-      const llamaEnv = {
-        ...process.env,
-        DYLD_LIBRARY_PATH: dyldPath,
-        DYLD_FALLBACK_LIBRARY_PATH: dyldPath,
-      };
       const transModel = path.join(SUBTITLE_MODELS_DIR, 'index_translate_2b_q4_k_m.gguf');
-      console.log(`[Subtitles] [2/2] 正在加载 Index-Translate-2B Metal 翻译服务 (端口 1249)...`);
+      console.log('[Subtitles] [2/3] 正在加载 Index-Translate-2B Metal 翻译服务 (端口 1249)...');
       const proc = spawn(
         llamaRuntime.binPath,
         [
@@ -1600,25 +1732,40 @@ class SubtitleService {
           '99',
           '-fa',
           'on',
-          '--cache-reuse',
-          '64',
           '-np',
           '1',
-          '--no-warmup',
           '-c',
-          '512',
+          '4096',
           '--jinja',
-          '--chat-template-kwargs',
-          '{"enable_thinking":false}',
+          '--reasoning',
+          'off',
         ],
-        { stdio: 'ignore', env: llamaEnv }
+        {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: {
+            ...process.env,
+            DYLD_LIBRARY_PATH: dyldPath,
+            DYLD_FALLBACK_LIBRARY_PATH: dyldPath,
+          },
+        }
       );
       this.transProc = proc;
-
+      let logStream = null;
+      try {
+        const logPath = path.join(HOME, 'Library', 'Logs', 'simpleui-subtitle-trans.log');
+        fs.mkdirSync(path.dirname(logPath), { recursive: true });
+        logStream = fs.createWriteStream(logPath, { flags: 'w' });
+      } catch {}
+      const capture = (d) => {
+        try {
+          logStream?.write(d);
+        } catch {}
+      };
+      proc.stdout?.on('data', capture);
+      proc.stderr?.on('data', capture);
       try {
         if (proc.pid) fs.writeFileSync(TRANS_PID_FILE, String(proc.pid));
       } catch {}
-
       let exitedEarly = false;
       proc.on('exit', () => {
         exitedEarly = true;
@@ -1630,8 +1777,7 @@ class SubtitleService {
           } catch {}
         }
       });
-
-      for (let i = 0; i < 60; i++) {
+      for (let i = 0; i < 120; i++) {
         if (exitedEarly) break;
         await new Promise((r) => setTimeout(r, 300));
         if (await this.checkHealth(1249)) {
@@ -1639,48 +1785,54 @@ class SubtitleService {
           break;
         }
       }
-    } else if (transAlive) {
-      this.transAlive = true;
+      if (!transAlive) {
+        try {
+          proc.kill('SIGKILL');
+        } catch {}
+        this.transProc = null;
+        return false;
+      }
     }
-
     this.transAlive = transAlive;
-    this.transRespawnAttempts = transAlive ? 0 : this.transRespawnAttempts;
     return transAlive;
   }
 
-  /**
-   * 按阶段拉起双级模型并实时推送加载进度（第 1 级：Confucius4-R2T2 · 第 2 级：Index-Translate-2B）
-   */
   async ensureServersRunning(expectedGen = this.sessionGeneration) {
     const check = this.checkModelsReadiness();
     if (!check.allReady) return false;
 
     this.ensureWatchdogs();
 
-    // 阶段 1/2：加载 Confucius4-R2T2 (audio.cpp · Metal · 端口 1250)
     this.loadingStage = 0;
     this.loadingStepKey = 'asr';
     this.broadcastStatus();
     const asrOk = await this.asrEngine.ensureServer();
     if (!asrOk || expectedGen !== this.sessionGeneration) return false;
 
-    // 阶段 2/2：加载 Index-Translate-2B (llama-server 端口 1249)
     this.loadingStage = 1;
+    this.loadingStepKey = 'ml';
+    this.broadcastStatus();
+    try {
+      await this.ensureMlHelper();
+    } catch (err) {
+      this.fail(err);
+      return false;
+    }
+    if (expectedGen !== this.sessionGeneration) return false;
+
+    this.loadingStage = 2;
     this.loadingStepKey = 'translate';
     this.broadcastStatus();
     const transOk = await this.ensureTransServer();
-
-    return asrOk && transOk;
+    if (!transOk || expectedGen !== this.sessionGeneration) return false;
+    return true;
   }
 
-  /**
-   * 健康巡检：任一双生服务掉线时按限次尝试自愈（翻译服务 / ASR 服务各自独立计数）
-   */
   startHealthMonitor() {
     if (this.healthTimer) return;
     this.healthTimer = setInterval(() => {
-      this.healthCheckLoop().catch(() => {});
-    }, 3000);
+      this.healthCheckLoop().catch((err) => this.fail(err));
+    }, 5000);
   }
 
   stopHealthMonitor() {
@@ -1691,47 +1843,17 @@ class SubtitleService {
   }
 
   async healthCheckLoop() {
-    if (!this.modelsLoaded || !this.isRunning) return;
-
-    // 翻译服务自愈
-    const transHealthy = await this.checkHealth(1249);
-    this.transAlive = transHealthy;
-    if (!transHealthy) {
-      if (this.transRespawnAttempts < 3) {
-        this.transRespawnAttempts += 1;
-        console.warn(
-          `[Subtitles] ⚠ 翻译服务 (1249) 掉线，第 ${this.transRespawnAttempts}/3 次尝试重启...`
-        );
-        const ok = await this.ensureTransServer();
-        if (ok) {
-          this.transRespawnAttempts = 0;
-          console.log('[Subtitles] ✅ 翻译服务已自愈重启');
-        }
-      } else {
-        console.error('[Subtitles] ❌ 翻译服务多次重启失败，请关闭并重开字幕窗口');
-      }
-    } else {
-      this.transRespawnAttempts = 0;
+    if (!this.modelsLoaded || (this.state !== 'listening' && this.state !== 'finishing')) return;
+    if (!(await this.checkHealth(1249))) {
+      this.fail(new SubtitleError('translation', 'SERVICE_LOST', '翻译服务 (1249) 掉线'));
+      return;
     }
-
-    // ASR 服务自愈
     if (!this.asrEngine.isAlive() || !(await this.asrEngine.checkHealth())) {
-      if (this.asrEngine.respawnAttempts < 3) {
-        this.asrEngine.respawnAttempts += 1;
-        console.warn(
-          `[Subtitles] ⚠ 流式识别服务 (1250) 掉线，第 ${this.asrEngine.respawnAttempts}/3 次尝试重启...`
-        );
-        this.abortCurrentSession('asr-restart');
-        const ok = await this.asrEngine.ensureServer();
-        if (ok) {
-          this.asrEngine.respawnAttempts = 0;
-          console.log('[Subtitles] ✅ 流式识别服务已自愈重启');
-        }
-      } else {
-        console.error('[Subtitles] ❌ 流式识别服务多次重启失败，请关闭并重开字幕窗口');
-      }
-    } else {
-      this.asrEngine.respawnAttempts = 0;
+      this.fail(new SubtitleError('asr', 'SERVICE_LOST', '流式识别服务 (1250) 掉线'));
+      return;
+    }
+    if (!this.mlHelper?.ready) {
+      this.fail(new SubtitleError('segmentation', 'SERVICE_LOST', 'CoreML helper 掉线'));
     }
   }
 
@@ -1770,9 +1892,11 @@ class SubtitleService {
       targetLang: this.config.targetLang,
       config: this.config,
       clientCount: this.sseClients.size,
-      historyCount: this.history.length,
-      translationFailures: this.translationFailures,
-      recent: this.history.slice(-20),
+      state: this.state,
+      fatalError: this.fatalError,
+      mlReady: Boolean(this.mlHelper?.ready),
+      targetCount: this.targetRecords.length,
+      sourceLength: this.sourceText.length,
     };
   }
 
@@ -1780,276 +1904,240 @@ class SubtitleService {
     this.broadcast('status', this.getFullStatusPayload());
   }
 
-  broadcastDraft() {
-    this.broadcast('draft', {
-      stable: (this.currentDraft || '').trim(),
-      pending: '',
+  broadcastSnapshot() {
+    this.broadcast('snapshot', {
+      status: this.getFullStatusPayload(),
+      sourceText: this.sourceText,
+      targetRecords: this.targetRecords,
     });
   }
 
-  // MARK: - R2T2 实时增量断句与话语状态机
+  // MARK: - 连续 ASR / SaT 断句 / 单句翻译
 
-  /**
-   * 开启一个新话语（live 请求）：
-   * R2T2 的 delta 是 Longest Stable Prefix 追加流（已吐出的词和标点不会回滚修改）。
-   * 因此在 onDelta 中一旦检测到已形成完整的句号句或逗号子句，立即切出并送往翻译，
-   * 无需等到整个 45 秒话语结束或静音才翻译！
-   */
-  openUtterance() {
+  openAsrSession() {
+    if (this.asrSession || !this.isRunning || !this.modelsLoaded) return;
+    if (this.state !== 'listening') return;
+    // 每次 live 请求是独立 ASR 流：prefix 校验只针对本条流。
+    this.asrStreamText = '';
+    this.draft = '';
+    this.sentencesSinceSession = 0;
+    const asrLang = this.config.sourceLang === 'zh' ? 'Chinese' : 'English';
     const session = this.asrEngine.createSession({
-      onDelta: (delta) => {
-        if (!delta || this.asrSession !== session) return;
-        this.currentDraft += delta;
-        this.drainCompletedClausesFromDraft();
-        this.broadcastDraft();
+      language: asrLang,
+      onDelta: (delta) => this.onAsrDelta(delta, session),
+      onDone: (finalText) => {
+        this.handleAsrDone(finalText, session).catch((err) => this.fail(err));
       },
-      onDone: (finalText) => this.onUtteranceDone(finalText, session),
-      onError: (err) => this.onUtteranceError(err, session),
+      onError: (err) =>
+        this.fail(new SubtitleError('asr', 'ASR_STREAM_ERROR', err?.message || String(err))),
     });
-    session.committedCharCount = 0;
     this.asrSession = session;
-    this.currentDraft = '';
-    this.speechMs = 0;
-    this.silenceMs = 0;
-    this.utteranceStartedAt = Date.now();
-
-    // 将开启话语前缓存的 320ms 前置音频帧一并写入，杜绝句首吞字
-    if (this.preRollFrames && this.preRollFrames.length > 0) {
-      for (const preBuf of this.preRollFrames) {
-        session.write(preBuf);
-      }
-      this.preRollFrames = [];
-    }
-
-    this.broadcastDraft();
+    this.sessionStartedAt = Date.now();
+    this.lastDeltaAt = 0;
+    this.lastTurnProbeAt = 0;
   }
 
-  /**
-   * 从正在流式增长的 currentDraft 中实时提取已完成的句子或意群子句并立即提交翻译：
-   *   1. 句末停止符（. ? ! …）：满 4 词且后面已跟出新词（确保标点 token 已完整）
-   *   2. 逗号/分号子句（, ; : —）：满 7 词且非悬挂词、后面已跟出新词
-   *   3. 超长无标点意群保护：满 20 词时在非悬挂词边界切出前段，防止长句无限积压
-   */
-  drainCompletedClausesFromDraft() {
-    let safety = 0;
-    while (safety++ < 5) {
-      const trimmed = (this.currentDraft || '').trimStart();
-      if (!trimmed) break;
+  onAsrDelta(delta, session) {
+    if (session !== this.asrSession || !delta) return;
+    this.asrStreamText += delta;
+    this.draft += delta;
+    this.lastDeltaAt = Date.now();
+    this.appendSourceDelta(delta);
+    this.scheduleSegmentation();
+  }
 
-      const words = trimmed.split(/\s+/).filter(Boolean);
-      const n = words.length;
-      if (n < 4) break;
+  appendSourceDelta(text) {
+    this.sourceText += text;
+    if (this.sourceText.length > 200000) {
+      this.sourceText = this.sourceText.slice(-200000);
+    }
+    this.broadcast('source_delta', { text });
+  }
 
-      let cutWordCount = 0;
-      let cutReason = null;
+  scheduleSegmentation() {
+    if (this.segmentationInFlight) {
+      this.segmentationQueued = true;
+      return;
+    }
+    this.segmentationInFlight = true;
+    (async () => {
+      do {
+        this.segmentationQueued = false;
+        await this.runSegmentation();
+      } while (this.segmentationQueued);
+    })()
+      .catch((err) => this.fail(err))
+      .finally(() => {
+        this.segmentationInFlight = false;
+      });
+  }
 
-      for (let i = 0; i < n - 1; i++) {
-        const rawW = String(words[i] || '');
-        const strippedQuotes = rawW.replace(/["')\]}]+$/, '');
-        const lowerW = strippedQuotes.toLowerCase();
-        const bareW = cleanWordToken(strippedQuotes);
-        const wordsUpToHere = i + 1;
+  async runSegmentation() {
+    if (!this.segmenter || !this.draft.trim()) return;
+    if (this.state !== 'listening' && this.state !== 'finishing') return;
+    const { sentences, consumed } = await this.segmenter.split(this.draft, { final: false });
+    if (consumed > 0) this.draft = this.draft.slice(consumed);
+    for (const sentence of sentences) {
+      this.commitSentence(sentence);
+    }
+  }
 
-        if (FALSE_PUNCT_HANGING_WORDS.has(bareW)) continue;
+  commitSentence(sentence) {
+    const text = String(sentence || '').trim();
+    if (!text) return;
+    const record = {
+      id: `sub_${Date.now()}_${this.seqId++}`,
+      source_text: text,
+      target_text: '',
+      status: 'pending',
+      source_lang: this.config.sourceLang,
+      target_lang: this.config.targetLang,
+      createdAt: Date.now(),
+    };
+    this.targetRecords.push(record);
+    this.sentencesSinceSession += 1;
+    if (this.targetRecords.length > 200) this.targetRecords.shift();
+    this.broadcast('commit', { record });
+    this.enqueueTranslation(record);
+  }
 
-        // 1. 句末标点（. ? ! …），满 4 词且后面已有新词 (i < n - 1)
+  enqueueTranslation(record) {
+    const myClearGen = this.clearGeneration;
+    const mySessionGen = this.sessionGeneration;
+    this.translatePending += 1;
+    if (this.translatePending > 16) {
+      this.fail(new SubtitleError('translation', 'TRANSLATION_BACKLOG', '翻译队列积压超过 16 句'));
+      return;
+    }
+    this.translateChain = this.translateChain
+      .then(async () => {
+        this.translatePending = Math.max(0, this.translatePending - 1);
         if (
-          /[.?!…]$/.test(strippedQuotes) &&
-          wordsUpToHere >= 4 &&
-          !ABBREVIATIONS_WITH_DOT.has(lowerW) &&
-          !/^\d+\.\d+$/.test(strippedQuotes)
+          myClearGen !== this.clearGeneration ||
+          mySessionGen !== this.sessionGeneration ||
+          !this.modelsLoaded
         ) {
-          cutWordCount = wordsUpToHere;
-          cutReason = 'sentence-end';
-          break;
+          return;
         }
-
-        // 2. 逗号/分号/破折号（, ; : — –），满 7 词且后面已有新词
-        if (/[,;:—–]$/.test(strippedQuotes) && wordsUpToHere >= 7) {
-          cutWordCount = wordsUpToHere;
-          cutReason = 'comma-stop';
-          break;
+        try {
+          const target = await this.translator.translate(
+            record.source_text,
+            this.config.sourceLang,
+            this.config.targetLang
+          );
+          if (
+            myClearGen !== this.clearGeneration ||
+            mySessionGen !== this.sessionGeneration ||
+            !this.modelsLoaded
+          ) {
+            return;
+          }
+          record.target_text = target;
+          record.status = 'finalized';
+          this.broadcast('translation', { record });
+        } catch (err) {
+          if (
+            myClearGen !== this.clearGeneration ||
+            mySessionGen !== this.sessionGeneration ||
+            !this.modelsLoaded
+          ) {
+            return; // stop/clear/target change 导致的中断不是错误
+          }
+          this.fail(err);
         }
-      }
-
-      // 3. 若连续 20 词未出现任何标点，在非悬挂词边界切出前 16~18 词送翻
-      if (cutWordCount === 0 && n >= 20) {
-        let idx = 18;
-        while (idx > 10 && FALSE_PUNCT_HANGING_WORDS.has(cleanWordToken(words[idx - 1]))) {
-          idx--;
+      })
+      .catch((err) => {
+        if (
+          myClearGen !== this.clearGeneration ||
+          mySessionGen !== this.sessionGeneration ||
+          !this.modelsLoaded
+        ) {
+          return;
         }
-        cutWordCount = idx;
-        cutReason = 'clause-cap';
-      }
-
-      if (cutWordCount <= 0) break;
-
-      const committedClause = words.slice(0, cutWordCount).join(' ');
-      const remainingTail = words.slice(cutWordCount).join(' ');
-      this.currentDraft = remainingTail ? remainingTail + ' ' : '';
-      if (this.asrSession) {
-        this.asrSession.committedCharCount =
-          (this.asrSession.committedCharCount || 0) + committedClause.length + 1;
-      }
-      this.commitSentence(committedClause, cutReason);
-
-      // 消除随时间累加的 O(t) 计算量膨胀：当完整句子/意群已切出且当前会话已持续 >= 10s、currentDraft 为空时，
-      // 立即无损轮转新会话以清空 audiocpp 内部累积的音频帧与 Prefix KV 重算开销
-      if (
-        this.asrSession &&
-        this.asrSession.state === 'open' &&
-        !this.currentDraft.trim() &&
-        Date.now() - this.utteranceStartedAt >= 4500
-      ) {
-        this.rotateSessionCleanly();
-        break;
-      }
-    }
+        this.fail(err);
+      });
   }
 
-  /** 在完整句/子句定稿边界（currentDraft 为空）处无损轮转会话，彻底重置 audiocpp 随时间增长的音频与 Prefix 上下文 */
-  rotateSessionCleanly() {
-    const oldSession = this.asrSession;
-    if (!oldSession) return;
-    oldSession.abort();
-    this.asrSession = null;
-    this.currentDraft = '';
-    if (this.isRunning && this.modelsLoaded && this.asrEngine.isAlive() && this.asrEngine.ready) {
-      this.openUtterance();
-    }
+  closeAsrSession(reason) {
+    if (!this.asrSession || this.state !== 'listening') return;
+    this.state = 'finishing';
+    console.log(`[Subtitles] 收尾 live 流 (${reason})`);
+    this.asrSession.finish();
+    if (this.finishTimer) clearTimeout(this.finishTimer);
+    this.finishTimer = setTimeout(() => {
+      this.fail(
+        new SubtitleError('asr', 'ASR_DONE_TIMEOUT', `done 超时 (${reason})`)
+      );
+    }, this.config.utteranceDoneTimeoutMs || this.asrDoneTimeoutMs);
   }
 
-  /** 关闭当前话语：补 300ms 静音结束请求体，等待 done 终稿冲刷出句尾最后几个词 */
-  closeUtterance(reason) {
-    const session = this.asrSession;
-    if (!session || session.state !== 'open') return;
-    console.log(`[Subtitles] 话语收尾 (${reason})，冲刷尾部终稿...`);
-    session.finish();
-
-    const timeoutMs = this.config.utteranceDoneTimeoutMs || 4000;
-    setTimeout(() => {
-      if (this.asrSession === session && session.state !== 'done' && !session.abandoned) {
-        console.warn('[Subtitles] ⚠ done 终稿超时，按已接收增量定稿');
-        const collectedText = session.text;
-        session.abort();
-        this.onUtteranceDone(collectedText, session);
-      }
-    }, timeoutMs);
-  }
-
-  /** 放弃当前话语（暂停/停止/服务重启时）：不提交任何文本 */
-  abortCurrentSession(reason) {
-    const session = this.asrSession;
-    this.asrSession = null;
-    this.currentDraft = '';
-    if (session) {
-      session.abort();
+  async handleAsrDone(finalText, session) {
+    if (session !== this.asrSession) return;
+    if (this.finishTimer) {
+      clearTimeout(this.finishTimer);
+      this.finishTimer = null;
     }
-    this.broadcastDraft();
-  }
-
-  onUtteranceDone(finalText, sessionRef = null) {
-    const session = sessionRef || this.asrSession;
-    if (sessionRef && this.asrSession !== sessionRef) return;
-    // 在 done 事件中，R2T2 可能会比最后一次 delta 多吐出句尾最后 1~2 个词；
-    // 计算终稿相较于已通过 delta 接收的文本增量，追加到 currentDraft 后再将剩余尾部定稿！
-    const fullFinal = String(finalText || '').trim();
-    const streamedSoFar = String(session?.text || '').trim();
-    if (fullFinal.length > streamedSoFar.length && fullFinal.startsWith(streamedSoFar)) {
-      const extraTail = fullFinal.slice(streamedSoFar.length);
-      this.currentDraft = (this.currentDraft || '') + extraTail;
-    } else if (!streamedSoFar && fullFinal && !this.currentDraft) {
-      this.currentDraft = fullFinal;
-    }
-
-    const remainingText = (this.currentDraft || '').trim();
-    this.asrSession = null;
-    this.currentDraft = '';
-    this.broadcastDraft();
-
-    if (remainingText) {
-      const sentences = this.splitSentences(remainingText);
-      for (const sentence of sentences) {
-        this.commitSentence(sentence, 'sentence-end');
-      }
-      console.log(
-        `[Subtitles] 🎯 话语尾部定稿 (${sentences.length} 句): "${remainingText.slice(0, 80)}${remainingText.length > 80 ? '…' : ''}"`
+    const final = String(finalText || '');
+    if (!final.startsWith(this.asrStreamText)) {
+      throw new SubtitleError(
+        'asr',
+        'ASR_FINAL_MISMATCH',
+        'R2T2 final 文本不是已接收 delta 的前缀',
+        { streamLength: this.asrStreamText.length, finalLength: final.length }
       );
     }
-
-    // 关闭等待期间缓存的帧：立即开启新话语无缝补喂，绝不丢弃轻音帧
-    const buffered = this.pendingResumeFrames;
-    this.pendingResumeFrames = [];
-    if (buffered.length > 0 && this.isRunning && this.modelsLoaded) {
-      const hasAnySpeech = buffered.some((b) => this.vad.detectVoice(b).isSpeech);
-      if (hasAnySpeech && this.asrEngine.isAlive() && this.asrEngine.ready) {
-        this.openUtterance();
-        for (const buf of buffered) {
-          if (this.asrSession) {
-            const frameMs = Math.round((buf.length / 2 / 16000) * 1000);
-            if (this.vad.detectVoice(buf).isSpeech) {
-              this.silenceMs = 0;
-              this.speechMs += frameMs;
-            } else {
-              this.silenceMs += frameMs;
-            }
-            this.asrSession.write(buf);
-          }
-        }
-      }
+    const extra = final.slice(this.asrStreamText.length);
+    if (extra) {
+      this.asrStreamText += extra;
+      this.draft += extra;
+      this.appendSourceDelta(extra);
     }
-  }
-
-  onUtteranceError(err, sessionRef = null) {
-    if (sessionRef && this.asrSession !== sessionRef) return;
-    console.error('[Subtitles] 话语请求异常:', err?.message || err);
-    const remainingText = (this.currentDraft || '').trim();
+    if (this.segmenter && this.draft.trim()) {
+      const { sentences } = await this.segmenter.split(this.draft, { final: true });
+      for (const sentence of sentences) this.commitSentence(sentence);
+    }
+    this.draft = '';
+    this.asrStreamText = '';
     this.asrSession = null;
-    this.currentDraft = '';
-    this.broadcastDraft();
-    if (remainingText) {
-      for (const sentence of this.splitSentences(remainingText)) {
-        this.commitSentence(sentence, 'sentence-end');
-      }
+    this.state = 'listening';
+    this.sessionStartedAt = 0;
+    this.lastDeltaAt = 0;
+    this.lastTurnProbeAt = 0;
+    this.openAsrSession();
+
+    const buffered = this.pendingFrames;
+    this.pendingFrames = [];
+    for (const buf of buffered) {
+      this.asrSession?.write(buf);
     }
+    this.broadcastStatus();
   }
 
-  /** 按句末标点切分终稿；若单段超过 24 词则进一步按逗号或非悬挂词边界切分，防止单次翻译过长 */
-  splitSentences(text) {
-    const rawParts = (text.match(/[^.!?…]+[.!?…]+["'”’)\]]*|[^.!?…]+$/g) || [])
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const out = [];
-    for (const part of rawParts) {
-      const words = part.split(/\s+/).filter(Boolean);
-      if (words.length <= 24) {
-        out.push(part);
-        continue;
-      }
-      let cur = [];
-      for (let i = 0; i < words.length; i++) {
-        cur.push(words[i]);
-        const rawW = words[i].replace(/["')\]}]+$/, '');
-        const bareW = cleanWordToken(rawW);
-        const atComma = /[,;:—–]$/.test(rawW) && cur.length >= 8 && !FALSE_PUNCT_HANGING_WORDS.has(bareW);
-        const atCap = cur.length >= 18 && !FALSE_PUNCT_HANGING_WORDS.has(bareW);
-        if ((atComma || atCap) && i < words.length - 1) {
-          out.push(cur.join(' '));
-          cur = [];
-        }
-      }
-      if (cur.length > 0) out.push(cur.join(' '));
+  abortAsrSession() {
+    if (this.finishTimer) {
+      clearTimeout(this.finishTimer);
+      this.finishTimer = null;
     }
-    return out;
+    const session = this.asrSession;
+    this.asrSession = null;
+    this.asrStreamText = '';
+    this.draft = '';
+    if (session) {
+      try {
+        session.abort();
+      } catch {}
+    }
+    this.pendingFrames = [];
   }
 
-  /**
-   * 串行入队处理每个流式音频帧（160ms 裸 PCM 或 WAV）
-   */
-  enqueueAudioFrame(rawBuffer, isFinal = false, format = 'pcm') {
+  enqueueAudioFrame(rawBuffer, format = 'pcm') {
     const task = this.processingChain.then(() =>
-      this.processAudioFrameInternal(rawBuffer, isFinal, format).catch((err) => {
-        console.error('[Subtitles] 处理音频帧异常:', err.message);
+      this.processAudioFrameInternal(rawBuffer, format).catch((err) => {
+        this.fail(
+          err instanceof SubtitleError
+            ? err
+            : new SubtitleError('capture', 'FEED_FAILED', err?.message || String(err))
+        );
         return { ok: false, error: err.message };
       })
     );
@@ -2057,308 +2145,96 @@ class SubtitleService {
     return task;
   }
 
-  async processAudioFrameInternal(rawBuffer, isFinal = false, format = 'pcm') {
+  async processAudioFrameInternal(rawBuffer, format = 'pcm') {
     if (!this.isRunning || !this.modelsLoaded) {
-      return { ok: false, reason: this.isLoadingModels ? 'loading' : 'paused' };
+      return { ok: false, reason: 'not_running' };
     }
-
-    // 提取纯 16kHz Int16 PCM 字节
     let pcmBuffer = rawBuffer;
     if (format === 'wav' || (rawBuffer.length > 44 && rawBuffer.toString('ascii', 0, 4) === 'RIFF')) {
       pcmBuffer = rawBuffer.subarray(44);
     }
-    if (pcmBuffer.length === 0) return { ok: true, committed: false };
-
-    const durationMs = Math.round((pcmBuffer.length / 2 / 16000) * 1000);
-    const vadRes = this.vad.detectVoice(pcmBuffer, Boolean(this.asrSession));
-
-    if (vadRes.isSpeech) {
-      this.silenceMs = 0;
-      this.speechMs += durationMs;
-    } else {
-      this.silenceMs += durationMs;
+    if (!pcmBuffer.length) return { ok: false, reason: 'empty' };
+    if (pcmBuffer.length % 2 !== 0) {
+      throw new SubtitleError('capture', 'PCM_ODD_BYTES', 'PCM 字节数不是偶数');
     }
 
-    // 无活动话语：人声出现 → 携带前置缓冲开启新话语；静默期保留最近 2 帧前置缓冲防吞字
+    // Smart Turn 环形缓冲：只保留最近 8s。
+    this.turnRing.push(pcmBuffer);
+    this.turnSamples += pcmBuffer.length / 2;
+    while (this.turnSamples > 128000 && this.turnRing.length > 0) {
+      const head = this.turnRing[0];
+      const headSamples = head.length / 2;
+      if (this.turnSamples - headSamples >= 128000) {
+        this.turnRing.shift();
+        this.turnSamples -= headSamples;
+      } else {
+        break;
+      }
+    }
+
+    if (this.state === 'finishing') {
+      this.pendingFrames.push(pcmBuffer);
+      if (this.pendingFrames.length > 128) {
+        throw new SubtitleError('capture', 'PENDING_FRAME_OVERFLOW', '收尾期间缓冲音频溢出');
+      }
+      return { ok: true };
+    }
+    if (!this.asrSession) this.openAsrSession();
     if (!this.asrSession) {
-      if (vadRes.isSpeech && this.asrEngine.isAlive() && this.asrEngine.ready) {
-        this.openUtterance();
-      } else {
-        if (!this.preRollFrames) this.preRollFrames = [];
-        this.preRollFrames.push(pcmBuffer);
-        if (this.preRollFrames.length > 2) this.preRollFrames.shift();
-        return { ok: true, committed: false };
-      }
+      throw new SubtitleError('asr', 'ASR_SESSION_MISSING', 'ASR live 会话未建立');
     }
-
-    // 话语关闭等待 done 期间：缓存全部到达帧（不丢弃轻音帧），done 到达后无缝补喂
-    const session = this.asrSession;
-    if (session.state !== 'open') {
-      this.pendingResumeFrames.push(pcmBuffer);
-      if (this.pendingResumeFrames.length > 64) this.pendingResumeFrames.shift();
-      return { ok: true, committed: false };
+    if (!this.asrSession.write(pcmBuffer)) {
+      throw new SubtitleError('asr', 'ASR_WRITE_FAILED', '写入 R2T2 live 请求失败');
     }
-
-    // 喂入 R2T2 流式会话
-    session.write(pcmBuffer);
-
-    // 话语收尾判定：
-    //   1. 自然停顿（>= 640ms 静音）
-    //   2. 会话满 10s 且草稿刚好在句末标点（. ? ! …）结束且当前处于微停顿（>= 160ms）：在句界平滑收尾重置上下文，防止 O(t) 计算累积
-    //   3. 单次连接满 18s 兜底收尾重置
-    const utteranceMs = Date.now() - this.utteranceStartedAt;
-    const endBySilence = this.silenceMs >= (this.config.utteranceEndSilenceMs || 640) && this.speechMs > 0;
-    const draftTrimmed = (this.currentDraft || '').trim();
-    const endBySentenceBoundary =
-      utteranceMs >= 4500 &&
-      this.silenceMs >= 160 &&
-      (!draftTrimmed || /[.?!…]["')\]}]*$/.test(draftTrimmed));
-    const endByLength = utteranceMs >= (this.config.utteranceMaxMs || 12000);
-    if (endBySilence || endBySentenceBoundary || endByLength) {
-      this.closeUtterance(endByLength ? 'length' : endBySentenceBoundary ? 'sentence-reset' : 'silence');
-    }
-
-    if (isFinal) {
-      this.closeUtterance('final');
-    }
-
-    return {
-      ok: true,
-      committed: false,
-      reason: 'streaming',
-    };
+    return { ok: true };
   }
 
-  // MARK: - 定稿与翻译
-
-  /** 将一句话/子句定稿（入历史 + 广播 + 以前句为上文送翻译） */
-  commitSentence(sentence, reason = 'sentence-end') {
-    const text = (sentence || '').trim();
-    if (!text) return;
-
-    const segId = `sub_${Date.now()}_${this.seqId++}`;
-    const record = {
-      id: segId,
-      status: 'translating',
-      source_lang: 'en',
-      target_lang: 'zh',
-      source_text: text,
-      target_text: '',
-      reason,
-      createdAt: Date.now(),
-    };
-
-    this.history.push(record);
-    if (this.history.length > 200) this.history.shift();
-
-    // 第 0ms：立刻广播 commit 事件，前端英文连续流无缝衔接
-    this.broadcast('commit', record);
-    this.enqueueTranslation(record);
+  getTurnPcm() {
+    let merged = Buffer.concat(this.turnRing);
+    if (merged.length > 128000 * 2) merged = merged.subarray(merged.length - 128000 * 2);
+    if (merged.length < 128000 * 2) {
+      merged = Buffer.concat([Buffer.alloc(128000 * 2 - merged.length), merged]);
+    }
+    return merged;
   }
 
-  /**
-   * 翻译入队（串行链）。上下文在**执行时**读取，保证前序句子翻译已完成；
-   * 积压超过 2 句时自动跳过上下文以追上进度；关闭或清空后自动丢弃过期任务。
-   */
-  enqueueTranslation(record) {
-    const mySessionGen = this.sessionGeneration;
-    const myClearGen = this.clearGeneration;
-    this.translatePending += 1;
-    const task = this.translateChain.then(async () => {
-      this.translatePending = Math.max(0, this.translatePending - 1);
-      if (
-        mySessionGen !== this.sessionGeneration ||
-        myClearGen !== this.clearGeneration ||
-        !this.modelsLoaded
-      ) {
-        return;
+  async maybeProbeTurn() {
+    if (this.state !== 'listening' || !this.mlHelper?.ready) return;
+    if (!this.asrStreamText.trim()) return;
+    if (this.turnSamples < 16000 * 4) return; // 至少 4s 音频才有意义
+    const now = Date.now();
+    if (now - this.lastTurnProbeAt < 500) return;
+    if (this.turnProbeInFlight) return;
+    this.turnProbeInFlight = true;
+    this.lastTurnProbeAt = now;
+    try {
+      const prob = await this.mlHelper.turn(this.getTurnPcm());
+      if (this.state !== 'listening') return;
+      if (prob > (this.config.turnThreshold ?? 0.5)) {
+        this.closeAsrSession('turn');
+      } else if (this.lastDeltaAt && now - this.lastDeltaAt >= 5000) {
+        this.closeAsrSession('idle');
       }
-
-      const skipContext = this.translatePending > 2;
-      const prevEn = skipContext ? '' : this.lastCommittedEn;
-      const prevZh = skipContext ? '' : this.lastCommittedZh;
-
-      const result = await this.callTranslate(record.source_text, prevEn, prevZh);
-      if (
-        mySessionGen !== this.sessionGeneration ||
-        myClearGen !== this.clearGeneration ||
-        !this.modelsLoaded
-      ) {
-        return;
-      }
-
-      if (result.ok && result.text) {
-        record.target_text = this.harmonizeChinesePunctuation(
-          record.source_text,
-          result.text,
-          record.reason || 'sentence-end'
-        );
-        record.status = 'finalized';
-        this.lastCommittedEn = record.source_text;
-        this.lastCommittedZh = record.target_text;
-        this.broadcast('translated', record);
-        this.broadcast('finalized', record);
-      } else {
-        record.status = 'failed';
-        this.translationFailures += 1;
-        this.lastCommittedEn = record.source_text;
-        this.lastCommittedZh = '';
-        console.error(`[Subtitles] ❌ 翻译失败(已重试): "${record.source_text.slice(0, 60)}"`);
-        this.broadcast('translation_failed', record);
-        this.broadcastStatus();
-      }
-    });
-    this.translateChain = task.catch(() => {});
+    } finally {
+      this.turnProbeInFlight = false;
+    }
   }
 
-  /**
-   * 调用 Index-Translate-2B 极速神经机器翻译：
-   * - 严格限制单句与上文长度，杜绝长上下文累积导致模型崩溃或复读英文；
-   * - 有上文参考时走三轮上下文；若超时/失败/意外复述英文 → 立即以单轮模式重试一次（若服务掉线则先自愈拉起）。
-   */
-  async callTranslate(enText, prevEn = '', prevZh = '') {
-    const boundedEn = String(enText || '').trim().slice(0, 420);
-    if (!boundedEn) return { ok: false, text: '' };
+  checkStreamRotation() {
+    if (this.state !== 'listening' || !this.asrSession) return;
+    const now = Date.now();
+    const elapsed = now - this.sessionStartedAt;
+    const quietMs = this.lastDeltaAt ? now - this.lastDeltaAt : 0;
 
-    const singleTurnMessages = [
-      {
-        role: 'user',
-        content: `请将以下文本翻译为中文，直接输出翻译结果，不要进行任何解释。\n\n${boundedEn}`,
-      },
-    ];
-
-    const canUseContext =
-      prevEn &&
-      prevZh &&
-      prevEn.length <= 220 &&
-      prevZh.length <= 150 &&
-      boundedEn.length <= 260;
-
-    const contextMessages = canUseContext
-      ? [
-          {
-            role: 'user',
-            content: `请将以下文本翻译为中文，直接输出翻译结果，不要进行任何解释。\n\n${prevEn}`,
-          },
-          {
-            role: 'assistant',
-            content: prevZh,
-          },
-          {
-            role: 'user',
-            content: `请结合上文语境，将以下文本翻译为中文，直接输出当前句的翻译结果，不要重复上文，不要进行任何解释。\n\n${boundedEn}`,
-          },
-        ]
-      : null;
-
-    const sendOnce = (messages) =>
-      new Promise((resolve) => {
-        const body = JSON.stringify({
-          messages,
-          max_tokens: 180,
-          temperature: 0,
-          chat_template_kwargs: { enable_thinking: false },
-        });
-
-        const req = http.request(
-          {
-            hostname: '127.0.0.1',
-            port: 1249,
-            path: '/v1/chat/completions',
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Content-Length': Buffer.byteLength(body),
-            },
-            timeout: 6000,
-          },
-          (res) => {
-            let data = '';
-            res.on('data', (chunk) => (data += chunk));
-            res.on('end', () => {
-              try {
-                const json = JSON.parse(data);
-                const rawZh = json.choices?.[0]?.message?.content || '';
-                resolve(stripThinkTags(rawZh));
-              } catch {
-                resolve('');
-              }
-            });
-          }
-        );
-
-        req.on('error', () => resolve(''));
-        req.setTimeout(6000, () => {
-          req.destroy();
-          resolve('');
-        });
-        req.write(body);
-        req.end();
-      });
-
-    const isEnglishEcho = (candidate) => {
-      if (!candidate) return false;
-      const enWords = boundedEn.split(/\s+/).filter((w) => /[a-zA-Z]{2,}/.test(w));
-      return enWords.length >= 3 && !/[\u4e00-\u9fff]/.test(candidate);
-    };
-
-    // 第一次：优先上下文（消歧），无上下文则单轮
-    let outZh = contextMessages ? await sendOnce(contextMessages) : await sendOnce(singleTurnMessages);
-
-    // 失败/超时/空，或模型在多轮模式下意外复读英文 → 单轮重试一次（若 1249 掉线则立即自愈）
-    if (!outZh || (contextMessages && isEnglishEcho(outZh))) {
-      if (!outZh && this.modelsLoaded && !(await this.checkHealth(1249))) {
-        await this.ensureTransServer();
-      }
-      outZh = await sendOnce(singleTurnMessages);
+    // 优先在“已断出 3 句 + 短暂停顿”时轮转：此时尾部大概率是自然句界，切割代价小。
+    // 连续说话没有停顿则用 30s 硬上限，防止 R2T2 O(t) 解码越来越慢。
+    if (this.sentencesSinceSession >= 3 && quietMs >= 700) {
+      this.closeAsrSession('sentences');
+      return;
     }
-
-    // 若模型意外把上文译文重复拼在开头，自动剥离上文译文前缀
-    if (outZh && prevZh && prevZh.length >= 2 && outZh.startsWith(prevZh) && outZh.length > prevZh.length) {
-      outZh = outZh.slice(prevZh.length).replace(/^[，。、；：\s]+/, '');
+    if (elapsed >= 30000) {
+      this.closeAsrSession('rotate');
     }
-
-    return { ok: Boolean(outZh), text: (outZh || '').trim() };
-  }
-
-  /**
-   * 根据英文子句末尾的停止符号类型，协调中文译文末尾标点，使多段子句在连续流中无缝拼接成自然段落
-   */
-  harmonizeChinesePunctuation(enSentence, zhText, reason) {
-    let zh = String(zhText || '').trim();
-    if (!zh) return '';
-
-    const cleanEn = String(enSentence || '').trim().replace(/["')\]}]+$/, '');
-    const isCommaStop =
-      reason === 'comma-stop' ||
-      reason === 'clause-pause' ||
-      reason === 'clause-cap' ||
-      /[,;:—–]$/.test(cleanEn);
-    const isQuestion = /\?$/.test(cleanEn);
-    const isExclaim = /!$/.test(cleanEn);
-
-    if (isCommaStop) {
-      zh = zh.replace(/[。.!！,，;；:：]+$/, '，');
-      if (!/[，；：？！…—]$/.test(zh)) {
-        zh += '，';
-      }
-    } else if (isQuestion) {
-      zh = zh.replace(/[。.!！?？,，;；]+$/, '？');
-      if (!/[？！…]$/.test(zh)) {
-        zh += '？';
-      }
-    } else if (isExclaim) {
-      zh = zh.replace(/[。.!！?？,，;；]+$/, '！');
-      if (!/[！…]$/.test(zh)) {
-        zh += '！';
-      }
-    } else {
-      zh = zh.replace(/[.,，;；]+$/, '。');
-      if (!/[。？！…—”’》）\]}]/.test(zh.slice(-1))) {
-        zh += '。';
-      }
-    }
-    return zh;
   }
 
   // HTTP API 路由
@@ -2378,7 +2254,13 @@ class SubtitleService {
 
       this.sseClients.add(res);
       this.broadcastStatus();
-      this.broadcastDraft();
+      res.write(
+        `event: snapshot\ndata: ${JSON.stringify({
+          status: this.getFullStatusPayload(),
+          sourceText: this.sourceText,
+          targetRecords: this.targetRecords,
+        })}\n\n`
+      );
 
       req.on('close', () => {
         this.sseClients.delete(res);
@@ -2386,7 +2268,7 @@ class SubtitleService {
       return;
     }
 
-    // 2. 状态查询（含运行环境校验、三级模型完整状态、自动测速下载进度）
+    // 2. 状态查询（含运行环境校验、四级模型完整状态、自动测速下载进度）
     if (pathname === '/api/subtitles/status' && req.method === 'GET') {
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -2437,10 +2319,59 @@ class SubtitleService {
 
     // 6. 清空历史记录
     if (pathname === '/api/subtitles/clear' && req.method === 'POST') {
-      this.abortCurrentSession('clear');
-      this.resetSessionHistory();
+      this.resetSessionHistory({ broadcastEvent: true });
+      if (this.state === 'listening' && this.modelsLoaded) this.openAsrSession();
+      this.broadcastStatus();
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify({ ok: true, cleared: true }));
+      return;
+    }
+
+    // 更新字幕配置（如 sourceLang, targetLang）
+    if (pathname === '/api/subtitles/config' && req.method === 'POST') {
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        try {
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+          let changed = false;
+          let sourceLangChanged = false;
+
+          if (body.sourceLang && ['en', 'zh'].includes(body.sourceLang)) {
+            if (this.config.sourceLang !== body.sourceLang) {
+              this.config.sourceLang = body.sourceLang;
+              changed = true;
+              sourceLangChanged = true;
+            }
+          }
+
+          if (body.targetLang && ['none', 'zh', 'ja', 'en'].includes(body.targetLang)) {
+            if (this.config.targetLang !== body.targetLang) {
+              this.config.targetLang = body.targetLang;
+              changed = true;
+            }
+          }
+
+          // 同语言不翻译：若 sourceLang === targetLang，自动回退到 'none'
+          if (this.config.targetLang !== 'none' && this.config.sourceLang === this.config.targetLang) {
+            this.config.targetLang = 'none';
+            changed = true;
+          }
+
+          if (changed) {
+            this.saveConfig();
+            this.resetSessionHistory({ broadcastEvent: true });
+            if (this.state === 'listening' && this.modelsLoaded) this.openAsrSession();
+            this.broadcastStatus();
+          }
+
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ ok: true, config: this.config }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+          res.end(JSON.stringify({ ok: false, error: e.message }));
+        }
+      });
       return;
     }
 
@@ -2514,17 +2445,17 @@ class SubtitleService {
 
     // 12. 实时 160ms 增量音频帧喂入端点（支持裸 PCM Int16LE 或 WAV）
     if (pathname === '/api/subtitles/feed' && req.method === 'POST') {
-      const isFinal = url.searchParams.get('is_final') === '1';
       const format = url.searchParams.get('format') || 'pcm';
       const chunks = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', async () => {
-        if (!this.modelsLoaded || !this.isRunning) {
-          res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        if (this.state === 'error' || !this.modelsLoaded || !this.isRunning) {
+          res.writeHead(409, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
           res.end(
             JSON.stringify({
               ok: false,
-              status: this.isLoadingModels ? 'loading' : 'stopped',
+              error: this.state,
+              fatalError: this.fatalError,
             })
           );
           return;
@@ -2532,20 +2463,12 @@ class SubtitleService {
 
         try {
           const buf = Buffer.concat(chunks);
-          const result = await this.enqueueAudioFrame(buf, isFinal, format);
+          await this.enqueueAudioFrame(buf, format);
           res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-          res.end(
-            JSON.stringify({
-              ok: true,
-              status: 'done',
-              isFinal,
-              committed: Boolean(result && result.committed),
-              reason: (result && result.reason) || 'streaming',
-            })
-          );
+          res.end(JSON.stringify({ ok: true }));
         } catch (e) {
           res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-          res.end(JSON.stringify({ error: e.message }));
+          res.end(JSON.stringify({ ok: false, error: e.message }));
         }
       });
       return;
