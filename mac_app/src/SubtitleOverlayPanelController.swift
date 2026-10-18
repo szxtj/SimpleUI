@@ -98,7 +98,42 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
         webView.setValue(false, forKey: "drawsBackground")
         panel.contentView?.wantsLayer = true
         panel.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+
+        // 液态玻璃底：先垫一层原生材质，再把透明的 webView 盖上去。
+        // CSS 的 backdrop-filter 只能采到「页面内部」的内容；本页面整体透明、
+        // 面板又浮在别的 App 之上，所以真正的模糊/折射必须由原生材质提供。
+        panel.contentView?.addSubview(makeGlassBackground(in: panel.contentView))
         panel.contentView?.addSubview(webView)
+    }
+
+    /// macOS 26+ 用系统 Liquid Glass（NSGlassEffectView），更早的系统退回
+    /// NSVisualEffectView 的 .hudWindow 材质 —— 两者都是 .behindWindow 混合，
+    /// 会真实采样面板后面的视频画面。
+    private func makeGlassBackground(in container: NSView?) -> NSView {
+        let radius: CGFloat = 16
+        let bounds = container?.bounds ?? .zero
+
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            // .clear 是给「压在媒体内容上」的档位：比 .regular 透得多，
+            // 底下正在播的视频能透上来，白字靠页面上那层薄 scrim 保住对比。
+            glass.style = .clear
+            glass.cornerRadius = radius
+            glass.frame = bounds
+            glass.autoresizingMask = [.width, .height]
+            return glass
+        }
+
+        let fx = NSVisualEffectView()
+        fx.material = .hudWindow
+        fx.blendingMode = .behindWindow
+        fx.state = .active
+        fx.frame = bounds
+        fx.autoresizingMask = [.width, .height]
+        fx.wantsLayer = true
+        fx.layer?.cornerRadius = radius
+        fx.layer?.masksToBounds = true
+        return fx
     }
 
     func loadContent() {
