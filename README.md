@@ -5,799 +5,249 @@
 </p>
 
 <p align="center">
-  <strong>专为 <a href="https://github.com/drumih/turbo-fieldfare">TurboFieldfare</a> 深度定制，全面兼容通用推理引擎的现代化轻量级 AI 客户端</strong>
+  <strong>本地优先的 macOS AI 工作台</strong><br>
+  多模型集成 · 离线维基 RAG · 实时双语字幕 · 原生悬浮窗
 </p>
 
 <p align="center">
-  React 19 · TypeScript · Vite · Tailwind CSS · KaTeX · 原生 macOS 双窗口 · 中英双语
+  React 19 · TypeScript · Vite · Tailwind CSS · KaTeX · Swift / WebKit · Apple Silicon
+</p>
+
+SimpleUI 为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 深度适配，支持 [Mference](https://github.com/NeelM0906/Mference) 与 [DeepSeek 官方 API](https://api-docs.deepseek.com/)，并通过 OpenAI 兼容接口连接 Ollama、vLLM、llama.cpp server、LM Studio 等推理服务。
+
+---
+
+## 界面预览
+
+<p align="center">
+  <img src="docs/assets/main-cn.png" alt="SimpleUI 中文主界面" width="960" />
+</p>
+
+<p align="center">
+  <sub>中文主界面 · <a href="docs/assets/main-en.png">English UI</a></sub>
 </p>
 
 ---
 
-## 目录
+## 核心亮点
 
-- [项目简介](#项目简介)
-- [系统架构](#系统架构)
-- [离线维基 RAG 流水线](#离线维基-rag-流水线)
-- [语音识别服务（SenseVoice · audio.cpp）](#语音识别服务sensevoice--audiocpp)
-- [实时双语字幕服务（Confucius4-R2T2 · Index-Translate）](#实时双语字幕服务confucius4-r2t2--index-translate)
-- [快捷翻译悬浮窗](#快捷翻译悬浮窗)
-- [上下文窗口管理](#上下文窗口管理)
-- [推理引擎兼容](#推理引擎兼容)
-- [快速启动](#快速启动)
-- [项目结构](#项目结构)
-- [开源协议](#开源协议)
-
----
-
-## 项目简介
-
-SimpleUI 是一款专为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare)（TTF）与 [Mference](https://github.com/NeelM0906/Mference) 量身打造的高性能、极致轻量的前端客户端与 macOS 原生桌面应用。同时，基于对 OpenAI 兼容规范的全面支持，SimpleUI 亦可无缝连接 **Ollama、vLLM、llama.cpp server、LM Studio** 等主流本地与远程推理引擎。
-
-相比 Open WebUI 等重型方案，SimpleUI 剥离了一切多余依赖（无需 Python 虚拟环境、FastAPI、SQLite 或向量数据库），前端静态体积极小，冷启动耗时 **< 300 ms**，内存占用仅约 **30 MB**。
-
-SimpleUI 的核心技术亮点涵盖以下五大系统：
-
-1. **端到端离线维基 RAG 流水线**：零截断、**原文直注**（检索键由主力模型规划，注入正文不经任何模型改写）、单模型承担全部语义判断，完全在 Apple Silicon 本地运行，无需任何云端调用。
-2. **全局语音输入（SenseVoice · audio.cpp）**：长按右侧 ⌘ 键直接语音转文字并精准键入输入框，内置 SenseVoice-Small Q8 GGUF 模型与 Silero VAD，安装后开箱即用，断网全离线运行。
-3. **原生端侧实时双语字幕流水线**：两级极速流式架构（Confucius4-R2T2 `audio.cpp` Metal 追加式流式英文识别 + Index-Translate-2B 神经机器翻译），采用大厂级双轨连续提词器界面与 `2+2 / 3+3 / 4+4` 等行自适应高度吸附，纯按需加载、0 后台显存常驻，控制面板内置双源测速与断点续传下载。
-4. **快捷翻译悬浮窗（Quick Translate）**：全局快捷键 `⌃ Control + Space` 瞬时唤起，完全与主窗口解耦的独立原生非激活浮窗；支持多模式互译（自动/中英/英中/详解）、双向 TTS 语音朗读与全键盘交互；设置中提供独立的快速翻译模型配置，默认免思考秒级返回。
-5. **基础模型双引擎切换与动态上下文追踪**：支持 TurboFieldfare (Gemma 4 26B) 与 Mference (Qwen 3.6 35B-A3B) 自适应互斥切换，精确区分生成中（峰值）与生成后（稳态）的上下文占用并在界面实时呈现。
+- **本地优先**：模型推理、知识库、语音识别、字幕和翻译都在本机完成；无需 Python 虚拟环境、向量数据库或云端 API。
+- **模型集成服务**：统一托管基础模型、SenseVoice 语音识别、R2T2 流式字幕、Index-Translate 翻译与 CoreML 断句/端点模型。
+- **DeepSeek API 深度适配**：官方 Base URL / API Key / 模型 / 上下文 / 温度 / top_p / 推理强度 / 停止串 / 系统提示词独立配置，直接请求官方接口，并针对缓存命中做上下文修剪。
+- **离线维基 RAG**：Kiwix ZIM + 多通道检索 + 原文直注；不摘要、不改写、不机械截断，答案带可点击引用。
+- **实时双语字幕**：SOTA SaT 断句、Smart Turn 语义端点、R2T2 流式识别、Index-Translate 整句翻译，原文实时、译文按句追加。
+- **强大前端**：Markdown / KaTeX / Mermaid，代码块一键复制，公式块可复制为 Word / WPS 原生公式，表格可保留格式粘贴到 Word。
+- **原生 macOS**：主窗口 + Spotlight 浮窗 + 快捷翻译 + 字幕悬浮窗，支持中英文界面与深浅色主题。
 
 ---
 
 ## 系统架构
 
-```
-用户输入 (React 前端)
-     │
-     ▼
-Node.js 代理服务器 (端口 31235)
-     │
-     ├──► 基础模型服务托管 (ttf_service.js)
-     │         │
-     │         ├──► TurboFieldfare 推理服务 (端口 1235 · Gemma 4 26B)
-     │         └──► Mference 推理服务 (端口 1241 · Qwen 3.6 35B-A3B)
-     │              (双引擎自由切换 · 统一显存严格互斥释放)
-     │
-     ├──► 维基 RAG 服务 (wiki_service.js)
-     │         │
-     │         ├──► Kiwix 离线维基 (端口 31236 · ZIM 文件)
-     │         └──► 主力模型 (端口 1235 / 1241) ← 实体规划 / 长文目录路由
-     │
-     ├──► 语音识别服务托管 (asr_service.js)
-     │         │
-     │         └──► audiocpp_server · SenseVoice-Small (端口 1236 · 随 App 自启/退出终止)
-     │                   ▲
-     │                   └── 长按右 ⌘（Swift VoiceInputManager）→ /api/asr/transcribe
-     │
-     ├──► 实时双语字幕服务托管 (subtitle_service.js)
-     │         │
-     │         ├──► 第 1 级：Confucius4-R2T2 Q8_0 (端口 1250 · audiocpp_server Metal 追加式流式识别 + 原生标点)
-     │         └──► 第 2 级：Index-Translate-2B (端口 1249 · llama-server 专精神经机器翻译)
-     │              (纯按需加载：开窗口拉起，关窗口即卸载释放显存)
-     │
-     └──► 主推理模型 (端口 1235 / 1241 · TTF / Mference / Ollama / vLLM 等) ← 最终答案生成
+```text
+React 前端 / Swift 原生窗口
+        │
+        ▼
+Node.js 代理（127.0.0.1:31235）
+        │
+        ├── 基础模型服务（TTF :1235 / Mference :1241 / OpenAI 兼容）
+        ├── DeepSeek 官方 API（云端）
+        ├── 离线维基 RAG（Kiwix :31236 + 本地 ZIM）
+        ├── 语音输入（SenseVoice · audio.cpp :1236）
+        ├── 实时双语字幕
+        │     ├── R2T2 Q8_0 流式识别（:1250 · Metal）
+        │     ├── SaT-3L-sm CoreML 断句（ANE / CPU）
+        │     ├── Index-Translate-2B Q4_K_M（:1249 · Metal）
+        │     └── Smart Turn v3.2 CoreML 语义端点（ANE）
+        └── 快捷翻译（独立原生悬浮窗）
 ```
 
-| 服务 | 端口 | 职责 |
+| 服务 | 默认端口 | 职责 |
 | :--- | :--- | :--- |
-| Node.js 代理 (`proxy.js`) | `31235` | SSE 透传、静态托管、动态路由、会话与多模态媒体服务、各受管服务 API |
-| Kiwix 离线百科 | `31236` | ZIM 文件读取、标题联想、条目 HTTP 服务（随包内置运行时，完全离线） |
-| 语音识别（audiocpp · SenseVoice） | `1236` | 本地中英语音转文字（随包内置 GGUF 与 VAD，完全离线） |
-| 字幕流式识别（audiocpp · Confucius4-R2T2） | `1250` | 英文实时追加式流式识别与原生标点（独立 audiocpp_server 实例，按需拉起） |
-| 字幕翻译服务（Index-Translate-2B） | `1249` | 专精神经机器翻译（独立 llama-server 单并发槽位实例，按需拉起） |
-| 主推理模型（TTF / Mference） | `1235` / `1241` | 实体规划、长文目录路由、最终答案生成（高阶用户自备外部项目与权重） |
+| Node 代理 `proxy.js` | `31235` | 静态托管、SSE 透传、动态路由、受管服务 API |
+| Kiwix 离线百科 | `31236` | 本地 ZIM 条目、标题联想、全文检索 |
+| SenseVoice 语音输入 | `1236` | 长按右 ⌘ 的本地中英语音转文字 |
+| R2T2 字幕识别 | `1250` | 追加式流式识别，原生标点 |
+| Index-Translate 字幕翻译 | `1249` | 专精神经机器翻译 |
+| 基础模型 | `1235` / `1241` | TTF / Mference / 兼容 OpenAI 的推理服务 |
+| DeepSeek API | 云端 | 官方 API：对话、推理与快捷翻译 |
 
-> **模型服务托管**：SimpleUI 作为本地模型服务的统一宿主管理方——
-> 支持在 **TurboFieldfare**（默认端口 `1235`，Gemma 4 26B）与 **Mference**（默认端口 `1241`，Qwen 3.6 35B-A3B）之间自由切换，切换时严格执行显存互斥释放；
-> 服务管理界面提供独立状态指示灯、启停控制、本体路径浏览、运行参数调优（上下文容量、前缀缓存、专家缓存、思考模式等）及日志查看；
-> 配置统一持久化于 `~/Library/Application Support/SimpleUI/model_config.json`。
->
-> **前置条件需自行准备**：基础大模型项目为实验性、面向开发者的外部项目，**本体源码与大模型权重不随本仓库分发**，
-> 需分别克隆 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 或 [Mference](https://github.com/NeelM0906/Mference) 到本机（默认 `~/turbo-fieldfare` 或 `~/Mference`）并完成构建。
-> 缺少本体或模型时，服务管理界面会进行检测并提供引导。
-
-> **字幕服务使用简述**：字幕服务运行时二进制（`audiocpp_server` 与 `llama-server`）已随包分发，运行所需的两个专属模型（Confucius4-R2T2、Index-Translate-2B）不随包入库，用户只需在服务管理面板的「实时字幕服务」卡片中点击「一键测速并下载缺失模型」（支持官方源与镜像源自动测速、故障自动切换与断点续传），下载完成后即可随时通过菜单开启字幕悬浮窗。开启时按序加载并清空旧记录，关闭时立刻卸载并释放显存。
-
-### 跨窗口同步
-
-主窗口（Main Window）与 Spotlight 浮窗通过 `BroadcastChannel`（`syncChannel`）实时双向同步，消息类型包括：
-
-| 消息类型 | 触发时机 | 内容 |
-| :--- | :--- | :--- |
-| `STREAM_TOKEN_PROGRESS` | 流式生成中（每 20 tokens） | `{ sessionId, liveTokens }` |
-| `STREAM_CHUNK` | 每个 SSE delta | 增量文本 |
-| `STREAM_DONE` | 生成完成 | 最终 metrics、cleanHistoryTokens |
-| `STREAM_ABORT` | 用户停止 | sessionId |
-| `SESSIONS_CHANGED` | 会话增删改 | - |
-| `SETTINGS_CHANGED` | 设置变更 | 新配置 |
-| `STREAM_QUERY` | 浮窗打开/聚焦时，主窗回灌进行中的流 | 重放中的 chunk |
-| `LOAD_SESSION_IN_SPOTLIGHT` | 主窗「收起为浮窗」 | sessionId |
+> 基础模型本体与权重不随本仓库分发，需要用户自行准备；语音模型随包内置，字幕模型可在应用内按需下载。
 
 ---
 
-## 离线维基 RAG 流水线
+## 离线维基 RAG
 
-SimpleUI 构建了一套**端到端、零截断、原文直注**的离线本地知识库检索增强体系，完整运行于 Apple Silicon Mac，无任何云端依赖。
+SimpleUI 使用本地 Kiwix ZIM 构建端到端离线知识库。核心原则是：
 
-核心思想：**注入正文不经任何模型改写**。条目名由主力模型从提问中规划出 1~2 个规范名称（规划失败则用归一后的原提问直接检索）；注入的不是模型摘要，而是抓取并归一后的原文——没有改写就没有编造。
+> **注入给模型的正文是原文，不是模型摘要；不重写、不截断。**
 
-### 完整流程
-
-```mermaid
-flowchart TD
-    Q["用户输入提问"] --> NORM["0ms 全局归一：toSimplifiedChinese\n（繁→简，港台词汇→大陆规范）"]
-    NORM --> PLAN["主力模型实体规划\n提取 1~2 个规范条目名\n(system role · 关思考 · temperature 0)\n失败则用归一后的原始提问直接检索"]
-
-    PLAN --> VARIANTS["OpenCC 变体矩阵扩展\n简体 → 标准繁体 / 台繁 / 台繁语 / 港繁\n(getAllVariants)"]
-    VARIANTS --> RECALL["多通道召回（并行 · 每个候选带来源与可靠度）\nA 精确探针 HEAD 200/302\nB 标题联想 /suggest count=30\nC 消歧义页的义项列表\nD 全文检索（仅 A/B/C 无候选时启用）"]
-    RECALL --> FILTER["命名空间前缀过滤（数据表）\nCategory/Portal/Template/Module… 一律丢弃\n再按规范路径去重（别名归一为一篇）"]
-    FILTER --> SELECT["按关键字独立解析（严格串行）\n① 精确命中且非消歧义页 → 取 1 篇\n② 精确命中是消歧义页 → 主力模型选义项，选中即取 1 篇\n③ 都不匹配 → 包含命中按通用相关度取 ≤2 篇\n④ A/B/C 全无候选 → 全文检索按相关度取 ≤2 篇"]
-    SELECT --> DOM["Kiwix HTTP 取全文 HTML\nparseWikipediaDOM（DOM 树解析）：\n  - 结构性剪枝导航框/维护横幅/参考资料\n  - Infobox 按 <tr> 抽取（不要求 th 在 td 之前）\n  - 完整引言 + 段落 + 列表(·) + 表格(|) + 定义列表"]
-    DOM --> NORM2["全局二次归一：toSimplifiedChinese\n（Infobox 键值 / 引言 / 小节标题 / 段落）"]
-    NORM2 --> BRANCH{"清洗后总字数 > 3500？"}
-    BRANCH -->|"≤ 3500"| PANO["全景模式 panoramic\nInfobox + 完整引言 + 全部小节"]
-    BRANCH -->|"> 3500"| ROUTE["主力模型目录路由\n选 1~2 个最相关小节 + 1~3 个属性\n（完整引言照常保留，不截取）"]
-    PANO --> CTX["归一原文 context\n（不改写 · 不摘要 · 不机械截断）"]
-    ROUTE --> CTX
-    CTX --> INJECT["注入 Grounding Prompt\n【条目名】+ 原文（含 Infobox/引言/列表/表格）\n+ 引用胶囊（仅条目名，点开看原文）"]
-    CTX -->|"0 条引用"| SILENT["静默回退\n不注入任何内容"]
-
-    INJECT --> LLM["主力模型生成最终答案\n自行筛选相关信息，列举类可照抄原文"]
-    SILENT --> LLM
+```text
+提问
+  → OpenCC 简繁/港台词汇归一
+  → 主力模型规划 1~2 个条目名
+  → 多通道召回（精确探针 / 标题联想 / 消歧义页 / 全文检索）
+  → 命名空间过滤 + 规范路径去重
+  → 抓取条目 HTML，DOM 解析
+  → 原文直注（Infobox / 引言 / 段落 / 列表 / 表格 / 公式）
+  → 生成答案 + 引用胶囊
 ```
 
-### 各步骤技术说明
-
-#### 步骤 0：全局归一（OpenCC）
-
-`toSimplifiedChinese(text)` 使用 **opencc-js** 进行两步级联转换：
-1. `cn → t`：将大陆简体写法的港台词汇（如"记忆体"、"软体"）对齐到繁体词表索引（"記憶體"、"軟體"）
-2. `twp → cn` + `hk → cn`：再将区域繁体与港台习语统一回大陆规范简体（"内存"、"软件"）
-
-这一步同时作用于用户提问、Infobox 键值、小节标题与正文段落，实现全链路词汇归一。
-所有中文简繁与港台用语转换**统一由 OpenCC 承担**，不使用任何自写映射表。
-
-#### 步骤 1：主力模型实体规划
-
-- **模型**：主力推理模型（默认 Gemma 4 26B-A4B，端口 1235）
-- **调用方式**：规则放 `system`、示例与提问放 `user`（Gemma 4 原生支持 system role）；关闭思考；`temperature=0`（实测与官方建议的 1.0 在 12 个全新问题上质量一致，但 1.0 存在规划结果跳变）
-- **任务**：从完整自然语言提问中提炼 1~2 个规范条目名，输出纯 JSON `{"target_articles": [...]}`
-- **防凑数**：提示词显式要求"默认只给 1 个，仅当确实涉及两个独立实体才给 2 个，严禁凑数推测"
-- **无回退**：不做任何小模型兜底；规划失败时直接用归一后的原始提问检索
-- **性能**：主力模型 prefill ≈ 30ms/token，规划一次约 9s；提示词长度是唯一有效杠杆（无有效前缀缓存）
-
-#### 步骤 2：OpenCC 变体矩阵扩展
-
-`getAllVariants(term)` 对规划出的每个实体名，通过 opencc-js 扩展出全部字形变体：
-
-| 转换分支 | 示例（"鼠标"） | 示例（"激光"） | 示例（"周杰伦"） |
-| :--- | :--- | :--- | :--- |
-| 原词（大陆简体） | 鼠标 | 激光 | 周杰伦 |
-| 标准繁体 `cn→t` | 鼠標 | 激光 | 周杰倫 |
-| 台湾繁体 `cn→tw` | 鼠標 | 激光 | 周杰倫 |
-| 台湾繁体语 `cn→twp` | 滑鼠 | 雷射 | 周杰倫 |
-| 香港繁体 `cn→hk` | 鼠標 | 激光 | 周杰倫 |
-
-**全部变体**（含原词与归一结果本身）进入去重 `Set` 后用于后续检索（旧版只取前 2~4 个，会漏检），确保无论 ZIM 文件以何种字形索引条目都能命中。
-
-> 注意 `Set` 会去重：多数词条的 `cn→t` / `cn→tw` / `cn→hk` 输出相同字形（如"鼠标"三者皆为"鼠標"），
-> 因此单个关键字的**实际变体数通常只有 2~3 个**（实测：`鼠标 → [鼠标, 鼠標, 滑鼠]`，`激光 → [激光, 雷射]`）。
-> 上表按"转换分支"列出以便对照，并非每个词条都会产出 5 个互不相同的变体。
-
-#### 步骤 3：多通道召回 + 命名空间过滤 + 规范化去重
-
-**多通道召回**（并行执行；每个候选携带来源标记与可靠度）：
-
-| 通道 | 接口 | 作用 | 可靠度 |
-| :--- | :--- | :--- | :--- |
-| **A 精确探针** | `HEAD /content/{id}/{variant}` | 关键词即条目标题（200 存在 / 301-302 跟随重定向） | 高 |
-| **B 标题联想** | `/suggest?...&count=30` | 标题**包含**关键词的条目 | 中 |
-| **C 义项目录** | 消歧义页的链接列表 | 一词多义；也可覆盖「义项标题不含关键词」的情形 | 高 |
-| **D 全文检索** | `/search?pattern=...` | 正文提到关键词的条目（别名、非独立词条） | 低 |
-
-> 通道 D **只在 A/B/C 均无可用候选时**才启用，避免噪音常态化。
-
-随后三步收敛：
-1. **命名空间过滤**：`Category:`、`Portal:`、`Template:`、`Module:`、`Draft:` 等命名空间页一律丢弃（前缀表是**数据**，覆盖中英文，不是正则）
-2. **深度重定向**：对候选发起 `HEAD`（`redirect:manual`）解析 Kiwix 的规范路径——避免同一文章的多个别名（如「康托」→「格奥尔格·康托尔」）被当成多篇
-3. **相关度粗排 + 上限**：先按通用相关度排序，**只对前 12 个候选做规范路径解析**（避免对全部候选逐个发 HEAD），再按规范路径去重
-
-#### 步骤 4：按关键字解析（每关键字独立、串行）
-
-每个关键字**独立解析**，按固定优先级：
-
-| 优先级 | 条件 | 行为 |
-| :--- | :--- | :--- |
-| ① | 精确命中且**非**消歧义页 | 取该篇 **1 篇**，该关键字结束 |
-| ② | 精确命中是**消歧义页** | **主力模型**读义项列表选 1 个义项；**选中即视为完全命中**，取该篇 1 篇并结束 |
-| ③ | 模型回答「都不匹配」 | 落到「标题包含关键词」的条目，按**通用相关度**取 **≤2 篇** |
-| ④ | A/B/C 全无可用候选 | 才启用**全文检索**，按通用相关度取 **≤2 篇** |
-
-- **消歧义判定**按可靠性分三级：① **页面自身的分类**（MediaWiki `wgCategories` 元数据）命中消歧义分类 → 判定为消歧义页；② 有分类元数据但未命中 → 明确按普通条目处理，不再猜测；③ 仅当分类元数据缺失时，才退化为结构标记（`#disambigbox`，或**非 `<a>` 元素**上的 `disambig` / `mw-disambig` 类——`<a class="mw-disambig">` 只是"指向消歧义页"的链接，不能当页面标记）与结构特征（无 Infobox + 无 `<h2>` + 正文极短 + 大量链接列表项）。分类判定在实测中 35 个正常条目 0 误判、真消歧义页 100% 命中
-- **义项选择完全交给主力模型**（提示词要求「名称必须与候选列表逐字一致；都不相关则输出 `null`」）——原先的实体类型硬编码打分已删除
-- **通用相关度**（纯算术、零词表）：`覆盖率（最长匹配变体 ÷ 标题长度）+ 前缀命中加权 + 通道可靠度加权 − 超长标题惩罚`
-- 两个关键字各自独立，最多各得 2 篇；全部**串行**处理（主力模型不支持并发）
-
-#### 步骤 5：全文 HTML 抓取与 DOM 解析
-
-`parseWikipediaDOM(html)` 用 **DOM 解析器**（`node-html-parser`）建树后按**节点类型**抽取，不再用正则去"伺候"HTML：
-
-1. **结构性剪枝**：按标签（`script` / `style` / `link` …）、MediaWiki 标准 class（`navbox` / `ambox` / `reflist` / `mw-editsection` / `sortkey` / `magnify` / `mw-hidden-catlinks` …）与**内联 `display:none`** 整枝删除（`figure` / `thumb` / `gallery` 不删——它们承载图注，见第 5 条）。内联 `display:none` 是关键一条：公式的 MathML 无障碍副本、隐藏分类都藏在这里，不删就会把无关标记带进正文。**公式则按原文保留**：离线维基里公式只有"图片 + LaTeX 源码"这一种文本形式（`img.alt` / `math.alttext` / `<annotation>` 三者同源，`img.title` 为空），故注入其 LaTeX（`\pi`、`{1 \over 2}R`、`f:[0,1]\rightarrow \mathbb {C}` 这类是 LLM 可直接读懂的形式），仅去掉 MathJax 的 `\displaystyle` / `\textstyle` 样式命令、**保留花括号**（连括号一起删会让 `{1 \over 2}R` 变成有歧义的 `1 \over 2R`）
-2. **尾部截断**：遇到第一个「样板」章节标题（注释/参考文献/外部链接/参见…，多语言数据表）即自此截断
-3. **Infobox 整体截出**：按 `<tr>` 遍历，**不要求** `<th>` 在 `<td>` 之前，也不怕嵌套子表格；同一行的多个值以 `|` 连接，「仅有值」的续行归属最近的键名
-4. **结构分割**：按文档顺序遇到 `<h2>` 切换小节；`<h3>` / `<h4>` 的内容归属其所在小节
-5. **按序抽取内容块**：`<p>` 段落、`<ul>/<ol>` 列表（`·` 行）、`<table>` 表格（`| 单元格 | 单元格 |` 管道表）、`<dl>` 定义列表（`键：值`）、`<blockquote>` / `<pre>` 引用。**无任何长度过滤**。另有两条保真规则：① **上标 / 下标**分别用 `^` / `_` 标记，保留幂次与下标语义（否则 `3.00×10⁸` 被拉平成 `3.00×108` 像"一百零八"、`H₂O` 被拉平成 `H2O`）；② 提取结果里嵌入**结构化标记**（见下节），供面板渲染富文本。
-
-#### 步骤 5.1：结构化标记与面板渲染
-
-面板（右侧百科抽屉，入口与不可用行为见上文「知识库面板」一节）要"适合阅读"，而注入给模型的必须是**纯文本**——两者用同一份抽取结果经标记分流：
-
-| 标记 | 载荷 | 注入侧还原为 | 面板侧渲染为 |
-| :--- | :--- | :--- | :--- |
-| `tex` | LaTeX | LaTeX 原文（与旧版一致） | **KaTeX 公式**（行内，含表格单元格内） |
-| `tbl` | JSON（表头行数 + 单元格，含 `colspan`/`rowspan`） | 管道表文本（与旧版一致） | **真 `<table>`**：`<th>` 表头、合并单元格、超宽横向滚动 |
-| `img` | 图片 src + 图注 | `[图略] 图注` | **真图 + 图注**（src 解析为同源 URL） |
-| `sh` | 层级 + 标题 | 空串（旧版也不含子标题文字） | **子标题**（h3/h4，此前完全丢失） |
-
-设计要点：
-
-- 标记用 **Unicode 私有区字符**（U+E000 起始 / U+E001 终止）包裹，维基正文绝不出现，因此不存在与原文冲突。
-- **嵌套转义**：内层标记的终止符在写入外层载荷前转义为 U+E002，解析时还原。否则「表格单元格里放公式」「子标题里放公式（如《圆周率》的"计算 π 的意义"）」会把外层标记提前截断。
-- **注入侧零变化**：标记在统计字数**之前**就被还原，因此 3500 字分支、管道表格式、`[图略]` 文案、子标题省略等行为**与引入标记前逐字节一致**（有基线回归守着）。
-- 义项选择（消歧义）的候选描述也会先还原，避免标记泄漏进提示词。
-- 公式渲染用 `katex`（项目已内置且样式全局引入）；遇到 KaTeX 不支持的宏时回退显示 LaTeX 原文而非报错。
-
-> **零截断原则**：全程不对内容做字符截断；清洗只针对"页面上不渲染的元素"与"非文章页"，正文一律保留。
-
-#### 步骤 6：全局二次归一
-
-将所有 Infobox 键名、键值、小节标题、引言与正文段落再次经过 `toSimplifiedChinese` 归一，消除 ZIM 文件本身以繁体字存储带来的字形与词汇偏差。实测繁体条目（《周杰倫》）输出 0 繁体字形残留。
-
-#### 步骤 7：长文章路由
-
-- **标准条目（≤ 3500 字，约 75%）**：`panoramic` 模式，完整输出 Infobox + 完整引言 + 全部小节
-- **超长条目（> 3500 字）**：`routed` 模式，由**主力模型**从章节大纲与 Infobox 键名中选出 1~2 个最相关小节与 1~3 个属性；这些小节的**完整段落**全部拼入，**完整引言照常保留**，不做任何截取
-- **兜底**：模型未选出任何小节 → 取前 2 个小节；未选出任何属性 → 取前 8 个 Infobox 属性
-- **阈值口径**：3500 字按归一后的「引言 + 全部小节」字数统计，**不含 Infobox**
-
-#### 步骤 8：原文直注（无 MRC）
-
-旧版在此处有一个「机器阅读理解」环节：让小模型读正文、压缩成一句事实陈述。实测它会**编造**（在《康托尔集》里编出"哥德巴赫猜想是由格奥尔格·康托尔提出的"）。该环节已整体移除。
-
-现在：`assembleArticleContext` 产出的归一原文**直接注入**给主力模型，由它自行定位相关信息、结合自身知识生成答案：
-- 没有改写就没有编造
-- 列举类问题（"列出所有作品"）可直接照抄原文列表
-- 引用胶囊点击后，右侧知识库面板会在**完整条目正文上方**展示这份「本次实际注入的纯文字原文」，**可核验**（面板正文为抽取文本的原生渲染；原版维基页面可用面板右上角「在浏览器中打开」访问）
-
-#### 关于上下文容量（原「上下文预算装载」已移除）
-
-早先版本在注入前有一道「上下文预算」保护：前端按 `maxContext - maxTokens` 估算 `budgetChars` 传给后端，超预算整篇丢弃，一篇都装不下则返回 `contextOverflow` 并提示新建对话。实测这道预算只由设置推导、**完全不看当前对话已占用多少**，因此是个恒定值，实际上从不触发，属于虚假保护。
-
-现已**前后端整体移除**（`budgetChars` / `usableTokens` / `contextOverflow` 全部删除）。检索到多少就注入多少，注入前不做任何截断或取舍；请把上下文窗口开到足够大来承载。
-
-#### 注入提示词
-
-```
-[百科原文参考]
-以下是从离线知识库中检索到的与用户问题相关的百科条目内容（含基本档案、引言与相关小节）。
-
-【条目名】
-<原文>
-
-[回答指引]
-1. 【自行筛选】：上述原文中可能包含与问题无关的内容（例如档案中用不到的属性、其他小节、列表中的无关条目）。请自行定位其中真正与问题相关的部分，忽略其余。
-2. 【事实锚定】：将其中出现的事实、时间、人物与数据作为真实性基石；若信息不完整，可结合你自身的知识补充展开。
-3. 【按需照抄】：若用户要求列举类内容（例如"列出所有作品/所有奖项"），请忠实照抄原文中的对应列表，不要擅自删减或概括。
-4. 【注明出处】：回答中请说明引用了哪篇百科条目。
-
-[用户问题]
-<原始提问>
-```
-
-该 Grounding Prompt 为临时 ephemeral 包装，**不写入持久对话历史**。
-
-> 说明：该 Grounding Prompt 由 `src/services/chatTurn.ts` 统一提供，**主窗口与 Spotlight 浮窗共用同一份实现、逐字一致**。知识库检索门控、wire 消息构造、会话级参数装配（思考 / 知识库开关）也全部收敛在该模块内，两个窗口不再各写一份。
-
-### 核心设计原则
-
-1. **无改写注入**：注入内容完全来自抓取并归一后的原文，不经任何模型摘要或改写；检索键由主力模型从提问中规划（不做全文检索，失败时退回原提问），取代了旧版由小模型改写事实的 MRC 环节。没有改写就没有编造。
-2. **零截断**：正文内容完整传递，不做任何字符截断，也不做"整篇丢弃"式的预算取舍——检索到多少就注入多少。
-3. **零污染**：Grounding Prompt 为临时 ephemeral 包装，严格不写入持久对话历史。
-4. **零机械规则**：不做关键词正则剥离、不做硬编码打招呼旁路、不做事实相关性正则过滤；中文简繁转换统一交给 OpenCC，消歧义义项选择交给主力模型——原先的实体类型硬编码打分已删除。
-5. **弃权优先**：任一环节拿不到结果即静默退出，主模型依靠通用知识作答，绝不注入噪音。宁可漏引，不可错引。
-6. **DOM 树解析**：HTML 一律解析成树后按**节点类型**抽取与剪枝，不再用正则去"配合"嵌套结构；结构性判断依据 HTML 标签与 MediaWiki 标准 class 名，与语言无关。
-7. **单模型串行**：链路中只有主力模型承担全部语义判断（规划 / 义项选择 / 目录路由 / 生成），且严格串行调用——主力模型不支持多路并发；无内存缓存，结果实时计算。
-
-### 知识库服务开关
-
-设置中的「启用知识库服务」是**服务级总开关**（持久化于 `wiki_config.json`）：
-
-| 总开关 | ZIM 就绪 | 对话 📚 按钮 | 左下角服务行 |
-| :--- | :--- | :--- | :--- |
-| 关闭 | 任意 | 不渲染 | 整行消失（服务进程被杀） |
-| 开启 | 是 | 显示 · 可点 | 显示 ready（含条目数） |
-| 开启 | 否 | 显示 · 禁用 | 显示 offline |
-
-会话级 📚 开关默认关闭（知识库检索目前处于早期实验阶段），需手动点亮。会话级 🧠 思考开关与 📚 知识库开关都随会话保存，主窗口与 Spotlight 浮窗通过 `BroadcastChannel` 实时双向同步，两个窗口的问答参数始终一致。
-
-> 上表的 📚 是**检索开关**（本轮问答要不要检索知识库，受总开关就绪状态约束）。
-> 打开**知识库面板**是另一回事，不受这两个状态影响——见下节。
-
-### 知识库面板（两个窗口 · 三个入口 · 同一份实现）
-
-面板的显示机制**只有一份实现**（`WikiPanel.tsx`），两个窗口只是容器形式不同：
-
-| 入口 | 所在窗口 | 容器形式 |
-| :--- | :--- | :--- |
-| 对话头部「展开知识库面板」开关 | 主窗口 | 右侧**停靠侧栏**（440px，随窗口布局滑入滑出） |
-| 输入框发送按钮**左侧**的 🔍 按钮 | Spotlight 浮窗（胶囊态与展开态都有） | **整块覆盖抽屉**：与浮窗卡片同圆角（22px）同描边，左上角带整体关闭 ✖、右上角为关闭 ✕ |
-| 回答下方的**引用胶囊** | 两个窗口都有 | 同上容器，打开时直接定位到该条目 |
-
-面板内容：搜索栏 + 结果列表 + 完整条目富文本（公式 / 表格 / 图片 / 子标题，由 `WikiContextView` 原生渲染）。
-从引用胶囊进入时，面板顶部额外展示**本次实际注入给模型的纯文字原文**（可核验），其下方才是完整条目正文。
-
-**知识库不可用（服务总开关关闭 / 未就绪）时**：
-
-- 搜索栏与正文区整体换成**一条同风格提醒**（说明原因：服务未开启 / 未找到 ZIM 或未连接）——大窗口、小窗口、任何一个入口进去都一致。
-- 引用胶囊带来的**注入原文仍照常显示**在提醒上方（它是胶囊自带的本地数据，不依赖服务）。
-- **不发任何知识库请求**（不取全文、不搜索），避免连接报错；头部绿点与「在浏览器中打开」一并收掉。
-
-浮窗尺寸联动：胶囊态窗口只有 88px 高，放不下面板，故打开面板时会把窗口撑到可阅读尺寸（500×640），关闭时收回输入胶囊。
-
-### 问答界面的阶段阶梯与中止
-
-开启会话级 📚 后，一轮问答在拿到第一个回答 token 之前会经历多个阶段。界面上把它们做成一条**阶段阶梯**（大窗口与 Spotlight 浮窗共用同一组件 `StageLadder`，行为逐字一致）：
-
-- **生成中**：一层一层往下追加，逐行显示「阶段名 · 细节 + 该阶段耗时」，当前行转圈并实时计时；
-- **结束后**：自动折叠成一行汇总（如 `知识库检索 · 5 步 · 14.6s`），点击可展开回看逐行明细；
-- **两块分列**：阶梯按「知识库检索」与「引擎载入上下文」分成两块，各自独立折叠。
-  **引擎 prefill 不算检索的一步** —— 它不进「知识库检索」的步数，耗时也不计入该块总时长；
-- **只有一行时不套壳**：某一块只记到一行时（例如本轮没检索、只剩 prefill）就直接显示那一行，
-  不再渲染「汇总行 + 缩进里一行一模一样的明细」那种重复结构；
-- **位置**：阶梯渲染在思考条**上方**，思考条始终在最下面，与时间线顺序一致；
-- **持久化**：记录随消息保存（localStorage）——切窗口、切会话、关掉所有窗口、退出 App 再打开，已完成的状态都还在；生成方窗口负责记录，另一窗口通过 `SESSIONS_CHANGED` 实时镜像。
-
-检索阶段的文案由服务端管线**真实打点**驱动（`setRagStage` → `GET /api/wiki/rag-stage`）：
-
-| 界面显示 | 对应管线环节 | 何时出现 | 典型耗时 |
-| :--- | :--- | :--- | :--- |
-| 🌀 规划检索词 3.2s | 主力模型实体规划（模型调用 ①） | 每轮必现 | 8~11s |
-| 🌀 定位条目 · i/N · 实体名 1.4s | 变体展开 + kiwix 多通道召回 + 候选筛选 | 每个关键字 1 次 | 1~5s |
-| 🌀 选择义项 · 实体名 9.1s | 主力模型义项选择（模型调用 ②） | 仅命中消歧义页 | 8~10s |
-| 🌀 抓取原文 · 条目名 0.8s | kiwix 取全文 HTML + DOM 解析 + 归一 | 每篇入选条目 1 次 | 0.5~2s |
-| 🌀 规划小节 8.7s | 主力模型章节路由（模型调用 ③） | 仅条目清洗后 > 3500 字 | 8~10s |
-| 🌀 正在载入上下文 2.1s | 引擎 prefill（消息已发出即开始计时） | 每轮必现 | 随注入长度 |
-
-说明：
-
-- 汇总行的标签按**实际发生过的阶段**取：有检索阶段时写「知识库检索 · N 步 · X.Xs」（N 与总时长都只算检索）；
-  **只有 prefill 时**（没开知识库、或本轮没检索）「正在载入上下文 · X.Xs」以单步行直接显示 —— 不会让用户误以为偷偷检索了知识库。
-- 每行末尾的秒数是**该阶段自己的耗时**（0.1s 精度；当前行实时跳动，结束后固定）。
-- 「组装上下文」是毫秒级字符串拼接，不打点、不显示，因此不进阶梯。
-- 规划 / 义项 / 路由三处是**主力模型调用**（严格串行、时长不可预测），只转圈、不显示百分比。
-- **prefill 阶段不做任何估算**：消息一发出就出现「正在载入上下文」这一行并按秒计时，不轮询 TTF 日志、不算百分比。早先那套「已等待 × 近期实测速率 ÷ 真实 prompt 数」的百分比估算（圆环填充）因时序依赖过多（SSE 首块时机、日志归属、串行排队）已整体移除。
-- 服务端没有**新鲜**打点时（`at` 早于本轮开始 1.5s 以上，或接口不可达）不会凭空造行；整个回合没有记录（例如没开知识库）时阶梯整块不渲染。
-- 主力模型调用全管线**仅上述 3 处**，无隐藏调用。
-
-**中止**：任意阶段点「停止」都会立即撤下本轮占位消息，并经 `AbortSignal` 沿
-`rag-context → getRagContext → planQuery / pickSenseWithMainModel / assembleArticleContext(路由…)`
-全链穿透——正在生成中的主力模型调用会被 TTF 以 `cancelled by client` 真实取消，
-串行的模型即刻释放，无进程与内存残留。prefill / 思考 / 生成阶段的中止同理；
-回合结束后操作按钮与耗时指标照常显示（含中断的轮次）。
-
-**关键参数（逐条核对自 `server/wiki_service.js`）**：
-
-| 参数 | 实际值 | 所在函数 |
-| :--- | :--- | :--- |
-| 目标条目数 | ≤ 2（规划失败时用归一后的原始提问） | `getRagContext` |
-| 变体矩阵 | ≤ 6 个字形：原词 / 简体 / cn→t / tw / twp / hk | `getAllVariants` |
-| 通道 A 精确探针 | kiwix `/content` **HEAD** 跟随 301/302，超时 1.2s，可靠度 0.95 | `_probeExact` |
-| 通道 B 标题联想 | `/suggest count=30`，超时 1.5s，可靠度 0.6 | `_suggestTitles` |
-| 通道 D 全文检索 | `/search pageLength=8`，超时 2.5s，可靠度 0.35（末位手段） | `_fullTextSearch` |
-| 候选收敛 | 按通用相关度粗排后仅前 **12** 个做规范路径 HEAD（各 2s），按规范路径去重 | `_resolveCandidates` |
-| 取原文 | GET 超时 2.5s | `_getPage` |
-| 3500 分支 | 统计口径为**引言 + 小节正文字数（不含 Infobox）** | `assembleArticleContext` |
-| 路由兜底 | 模型未匹配小节 → 取前 2 节；未匹配属性 → 取前 8 个 Infobox 键；引言始终完整保留 | `assembleArticleContext` |
-| 包含/全文命中 | 各取 ≤ 2 篇（`rejectStrongDisambig=true`，强消歧义页直接跳过） | `_resolveForKeyword` |
-| 模型调用参数 | temperature 0 · top_p 0.95 · top_k 64 · max_tokens 64/80 · 关思考 · SSE 流式 · 单次超时 30s | `callMainModel` |
+- 条目名由主力模型规划，检索结果按可靠度收敛；不是把整篇维基硬塞进上下文。
+- 长条目只做“目录路由”，保留完整引言，不机械截断正文。
+- 公式以 LaTeX 保留，表格以管道表/结构化数据保留，图片与图注在知识库面板中还原。
+- 知识库面板支持公式、表格、图片、子标题与引用原文查看。
+- 需要本地 ZIM 文件；运行时已随包分发，路径可在「服务管理 → 知识库」中配置。
+
+### 中文检索为什么准
+
+1. **中文优先归一**：先用 OpenCC 做简繁与港台词汇归一，再扩展字形变体，避免中文 ZIM 因“鼠標/鼠标/滑鼠”等写法差异漏检。
+2. **模型规划 + 多通道召回**：主力模型只负责规划 1~2 个规范条目名；精确探针、标题联想、消歧义页、全文检索按可靠度收敛，全文检索只在必要时启用。
+3. **消歧义交给模型**：精确命中消歧义页时，由主力模型从义项列表中选一个；不靠硬编码实体类型打分。
+4. **原文直注**：DOM 解析后注入 Infobox、完整引言、段落、列表、表格与 LaTeX 公式；不做模型摘要、不机械截断，答案可直接引用原文。
+5. **引用可回看**：答案中的引用胶囊只指向条目名，点开知识库面板可查看注入的原文，便于核对。
 
 ---
 
-## 语音识别服务（SenseVoice · audio.cpp）
+## 模型集成服务
 
-SimpleUI 内置第三个受管服务：本地语音识别。基于 **SenseVoice-Small**（FunAudioLLM）的
-Q8 GGUF 量化包，由 **audio.cpp** 的 `audiocpp_server` 承载，完全本地运行、无云端依赖。
+### 基础模型与 DeepSeek API
 
-| 项目 | 值 |
+- 本地深度适配 **TurboFieldfare**（默认端口 `1235`），同时支持 **Mference**（默认端口 `1241`）。
+- **DeepSeek 官方 API 是一等 Provider**：独立配置 Base URL、API Key、模型、上下文窗口、温度、top_p、推理强度、停止串与系统提示词；请求直接发往 `api.deepseek.com`，不经过本地推理进程。
+- DeepSeek 模式针对官方缓存行为做上下文修剪（批量修剪到 70% 水位），减少缓存失效与重复 prefill。
+- 通过 OpenAI 兼容接口连接 Ollama、vLLM、llama.cpp server、LM Studio 等。
+- 服务管理面板提供启停、状态、参数调优、日志与模型目录浏览；切换本地基础引擎时执行显存互斥释放。
+- 本地上游项目与模型权重需自行准备，详见 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) / [Mference](https://github.com/NeelM0906/Mference)；DeepSeek 只需在设置中填写 API Key。
+- 说明：DeepSeek 模式会自动关闭知识库入口；离线维基 RAG 面向本地模型链路。
+
+### 全局语音输入
+
+- 模型：SenseVoice-Small Q8_0（audio.cpp），随包内置运行时与模型。
+- 操作：长按右侧 `⌘` 说话，松开后转写并写入当前输入框；在其它 App 中通过剪贴板粘贴。
+- 支持中英语音、内置 Silero VAD，断网可用。
+- 首次使用需授予麦克风、辅助功能、输入监控权限。
+
+### 离线实时双语字幕
+
+SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传，不调用云端 API**，ASR、断句、端点和翻译均由本地模型完成。适用于看剧、会议、演讲、播客等场景。
+
+```text
+系统音频（16kHz mono PCM）
+  → R2T2 Q8_0 流式识别（audio.cpp · Metal）
+  → SaT-3L-sm 断句（CoreML · ANE）
+  → Index-Translate-2B 整句翻译（llama.cpp · Metal）
+  → 原文实时流 / 译文按句追加
+         ↑
+   Smart Turn v3.2（CoreML · ANE，旁路判断是否说完）
+```
+
+| 组件 | 模型 / 版本 | 体积 | 运行位置 |
+| :--- | :--- | ---: | :--- |
+| 流式识别 | Confucius4-R2T2 Q8_0 | 2.31 GiB | audiocpp · Metal（`:1250`） |
+| 智能断句 | [SaT-3L-sm](https://huggingface.co/segment-any-text/sat-3l-sm) CoreML FP16 | 240 MB | CoreML · ANE / CPU |
+| 整句翻译 | [Index-Translate-2B](https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF) Q4_K_M | 1.22 GiB | llama-server · Metal（`:1249`） |
+| 语义端点 | [Smart Turn v3.2](https://huggingface.co/aufklarer/Smart-Turn-v3.2-CoreML) CoreML FP16 | 16.8 MB | CoreML · ANE |
+| 断句分词 | XLM-R `tokenizer.json` | 9 MB | Node |
+
+> 字幕模型遵循各自上游许可证；SaT 权重为 MIT，其 CoreML 转换包请自行确认分发授权。
+
+工作方式：
+
+- **音频全量直连 R2T2**：不使用能量 VAD、不裁剪静音、不丢帧；Smart Turn 只做旁路语义端点，不门控音频。
+- **完整句翻译**：SaT 按完整句切分，翻译只处理完整句；只有收尾时的尾部半句才会单独翻译。
+- **智能收尾**：Smart Turn 判断“这一轮说完了”后结束 live 请求；已断出 3 句且停顿 700ms 也可安全轮换，30 秒为硬上限。
+- **稳定吐出尾部**：关闭请求前补 1 秒静音，确保 R2T2 返回最后未提交的文本。
+- **语言方向**：支持英文→中文/日文、中文→英文/日文；声音源与目标语言在字幕悬浮窗切换。
+- **严格按需**：打开字幕窗口才加载，关闭即卸载；失败直接 fatal，不自动重启/重连。
+- **模型目录**：`~/Library/Application Support/SimpleUI/models/subtitles_pipeline/`；服务管理面板支持四模型测速下载与断点续传。
+
+### 快捷翻译
+
+- 全局快捷键 `⌃ Control + Space`，原生非激活浮窗，不抢当前应用焦点。
+- 支持自动、中→英、英→中、详解四种模式，`Enter` 翻译、`⌘C` 复制、双向 TTS。
+- Provider 可选 TTF、Mference、OpenAI 兼容服务或 DeepSeek；独立提示词，默认关闭思考。
+
+---
+
+## 前端
+
+- **轻量**：React 19 + TypeScript + Vite + Tailwind；原生 Swift/WebKit 外壳，无重型前端框架依赖。
+- **富文本渲染**：Markdown、KaTeX 公式、Mermaid 图、表格、代码块、图片预览、思考折叠。
+- **复制能力（Word 兼容）**：
+
+| 内容 | 复制行为 |
 | :--- | :--- |
-| 模型 | [`FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp`](https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp) |
-| 模型文件 | `sensevoice-small-q8-audiocpp-v1.gguf`（约 254 MB，Q8_0） |
-| 运行时 | [audio.cpp](https://github.com/0xShug0/audio.cpp) 的 `audiocpp_server`（`--config server.json`） |
-| 服务端口 | `1236`（随 App 自启 / 退出一并终止） |
-| 配置持久化 | `~/Library/Application Support/SimpleUI/asr_config.json` |
-| 运行时派生配置 | `~/Library/Application Support/SimpleUI/asr_server.json`（audiocpp 的 `server.json`） |
-| 管理 API | `/api/asr/status｜start｜stop｜restart｜config｜logs｜transcribe` |
+| 公式块 | 复制为 Word / WPS 原生 OMML 或标准 MathML，粘贴后是可编辑公式 |
+| 表格 | 复制为带样式的 DOCX 表格 XML / 富文本，保留表头、边框、合并单元格 |
+| 代码块 | 右上角按钮一键复制纯代码；选中代码时只复制选中行 |
+| 普通文本 | 复制为干净的 Markdown 原文 |
 
-### 中英语音场景的默认参数
+公式与表格的 Word 兼容序列化位于 `src/utils/selectionToMarkdown.ts`；代码块复制由 `MarkdownRenderer` 的代码块组件提供。
 
-服务管理界面「语音识别服务」卡片可调下列参数，默认值面向中英场景：
-
-| 参数 | 默认 | 说明 |
-| :--- | :--- | :--- |
-| `language` | `auto` | **中英混说最稳**——由模型自行做语种判定（LID）；纯中文 / 纯英文可显式指定 `zh` / `en` |
-| `enable_itn` | 开 | 逆文本归一化：输出自动带标点、数字规范化（`enable_itn=false` 会连标点一起去掉） |
-| `audio_chunk_mode` | `none` | 短语音整段一次编码最准；长音频可切 `auto`（内置 silero VAD 切分）或 `fixed` |
-| `audio_chunk_duration_sec` | 30 | `fixed` 模式的分块时长 |
-| `keep_tags` | 关 | 是否保留 `<\|event\|>/<\|emotion\|>/<\|language\|>` 元标签 |
-| `backend` / `threads` | `metal` / 4 | Apple Silicon 默认走 Metal（原生 GPU 加速，比 CPU 更快更省电）；CPU 仅作兜底。`threads` 仅影响 CPU 回退路径，Metal 下基本不生效 |
-
-> **参数下发路径**：audio.cpp 的服务端契约只在 `/v1/audio/transcriptions` 上暴露
-> `model / file / language / prompt / busy_timeout_ms`；`enable_itn`、`audio_chunk_mode`
-> 等属**模型请求选项**，必须经 `server.json` 的 `default_request_options` 下发。
-> 因此 `asr_service.js` 在每次启动/改配置时都会重新生成 `asr_server.json`，
-> 改参数即热重启生效。
->
-> 另注：`audiocpp_server` 必须以**本体目录**为工作目录启动——sense_asr 内置 silero VAD
-> 的默认路径是相对路径（`assets/framework/models/silero_vad`），否则 `auto` / `fixed`
-> 分块模式会直接报 “Silero VAD model path does not exist”。
-
-### 实测性能（Apple M4 · CPU · Q8_0）
-
-> 注：以下为 **CPU 后端**的实测值（历史数据）。默认后端已改为 `metal`，实际默认路径通常更快。
-
-| 场景 | 耗时 | 相对实时 |
-| :--- | :--- | :--- |
-| 5.5s 中文（首次含模型加载） | 7.4s | — |
-| 5.5s 中文（热态） | ~145ms | ~38× |
-| 3.9s 英文（热态） | ~131ms | ~30× |
-| 46s 长中文 · `none` | 2.11s | 22× |
-| 46s 长中文 · `auto`(VAD) | 1.73s | 27× |
-
-中英短句识别准确率高；46s 长音频整段一次编码也能稳定输出（标点、数字归一化正常）。
-真实人声效果优于系统 TTS 合成的语音。
-
-### 长按右 ⌘ 全系统语音输入
-
-落点只有两条，不做任何「焦点是不是输入框」的判定：
-
-| 场景 | 行为 |
-| :--- | :--- |
-| 焦点在 **SimpleUI 自身** | 长按右 ⌘ 录音 → 转写 → 结果**直接插入**输入框光标处（走前端桥写入受控组件，**不经过剪贴板**） |
-| 焦点在**其它任何 App** | 长按右 ⌘ 录音 → 转写 → 结果**写入剪贴板后合成 ⌘V 粘贴**（与系统听写一致） |
-
-> 之所以不做焦点判定：Electron / Web 内核 App 的系统级辅助功能焦点查询会直接失败
-> （实测拿不到焦点元素，连角色都问不出来），任何基于该判定的门槛都会让这类 App 无法输入。
-
-屏幕**底部居中**会浮出一枚绿色渐变胶囊（麦克风 + 电平点阵），实时反映录音音量与识别状态。
-该胶囊是一个**透明、非激活、不接收鼠标事件**的浮动面板——绝不抢走焦点，因此 ⌘V 总能贴到正确位置。
-
-实现要点（`mac_app/src/VoiceInputManager.swift`）：
-
-- 右 ⌘ 是**修饰键**而非普通热键，不能用 `RegisterEventHotKey`；改为在会话级事件流上挂只读
-  `CGEventTap`，监听 `flagsChanged`（keyCode 54）与 `keyDown`。长按超过 350 ms 才进入录音；
-  期间若按下任何其它键（说明是 ⌘C 这类组合键）立即取消，**绝不抢用户的组合键**。
-- 录音用 `AVAudioEngine`，硬件格式经 `AVAudioConverter` 转 16 kHz 单声道 Int16，再封装 WAV。
-- **不判定**焦点是否为输入框：只比较「前台 App 是不是 SimpleUI 自己」（`NSWorkspace.frontmostApplication`
-  的 bundle id）。是 → 走前端桥插入；不是 → 剪贴板 + ⌘V。辅助功能仅用于合成按键，不用于读取焦点。
-- 转写请求走本地代理 `POST /api/asr/transcribe`（裸 WAV 字节），由 Node 侧构造 audiocpp 需要的
-  multipart 请求——Swift 端与浏览器端因此可共用同一入口。
-
-### 权限（三件套）
-
-| 权限 | 用途 |
-| :--- | :--- |
-| **麦克风** | 录音（`NSMicrophoneUsageDescription` 已在 Info.plist 声明） |
-| **辅助功能** | 合成 ⌘V 把结果粘进其它 App（本 App 内为前端桥直接插入，不读焦点也不需要此权限） |
-| **输入监控** | 挂全局只读事件监听（捕获长按右 ⌘） |
-
-服务管理界面的语音识别卡片内直接展示三项的实时授权状态，并提供「去授权」与「打开系统设置」两个入口；
-原生侧在系统设置里改动后会主动回推刷新。
-
-### 运行时与模型：默认随包，打开即用
-
-语音识别需要两样东西：**运行时**（`audiocpp_server`，约 11.8 MB）与**模型**（SenseVoice GGUF，约 254 MB）。
-两者都不依赖任何云端，随包打进 App 后**完全离线、打开即用**。
-
-| 形态 | 运行时从哪来 | 模型从哪来 | 装完能否直接用 |
-| :--- | :--- | :--- | :--- |
-| **本机开发/自打包** | 随 App 分发（打进 `Contents/Resources/asr/`） | 随 App 分发（打进 `Contents/Resources/asr/models/`） | **打开即用，全程离线** |
-| **源码克隆后自构建** | `build_mac_app.sh` 自动 ensure（本地有则复用，否则 clone+编译） | `build_mac_app.sh` 自动 ensure（本地有则复用 `~Library` 缓存，否则下载） | 一条命令自动补齐 |
-| **Release 包（带模型）** | 随 App 分发 | 随 App 分发 | **装完即用，全程离线** |
-
-**打包 / 构建只需一条命令**（运行时与模型会自动就位，本地已缓存则直接复用，不重复下载或编译）：
-
-```bash
-./build_mac_app.sh install          # 打出并安装自包含 App（含语音识别运行时 + 模型）
-```
-
-`build_mac_app.sh` 在打包前会调用 `ensure_asr_assets`：
-- 若 `bin/audiocpp/bin/audiocpp_server` 缺失，自动 `./scripts/sync_audiocpp.sh --build`（本地已有 `~/audio.cpp` 构建则只同步，否则克隆并编译）；
-- 若 `bin/audiocpp/models/*.gguf` 缺失，优先复用 `~/Library/Application Support/SimpleUI/models/` 里已下载的缓存，否则下载官方 GGUF（约 254MB，失败自动回退 `hf-mirror.com` 镜像）。
-
-需要手动准备时仍可单独跑 `./scripts/sync_audiocpp.sh --build --with-model`。
-
-模型 GGUF 放在 `bin/audiocpp/models/`（已在 `.gitignore` 中，不入库）；
-二进制与内置 VAD 随仓库提交，与 `bin/kiwix` 同策略。因此克隆仓库后直接 `build_mac_app.sh install` 即可，
-分发的 App 自带模型，**其他开发者下载打开即能用语音输入，无需任何额外下载或编译**。
-
-**查找顺序**（`asr_service.js`）：
-
-| 资源 | 顺序 |
-| :--- | :--- |
-| 可执行文件 | 用户指定路径 → **随包 `Resources/asr/bin/`** → 本体 `build/bin/` → Homebrew / `/usr/local/bin` |
-| 模型 GGUF | 用户指定路径 → **随包 `Resources/asr/models/`** → `~/Library/Application Support/SimpleUI/models/` → 本体 `models/` |
-| 运行时根目录（cwd） | **随包 `Resources/asr/`** → 本体目录（以「该目录下确有内置 silero VAD」为准） |
-
-> 运行时根目录即 `audiocpp_server` 的 `cwd`——sense_asr 内置 silero VAD 的默认路径是**相对路径**
-> （`assets/framework/models/silero_vad`），选错目录会让 `audio_chunk_mode=auto/fixed`
-> 直接报 “Silero VAD model path does not exist”。因此打包时必须一并带上这 1.2 MB 的 VAD 资源。
-
-**模型**（无论来源）：随包即包含（`Contents/Resources/asr/models/sensevoice-small-q8-audiocpp-v1.gguf`，约 254 MB），
-打开即用、完全离线；自构建时 `./scripts/sync_audiocpp.sh --with-model` 会在打包前拉取模型并随包打入
-（优先复用 `~/Library/.../models/` 本地缓存，零下载）。运行时按 `findModel` 优先级
-（显式路径 → 随包 → `~/Library/Application Support/SimpleUI/models/` → 本体 `models/`）自动探测，随包副本优先。
-**服务端与前端均不再提供在线下载**：模型已随包分发，原先的 `/api/asr/download-model` 端点、
-`downloadSource` 配置项与进度状态已整体移除（含镜像回退逻辑）。
-
-**只想要运行时**（自己已编译 audio.cpp）：把 `audiocpp_server` 放到 `bin/audiocpp/bin/`（或随包
-`Contents/Resources/asr/bin/`）即可，运行时按 `findBinary` 优先级（显式路径 → 随包 → 本体 `build/bin/` → Homebrew）
-自动探测，**无需手动填路径**。二进制或模型缺失时，卡片会给出明确提示，服务状态保持「离线」而不报错。
+- **原生体验**：主窗口、Spotlight 浮窗、快捷翻译、字幕悬浮窗、语音胶囊；全局快捷键与深浅色主题。
+- **双语界面**：中英文文案同步，字幕/服务面板/错误提示均支持中英文。
+- **上下文可视化**：实时上下文圆环、阶段阶梯、性能页脚与跨窗口流同步。
 
 ---
 
-## 实时双语字幕服务（Confucius4-R2T2 · Index-Translate）
+## 快速开始
 
-SimpleUI 内置第四个受管服务：**原生端侧实时双语字幕流水线**。专为看剧、在线会议、英语演讲等场景设计，完全在 Apple Silicon 端侧离线运行，无需云端 API。
+### 前提
 
-| 模块 | 引擎 / 模型 | 规格 | 运行时宿主 | 职责 |
-| :--- | :--- | :--- | :--- | :--- |
-| **第 1 级：流式 ASR** | [`davidxifeng/Confucius4-R2T2-gguf`](https://huggingface.co/davidxifeng/Confucius4-R2T2-gguf) | 2.31 GB (`r2t2-q8_0.gguf`) | 内置 `audiocpp_server`（端口 `1250`） | Metal GPU 加速，Longest Stable Prefix 追加式流式识别，原生输出大小写与标点 |
-| **第 2 级：机器翻译** | [`IndexTeam/Index-Translate-2B-GGUF`](https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF) | 1.25 GB (`index_translate_2b_q4_k_m.gguf`) | 内置自包含 `llama-server`（端口 `1249`） | Metal GPU 加速专精神经机器翻译，结合前句上下文消歧并实时协调中英文标点 |
-
-### 核心特性
-
-1. **纯按需加载，0 后台显存常驻**：
-   - App 启动时**绝不拉起字幕模型**，后台保持 0 显存占用；
-   - 仅当用户从状态栏菜单点击开启字幕窗口时，服务端按阶段依次加载两级模型，并自动清空历史记录；
-   - 关闭字幕窗口或退出应用时，守护看门狗立即终止 `1250` 与 `1249` 两个子进程（与 `1236` 语音输入服务完全隔离），释放显存与内存。
-2. **一键免配置，多源并发测速与断点续传下载**：
-   - 运行环境（`audiocpp_server`、`llama-server` 及其动态库）已随包分发，**无需配置 Python 虚拟环境**；
-   - 模型专属隔离目录：`~/Library/Application Support/SimpleUI/models/subtitles_pipeline/`；
-   - 服务管理面板内置测速引擎，在**国内高速镜像源（hf-mirror.com）**与**官方源（huggingface.co）**之间自动比对延迟与带宽，支持 HTTP Range 断点续传与源故障自动切换。
-3. **追加式稳定前缀流 + 标点触发增量翻译**：
-   - 基于 R2T2 的 Longest Stable Prefix 特性，已输出英文词与标点永不回滚闪烁，连续音频流不设激进静音门控，杜绝吞字漏词；
-   - 实时监测句号、问号、感叹号或完整逗号子句，以前一句英文与译文为上文参考送入单并发槽位的 Index-Translate-2B 翻译并依次向后堆叠，具备防英文复读回退与掉线即时自愈能力。
-4. **大厂级双轨提词器界面与 `N+N` 等行自适应高度**：
-   - 采用上下双轨连续流设计（上轨英文实时流、下轨中文译文流），支持三档字号（小/中/大）与一键隐藏原文；
-   - 窗体高度按当前字号行高自动吸附至 `2+2`、`3+3`、`4+4` 等严格等行档位（最小容纳 `2+2` 共 4 行，最大宽度锁定当前屏幕宽度，最大高度锁定当前屏幕高度的 2/3）。
-
----
-
-## 快捷翻译悬浮窗
-
-SimpleUI 内置了专为高频查词与即时互译设计的原生 macOS 悬浮翻译面板：
-
-- **全局唤起与解耦设计**：支持通过全局快捷键 `⌃ Control + Space`、状态栏菜单（`快捷翻译 (⌃Space)`）或应用菜单（*视图 → 快捷翻译*）快速呼出/隐藏。采用 macOS 原生非激活浮窗（`nonactivatingPanel`），呼出时不抢占当前应用焦点，且与主窗口完全解耦（后台主窗口不会被意外拉起）；每次打开默认屏幕居中归位，可随意拖动位置。
-- **多模式互译与全键盘交互**：提供「自动」、「中 → 英」、「英 → 中」、「详解」4 种翻译模式；支持 `Enter` 翻译、`Shift + Enter` 换行、`Esc` 退出、`⌘ C` 一键复制结果。
-- **双向语音朗读 (TTS)**：内置原生语音合成引擎，支持对输入原文与翻译结果独立进行即时朗读。
-- **独立快速翻译配置**：在应用设置中设有独立的「快速翻译设置」卡片，对齐对话模型的 4 大 Provider 体系（SimpleUI 内置、DeepSeek、OpenAI、Mference），内置锁定专精翻译提示词，默认关闭思考以保证秒级响应。
-- **原生双语与主题跟随**：界面文案与深浅色模式实时跟随应用设置动态切换。
-
----
-
-## 上下文窗口管理
-
-### 两阶段动态追踪（潮起 / 潮落）
-
-```
-生成中 (Phase 1 - 潮起)：
-  liveStreamingTokens = initialPromptTokens + 已生成 tokens
-  ← 每 20 个 token 刷新一次，通过 BroadcastChannel 同步双窗口
-
-生成后 (Phase 2 - 潮落)：
-  liveStreamingTokens = null
-  displayTokens = persistentHistoryTokens (useMemo 计算)
-  ← 只统计持久化历史（用户问题 + 助手最终回答），自然回落
-```
-
-**为什么两阶段是必要的：**
-
-生成中，上下文包含：持久历史 + RAG Grounding Prompt（体积随检索到的条目而定，现已无预算上限）+ 思考模型 reasoningContent。生成后，下一轮 `wireMessages` 只发送 `msg.content`，不含 `reasoningContent` 和 RAG 提示词，实际上下文大幅下降。
-
-**生成中的数字尽量用真实值（TTF 专属增强）**：
-
-| 来源 | 提供什么 | 可得时机 |
-| :--- | :--- | :--- |
-| 服务端日志 `prepared prompt=N` | **真实 prompt token 数** | **生成开始前**（实测：发出请求后约 180ms） |
-| SSE 事件计数 | 生成中的增量 | 逐 token（TTF 实测「事件数 ÷ token 数」= 1.00 / 0.99） |
-| `usage`（末块） | prompt / completion / `cached_tokens` / `reasoning_tokens` | 生成结束 |
-
-机制：Node 代理新增只读端点 `GET /api/ttf/request?id=<chatcmpl-…>`，按请求 id 解析 TTF 日志（默认 `~/Library/Logs/turbo-fieldfare.log`，可用 `TTF_LOG_FILE` 覆盖）；前端拿到首个 SSE chunk 的 id 后即查询它，**用真实值替换圆环的估算起点**。
-
-> 降级：日志不可用（Ollama / vLLM / llama.cpp 等非 TTF 引擎，或日志被清空）时自动回退估算器，绝不报错。
-
-旧方案将 `metrics.totalTokens`（~5,000）直接存入 `session.contextUsed`，导致下一轮圆环虚高不回落。新方案在 `onDone` 时用 `estimateHistoryTokens` 计算纯净历史作为 `contextUsed`，圆环在生成结束后自然回落。
-
-### Token 估算器（`src/utils/token.ts`）
-
-估算器是**启发式**的，与真实分词器对拍后偏差随内容类型变化很大：
-
-| 内容 | 真实 ÷ 估算 |
-| :--- | :--- |
-| 纯中文 | 1.27（低估 27%） |
-| 繁体 | 1.35（低估 35%） |
-| 数字密集 | 2.65（低估 165%） |
-| 纯英文 | 0.76（高估 32%） |
-| 英文长词 | 0.39（高估 156%） |
-
-因此它现在**只在拿不到真实值时兜底**（非 TTF 引擎，或日志尚不可读）。
-
-**会话级校准**：每轮结束用「真实 `usage.prompt_tokens` ÷ 同一批消息的原始估算」求得一个系数，**仅施加在展示层**（`applyTokenCalibration`），可自动适配任意分词器与模型。实测四种开关组合（思考 × 知识库）下，"生成后"显示值与下一轮真实 prompt 的偏差，从原始的 −17% ~ −25% 收敛到 **±15% 以内**。
-
-```typescript
-// CJK 字符：~0.75 tokens/字；非 CJK 字符：~1 token / 3.8 chars
-// 每条消息 chat template 固定开销：+4 tokens；图片（vision）：+576 tokens/张
-estimateTextTokens(text: string): number
-estimateHistoryTokens(messages: Array<Partial<ChatMessage>>, systemPrompt?: string): number
-setTokenCalibration(realTokens, rawEstimatedTokens): void  // 每轮由 api.ts 调用
-applyTokenCalibration(tokens: number): number              // 展示层使用
-```
-
-`estimateHistoryTokens` **仅统计**：用户 `content`、助手 `content`（最终答案）、图片附件。  
-**明确排除**：`reasoningContent`（思考过程）、ephemeral RAG Grounding Prompt。
-
-### 圆环显示规则
-
-| 窗口 | 生成中 | 生成后 |
-|---|---|---|
-| **主窗口 (大)** | `liveStreamingTokens` 实时驱动 + 右侧显示余量百分比 | `persistentHistoryTokens` 驱动 + 右侧百分比 |
-| **Spotlight (小)** | `liveStreamingTokens` 实时驱动，仅圆环 | `persistentHistoryTokens` 驱动，仅圆环 |
-
-余量百分比格式：`≥ 99.95%` 显示 `100%`，否则显示 `X.X%`（如 `98.6%`）。
-
----
-
-## 推理引擎兼容
-
-SimpleUI 最深度适配 TurboFieldfare (TTF)，同时完整兼容通用 OpenAI API 规范：
-
-| 推理服务 | 端口 | 深度思考 | 视觉 |
-| :--- | :--- | :--- | :--- |
-| **TurboFieldfare (TTF)** | `1235` | ✅ 原生（`chat_template_kwargs` + `reasoning_effort`） | ✅ 自动识别 |
-| **Ollama** | `11434` | 依赖模型 template | 依赖模型 |
-| **vLLM** | `8000` | 依赖模型 template | 依赖模型 |
-| **llama.cpp server** | `8080` | 依赖模型 template | 依赖模型 |
-| **LM Studio** | `1234` | 依赖模型 template | 依赖模型 |
-
-> **工作机制**：请求通过 `x-target-port` 标头动态路由，切换推理引擎无需重启代理。
-
----
-
-## 快速启动
-
-### 前提条件
 - Node.js ≥ 18
-- 本地或局域网已启动推理服务（推荐搭配 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 默认端口 `1235`）
+- macOS 15+（构建原生 App）
+- 可选：本地基础模型服务（TTF / Mference / Ollama / vLLM / llama.cpp / LM Studio）
+- 可选：DeepSeek API Key（云端对话/翻译）
+- 可选：本地 Kiwix ZIM 文件（离线维基）
 
-### 方式一：一键启动（推荐）
+### 一键启动
+
 ```bash
 ./start.sh
 ```
-探测推理服务 → 首次安装依赖 → **若 `dist/` 不存在**则编译 → 启动代理并打开 `http://127.0.0.1:31235`。
 
-> 注意：脚本只在 `dist/` 缺失时才构建。**改过前端后请先 `npm run build`**，否则拿到的是旧构建。
+首次运行会安装依赖；若 `dist/` 不存在会先构建，然后启动代理并打开 `http://127.0.0.1:31235`。
 
-### 方式二：开发热重载
+### 开发模式
+
 ```bash
 ./start.sh dev
 # 或
 npm run dev
 ```
-Vite 开发服务器（默认 `http://127.0.0.1:5173`；`/v1`、`/health` 代理到推理引擎，`/api/wiki` 代理到 `31235`）。
 
-### 方式三：编译 macOS 桌面应用
+### 构建 macOS App
+
 ```bash
 ./build_mac_app.sh install
 ```
-编译 Swift 原生窗口外壳 + 前端产物，安装至 `/Applications/SimpleUI.app`，支持全局热键 `⌥ Option + Space` 唤起 Spotlight 浮窗、`⌃ Control + Space` 唤起快捷翻译悬浮窗，
-以及**长按右侧 Command ⌘ 键**语音转文字：在 SimpleUI 内直接插入光标处，在其它 App 内粘贴（首次使用需在「系统设置 → 隐私与安全性」中授予
-麦克风、辅助功能、输入监控三项权限，服务管理界面的语音识别卡片内有直达入口）。
 
-> 装好的 App 是**自包含包**：`build_mac_app.sh` 会把 `dist/` 与 `server/` 一并拷进 `Contents/Resources`，运行时优先使用包内副本。
-> 因此**改完前端必须重新执行一次 `./build_mac_app.sh install`**——只重建项目里的 `dist/` 不会影响已安装的 App。
+构建 Swift 原生外壳、前端产物与内置运行时，安装到 `/Applications/SimpleUI.app`。修改前端后需要重新执行构建，已安装 App 使用包内副本。
+
+### 模型与知识库
+
+- 基础模型：自行准备 TTF / Mference 本体与权重；也可连接其它 OpenAI 兼容服务，或在设置中直接配置 DeepSeek API Key。
+- 语音模型：随包内置 SenseVoice；缺失时可在「服务管理」下载。
+- 字幕模型：在「服务管理」下载，包含 R2T2、SaT、Index-Translate、Smart Turn 与 tokenizer。
+- 离线维基：在「服务管理 → 知识库」中指定本地 ZIM 文件。
 
 ---
 
 ## 项目结构
 
-```
+```text
 SimpleUI/
-├── server/
-│   ├── proxy.js              # Node.js 代理服务器（端口 31235）
-│   │                         #   SSE 透传、静态托管、动态端口路由、各受管服务 API 汇聚
-│   ├── ttf_service.js        # 基础模型服务托管（TTF 与 Mference 双引擎自适应互斥管理）
-│   │                         #   随 App 自启/退出终止、配置持久化 model_config.json、/api/model/*
-│   ├── ttf_server.sh         # TurboFieldfare 启停脚本运行时资产
-│   ├── mference_server.sh    # Mference 启停脚本运行时资产
-│   ├── ttf_log.js            # 模型日志探针（生成前取真实 prompt token 数与极低负载检测）
-│   ├── asr_service.js        # 语音识别服务托管（SenseVoice / audio.cpp 端口 1236）
-│   │                         #   生成 audiocpp server.json、配置持久化 asr_config.json、/api/asr/*
-│   ├── subtitle_service.js   # 实时双语字幕服务托管（两级流式流水线，端口 1250 / 1249）
-│   │                         #   Confucius4-R2T2 (audio.cpp)、Index-Translate-2B (llama-server)、双源测速下载
-│   ├── session_service.js    # 全局会话唯一真相源（SSOT）、长文滑动窗口截断、跨窗口实时同步
-│   ├── media_service.js      # 多模态媒体服务（图片 SHA-256 内容寻址持久化、自动 GC、模型上送注入）
-│   ├── watchdog.js           # 统一进程看门狗（Node 异常退出时按 PID 精确清理所有子进程）
-│   └── wiki_service.js       # 离线 RAG 流水线核心（主力模型规划 / 目录路由 / DOM 解析 / OpenCC 归一）
-│
-├── bin/
-│   ├── kiwix/                # Kiwix 离线百科工具集（kiwix-serve 等，随包分发）
-│   ├── audiocpp/             # 语音识别与流式字幕 ASR 运行时（audiocpp_server 与 Silero VAD，随包分发）
-│   └── llama/                # 字幕翻译运行时（自包含 llama-server 及其依赖 dylib，随包分发）
-│
-├── scripts/
-│   ├── sync_audiocpp.sh      # 编译/同步 audiocpp 运行时与 SenseVoice 模型
-│   └── test_markdown_pipeline.js # Markdown 与数学公式测试套件
-│
-├── mac_app/                  # macOS 原生窗口与悬浮面板包装层（Swift + WebKit）
-│   ├── src/                  # AppDelegate、ProcessManager、HotKeyManager
-│   │                         #   VoiceInputManager.swift            长按右 ⌘ 全局语音输入
-│   │                         #   VoiceOverlayPanelController.swift  底部居中录音胶囊容器
-│   │                         #   SubtitleOverlayPanelController.swift 置顶双语字幕悬浮窗（N+N 等行自适应高度与音频内录）
-│   │                         #   TranslationPanelController.swift   快捷翻译非激活浮动面板控制器
-│   │                         #   TranslationMainView.swift          原生 SwiftUI 翻译交互主界面
-│   │                         #   TranslationViewModel.swift         翻译状态机与 TTS 控制
-│   │                         #   TranslationService.swift           专精翻译 HTTP 服务与解析引擎
-│   │                         #   TranslationProfileStore.swift      快速翻译 Provider 配置持久化
-│   └── Resources/            # Info.plist（含麦克风等隐私说明）、AppIcon.icns、状态栏图标
-│
-└── src/
-    ├── App.tsx               # 顶层状态机、会话管理、liveStreamingTokens、跨窗口同步
-    ├── main.tsx              # 入口（屏蔽原生右键菜单，输入区域内保留）
-    ├── services/
-    │   ├── api.ts            # 推理引擎通信、SSE 解析、真实 prompt 探针、Token 进展回调
-    │   ├── chatTurn.ts       # 单轮问答唯一实现（Grounding Prompt / 检索门控 / 消息构造）
-    │   └── storage.ts        # localStorage 持久化、BroadcastChannel
-    ├── hooks/
-    │   ├── useTheme.ts       # system / light / dark 主题应用（两窗口共用）
-    │   └── useFollowBottom.ts # 生成中滚动保护的唯一实现（消息流 ×2 + 思考框共用）：
-    │                          #   思考期每帧钉底跟随；正文流式期不自动滚、只守住
-    │                          #   用户阅读位置；用户一滚即单向停止，不与用户抢滚动条
-    ├── i18n/
-    │   ├── index.tsx         # I18nProvider / useI18n（`system` 跟随系统语言）
-    │   └── translations.ts   # 中英双语文案表（TranslationKeys 由此推导）
-    ├── types/
-    │   └── chat.ts           # ChatMessage / ChatSession / AppSettings / WikiStatusInfo…
-    ├── utils/
-    │   ├── token.ts          # 离线 Token 估算器（CJK + 非CJK + 图片）+ 会话级校准
-    │   ├── image.ts          # 粘贴 / 拖拽图片读取为 Data URL
-    │   ├── selectionToMarkdown.ts # 选中内容智能转 Markdown 与表格精准序列化
-    │   └── wikiFrame.ts      # 知识库条目外部链接构造（「在浏览器中打开」）
-    └── components/
-        ├── Sidebar.tsx       # 会话列表 + 左下角服务状态行 + 服务管理 / 设置入口
-        ├── ChatView.tsx      # 主对话视窗（头部工具条、消息流、输入区）
-        ├── ChatInput.tsx     # 主窗口复合输入框（附件、🧠 思考 / 📚 知识库开关、发送·停止、上下文圆环）
-        ├── MessageItem.tsx   # 单条消息（阶段指示、思考折叠、Markdown、引用胶囊、操作与指标）
-        ├── MarkdownRenderer.tsx  # Markdown + KaTeX 渲染（中文加粗友好、表格一键在 Word 中打开、图片点击预览）
-        ├── ThinkingAccordion.tsx # 思考过程折叠条
-        ├── StageLadder.tsx   # 回合阶段阶梯：知识库 / 引擎各阶段逐行固化 + 各自耗时，
-        │                     #   结束后折叠成一行汇总；两窗口共用同一组件
-        ├── ContextRing.tsx   # SVG 上下文圆环（可选余量百分比 + 悬浮详情）
-        ├── ImageAttachment.tsx   # 输入区图片缩略展示、点击预览与删除
-        ├── ImagePreviewModal.tsx # 沉浸式图片预览模态框（平滑缩放平移、触控板优化、系统原生另存为与 Preview 预览）
-        ├── SettingsModal.tsx # 应用设置 + 对话模型设置（4 大 Provider）+ 快速翻译设置（锁定提示词、免思考秒级返回）
-        ├── ServiceManagerModal.tsx # 服务管理器控制面板（基础模型双引擎/知识库/语音识别/实时双语字幕四项受管服务）
-        ├── SubtitleOverlay.tsx   # 实时双语字幕悬浮渲染组件（双轨连续提词器、N+N 等行档位、字号切换与清空重置）
-        ├── VoiceOverlay.tsx  # 屏幕底部居中语音识别胶囊（绿渐变 + 麦克风 + 电平点阵）
-        │                     #   由原生 VoiceOverlayPanelController 承载（#/voice 路由）
-        ├── WikiPanel.tsx     # 知识库面板**唯一实现**：搜索 + 完整条目富文本（公式/表格/图片/子标题）
-        │                     #   + 引用胶囊的注入原文；服务不可用时统一提醒且不发请求
-        ├── WikiContextView.tsx   # 面板正文渲染器（公式 / 表格 / 图片 / 子标题）
-        ├── WikiSidebar.tsx   # 主窗口「停靠型」薄壳（→ WikiPanel）
-        ├── WikiDrawer.tsx    # 浮窗「覆盖型」薄壳（→ WikiPanel：同圆角 + 左上角整体关闭）
-        ├── SpotlightView.tsx # Spotlight 浮窗完整状态机（胶囊态 / 展开态、输入框 🔍 面板入口）
-        └── PerformanceFooter.tsx # 性能监控页脚组件
+├── src/                  React 前端（聊天、Markdown/KaTeX、知识库、字幕、设置）
+├── server/               Node 代理与受管服务
+│   ├── proxy.js          HTTP/SSE 入口（:31235）
+│   ├── subtitle_service.js
+│   ├── asr_service.js
+│   ├── wiki_service.js
+│   └── subtitles/        字幕 helper / 断句 / 翻译模块
+├── mac_app/              Swift 原生窗口、悬浮窗、音频采集
+├── bin/                  Kiwix / audio.cpp / llama.cpp / 字幕 helper
+├── scripts/              构建、同步与测试脚本
+└── build_mac_app.sh      macOS App 构建与安装
 ```
 
 ---

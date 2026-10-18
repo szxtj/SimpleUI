@@ -34,7 +34,7 @@ export const translations = {
 
     // ChatView
     greetingTitle: '你好，今天有什么想探讨的？',
-    greetingSubtitle: '专为 TurboFieldfare 深度定制的轻量级 AI 客户端 · 全面兼容主流推理引擎',
+    greetingSubtitle: '本地优先的离线 AI Studio · 多模型集成 · 知识库 · 语音与字幕',
     defaultPrompt1Title: '复杂数学与微积分推导',
     defaultPrompt1Desc: '求解不定积分与傅里叶变换公式',
     defaultPrompt1Content: '请推导并计算高斯积分 $\\int_{-\\infty}^{\\infty} e^{-x^2} dx$，并用 LaTeX 给出详细步骤。',
@@ -569,7 +569,7 @@ export const translations = {
 
     // ChatView
     greetingTitle: 'Hello, what would you like to explore today?',
-    greetingSubtitle: 'Lightweight AI client tailored for TurboFieldfare · Fully compatible with OpenAI-compatible engines',
+    greetingSubtitle: 'A local-first offline AI Studio · Multi-model · Knowledge · Speech & Subtitles',
     defaultPrompt1Title: 'Math & Calculus Derivation',
     defaultPrompt1Desc: 'Solve indefinite integrals & Fourier transforms',
     defaultPrompt1Content: 'Please derive and calculate the Gaussian integral $\\int_{-\\infty}^{\\infty} e^{-x^2} dx$, showing detailed steps in LaTeX.',
