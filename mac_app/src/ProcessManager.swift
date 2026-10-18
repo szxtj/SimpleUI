@@ -15,12 +15,16 @@ class ProcessManager {
     private let watchdogGrace: TimeInterval = 1.0
 
     /// 全部受管服务的 PID 文件清单（基础模型 / 知识库 / 语音识别 / 实时双语字幕）
+    ///
+    /// 注意：这里只列**当前代码真正会写**的 PID 文件。`/tmp/simpleui_subtitle_asr.pid` 属于
+    /// 旧架构（subtitle_stream_asr）遗留名，R2T2 重构后 server 侧已改写 `..._audiocpp.pid`；
+    /// 保留死条目只有副作用 —— 清扫时按 PID 直接发信号且不校验命令行，旧 PID 被复用时
+    /// 会误杀无关进程，而旧二进制本身已由 `pkill -x subtitle_stream_asr` 按名字覆盖。
     private let managedPidFiles: [String] = [
         "/tmp/turbo_fieldfare_server.pid",
         "/tmp/mference_server.pid",
         "/tmp/simpleui_kiwix.pid",
         "/tmp/simpleui_audiocpp.pid",
-        "/tmp/simpleui_subtitle_asr.pid",
         "/tmp/simpleui_subtitle_audiocpp.pid",
         "/tmp/simpleui_subtitle_trans.pid",
         "/tmp/simpleui_subtitle_ml.pid"

@@ -24,6 +24,10 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
 
     private var webView: WKWebView!
     private var webReady = false
+    /// 关窗卸载的核对批次号：每次开/关窗自增，旧的核对链看到编号变了就自行放弃，
+    /// 避免「关→立刻开」时上一次的补发 /stop 把刚加载起来的新会话杀掉。
+    private var stopVerifyToken = 0
+    private static let maxStopAttempts = 3
     var onVisibilityChanged: ((Bool) -> Void)?
 
     // MARK: - 量化行数（2+2、3+3、4+4...）与排版高度自适应状态
@@ -194,6 +198,8 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
 
     func show() {
         guard let panel = window else { return }
+        // 作废上一次关窗遗留的卸载核对（它可能正打算补发 /stop）
+        stopVerifyToken &+= 1
         if !webReady {
             loadContent()
         }
@@ -213,7 +219,7 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
 
     func hide() {
         stopAudioCapture()
-        postControl(action: "stop")
+        requestServiceStop()
         window?.orderOut(nil)
         onVisibilityChanged?(false)
     }
@@ -426,6 +432,69 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         URLSession.shared.dataTask(with: req).resume()
+    }
+
+    // MARK: - 关窗卸载的确认与补发
+
+    /// `postControl` 是 fire-and-forget：请求若丢失（代理正好在重启、端口瞬断），
+    /// R2T2（2.3 GB）与 Index-Translate（1.3 GB）会一直驻留内存直到退出 App。
+    /// 所以关窗后主动核对一次服务状态，确认仍有进程/模型在跑就重发，最多 3 次；
+    /// 代理不可达时不再重试 —— 退出路径的 `forceSweepResidualProcesses()` 会兜底清进程。
+    private func requestServiceStop() {
+        stopVerifyToken &+= 1
+        let token = stopVerifyToken
+        postControl(action: "stop")
+        verifyServiceStopped(token: token, sent: 1)
+    }
+
+    private func verifyServiceStopped(token: Int, sent: Int) {
+        guard sent <= Self.maxStopAttempts else { return }
+        let delay: TimeInterval = sent == 1 ? 0.5 : 1.0
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self = self, self.stopVerifyToken == token, !self.isVisible else { return }
+            self.fetchSubtitlesRunState { stillActive, reachable in
+                guard reachable, self.stopVerifyToken == token, !self.isVisible else { return }
+                guard stillActive else {
+                    NSLog("[SubtitleOverlay] ✅ 字幕服务已确认卸载（第 \(sent) 次 stop）")
+                    return
+                }
+                guard sent < Self.maxStopAttempts else {
+                    NSLog("[SubtitleOverlay] ⚠️ 连续 \(sent) 次 stop 后服务仍在运行，交由退出清扫兜底")
+                    return
+                }
+                NSLog("[SubtitleOverlay] ⚠️ stop 未生效，重发（第 \(sent + 1) 次）")
+                self.postControl(action: "stop")
+                self.verifyServiceStopped(token: token, sent: sent + 1)
+            }
+        }
+    }
+
+    /// 读取字幕服务运行状态：`completion(是否仍有进程/模型在运行, 代理是否可达)`，始终在主线程回调。
+    /// 判定不能只看 `modelsLoaded` —— 模型还在加载时它同样是 false，那会被误判成“已卸载”而跳过重发，
+    /// 所以按 `state == idle` 才算真的停干净。
+    private func fetchSubtitlesRunState(completion: @escaping (Bool, Bool) -> Void) {
+        guard let url = URL(string: "\(ProcessManager.baseURLString)/api/subtitles/status") else {
+            DispatchQueue.main.async { completion(false, false) }
+            return
+        }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 1.5
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        URLSession.shared.dataTask(with: req) { data, response, error in
+            var stillActive = false
+            var reachable = false
+            if error == nil,
+               let http = response as? HTTPURLResponse, http.statusCode == 200,
+               let data = data,
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                reachable = true
+                let state = (obj["state"] as? String) ?? ""
+                let loaded = (obj["modelsLoaded"] as? Bool) ?? false
+                let loading = (obj["loading"] as? Bool) ?? false
+                stillActive = loaded || loading || (!state.isEmpty && state != "idle")
+            }
+            DispatchQueue.main.async { completion(stillActive, reachable) }
+        }.resume()
     }
 
     // MARK: - WKScriptMessageHandler

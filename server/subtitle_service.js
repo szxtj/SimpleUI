@@ -454,7 +454,7 @@ class SubtitleAsrEngine {
       return false;
     }
 
-    console.log('[Subtitles] [1/2] 正在加载 Confucius4-R2T2 流式识别引擎 (audio.cpp · Metal)...');
+    console.log('[Subtitles] [1/3] 正在加载 Confucius4-R2T2 流式识别引擎 (audio.cpp · Metal)...');
     const log = this.openLogStream();
     this.lastLogTail = [];
     const proc = spawn(runtime.binPath, ['--config', serverJsonFile], {
@@ -529,7 +529,7 @@ class SubtitleAsrEngine {
     }
     this.ready = true;
     this.respawnAttempts = 0;
-    console.log('[Subtitles] ✅ [1/2] Confucius4-R2T2 追加式流式识别引擎已就绪 (端口 1250)');
+    console.log('[Subtitles] ✅ [1/3] Confucius4-R2T2 追加式流式识别引擎已就绪 (端口 1250)');
     return true;
   }
 
@@ -867,6 +867,13 @@ class SubtitleService {
       } catch {}
     }
 
+    // CoreML helper 的 PID 文件只做回收、不按 PID 发信号：
+    // helper 在 stdin EOF 时会自己退出，残留的 PID 很可能已被无关进程复用，
+    // 按 PID 去 kill 反而有误杀风险；真正存活的 helper 由下面的 pkill -x 按名字精确清理。
+    try {
+      if (fs.existsSync(ML_PID_FILE)) fs.unlinkSync(ML_PID_FILE);
+    } catch {}
+
     // 精确清理同名孤儿进程（不误伤其它端口的服务：按派生配置文件名匹配）
     try {
       execSync('pkill -x "subtitle_stream_asr"', { stdio: 'ignore' }); // 旧架构遗留 daemon
@@ -882,27 +889,21 @@ class SubtitleService {
     } catch {}
   }
 
+  /**
+   * 为三个受管子进程各注册一个「父进程死亡」兜底看门狗（ASR / 翻译 / CoreML helper）。
+   * helper 正常情况下会因 stdin EOF 自行退出，但两种情况例外：代理侧丢了 proc 引用的竞态、
+   * 或 helper 卡在 CoreML prediction 里收不到 EOF —— 那时只有看门狗能收尸。
+   */
   ensureWatchdogs() {
-    if (!this.watchdogs.has(ASR_PID_FILE)) {
+    const specs = [
+      { pidFile: ASR_PID_FILE, binaryBasename: 'audiocpp_server' },
+      { pidFile: TRANS_PID_FILE, binaryBasename: 'llama-server' },
+      { pidFile: ML_PID_FILE, binaryBasename: 'subtitle_ml_helper' },
+    ];
+    for (const spec of specs) {
+      if (this.watchdogs.has(spec.pidFile)) continue;
       try {
-        this.watchdogs.set(
-          ASR_PID_FILE,
-          startWatchdog({
-            pidFile: ASR_PID_FILE,
-            binaryBasename: 'audiocpp_server',
-          })
-        );
-      } catch {}
-    }
-    if (!this.watchdogs.has(TRANS_PID_FILE)) {
-      try {
-        this.watchdogs.set(
-          TRANS_PID_FILE,
-          startWatchdog({
-            pidFile: TRANS_PID_FILE,
-            binaryBasename: 'llama-server',
-          })
-        );
+        this.watchdogs.set(spec.pidFile, startWatchdog(spec));
       } catch {}
     }
   }
@@ -1651,6 +1652,7 @@ class SubtitleService {
         `CoreML helper 不存在: ${runtime.mlHelperPath}`
       );
     }
+    console.log('[Subtitles] [2/3] 正在加载 CoreML helper（SaT 断句 + Smart Turn 端点）...');
     const helper = new SubtitleMlHelper({
       helperPath: runtime.mlHelperPath,
       modelsDir: SUBTITLE_MODELS_DIR,
@@ -1718,7 +1720,7 @@ class SubtitleService {
         .filter(Boolean)
         .join(':');
       const transModel = path.join(SUBTITLE_MODELS_DIR, 'index_translate_2b_q4_k_m.gguf');
-      console.log('[Subtitles] [2/3] 正在加载 Index-Translate-2B Metal 翻译服务 (端口 1249)...');
+      console.log('[Subtitles] [3/3] 正在加载 Index-Translate-2B Metal 翻译服务 (端口 1249)...');
       const proc = spawn(
         llamaRuntime.binPath,
         [

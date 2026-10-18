@@ -34,6 +34,9 @@ type FontSizePreset = 'small' | 'medium' | 'large';
 const CHROME_HEIGHT_BOTH = 68;
 const CHROME_HEIGHT_ZH_ONLY = 60;
 
+/// 选项带上的两位缩写（完整文案放在 title 里）
+const LANG_CHIP_LABEL: Record<string, string> = { none: 'NO', zh: 'CN', en: 'EN', ja: 'JP' };
+
 const FONT_CONFIG: Record<
   FontSizePreset,
   {
@@ -104,12 +107,24 @@ export const SubtitleOverlay: React.FC = () => {
     ? (isNone ? singleTrackLineHeight : fontCfg.zhLineHeight)
     : fontCfg.enLineHeight + fontCfg.zhLineHeight;
 
+  const openMenu: 'source' | 'target' | 'font' | null = showSourceMenu
+    ? 'source'
+    : showTargetMenu
+    ? 'target'
+    : showFontMenu
+    ? 'font'
+    : null;
+
   // 注册原生面板回调：新开字幕窗口时立即清空旧历史，拖拽改变档位时同步 N+N 行数
   useEffect(() => {
     (window as any).onSubtitleOverlayShown = (initialPairs?: number) => {
       setSourceText('');
       setTargetRecords([]);
       setFatalError(null);
+      // 窗口重新打开时不保留任何下拉（否则菜单会挂在新窗口外面）
+      setShowFontMenu(false);
+      setShowSourceMenu(false);
+      setShowTargetMenu(false);
       if (typeof initialPairs === 'number' && initialPairs >= 2) {
         setLinePairs(initialPairs);
       } else {
@@ -597,6 +612,41 @@ export const SubtitleOverlay: React.FC = () => {
 
   const hasAnyContent = Boolean(continuousSourceText || continuousTargetText);
 
+  // 横向选项带：三个控件共用同一条带子，用两位缩写把宽度压进一行。
+  // 带子贴在工具栏下方、盖住字幕区顶部，带下沿的投影压住下面的内容 ——
+  // 它永远落在卡片内部，所以既不会被窗口下沿裁掉，也不需要改窗口高度（不会有抖动）。
+  const optionChips: Array<{ key: string; label: string; title: string; active: boolean; onSelect: () => void }> =
+    openMenu === 'source'
+      ? sourceOptions.map((opt) => ({
+          key: opt.id,
+          label: LANG_CHIP_LABEL[opt.id],
+          title: opt.label,
+          active: sourceLang === opt.id,
+          onSelect: () => handleSelectSourceLang(opt.id),
+        }))
+      : openMenu === 'target'
+      ? targetOptions.map((opt) => ({
+          key: String(opt.id),
+          label: LANG_CHIP_LABEL[opt.id],
+          title: opt.label,
+          active: targetLang === opt.id,
+          onSelect: () => handleSelectTargetLang(opt.id as 'none' | 'zh' | 'ja' | 'en'),
+        }))
+      : openMenu === 'font'
+      ? (['small', 'medium', 'large'] as FontSizePreset[]).map((preset) => ({
+          key: preset,
+          label: preset === 'small' ? 'S' : preset === 'large' ? 'L' : 'M',
+          title:
+            preset === 'small'
+              ? t('subtitleFontSmall')
+              : preset === 'large'
+              ? t('subtitleFontLarge')
+              : t('subtitleFontMedium'),
+          active: fontSize === preset,
+          onSelect: () => setFontSize(preset),
+        }))
+      : [];
+
   const fatalStageLabel = (stage: string) => {
     switch (stage) {
       case 'asr':
@@ -704,27 +754,6 @@ export const SubtitleOverlay: React.FC = () => {
                   }`}
                 />
               </button>
-
-              {showSourceMenu && (
-                <div
-                  onClick={(e) => e.stopPropagation()}
-                  className="absolute left-0 top-full mt-1 w-28 rounded-lg bg-[#2b2d33] border border-white/15 py-1 shadow-xl z-50 text-[12px]"
-                >
-                  {sourceOptions.map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() => handleSelectSourceLang(opt.id)}
-                      className={`w-full px-3 py-1.5 text-left flex items-center justify-between hover:bg-white/10 cursor-pointer ${
-                        sourceLang === opt.id ? 'text-emerald-400 font-medium' : 'text-neutral-200'
-                      }`}
-                    >
-                      <span>{opt.label}</span>
-                      {sourceLang === opt.id && <Check className="w-3.5 h-3.5" />}
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
 
             {/* 翻译目标语言下拉菜单 */}
@@ -751,27 +780,6 @@ export const SubtitleOverlay: React.FC = () => {
                 </span>
                 <ChevronDown className="w-3 h-3 text-neutral-400" />
               </button>
-
-              {showTargetMenu && (
-                <div
-                  onClick={(e) => e.stopPropagation()}
-                  className="absolute left-0 top-full mt-1 w-36 rounded-lg bg-[#2b2d33] border border-white/15 py-1 shadow-xl z-50 text-[12px]"
-                >
-                  {targetOptions.map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() => handleSelectTargetLang(opt.id as any)}
-                      className={`w-full px-3 py-1.5 text-left flex items-center justify-between hover:bg-white/10 cursor-pointer ${
-                        targetLang === opt.id ? 'text-emerald-400 font-medium' : 'text-neutral-200'
-                      }`}
-                    >
-                      <span>{opt.label}</span>
-                      {targetLang === opt.id && <Check className="w-3.5 h-3.5" />}
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
 
             {/* 关闭原文 / 开启原文 开关（不翻译纯字幕模式下锁定且不可点击） */}
@@ -823,39 +831,6 @@ export const SubtitleOverlay: React.FC = () => {
                 <span>{fontSizeLabel}</span>
                 <ChevronDown className="w-3 h-3 text-neutral-400" />
               </button>
-
-              {showFontMenu && (
-                <div
-                  onClick={(e) => e.stopPropagation()}
-                  className="absolute left-0 top-full mt-1 w-28 rounded-lg bg-[#2b2d33] border border-white/15 py-1 shadow-xl z-50 text-[12px]"
-                >
-                  {(['small', 'medium', 'large'] as FontSizePreset[]).map((preset) => {
-                    const label =
-                      preset === 'small'
-                        ? t('subtitleFontSmall')
-                        : preset === 'large'
-                        ? t('subtitleFontLarge')
-                        : t('subtitleFontMedium');
-                    const active = fontSize === preset;
-                    return (
-                      <button
-                        key={preset}
-                        type="button"
-                        onClick={() => {
-                          setFontSize(preset);
-                          setShowFontMenu(false);
-                        }}
-                        className={`w-full px-3 py-1 text-left flex items-center justify-between hover:bg-white/10 cursor-pointer ${
-                          active ? 'text-emerald-400 font-medium' : 'text-neutral-200'
-                        }`}
-                      >
-                        <span>{label}</span>
-                        {active && <Check className="w-3.5 h-3.5" />}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
             </div>
           </div>
 
@@ -899,6 +874,38 @@ export const SubtitleOverlay: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {/* 横向选项带：贴在工具栏正下方，盖住字幕区顶部，带下沿的投影压住下面的内容。
+            整条带子永远在卡片内部 —— 不越界、不改窗口尺寸，所以既不会被裁掉也不会抖。 */}
+        {openMenu && (
+          <div
+            data-subtitle-options={openMenu}
+            onClick={(e) => e.stopPropagation()}
+            className="absolute left-0 right-0 top-[38px] z-30 flex items-center gap-1.5 px-3 h-[30px] bg-[#2b2d33] shadow-[0_10px_16px_-6px_rgba(0,0,0,0.75)]"
+          >
+            {optionChips.map((chip) => (
+              <button
+                key={chip.key}
+                type="button"
+                title={chip.title}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  chip.onSelect();
+                  setShowSourceMenu(false);
+                  setShowTargetMenu(false);
+                  setShowFontMenu(false);
+                }}
+                className={`px-2 py-[3px] rounded text-[11px] font-semibold tracking-wide transition-colors ${
+                  chip.active
+                    ? 'bg-emerald-400/20 text-emerald-300 ring-1 ring-inset ring-emerald-400/40'
+                    : 'text-neutral-300 hover:bg-white/10 hover:text-white'
+                }`}
+              >
+                {chip.label}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* 主内容区域 */}
         {fatalError ? (
