@@ -292,27 +292,29 @@ class VoiceInputManager {
         emit(.transcribing, 0, nil)
         transcribe(wav: data) { [weak self] result in
             guard let self = self else { return }
-            switch result {
-            case .success(let text):
-                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else {
-                    self.emit(.error, 0, "未识别到语音")
-                    return
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let text):
+                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else {
+                        self.emit(.error, 0, "未识别到语音")
+                        return
+                    }
+                    if VoiceInputManager.isSelfAppFocused() {
+                        // 本 App 自身的输入框在 WKWebView 内，AX 判定为 AXWebArea 会被误判非文本，
+                        // 因此走前端桥把文本直接插入光标处。按用户要求：**不写剪贴板**（不污染用户的剪贴板）。
+                        NotificationCenter.default.post(name: VoiceInputManager.insertTextNotification, object: trimmed)
+                        self.emit(.done, 0, trimmed, "insert")
+                    } else {
+                        // 其它 App：剪贴板 + 合成 ⌘V 粘贴（与系统听写、Superwhisper 等商业 App 同做法）。
+                        // 不做任何焦点判定 —— 判定在 Electron / Web 类 App 里必然失败，加了就等于不可用。
+                        // ⌘V 落在非文本处通常无副作用，且剪贴板留着文本可随时手动粘贴。
+                        self.pasteToFocusedApp(trimmed)
+                        self.emit(.done, 0, trimmed, "paste")
+                    }
+                case .failure(let err):
+                    self.emit(.error, 0, err.localizedDescription)
                 }
-                if VoiceInputManager.isSelfAppFocused() {
-                    // 本 App 自身的输入框在 WKWebView 内，AX 判定为 AXWebArea 会被误判非文本，
-                    // 因此走前端桥把文本直接插入光标处。按用户要求：**不写剪贴板**（不污染用户的剪贴板）。
-                    NotificationCenter.default.post(name: VoiceInputManager.insertTextNotification, object: trimmed)
-                    self.emit(.done, 0, trimmed, "insert")
-                } else {
-                    // 其它 App：剪贴板 + 合成 ⌘V 粘贴（与系统听写、Superwhisper 等商业 App 同做法）。
-                    // 不做任何焦点判定 —— 判定在 Electron / Web 类 App 里必然失败，加了就等于不可用。
-                    // ⌘V 落在非文本处通常无副作用，且剪贴板留着文本可随时手动粘贴。
-                    self.pasteToFocusedApp(trimmed)
-                    self.emit(.done, 0, trimmed, "paste")
-                }
-            case .failure(let err):
-                self.emit(.error, 0, err.localizedDescription)
             }
         }
     }
@@ -520,6 +522,9 @@ class VoiceInputManager {
 
     /// 当前前台 App 是否为本 App 自身（语音目标是本 App 自己的输入框时走前端桥插入）
     private static func isSelfAppFocused() -> Bool {
+        if NSApp.keyWindow != nil {
+            return true
+        }
         guard let front = NSWorkspace.shared.frontmostApplication else { return false }
         return front.bundleIdentifier == Bundle.main.bundleIdentifier
     }

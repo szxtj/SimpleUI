@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-public final class TranslationPanelController {
+public final class TranslationPanelController: NSObject {
     private enum Layout {
         static let width: CGFloat = 620
         static let minHeight: CGFloat = 336
@@ -16,6 +16,42 @@ public final class TranslationPanelController {
         } else {
             self.viewModel = MainActor.assumeIsolated {
                 TranslationViewModel()
+            }
+        }
+        super.init()
+        setupNotifications()
+    }
+
+    private func setupNotifications() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onVoiceInsertText(_:)),
+            name: VoiceInputManager.insertTextNotification,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func onVoiceInsertText(_ note: Notification) {
+        guard let text = note.object as? String, !text.isEmpty else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            guard let p = self.panel, p.isVisible, p.isKeyWindow else { return }
+
+            if let textView = p.firstResponder as? NSTextView, textView.isEditable {
+                textView.insertText(text, replacementRange: textView.selectedRange())
+            } else {
+                MainActor.assumeIsolated {
+                    if self.viewModel.inputText.isEmpty {
+                        self.viewModel.inputText = text
+                    } else {
+                        self.viewModel.inputText += text
+                    }
+                    self.viewModel.requestFocus()
+                }
             }
         }
     }
