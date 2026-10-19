@@ -222,132 +222,8 @@ public struct TranslationService: TranslationServiceProtocol {
     }
 
     public static func makePrompt(for text: String, mode: TranslationMode, baseLang: String = "zh") -> String {
-        let hasChinese = containsChinese(text)
-        let isZhBase = (baseLang != "en")
-
-        switch mode {
-        case .quick:
-            if isZhBase {
-                if hasChinese {
-                    // 情况 1-1：中文基准 · 中译英快速 (明确美式日常英语)
-                    return """
-                        Translate the following Chinese text into natural, idiomatic American everyday English.
-                        Return only the translation result.
-                        Do not explain anything.
-
-                        Text:
-                        \(text)
-                        """
-                } else {
-                    // 情况 1-2：中文基准 · 英译中快速
-                    return """
-                        Translate the following English text into natural Simplified Chinese.
-                        Return only the translation result.
-                        Do not explain anything.
-
-                        Text:
-                        \(text)
-                        """
-                }
-            } else {
-                if hasChinese {
-                    // 情况 2-1：英文基准 · 中译英快速
-                    return """
-                        Translate the following Chinese text into natural, idiomatic English.
-                        Return only the translation result.
-                        Do not explain anything.
-
-                        Text:
-                        \(text)
-                        """
-                } else {
-                    // 情况 2-2：英文基准 · 英译中快速
-                    return """
-                        Translate the following English text into natural Simplified Chinese.
-                        Return only the translation result.
-                        Do not explain anything.
-
-                        Text:
-                        \(text)
-                        """
-                }
-            }
-
-        case .detail:
-            if isZhBase {
-                if hasChinese {
-                    // 情况 1-3：中文基准 · 中译英详解 (优先美式日常表达，展示全面，英式加【英】)
-                    return """
-                        你是一个多角度中译英翻译与表达助手。请分析输入的中文内容：
-                        1. 列出该中文对应的多个英文单词或短语（分点列出）：
-                           - 优先推荐美式日常英语表达（日常口语、高频用法）。
-                           - 尽量展示全面的不同表达（包含口语、书面、正式度不同的替代表达）。
-                           - 如果包含英式英语特有表达，请在该表达前明确注明【英】（如【英】lift）。
-                        2. 对于每一个候选英文表达，提供：
-                           - 词性 (Part of speech，若为单单词则提供)
-                           - 语境与语气辨析 (简要说明适用场景，如美式口语/书面正式/口语俚语等)
-                           - 双语例句 (至少提供一个高质量地道的英文例句及中文对照翻译)
-
-                        注意约束：
-                        - 绝对不要输出任何音标。
-                        - 只输出 Markdown 格式的排版结果，不要包含任何前言介绍、解释性废话或代码块。
-
-                        输入内容：
-                        \(text)
-                        """
-                } else {
-                    // 情况 1-4：中文基准 · 英译中详解
-                    return """
-                        你是一个词汇与表达解析助手。请分析输入的英文内容：
-                        1. 判断输入是单个单词还是短语/句子。如果是单个单词，请给出词性（如：n. / v. / adj.）；如果是短语或词组，请忽略并不要输出词性。
-                        2. 以无序列表（分点）形式给出多个准确、有层次的中文释义。
-                        3. 针对该词汇或短语，提供 2-3 个生动实用的英文例句，并附带对应的地道中文翻译。
-                        4. 若有常用固定搭配或易混淆点，请作简要提示。
-
-                        注意约束：
-                        - 绝对不要输出任何音标。
-                        - 只输出 Markdown 格式的排版结果，不要包含任何前言介绍、解释性废话或代码块。
-
-                        输入内容：
-                        \(text)
-                        """
-                }
-            } else {
-                if hasChinese {
-                    // 情况 2-3：英文基准 · 中文输入详解 (向英文用户解释中文，全英文输出)
-                    return """
-                        You are a Chinese language and vocabulary tutor for English speakers. Analyze the following Chinese input:
-                        1. Pinyin: Provide the accurate Pinyin with tone marks.
-                        2. Part of Speech: If it is a word, specify its part of speech in English (e.g., Noun, Verb, Adjective).
-                        3. English Definitions: Provide clear, bulleted definitions explaining the literal and contextual meanings.
-                        4. Nuance & Usage Notes: Explain when and how this expression is used in modern Chinese (formality, register, cultural context).
-                        5. Example Sentences: Provide 2-3 authentic example sentences in Chinese characters, accompanied by Pinyin and natural English translations.
-
-                        Constraints:
-                        - Output ONLY clean Markdown formatting.
-                        - Do NOT include any introductory chit-chat, preamble, or code block wrapper.
-
-                        Input text:
-                        \(text)
-                        """
-                } else {
-                    // 情况 2-4：英文基准 · 英文输入详解 (向英文用户展示如何用地道中文表达，全英文输出)
-                    return """
-                        You are an English-to-Chinese translation and vocabulary consultant for English speakers. Analyze the following English input:
-                        1. Chinese Equivalents: List 2-4 authentic Chinese translations (Simplified Chinese characters accompanied by Pinyin).
-                        2. Nuance Breakdown: For each Chinese equivalent, explain in English its specific nuance, register (formal, informal, colloquial), and context where it is preferred over others.
-                        3. Example Sentences: Provide practical bilingual example sentences (English original and Chinese translation with Pinyin) for each major equivalent.
-
-                        Constraints:
-                        - Output ONLY clean Markdown formatting.
-                        - Do NOT include any introductory chit-chat, preamble, or code block wrapper.
-
-                        Input text:
-                        \(text)
-                        """
-                }
-            }
-        }
+        let instruction = makeSystemInstruction(for: mode, text: text, baseLang: baseLang)
+        return "\(instruction)\n\n\(text)"
     }
 
     public static func makeSystemInstruction(for mode: TranslationMode, text: String, baseLang: String = "zh") -> String {
@@ -359,18 +235,18 @@ public struct TranslationService: TranslationServiceProtocol {
             if isZhBase {
                 if hasChinese {
                     // 情况 1-1：中文基准 · 中译英快速 (明确美式日常英语)
-                    return "Translate the Chinese text into natural, idiomatic American everyday English. Output ONLY the clean translation result, with absolutely no explanation, reasoning process, formatting, introduction, phonetics, or repeating."
+                    return "Translate into natural, everyday American English. Output the translation only."
                 } else {
                     // 情况 1-2：中文基准 · 英译中快速
-                    return "Translate the English text into natural Simplified Chinese. Output ONLY the clean translation result, with absolutely no explanation, reasoning process, formatting, introduction, phonetics, or repeating."
+                    return "翻译为自然流畅的简体中文。仅输出翻译结果。"
                 }
             } else {
                 if hasChinese {
                     // 情况 2-1：英文基准 · 中译英快速
-                    return "Translate the Chinese text into natural, idiomatic English. Output ONLY the clean translation result, with absolutely no explanation, reasoning process, formatting, introduction, phonetics, or repeating."
+                    return "Translate into natural English. Output the translation only."
                 } else {
                     // 情况 2-2：英文基准 · 英译中快速
-                    return "Translate the English text into natural Simplified Chinese. Output ONLY the clean translation result, with absolutely no explanation, reasoning process, formatting, introduction, phonetics, or repeating."
+                    return "Translate into natural Simplified Chinese. Output the translation only."
                 }
             }
 
@@ -378,18 +254,42 @@ public struct TranslationService: TranslationServiceProtocol {
             if isZhBase {
                 if hasChinese {
                     // 情况 1-3：中文基准 · 中译英详解 (优先美式日常表达，展示全面，英式加【英】)
-                    return "你是一个多角度中译英翻译与表达助手。请分析输入的中文内容，提供对应的地道英文表达：1. 优先推荐美式日常英语表达（高频、自然的日常口语或常用用法）；2. 同时尽量展示全面的不同表达（包含口语、书面、正式度不同的替代表达）；3. 若提供英式英语特有表达，请在词条或短语前明确标注【英】（如【英】lift）；4. 针对候选表达注明词性（若是单单词）、语境与语气辨析，并提供高质量的英文例句与中文对照翻译。绝对不要输出任何音标。只输出 Markdown 格式的排版结果，不要包含任何前言介绍、寒暄或将结果包裹在代码块中。"
+                    return """
+                        请将输入的中文解析为地道英文表达，Markdown 格式：
+                        1. 表达推荐：优先美式日常表达，尽量展示全面不同表达；英式特有表达前标注【英】。
+                        2. 简要辨析：注明词性、语境及正式程度差异。
+                        3. 双语例句：为主要表达提供 1-2 个实用英文例句及中文对照。
+                        注意：不输出音标，不输出寒暄或多余前言。
+                        """
                 } else {
                     // 情况 1-4：中文基准 · 英译中详解
-                    return "你是一个词汇与表达解析助手。请分析输入的英文内容：如果是单个单词，请给出词性（如：n. / v. / adj. 等）；如果是短语/词组，则忽略并不要输出词性。以无序列表分点形式给出多个准确的中文释义。针对该词汇或短语，提供 2-3 个生动实用的英文例句并附带对应的地道中文翻译。绝对不要输出任何音标。只输出 Markdown 格式的排版结果，不要包含任何前言介绍、解释性废话或将结果包裹在代码块中。"
+                    return """
+                        请解析输入的英文单词或短语，Markdown 格式：
+                        1. 词性及准确中文释义（分点列出）。
+                        2. 2 个实用的英文例句及中文对照翻译。
+                        注意：不输出音标，不输出寒暄或多余前言。
+                        """
                 }
             } else {
                 if hasChinese {
                     // 情况 2-3：英文基准 · 中文输入详解 (向英文用户解释中文)
-                    return "You are a Chinese-to-English language and vocabulary tutor for English speakers. Analyze the provided Chinese text: 1. Provide the Pinyin with tone marks; 2. State the part of speech if it is a word; 3. Provide comprehensive English definitions with nuanced meanings; 4. Explain the cultural or pragmatic usage context in English; 5. Provide 2-3 authentic example sentences with Chinese characters, Pinyin, and English translations. Output ONLY clean Markdown with no conversational filler, prelude, or code block wrapper."
+                    return """
+                        Analyze the Chinese input for English speakers in Markdown:
+                        1. Pinyin with tone marks and part of speech.
+                        2. Clear English definitions.
+                        3. Usage and context notes.
+                        4. 2 authentic example sentences (Chinese, Pinyin, English).
+                        Output only the analysis without conversational filler.
+                        """
                 } else {
-                    // 情况 2-4：英文基准 · 英文输入详解 (向英文用户展示如何用地道中文表达)
-                    return "You are an English-to-Chinese translation and vocabulary consultant for English speakers. Analyze the provided English text: 1. Provide multiple accurate Chinese translations (Simplified Chinese characters with Pinyin); 2. Explain the differences, nuances, formality levels, and contexts between each Chinese alternative in English; 3. Provide 2-3 bilingual example sentences showing how each Chinese term is used naturally. Output ONLY clean Markdown with no conversational filler, prelude, or code block wrapper."
+                    // 情况 2-4：英文基准 · 英文输入详解 (向英文用户提供地道中文表达)
+                    return """
+                        Provide authentic Chinese equivalents for English speakers in Markdown:
+                        1. Chinese expressions with Pinyin.
+                        2. Nuance and register differences in English.
+                        3. 1-2 bilingual example sentences.
+                        Output only the analysis without conversational filler.
+                        """
                 }
             }
         }
