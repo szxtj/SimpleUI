@@ -5,6 +5,7 @@ node_modules/
 dist/
 dist-ssr/
 build/
+public/pyodide/
 *.tsbuildinfo
 
 # macOS metadata

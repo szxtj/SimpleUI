@@ -5,8 +5,9 @@ import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkCjkFriendly from 'remark-cjk-friendly';
 import remarkBreaks from 'remark-breaks';
-import { Check, Copy, Table as TableIcon, FileText, ChevronDown, ChevronUp } from 'lucide-react';
+import { Check, Copy, Table as TableIcon, FileText, ChevronDown, ChevronUp, Play, Loader2, Terminal, X, CornerDownRight } from 'lucide-react';
 import { useI18n } from '../i18n';
+import { pythonRunner, type PythonExecutionResult } from '../services/pythonRunner';
 
 import { preprocessMarkdown } from '../utils/markdownPipeline';
 import {
@@ -34,6 +35,13 @@ const CodeBlock: React.FC<CodeBlockProps> = React.memo(({ language, code }) => {
   const { t, lang } = useI18n();
   const [copied, setCopied] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const [isRunning, setIsRunning] = useState(false);
+  const [runStatus, setRunStatus] = useState('');
+  const [executionResult, setExecutionResult] = useState<PythonExecutionResult | null>(null);
+  const [streamingStdout, setStreamingStdout] = useState('');
+
+  const isEn = lang === 'en';
+  const isPython = ['python', 'py', 'python3'].includes((language || '').toLowerCase().trim());
 
   const handleCopy = async () => {
     try {
@@ -45,7 +53,47 @@ const CodeBlock: React.FC<CodeBlockProps> = React.memo(({ language, code }) => {
     }
   };
 
-  const isEn = lang === 'en';
+  const handleRunPython = async () => {
+    if (isRunning) {
+      pythonRunner.cancel();
+      setIsRunning(false);
+      setRunStatus('');
+      return;
+    }
+
+    if (collapsed) {
+      setCollapsed(false);
+    }
+
+    setIsRunning(true);
+    setStreamingStdout('');
+    setExecutionResult(null);
+    setRunStatus(t('runStatusInit'));
+
+    try {
+      const res = await pythonRunner.run(code, {
+        onStatus: (st) => {
+          if (st === 'initializing') setRunStatus(t('runStatusInit'));
+          else if (st === 'loading_packages') setRunStatus(t('runStatusLoadingPkgs'));
+          else if (st === 'running') setRunStatus(t('runStatusExecuting'));
+        },
+        onStdout: (chunk) => {
+          setStreamingStdout((prev) => prev + chunk + '\n');
+        },
+      });
+      setExecutionResult(res);
+    } catch (err: any) {
+      setExecutionResult({
+        stdout: '',
+        stderr: '',
+        error: err?.message || String(err),
+        durationMs: 0,
+      });
+    } finally {
+      setIsRunning(false);
+      setRunStatus('');
+    }
+  };
 
   return (
     <div
@@ -64,6 +112,34 @@ const CodeBlock: React.FC<CodeBlockProps> = React.memo(({ language, code }) => {
           {language || 'text'}
         </span>
         <div className="flex items-center gap-1">
+          {isPython && (
+            <button
+              type="button"
+              onClick={handleRunPython}
+              className={`flex items-center gap-1.5 px-2 py-0.5 rounded transition-colors cursor-pointer ${
+                isRunning
+                  ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20'
+                  : 'hover:bg-black/5 dark:hover:bg-[#32363e] text-emerald-600 dark:text-emerald-400'
+              }`}
+              title={isRunning ? t('cancelRun') : t('runCode')}
+            >
+              {isRunning ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span className="text-[11px] font-medium">
+                    {runStatus || t('runningCode')}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span className="text-[11px] font-medium">
+                    {executionResult ? t('rerunCode') : t('runCode')}
+                  </span>
+                </>
+              )}
+            </button>
+          )}
           <button
             type="button"
             onClick={handleCopy}
@@ -102,6 +178,7 @@ const CodeBlock: React.FC<CodeBlockProps> = React.memo(({ language, code }) => {
           </button>
         </div>
       </div>
+
       <pre
         className={`!m-0 !p-3.5 overflow-x-auto overflow-y-hidden text-[0.88em] font-mono leading-relaxed text-[#1f2328] dark:text-[#f0f3f6] bg-transparent border-0 whitespace-pre cursor-text ${
           collapsed ? 'hidden' : ''
@@ -109,6 +186,72 @@ const CodeBlock: React.FC<CodeBlockProps> = React.memo(({ language, code }) => {
       >
         <code className="!bg-transparent !p-0 !text-inherit font-mono whitespace-pre">{code}</code>
       </pre>
+
+      {/* Code execution output panel */}
+      {!collapsed && (executionResult || (isRunning && streamingStdout)) && (
+        <div
+          data-copy-ignore="true"
+          className="border-t border-[#d0d7de] dark:border-[#33363d] bg-[#f2f4f8] dark:bg-[#16171a] p-3 text-xs select-text"
+        >
+          {/* Header of output */}
+          <div className="flex items-center justify-between pb-2 mb-2 border-b border-black/5 dark:border-white/5 select-none text-zinc-500 dark:text-zinc-400">
+            <div className="flex items-center gap-1.5 font-medium text-[11px]">
+              <Terminal className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+              <span>{t('codeOutput')}</span>
+              {executionResult && executionResult.durationMs > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full bg-black/5 dark:bg-white/5 text-[10px] text-zinc-500 dark:text-zinc-400 font-mono">
+                  {executionResult.durationMs}ms
+                </span>
+              )}
+            </div>
+            {!isRunning && (
+              <button
+                type="button"
+                onClick={() => {
+                  setExecutionResult(null);
+                  setStreamingStdout('');
+                }}
+                className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/5 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors"
+                title={t('clearOutput')}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Standard output text */}
+          {(executionResult?.stdout || streamingStdout) && (
+            <pre className="!m-0 !p-0 font-mono text-[12px] leading-relaxed text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap break-words bg-transparent border-0">
+              {executionResult ? executionResult.stdout : streamingStdout}
+            </pre>
+          )}
+
+          {/* Evaluated last expression result (if any) */}
+          {executionResult?.result && (
+            <div className="mt-1.5 pt-1.5 border-t border-black/5 dark:border-white/5 flex items-start gap-1 font-mono text-[12px] text-emerald-700 dark:text-emerald-300 font-medium whitespace-pre-wrap break-words">
+              <span className="text-[11px] opacity-60 mr-1 select-none flex items-center gap-0.5 text-zinc-500 dark:text-zinc-400">
+                <CornerDownRight className="w-3 h-3 text-emerald-500" />
+                Out:
+              </span>
+              <span>{executionResult.result}</span>
+            </div>
+          )}
+
+          {/* Error / Traceback (if any) */}
+          {executionResult?.error && (
+            <pre className="!m-0 mt-1.5 !p-2 rounded bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 font-mono text-[11.5px] leading-relaxed text-rose-700 dark:text-rose-300 whitespace-pre-wrap break-words">
+              {executionResult.error}
+            </pre>
+          )}
+
+          {/* Fallback if finished with nothing printed and no result */}
+          {executionResult && !executionResult.stdout && !executionResult.result && !executionResult.error && (
+            <div className="text-[11px] text-zinc-400 italic">
+              {t('noOutput')}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 });

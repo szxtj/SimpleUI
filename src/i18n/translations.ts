@@ -98,6 +98,16 @@ export const translations = {
     expandCode: '展开',
     collapseCodeTooltip: '收起代码',
     expandCodeTooltip: '展开代码',
+    runCode: '运行',
+    rerunCode: '重新运行',
+    runningCode: '运行中...',
+    cancelRun: '取消运行',
+    codeOutput: '运行结果',
+    clearOutput: '清除输出',
+    noOutput: '执行完成（无输出）',
+    runStatusInit: '初始化解释器...',
+    runStatusLoadingPkgs: '载入科学计算库...',
+    runStatusExecuting: '正在计算...',
     thinkingNotice: '正在思考...',
 
     // ThinkingAccordion
@@ -642,6 +652,16 @@ export const translations = {
     expandCode: 'Expand',
     collapseCodeTooltip: 'Collapse code',
     expandCodeTooltip: 'Expand code',
+    runCode: 'Run',
+    rerunCode: 'Rerun',
+    runningCode: 'Running...',
+    cancelRun: 'Cancel',
+    codeOutput: 'Output',
+    clearOutput: 'Clear output',
+    noOutput: 'Executed successfully (no output)',
+    runStatusInit: 'Initializing...',
+    runStatusLoadingPkgs: 'Loading packages...',
+    runStatusExecuting: 'Executing...',
     thinkingNotice: 'Thinking...',
 
     // ThinkingAccordion

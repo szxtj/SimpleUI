@@ -25,6 +25,10 @@ const MIME_TYPES = {
   '.woff2': 'font/woff2',
   '.ttf': 'font/ttf',
   '.ico': 'image/x-icon',
+  '.wasm': 'application/wasm',
+  '.whl': 'application/zip',
+  '.zip': 'application/zip',
+  '.mjs': 'application/javascript; charset=utf-8',
 };
 
 function proxyRequest(req, res, targetUrl) {
