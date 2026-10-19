@@ -959,7 +959,7 @@ class SubtitleService {
     // 旧架构模型与残留运行时回收：R2T2 GGUF 就绪后才删除旧模型目录与已废弃的 ten_vad.onnx
     const r2t2Path = path.join(SUBTITLE_MODELS_DIR, 'r2t2-q8_0.gguf');
     if (fs.existsSync(r2t2Path)) {
-      for (const legacyName of ['nemotron_asr', 'qwen3_asr', 'qwen3_aligner', 'ten_vad.onnx']) {
+      for (const legacyName of ['nemotron_asr', 'qwen3_asr', 'qwen3_asr_coreml', 'qwen3_aligner', 'ten_vad.onnx']) {
         const legacyTarget = path.join(SUBTITLE_MODELS_DIR, legacyName);
         if (fs.existsSync(legacyTarget)) {
           try {
