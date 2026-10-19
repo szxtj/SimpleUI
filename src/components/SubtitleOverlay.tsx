@@ -731,21 +731,21 @@ export const SubtitleOverlay: React.FC = () => {
         className="relative w-full h-full rounded-[16px] flex flex-col text-white overflow-hidden border border-white/[0.22]"
         style={{
           // 液态玻璃表面：原生材质负责真正的模糊/折射（NSGlassEffectView），
-          // 这里只叠一层很薄的暗色 scrim 保住白字对比，外加顶部高光与内缘亮线。
-          backgroundColor: 'rgba(12, 14, 18, 0.30)',
+          // 叠一层深色 scrim 保住浅色画面/白色背景下的白字与控件对比，外加顶部高光与内缘亮线。
+          backgroundColor: 'rgba(12, 14, 18, 0.68)',
           backgroundImage:
-            'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.035) 34%, rgba(255,255,255,0) 70%)',
+            'linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 34%, rgba(0,0,0,0.12) 100%)',
           boxShadow:
-            'inset 0 1px 0 rgba(255,255,255,0.30), inset 0 -1px 0 rgba(255,255,255,0.08), inset 0 0 26px rgba(255,255,255,0.05)',
+            'inset 0 1px 0 rgba(255,255,255,0.25), inset 0 -1px 0 rgba(255,255,255,0.08), inset 0 0 26px rgba(0,0,0,0.3)',
         }}
       >
-        {/* 顶部控制栏（固定 38px 高度） */}
+        {/* 顶部控制栏（固定 38px 高度，自带深色衬底保住白色背景下的可读性） */}
         <div
           onMouseDown={handleMouseDownOnHeader}
-          className="h-[38px] flex items-center justify-between px-4 border-b border-white/[0.08] text-[12px] cursor-move select-none shrink-0"
+          className="h-[38px] flex items-center justify-between px-4 border-b border-white/[0.10] bg-black/20 text-[12px] cursor-move select-none shrink-0"
         >
           {/* 左侧：声音源 / 翻译目标语言 / 关闭原文 / 字体大小 */}
-          <div className="flex items-center gap-3.5 text-neutral-200">
+          <div className="flex items-center gap-3.5 text-neutral-100" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.7)' }}>
             {/* 声音源下拉菜单 */}
             <div className="relative" data-no-drag>
               <button
@@ -757,13 +757,13 @@ export const SubtitleOverlay: React.FC = () => {
                   setShowTargetMenu(false);
                   setShowFontMenu(false);
                 }}
-                className="flex items-center gap-1.5 px-1.5 py-0.5 rounded hover:bg-white/10 font-medium text-neutral-100 transition cursor-pointer whitespace-nowrap"
+                className="flex items-center gap-1.5 px-1.5 py-0.5 rounded hover:bg-white/10 font-medium text-white/95 transition cursor-pointer whitespace-nowrap"
               >
-                <Volume2 className="w-3.5 h-3.5 text-neutral-300" />
+                <Volume2 className="w-3.5 h-3.5 text-white/90" />
                 {!compactBar && (
                   <span>{sourceLang === 'zh' ? t('subtitleSourceAudioZh') : t('subtitleSourceAudioEn')}</span>
                 )}
-                <ChevronDown className="w-3 h-3 text-neutral-400" />
+                <ChevronDown className="w-3 h-3 text-white/80" />
                 <span
                   title={
                     !allReady
@@ -798,11 +798,11 @@ export const SubtitleOverlay: React.FC = () => {
                   setShowSourceMenu(false);
                   setShowFontMenu(false);
                 }}
-                className="flex items-center gap-1.5 px-1.5 py-0.5 rounded hover:bg-white/10 font-medium text-neutral-100 transition cursor-pointer whitespace-nowrap"
+                className="flex items-center gap-1.5 px-1.5 py-0.5 rounded hover:bg-white/10 font-medium text-white/95 transition cursor-pointer whitespace-nowrap"
               >
-                <Globe className="w-3.5 h-3.5 text-neutral-300" />
+                <Globe className="w-3.5 h-3.5 text-white/90" />
                 {!compactBar && <span>{targetLabel}</span>}
-                <ChevronDown className="w-3 h-3 text-neutral-400" />
+                <ChevronDown className="w-3 h-3 text-white/80" />
               </button>
             </div>
 
@@ -825,10 +825,10 @@ export const SubtitleOverlay: React.FC = () => {
               className={`flex items-center gap-1.5 px-1.5 py-0.5 rounded transition whitespace-nowrap ${
                 isNone
                   ? 'opacity-40 cursor-not-allowed text-neutral-400'
-                  : 'hover:bg-white/10 text-neutral-200 hover:text-white cursor-pointer'
+                  : 'hover:bg-white/10 text-white/90 hover:text-white cursor-pointer'
               }`}
             >
-              <span className="relative inline-flex items-center justify-center px-1 py-[1px] text-[9px] font-bold leading-none rounded-[3px] border border-neutral-300/80 text-neutral-200">
+              <span className="relative inline-flex items-center justify-center px-1 py-[1px] text-[9px] font-bold leading-none rounded-[3px] border border-white/80 text-white">
                 cc
                 <span
                   className={`absolute -bottom-0.5 -right-0.5 w-1.5 h-1.5 rounded-full border border-[#222327] ${
@@ -850,11 +850,11 @@ export const SubtitleOverlay: React.FC = () => {
                   setShowSourceMenu(false);
                   setShowTargetMenu(false);
                 }}
-                className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-white/10 text-neutral-200 hover:text-white transition cursor-pointer whitespace-nowrap"
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-white/10 text-white/95 hover:text-white transition cursor-pointer whitespace-nowrap"
               >
                 <span className="text-[12px] font-semibold tracking-tight">Aa</span>
                 {!compactBar && <span>{fontSizeLabel}</span>}
-                <ChevronDown className="w-3 h-3 text-neutral-400" />
+                <ChevronDown className="w-3 h-3 text-white/80" />
               </button>
             </div>
           </div>
@@ -862,7 +862,7 @@ export const SubtitleOverlay: React.FC = () => {
           {/* 右侧：行数档位标签 / 清空 / 暂停 / 关闭 */}
           <div className="flex items-center gap-2">
             {allReady && modelsLoaded && !showLoadingScreen && (
-              <span className="text-[10px] font-mono text-neutral-500 px-1 select-none">
+              <span className="text-[10px] font-mono text-neutral-300 px-1 select-none">
                 {isSingleTrack ? `${linePairs}L` : `${linePairs}+${linePairs}`}
               </span>
             )}
@@ -872,7 +872,7 @@ export const SubtitleOverlay: React.FC = () => {
                 type="button"
                 onClick={handleClearHistory}
                 title={t('subtitleClearHistory')}
-                className="p-1 rounded hover:bg-white/10 text-neutral-400 hover:text-white transition cursor-pointer"
+                className="p-1 rounded hover:bg-white/10 text-neutral-300 hover:text-white transition cursor-pointer"
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
@@ -883,7 +883,7 @@ export const SubtitleOverlay: React.FC = () => {
                 type="button"
                 onClick={toggleListening}
                 title={isRunning ? t('subtitlePauseCapture') : t('subtitleResumeCapture')}
-                className="p-1 rounded hover:bg-white/10 text-neutral-400 hover:text-white transition cursor-pointer"
+                className="p-1 rounded hover:bg-white/10 text-neutral-300 hover:text-white transition cursor-pointer"
               >
                 {isRunning ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
               </button>
@@ -893,7 +893,7 @@ export const SubtitleOverlay: React.FC = () => {
               type="button"
               onClick={handleClose}
               title={t('subtitleClose')}
-              className="w-5 h-5 rounded-full bg-white/15 hover:bg-white/25 text-neutral-200 hover:text-white flex items-center justify-center transition cursor-pointer ml-0.5"
+              className="w-5 h-5 rounded-full bg-white/20 hover:bg-white/30 text-white flex items-center justify-center transition cursor-pointer ml-0.5"
             >
               <X className="w-3 h-3" strokeWidth={2.5} />
             </button>
@@ -906,7 +906,7 @@ export const SubtitleOverlay: React.FC = () => {
           <div
             data-subtitle-options={openMenu}
             onClick={(e) => e.stopPropagation()}
-            className="absolute left-0 right-0 top-[38px] z-30 flex items-center gap-1.5 px-3 h-[30px] bg-white/[0.03] backdrop-blur-[6px] border-t border-white/[0.09] shadow-[0_10px_18px_-12px_rgba(0,0,0,0.7)]"
+            className="absolute left-0 right-0 top-[38px] z-30 flex items-center gap-1.5 px-3 h-[30px] bg-[#12141a]/95 backdrop-blur-[8px] border-t border-white/[0.12] shadow-[0_10px_18px_-12px_rgba(0,0,0,0.7)]"
           >
             {optionChips.map((chip) => (
               <button
@@ -1081,14 +1081,17 @@ export const SubtitleOverlay: React.FC = () => {
             }`}
           >
             {!hasAnyContent ? (
-              <div className="h-full flex items-center justify-center text-white/65 text-[13px] select-none">
+              <div
+                className="h-full flex items-center justify-center text-white/85 text-[13px] select-none"
+                style={{ textShadow: '0 1px 2px rgba(0,0,0,0.7)' }}
+              >
                 {isRunning
                   ? (sourceLang === 'zh' ? t('subtitleWaitingAudioZh') : t('subtitleWaitingAudioEn'))
                   : t('subtitleCapturePaused')}
               </div>
             ) : (
               <>
-                {/* 上轨：linePairs 行源文字幕连续流 */}
+                {/* 上轨：linePairs 行源文字幕连续流（保持与译文一致的白字高对比与清晰投影） */}
                 {(showOriginal || isNone) && (
                   <div
                     ref={enStreamRef}
@@ -1096,11 +1099,11 @@ export const SubtitleOverlay: React.FC = () => {
                       height: `${(isNone ? singleTrackLineHeight : fontCfg.enLineHeight) * linePairs}px`,
                       fontSize: `${isNone ? (sourceLang === 'zh' ? fontCfg.zhFontSize : fontCfg.enFontSize) : fontCfg.enFontSize}px`,
                       lineHeight: `${(isNone ? singleTrackLineHeight : fontCfg.enLineHeight)}px`,
-                      // 玻璃底上保住对比：浅色画面里白字也要能读
-                      textShadow: '0 1px 3px rgba(0,0,0,0.55), 0 0 10px rgba(0,0,0,0.35)',
+                      // 玻璃底与浅色背景上保住高对比：白字加双重投影，任何背景下均始终清晰
+                      textShadow: '0 1px 3px rgba(0,0,0,0.75), 0 0 10px rgba(0,0,0,0.5)',
                     }}
                     className={`w-full overflow-y-hidden break-words scroll-smooth shrink-0 ${
-                      isNone ? 'font-bold text-white tracking-wide' : 'font-semibold text-[#a6aab3] tracking-normal'
+                      isNone ? 'font-bold text-white tracking-wide' : 'font-semibold text-white/90 tracking-normal'
                     }`}
                   >
                     {continuousSourceText}
@@ -1115,13 +1118,13 @@ export const SubtitleOverlay: React.FC = () => {
                       height: `${fontCfg.zhLineHeight * linePairs}px`,
                       fontSize: `${fontCfg.zhFontSize}px`,
                       lineHeight: `${fontCfg.zhLineHeight}px`,
-                      textShadow: '0 1px 3px rgba(0,0,0,0.55), 0 0 10px rgba(0,0,0,0.35)',
+                      textShadow: '0 1px 3px rgba(0,0,0,0.75), 0 0 10px rgba(0,0,0,0.5)',
                     }}
                     className="w-full overflow-y-hidden font-bold text-white tracking-wide break-words scroll-smooth shrink-0"
                   >
                     {continuousTargetText}
                     {hasPendingTarget && (
-                      <span className="ml-1 text-neutral-500/80 font-normal text-[0.8em]">
+                      <span className="ml-1 text-white/55 font-normal text-[0.8em]">
                         {t('subtitlePendingTranslation')}
                       </span>
                     )}

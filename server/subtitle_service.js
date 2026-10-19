@@ -1958,15 +1958,16 @@ class SubtitleService {
   appendToDraftAndSource(chunk) {
     if (!chunk) return;
     let piece = chunk;
-    // 跨会话续接英文半句时，若上一会话尾部与新会话首词之间缺少空格则自动补齐
-    if (
-      this.asrStreamText.length === 0 &&
-      this.draft.length > 0 &&
-      this.config.sourceLang === 'en' &&
-      !/\s$/.test(this.draft) &&
-      !/^[\s.,?!;:')]/.test(piece)
-    ) {
-      piece = ' ' + piece;
+    // 英文模式下自动保持词间与标点后空格，防止出现 post.By、sheet.This、optionShe'd 等粘连问题
+    if (this.config.sourceLang === 'en') {
+      const prevContext = this.draft || this.sourceText;
+      if (
+        prevContext.length > 0 &&
+        !/\s$/.test(prevContext) &&
+        !/^[\s.,?!;:')]/.test(piece)
+      ) {
+        piece = ' ' + piece;
+      }
     }
     this.draft += piece;
     this.appendSourceDelta(piece);
@@ -2015,13 +2016,6 @@ class SubtitleService {
     if (consumed > 0) this.draft = this.draft.slice(consumed);
     for (const sentence of sentences) {
       this.commitSentence(sentence);
-    }
-    // 一旦当前会话已切出完整句且流持续满 5.2s（或累计切出 >=2 句），立即趁句界轮转重置 R2T2 音频缓冲，防止 O(t) 算力与温度爬升
-    if (this.state === 'listening' && this.asrSession && sentences.length > 0) {
-      const elapsed = Date.now() - this.sessionStartedAt;
-      if (this.sentencesSinceSession >= 2 || (this.sentencesSinceSession >= 1 && elapsed >= 5200)) {
-        this.closeAsrSession('sentences');
-      }
     }
   }
 
@@ -2077,8 +2071,7 @@ class SubtitleService {
           const target = await this.translator.translate(
             record.source_text,
             this.config.sourceLang,
-            this.config.targetLang,
-            this.targetRecords
+            this.config.targetLang
           );
           if (
             myClearGen !== this.clearGeneration ||
@@ -2376,15 +2369,16 @@ class SubtitleService {
 
     if (!this.asrSession) return;
     const elapsed = now - this.sessionStartedAt;
+    const quietMs = this.lastDeltaAt ? now - this.lastDeltaAt : 0;
 
-    // 核心防积压机制：R2T2 单次 live 流内每块都会对 [0, t] 重新计算特征与 LLM 前缀，
-    // 将单条流严格控制在 <= 9.6s（若已切出句子则 >= 5.2s 即刻轮转），使单次分块 GPU 耗时恒定在 ~120ms，
-    // 彻底根治长流 O(t^2) 算力爆炸、延迟递增与收尾超时 (ASR_DONE_TIMEOUT)。
-    if (this.sentencesSinceSession >= 1 && elapsed >= 5200) {
+    // 优先在句后自然停顿（已切出完整句且静默 >= 600ms）时优雅轮转，绝不强行截断正在说话的话语
+    if (this.sentencesSinceSession >= 2 && quietMs >= 600) {
       this.closeAsrSession('sentences');
       return;
     }
-    if (elapsed >= 9600) {
+
+    // 连续无停顿说话时的安全上限：25s 硬上限轮转，防止长流无限占用音频缓冲
+    if (elapsed >= 25000) {
       this.closeAsrSession('rotate');
     }
   }

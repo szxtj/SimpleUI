@@ -16,13 +16,45 @@ function stripThinkBlock(text) {
   return out.replace(/^<think>/i, '').trim();
 }
 
+function sanitizeTranslation(text) {
+  if (!text || typeof text !== 'string') return '';
+  let out = stripThinkBlock(text);
+
+  // 1. 去除格式残留（如 "xxx -> yyy" 或 "【译文】"）
+  if (out.includes('->')) {
+    out = out.split('->').pop();
+  }
+  out = out.replace(/^【?译文】?[:：\s]*/i, '');
+  out = out.replace(/^翻译结果[:：\s]*/i, '');
+
+  // 2. 去除小模型偶发泄漏的指令性元文案或 prompt 约束说明
+  out = out
+    .replace(/[（(]?\s*【?注意】?[\s\S]*$/gi, '')
+    .replace(/[（(]?\s*【?约束要求】?[\s\S]*$/gi, '')
+    .replace(/[（(]?\s*结合前文语境[\s\S]*$/gi, '')
+    .replace(/[（(]?\s*保持人称指代[\s\S]*$/gi, '')
+    .replace(/[（(]?\s*仅翻译【?源?原?文】?本身[\s\S]*$/gi, '')
+    .replace(/[（(]?\s*严禁重复输出前文[\s\S]*$/gi, '')
+    .replace(/[（(]?\s*只输出译文[\s\S]*$/gi, '')
+    .replace(/[（(]?\s*不要有任何额外说明[\s\S]*$/gi, '')
+    .replace(/[（(]?\s*不要进行任何解释[\s\S]*$/gi, '');
+
+  // 3. 去除首尾不匹配的悬挂括号
+  out = out.replace(/^[）)\]}\s]+/, '').replace(/[（(\[{]\s*$/, '');
+  if (!out.includes('（') && !out.includes('(')) {
+    out = out.replace(/[）)]+$/, '');
+  }
+
+  return out.trim();
+}
+
 export class TranslationEngine {
   constructor({ port = 1249, timeoutMs = 15000 } = {}) {
     this.port = port;
     this.timeoutMs = timeoutMs;
   }
 
-  translate(text, sourceLang, targetLang, contextRecords = []) {
+  translate(text, sourceLang, targetLang) {
     const source = String(text || '').trim();
     if (!source) return Promise.reject(new SubtitleError('translation', 'EMPTY_SOURCE', '空句子'));
     if (targetLang === 'none') return Promise.resolve('');
@@ -34,33 +66,14 @@ export class TranslationEngine {
       );
     }
 
-    // 提取最近最多 2 句已完成翻译的上下文，利用 Index-Translate-2B 原生 instTrans 约束格式提升指代消解与口语连贯度
-    const validContext = Array.isArray(contextRecords)
-      ? contextRecords
-          .filter((r) => r && r.source_text && r.target_text && r.status === 'finalized')
-          .slice(-2)
-      : [];
-
-    let prompt;
-    if (validContext.length > 0) {
-      const ctxLines = validContext
-        .map((r) => `${String(r.source_text).trim()} -> ${String(r.target_text).trim()}`)
-        .join(' | ');
-      prompt =
-        `请将以下${sourceName}字幕翻译成${targetName}，并且严格遵循所有约束要求。\n` +
-        `【源文】\n${source}\n` +
-        `【约束要求】\n` +
-        `1. 【注意】结合前文语境（${ctxLines}）保持人称指代、术语与口语语气自然连贯，仅翻译【源文】本身，严禁重复输出前文。\n` +
-        `只输出译文，不要有任何额外说明。`;
-    } else {
-      prompt =
-        `请将以下${sourceName}文本翻译为${targetName}，直接输出翻译结果，不要进行任何解释。\n\n` +
-        source;
-    }
+    // Index-Translate-2B 官方基准翻译提示词（无幻觉、200ms 高速、无 prompt 指令反刍）
+    const prompt =
+      `请将以下${sourceName}文本翻译为${targetName}，直接输出翻译结果，不要进行任何解释。\n\n` +
+      source;
 
     const body = JSON.stringify({
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 512,
+      max_tokens: 128,
       temperature: 0,
       chat_template_kwargs: { enable_thinking: false },
     });
@@ -113,7 +126,7 @@ export class TranslationEngine {
               );
               return;
             }
-            const cleaned = stripThinkBlock(rawContent);
+            const cleaned = sanitizeTranslation(rawContent);
             if (!cleaned) {
               reject(new SubtitleError('translation', 'TRANSLATION_EMPTY', '翻译结果为空'));
               return;
