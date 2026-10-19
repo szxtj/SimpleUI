@@ -165,6 +165,7 @@ export const DEFAULT_TRANSLATOR_CONFIG: TranslatorConfig = {
 
 /** 快捷翻译全新独立 Provider 配置（1:1 复刻模型设置 Provider 架构，内置锁定提示词，默认关闭思考） */
 export const DEFAULT_TRANSLATOR_SETTINGS_CONFIG: TranslatorSettingsConfig = {
+  baseLang: 'zh',
   apiProvider: 'ttf',
   ttfConfig: {
     ...DEFAULT_TTF_CONFIG,
@@ -195,6 +196,7 @@ export const DEFAULT_TRANSLATOR_SETTINGS_CONFIG: TranslatorSettingsConfig = {
 /** 投影快捷翻译配置为原生层所期望的活跃参数及有效请求 Payload */
 export function computeTranslatorPayload(config: TranslatorSettingsConfig) {
   const provider = config.apiProvider || 'ttf';
+  const baseLang = config.baseLang === 'en' ? 'en' : 'zh';
   let activeEndpoint = '';
   let activeModel = '';
   let activeApiKey = '';
@@ -235,6 +237,7 @@ export function computeTranslatorPayload(config: TranslatorSettingsConfig) {
 
   return {
     ...config,
+    baseLang,
     activeProvider: provider,
     activeEndpoint,
     activeModel,
@@ -561,6 +564,7 @@ export function normalizeSettingsObject(parsed: any, fallbackApiKey: string = ''
       let trProvider = rawTr.apiProvider || 'ttf';
       if (!['ttf', 'mference', 'custom', 'deepseek'].includes(trProvider)) trProvider = 'ttf';
       return {
+        baseLang: rawTr.baseLang === 'en' ? 'en' : 'zh',
         apiProvider: trProvider,
         ttfConfig: {
           ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.ttfConfig,

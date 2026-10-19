@@ -178,6 +178,7 @@ export interface TranslatorConfig {
 }
 
 export interface TranslatorSettingsConfig {
+  baseLang?: 'zh' | 'en'; // 快捷翻译基准语言视角 (默认 'zh')
   apiProvider: 'ttf' | 'mference' | 'custom' | 'deepseek';
   ttfConfig: TtfProviderConfig;
   mferenceConfig: MferenceProviderConfig;

@@ -80,6 +80,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const prevIsOpenRef = useRef(false);
 
   // 3. 快捷翻译独立配置 (1:1 复刻模型设置 Provider 架构)
+  const [translatorBaseLang, setTranslatorBaseLang] = useState<'zh' | 'en'>(() => {
+    return settings?.translatorSettingsConfig?.baseLang || 'zh';
+  });
+
   const [translatorApiProvider, setTranslatorApiProvider] = useState<ApiProvider>(() => {
     return settings?.translatorSettingsConfig?.apiProvider || 'ttf';
   });
@@ -115,6 +119,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [showTranslatorApiKey, setShowTranslatorApiKey] = useState(false);
 
   const handleTranslatorCardReset = () => {
+    setTranslatorBaseLang('zh');
     if (translatorApiProvider === 'ttf' || translatorApiProvider === 'local') {
       setTranslatorTtfConfig({ ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.ttfConfig });
     } else if (translatorApiProvider === 'mference') {
@@ -187,6 +192,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
       const trP = settings?.translatorSettingsConfig?.apiProvider || 'ttf';
       setTranslatorApiProvider((trP as string) === 'local' ? 'ttf' : trP);
+      setTranslatorBaseLang(settings?.translatorSettingsConfig?.baseLang || 'zh');
 
       setTranslatorTtfConfig({
         ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.ttfConfig,
@@ -284,6 +290,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       apiKey: prev.apiKey || storedApiKey,
     }));
     setDeepseekStopInput('');
+    setTranslatorBaseLang('zh');
     setTranslatorApiProvider('ttf');
     setTranslatorTtfConfig({ ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.ttfConfig });
     setTranslatorMferenceConfig({ ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.mferenceConfig });
@@ -425,6 +432,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     };
 
     const finalTranslatorSettingsConfig: TranslatorSettingsConfig = {
+      baseLang: translatorBaseLang,
       apiProvider: translatorApiProvider === 'local' ? 'ttf' : translatorApiProvider,
       ttfConfig: finalTrTtf,
       mferenceConfig: finalTrMference,
@@ -1649,6 +1657,48 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <p className="text-[11px] text-zinc-500 dark:text-[#8c929f] leading-relaxed mb-3">
               {t('translatorGlobalShortcutTip')}
             </p>
+
+            {/* 快捷翻译基准语言设置 (置于模型设置上方独立展示) */}
+            <div className="mb-3.5 p-3 rounded-lg border border-indigo-500/20 bg-indigo-50/50 dark:bg-indigo-950/20">
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="font-semibold text-xs text-zinc-700 dark:text-[#c4cad4] flex items-center gap-1.5">
+                  <Languages className="w-3.5 h-3.5 text-indigo-500" />
+                  <span>{t('translatorBaseLang')}</span>
+                </label>
+                <span className="text-[10px] font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/20">
+                  {t('translatorBaseLangDefaultBadge')}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={() => setTranslatorBaseLang('zh')}
+                  className={`py-2 px-3 rounded-lg border text-xs font-medium transition-all flex items-center justify-center gap-1.5 ${
+                    translatorBaseLang === 'zh'
+                      ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm font-semibold'
+                      : 'bg-[#f6f8fa] dark:bg-[#18191c] border-black/10 dark:border-[#343740] text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
+                  }`}
+                >
+                  <span className="text-sm">🇨🇳</span>
+                  <span>{t('translatorBaseLangZh')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTranslatorBaseLang('en')}
+                  className={`py-2 px-3 rounded-lg border text-xs font-medium transition-all flex items-center justify-center gap-1.5 ${
+                    translatorBaseLang === 'en'
+                      ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm font-semibold'
+                      : 'bg-[#f6f8fa] dark:bg-[#18191c] border-black/10 dark:border-[#343740] text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
+                  }`}
+                >
+                  <span className="text-sm">🇺🇸</span>
+                  <span>{t('translatorBaseLangEn')}</span>
+                </button>
+              </div>
+              <p className="text-[10px] text-zinc-500 dark:text-[#8c929f] mt-2 leading-relaxed">
+                {t('translatorBaseLangTip')}
+              </p>
+            </div>
 
             {/* Provider 切换器 */}
             <div className="mb-3.5">

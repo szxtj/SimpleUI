@@ -176,6 +176,9 @@ public final class TranslationProfileStore: ObservableObject {
     /// 从前端通过 WKScriptMessageHandler 回传的 JSON 字典中热同步配置
     public func updateFromWebDict(_ dict: [String: Any]) {
         let defaults = UserDefaults.standard
+        if let baseLang = dict["baseLang"] as? String {
+            defaults.set(baseLang, forKey: "simpleui_translator_base_lang")
+        }
         if let provider = dict["activeProvider"] as? String ?? dict["apiProvider"] as? String {
             defaults.set(provider, forKey: "simpleui_translator_api_provider")
         }

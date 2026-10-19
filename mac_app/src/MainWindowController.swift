@@ -541,6 +541,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         } else if message.name == "setTranslatorConfig", let dict = message.body as? [String: Any] {
             DispatchQueue.main.async {
                 TranslationProfileStore.shared.updateFromWebDict(dict)
+                (NSApp.delegate as? AppDelegate)?.translationPanelController?.refreshLocaleAndTheme()
             }
         } else if message.name == "copyWordEquation", let dict = message.body as? [String: Any] {
             let mathml = dict["mathml"] as? String ?? ""

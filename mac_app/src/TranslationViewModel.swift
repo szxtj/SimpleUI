@@ -7,7 +7,7 @@ public final class TranslationViewModel: ObservableObject {
     @Published public var inputText = ""
     @Published public var outputText = ""
     @Published public var isLoading = false
-    @Published public var selectedMode: TranslationMode = .auto
+    @Published public var selectedMode: TranslationMode = .quick
     @Published public var errorMessage: String?
     @Published public private(set) var focusToken = 0
     @Published public var isSpeaking = false
@@ -15,6 +15,7 @@ public final class TranslationViewModel: ObservableObject {
     @Published public var isSpeakingOutput = false
     @Published public var isZh: Bool = AppLocale.isZh
     @Published public var isDark: Bool = UserDefaults.standard.bool(forKey: "simpleui_is_dark")
+    @Published public var baseLang: String = UserDefaults.standard.string(forKey: "simpleui_translator_base_lang") ?? "zh"
 
     private let service: TranslationServiceProtocol
     private let speechManager = TranslationSpeechManager()
@@ -79,7 +80,7 @@ public final class TranslationViewModel: ObservableObject {
         errorMessage = nil
 
         do {
-            outputText = try await service.translate(text: trimmedInput, mode: selectedMode)
+            outputText = try await service.translate(text: trimmedInput, mode: selectedMode, baseLang: baseLang)
         } catch is CancellationError {
             errorMessage = isZh ? "已终止翻译。" : "Translation stopped."
         } catch let error as TranslationServiceError where error == .cancelled {
@@ -132,6 +133,7 @@ public final class TranslationViewModel: ObservableObject {
     public func refreshLocaleAndTheme() {
         isZh = AppLocale.isZh
         isDark = UserDefaults.standard.bool(forKey: "simpleui_is_dark")
+        baseLang = UserDefaults.standard.string(forKey: "simpleui_translator_base_lang") ?? "zh"
     }
 
     private static func message(for error: Error) -> String {

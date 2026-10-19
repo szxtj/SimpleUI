@@ -129,21 +129,24 @@ public struct TranslationProfileRecord: Identifiable, Codable, Equatable, Hashab
 }
 
 public enum TranslationMode: String, CaseIterable, Identifiable, Sendable {
-    case auto
-    case zhToEn
-    case enToZh
-    case detail
+    case quick = "quick"
+    case detail = "detail"
 
     public var id: String { rawValue }
 
+    public init(rawValue: String) {
+        switch rawValue {
+        case "detail":
+            self = .detail
+        default:
+            self = .quick
+        }
+    }
+
     public func localizedTitle(isZh: Bool) -> String {
         switch self {
-        case .auto:
-            return isZh ? "自动" : "Auto"
-        case .zhToEn:
-            return isZh ? "中 → 英" : "ZH → EN"
-        case .enToZh:
-            return isZh ? "英 → 中" : "EN → ZH"
+        case .quick:
+            return isZh ? "快速" : "Quick"
         case .detail:
             return isZh ? "详解" : "Detail"
         }
