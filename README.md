@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  React 19 · TypeScript · Vite · Tailwind CSS · KaTeX · Swift / WebKit · Apple Silicon
+  React 19 · TypeScript · Vite · Tailwind CSS · KaTeX · Pyodide · Swift / WebKit · Apple Silicon
 </p>
 
 SimpleUI 为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 深度适配，支持 [Mference](https://github.com/NeelM0906/Mference) 与 [DeepSeek 官方 API](https://api-docs.deepseek.com/)，并通过 OpenAI 兼容接口连接 Ollama、vLLM、llama.cpp server、LM Studio 等推理服务。
@@ -36,7 +36,7 @@ SimpleUI 为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 深度�
 - **DeepSeek API 深度适配**：官方 Base URL / API Key / 模型 / 上下文 / 温度 / top_p / 推理强度 / 停止串 / 系统提示词独立配置，直接请求官方接口，并针对缓存命中做上下文修剪。
 - **离线维基 RAG**：Kiwix ZIM + 多通道检索 + 原文直注；不摘要、不改写、不机械截断，答案带可点击引用。
 - **实时双语字幕**：SOTA SaT 断句、Smart Turn 语义端点、R2T2 流式识别、Index-Translate 整句翻译，原文实时、译文按句追加。
-- **强大前端**：Markdown / KaTeX / Mermaid，代码块一键复制，公式块可复制为 Word / WPS 原生公式，表格可保留格式粘贴到 Word。
+- **强大前端与科学计算**：Markdown / KaTeX / Mermaid，代码块支持一键收起与复制代码；内置 **Pyodide Python 科学计算沙盒**，免配置环境在浏览器沙盒内一键运行代码，源码与运行结果双层独立折叠；公式块可复制为 Word / WPS 原生公式，表格可保留格式粘贴到 Word。
 - **原生 macOS**：主窗口 + Spotlight 浮窗 + 快捷翻译 + 字幕悬浮窗，支持中英文界面与深浅色主题。
 
 ---
@@ -173,6 +173,11 @@ SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传
 
 - **轻量**：React 19 + TypeScript + Vite + Tailwind；原生 Swift/WebKit 外壳，无重型前端框架依赖。
 - **富文本渲染**：Markdown、KaTeX 公式、Mermaid 图、表格、代码块、图片预览、思考折叠。
+- **内置 Python 科学计算沙盒**：
+  - **免本地环境**：基于 WebAssembly 技术的 Pyodide 解释器在独立的 Web Worker 中全离线沙盒运行，随前端资源随包打包，无需本机安装 Python、pip 或任何虚拟环境。
+  - **一键即时运行**：Python 代码块顶栏集成「运行」按钮，支持标准输出（`stdout`）、末尾表达式结果（`Out:`）与运行时异常完整追踪（Traceback）。
+  - **双层独立折叠交互**：代码层与执行结果层各自拥有独立的折叠/展开控件，互不干扰；点击「运行」或「重新运行」时保留代码块现有的折叠状态，避免长代码自动弹开破坏阅读视野。
+- **长代码折叠优化**：所有代码块顶栏最右侧均配备收起按钮，支持用户手动折叠长代码块。
 - **复制能力（Word 兼容）**：
 
 | 内容 | 复制行为 |
@@ -182,7 +187,7 @@ SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传
 | 代码块 | 右上角按钮一键复制纯代码；选中代码时只复制选中行 |
 | 普通文本 | 复制为干净的 Markdown 原文 |
 
-公式与表格的 Word 兼容序列化位于 `src/utils/selectionToMarkdown.ts`；代码块复制由 `MarkdownRenderer` 的代码块组件提供。
+公式与表格的 Word 兼容序列化位于 `src/utils/selectionToMarkdown.ts`；代码块复制与运行沙盒由 `MarkdownRenderer` 的代码块组件提供。
 
 - **原生体验**：主窗口、Spotlight 浮窗、快捷翻译、字幕悬浮窗、语音胶囊；全局快捷键与深浅色主题。
 - **双语界面**：中英文文案同步，字幕/服务面板/错误提示均支持中英文。

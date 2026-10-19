@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  React 19 · TypeScript · Vite · Tailwind CSS · KaTeX · Swift / WebKit · Apple Silicon
+  React 19 · TypeScript · Vite · Tailwind CSS · KaTeX · Pyodide · Swift / WebKit · Apple Silicon
 </p>
 
 SimpleUI is deeply tuned for [TurboFieldfare](https://github.com/drumih/turbo-fieldfare), supports [Mference](https://github.com/NeelM0906/Mference) and the [DeepSeek official API](https://api-docs.deepseek.com/), and connects to Ollama, vLLM, llama.cpp server, LM Studio, and other services through OpenAI-compatible APIs.
@@ -36,7 +36,7 @@ SimpleUI is deeply tuned for [TurboFieldfare](https://github.com/drumih/turbo-fi
 - **DeepSeek API integration**: independent Base URL / API key / model / context / temperature / top_p / reasoning effort / stop strings / system prompt; requests go directly to the official endpoint, with cache-friendly context trimming.
 - **Offline Wiki RAG**: Kiwix ZIM + multi-channel retrieval + direct raw-text injection; no summarization, no rewriting, no mechanical truncation, with clickable citations.
 - **Real-time bilingual subtitles**: SOTA SaT sentence segmentation, Smart Turn semantic endpointing, R2T2 streaming ASR, and Index-Translate sentence translation; source text streams live while translations are appended per sentence.
-- **Strong frontend**: Markdown / KaTeX / Mermaid; one-click code-block copy, formulas copied as native Word/WPS equations, and tables retain their formatting when pasted into Word.
+- **Strong frontend & scientific computing**: Markdown / KaTeX / Mermaid, one-click code-block collapse/copy; built-in **Pyodide Python scientific computing sandbox** running client-side with zero local environment setup, two independent collapsible layers for source and execution output; formulas copyable as native Word/WPS equations, and tables retain formatting when pasted into Word.
 - **Native macOS**: main window, Spotlight panel, quick translate, subtitle overlay, and voice capsule; Chinese/English UI with light/dark themes.
 
 ---
@@ -173,6 +173,11 @@ How it works:
 
 - **Lightweight**: React 19 + TypeScript + Vite + Tailwind, wrapped in a native Swift/WebKit shell with no heavy frontend framework.
 - **Rich rendering**: Markdown, KaTeX formulas, Mermaid diagrams, tables, code blocks, image preview, and collapsible thinking.
+- **Built-in Python scientific computing sandbox**:
+  - **Zero local setup**: Powered by Pyodide (WebAssembly) running inside an isolated Web Worker sandbox — entirely client-side and offline, bundled with frontend assets without requiring Python, pip, or virtual environments on macOS.
+  - **One-click instant execution**: Python code blocks feature an integrated "Run" button with full support for standard output (`stdout`), final expression evaluation (`Out:`), and error traceback display.
+  - **Dual independent collapsible layers**: The source code block and execution output each have their own independent collapse/expand toggles; running or rerunning code preserves the current collapsed state of the code block, avoiding unwanted layout disruption.
+- **Long-code collapse optimization**: All code blocks include a collapse button on the far right of the header bar for quick toggling of lengthy snippets.
 - **Copy capabilities (Word-compatible)**:
 
 | Content | Copy behavior |
@@ -182,7 +187,7 @@ How it works:
 | Code block | One-click copy of plain code; selecting inside a block copies only the selected lines |
 | Normal text | Clean Markdown source |
 
-Word-compatible formula/table serialization lives in `src/utils/selectionToMarkdown.ts`; code-block copy is provided by the `MarkdownRenderer` code-block component.
+Word-compatible formula/table serialization lives in `src/utils/selectionToMarkdown.ts`; code-block copy and execution sandbox are provided by the `MarkdownRenderer` code-block component.
 
 - **Native experience**: main window, Spotlight panel, Quick Translate, subtitle overlay, and voice capsule; global hotkeys and light/dark themes.
 - **Bilingual UI**: Chinese/English strings stay in sync, including subtitles, service panels, and error messages.

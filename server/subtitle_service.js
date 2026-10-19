@@ -887,9 +887,6 @@ class SubtitleService {
 
     // 精确清理同名孤儿进程（不误伤其它端口的服务：按派生配置文件名匹配）
     try {
-      execSync('pkill -x "subtitle_stream_asr"', { stdio: 'ignore' }); // 旧架构遗留 daemon
-    } catch {}
-    try {
       execSync('pkill -f "audiocpp_server.*subtitles_asr_server.json"', { stdio: 'ignore' });
     } catch {}
     try {
@@ -921,7 +918,6 @@ class SubtitleService {
 
   /**
    * 仅清理字幕模型目录内的下载临时缓存碎片（.part / .tmp / .download），不触碰任何外部或用户正式文件。
-   * 另外：新 R2T2 模型就绪后，回收旧架构（Nemotron CoreML，580MB）占用的磁盘空间。
    */
   cleanLegacyModels(opts = { removePartFiles: true }) {
     if (!fs.existsSync(SUBTITLE_MODELS_DIR)) return { freedBytes: 0, removed: [] };
@@ -956,32 +952,9 @@ class SubtitleService {
     };
     cleanTempRecursive(SUBTITLE_MODELS_DIR);
 
-    // 旧架构模型与残留运行时回收：R2T2 GGUF 就绪后才删除旧模型目录与已废弃的 ten_vad.onnx
-    const r2t2Path = path.join(SUBTITLE_MODELS_DIR, 'r2t2-q8_0.gguf');
-    if (fs.existsSync(r2t2Path)) {
-      for (const legacyName of ['nemotron_asr', 'qwen3_asr', 'qwen3_asr_coreml', 'qwen3_aligner', 'ten_vad.onnx']) {
-        const legacyTarget = path.join(SUBTITLE_MODELS_DIR, legacyName);
-        if (fs.existsSync(legacyTarget)) {
-          try {
-            freedBytes += getSize(legacyTarget);
-            fs.rmSync(legacyTarget, { recursive: true, force: true });
-            removed.push(`${legacyName} (旧架构模型残留)`);
-          } catch {}
-        }
-      }
-    }
-    const legacyRuntimeBin = path.join(userConfigDir, 'runtime', 'bin', 'subtitle_stream_asr');
-    if (fs.existsSync(legacyRuntimeBin)) {
-      try {
-        freedBytes += getSize(legacyRuntimeBin);
-        fs.rmSync(legacyRuntimeBin, { force: true });
-        removed.push('runtime/bin/subtitle_stream_asr');
-      } catch {}
-    }
-
     if (removed.length > 0) {
       console.log(
-        `[Subtitles] 🧹 已自动清理旧模型与临时缓存: ${removed.join(', ')}`
+        `[Subtitles] 🧹 已自动清理临时缓存碎片: ${removed.join(', ')}`
       );
     }
     return { freedBytes, removed };
