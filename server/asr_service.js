@@ -687,15 +687,27 @@ class AsrService {
             try {
               const j = JSON.parse(data);
               const raw = String(j.text ?? j.transcript ?? '').trim();
+              const cleaned = this.config.keepTags ? raw : stripMetaTags(raw);
+              const text = stripLonePunctuation(cleaned);
               resolve({
                 ok: true,
-                text: this.config.keepTags ? raw : stripMetaTags(raw),
+                text,
                 language: j.language || lang,
                 raw,
+                // 上游确实给了内容，只是整串都是标点 → 客户端可据此「静默收场」而不是报错
+                droppedPunctuation: text === '' && cleaned !== '',
               });
             } catch (e) {
               // 非 JSON：有些实现直接回纯文本
-              resolve({ ok: true, text: stripMetaTags(data.trim()), language: lang, raw: data.trim() });
+              const cleaned = stripMetaTags(data.trim());
+              const text = stripLonePunctuation(cleaned);
+              resolve({
+                ok: true,
+                text,
+                language: lang,
+                raw: data.trim(),
+                droppedPunctuation: text === '' && cleaned !== '',
+              });
             }
           });
         }
@@ -861,6 +873,19 @@ function findGgufRecursive(dir, depth) {
 function stripMetaTags(text) {
   if (!text) return '';
   return text.replace(/<\|[^|]*\|>/g, '').trim();
+}
+
+/// 纯标点「幻觉」：完全静音时模型偶尔会吐一个句号/逗号（中英文都有）。
+/// 这种结果不携带任何信息，落进输入框只会污染用户文本 —— 统一视作空串。
+///
+/// 判据是**整串只由标点与空白组成**（中文全角、英文半角、省略号、重复标点都算），
+/// 只要出现一个字母/数字/汉字就原样保留，句中、句尾的标点一律不碰。
+const PUNCTUATION_ONLY_RE =
+  /^[\s,，.．。、!！?？;；:：…‥·•—–\-_~～'"“”‘’`()（）\[\]【】{}｛｝<>＜＞《》〈〉«»\/\\|｜+＋*＊=＝#＃@＆&^%％$＄￥€£]+$/u;
+
+function stripLonePunctuation(text) {
+  if (!text) return '';
+  return PUNCTUATION_ONLY_RE.test(text) ? '' : text;
 }
 
 export const asrService = new AsrService();

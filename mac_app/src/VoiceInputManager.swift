@@ -294,10 +294,15 @@ class VoiceInputManager {
             guard let self = self else { return }
             DispatchQueue.main.async {
                 switch result {
-                case .success(let text):
-                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                case .success(let transcript):
+                    let trimmed = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else {
-                        self.emit(.error, 0, "未识别到语音")
+                        if transcript.droppedPunctuation {
+                            // 模型对静音吐了个孤立标点（「。」「，」）→ 按用户要求直接当空，什么都不做
+                            self.emit(.idle, 0, nil)
+                        } else {
+                            self.emit(.error, 0, "未识别到语音")
+                        }
                         return
                     }
                     if VoiceInputManager.isSelfAppFocused() {
@@ -480,7 +485,15 @@ class VoiceInputManager {
 
     // MARK: - 转写
 
-    private func transcribe(wav: Data, completion: @escaping (Result<String, Error>) -> Void) {
+    /// 转写结果。
+    /// `droppedPunctuation`：上游确实返回了内容，但整串只有标点（模型对静音吐了个「。」「，」），
+    /// 服务端已把它清成空串 —— 客户端据此**静默收场**，既不写入也不报错。
+    struct Transcript {
+        let text: String
+        let droppedPunctuation: Bool
+    }
+
+    private func transcribe(wav: Data, completion: @escaping (Result<Transcript, Error>) -> Void) {
         guard let url = URL(string: "\(ProcessManager.baseURLString)/api/asr/transcribe") else {
             completion(.failure(VoiceInputError("无效的本地服务地址")))
             return
@@ -502,7 +515,8 @@ class VoiceInputManager {
                 return
             }
             if (obj["ok"] as? Bool) == true, let text = obj["text"] as? String {
-                completion(.success(text))
+                let dropped = (obj["droppedPunctuation"] as? Bool) ?? false
+                completion(.success(Transcript(text: text, droppedPunctuation: dropped)))
             } else {
                 let code = (obj["error"] as? String) ?? "unknown"
                 let msg: String
