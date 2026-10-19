@@ -731,18 +731,18 @@ export const SubtitleOverlay: React.FC = () => {
         className="relative w-full h-full rounded-[16px] flex flex-col text-white overflow-hidden border border-white/[0.22]"
         style={{
           // 液态玻璃表面：原生材质负责真正的模糊/折射（NSGlassEffectView），
-          // 叠一层深色 scrim 保住浅色画面/白色背景下的白字与控件对比，外加顶部高光与内缘亮线。
-          backgroundColor: 'rgba(12, 14, 18, 0.72)',
+          // 这里只叠一层很薄的暗色 scrim 保住白字对比，外加顶部高光与内缘亮线。
+          backgroundColor: 'rgba(12, 14, 18, 0.30)',
           backgroundImage:
-            'linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.01) 34%, rgba(0,0,0,0.15) 100%)',
+            'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.035) 34%, rgba(255,255,255,0) 70%)',
           boxShadow:
-            'inset 0 1px 0 rgba(255,255,255,0.25), inset 0 -1px 0 rgba(255,255,255,0.08), inset 0 0 26px rgba(0,0,0,0.3)',
+            'inset 0 1px 0 rgba(255,255,255,0.30), inset 0 -1px 0 rgba(255,255,255,0.08), inset 0 0 26px rgba(255,255,255,0.05)',
         }}
       >
-        {/* 顶部控制栏（固定 38px 高度，自带深色衬底保住白色背景下的可读性） */}
+        {/* 顶部控制栏（固定 38px 高度） */}
         <div
           onMouseDown={handleMouseDownOnHeader}
-          className="h-[38px] flex items-center justify-between px-4 border-b border-white/[0.10] bg-black/20 text-[12px] cursor-move select-none shrink-0"
+          className="h-[38px] flex items-center justify-between px-4 border-b border-white/[0.08] text-[12px] cursor-move select-none shrink-0"
         >
           {/* 左侧：声音源 / 翻译目标语言 / 关闭原文 / 字体大小 */}
           <div className="flex items-center gap-3.5 text-neutral-100" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.7)' }}>
@@ -906,7 +906,7 @@ export const SubtitleOverlay: React.FC = () => {
           <div
             data-subtitle-options={openMenu}
             onClick={(e) => e.stopPropagation()}
-            className="absolute left-0 right-0 top-[38px] z-30 flex items-center gap-1.5 px-3 h-[30px] bg-[#12141a]/95 backdrop-blur-[8px] border-t border-white/[0.12] shadow-[0_10px_18px_-12px_rgba(0,0,0,0.7)]"
+            className="absolute left-0 right-0 top-[38px] z-30 flex items-center gap-1.5 px-3 h-[30px] bg-white/[0.03] backdrop-blur-[6px] border-t border-white/[0.09] shadow-[0_10px_18px_-12px_rgba(0,0,0,0.7)]"
           >
             {optionChips.map((chip) => (
               <button
