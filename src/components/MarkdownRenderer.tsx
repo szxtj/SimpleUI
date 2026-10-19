@@ -34,7 +34,8 @@ interface CodeBlockProps {
 const CodeBlock: React.FC<CodeBlockProps> = React.memo(({ language, code }) => {
   const { t, lang } = useI18n();
   const [copied, setCopied] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
+  const [codeCollapsed, setCodeCollapsed] = useState(false);
+  const [outputCollapsed, setOutputCollapsed] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [runStatus, setRunStatus] = useState('');
   const [executionResult, setExecutionResult] = useState<PythonExecutionResult | null>(null);
@@ -61,9 +62,9 @@ const CodeBlock: React.FC<CodeBlockProps> = React.memo(({ language, code }) => {
       return;
     }
 
-    if (collapsed) {
-      setCollapsed(false);
-    }
+    // Do NOT auto-expand code block, keep codeCollapsed as user set it
+    // Ensure output layer is expanded so user sees the result immediately
+    setOutputCollapsed(false);
 
     setIsRunning(true);
     setStreamingStdout('');
@@ -100,101 +101,108 @@ const CodeBlock: React.FC<CodeBlockProps> = React.memo(({ language, code }) => {
       data-md-codeblock="true"
       data-language={language || ''}
       data-raw-code={code}
-      className="relative my-3 rounded-lg overflow-hidden border border-[#d0d7de] dark:border-[#33363d] bg-[#f8f9fb] dark:bg-[#1a1b1e]"
+      className="my-3 space-y-2"
     >
-      <div
-        data-copy-ignore="true"
-        className={`flex items-center justify-between px-3.5 py-1.5 bg-[#f0f2f5] dark:bg-[#22242a] text-xs text-zinc-500 dark:text-[#9aa0a6] select-none ${
-          collapsed ? '' : 'border-b border-[#d0d7de] dark:border-[#33363d]'
-        }`}
-      >
-        <span className="font-mono uppercase font-semibold text-[11px] tracking-wider text-zinc-600 dark:text-[#abb2bf]">
-          {language || 'text'}
-        </span>
-        <div className="flex items-center gap-1">
-          {isPython && (
+      {/* Layer 1: Source Code Block */}
+      <div className="relative rounded-lg overflow-hidden border border-[#d0d7de] dark:border-[#33363d] bg-[#f8f9fb] dark:bg-[#1a1b1e]">
+        <div
+          data-copy-ignore="true"
+          className={`flex items-center justify-between px-3.5 py-1.5 bg-[#f0f2f5] dark:bg-[#22242a] text-xs text-zinc-500 dark:text-[#9aa0a6] select-none ${
+            codeCollapsed ? '' : 'border-b border-[#d0d7de] dark:border-[#33363d]'
+          }`}
+        >
+          <span className="font-mono uppercase font-semibold text-[11px] tracking-wider text-zinc-600 dark:text-[#abb2bf]">
+            {language || 'text'}
+          </span>
+          <div className="flex items-center gap-1">
+            {isPython && (
+              <button
+                type="button"
+                onClick={handleRunPython}
+                className={`flex items-center gap-1.5 px-2 py-0.5 rounded transition-colors cursor-pointer ${
+                  isRunning
+                    ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20'
+                    : 'hover:bg-black/5 dark:hover:bg-[#32363e] text-emerald-600 dark:text-emerald-400'
+                }`}
+                title={isRunning ? t('cancelRun') : t('runCode')}
+              >
+                {isRunning ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span className="text-[11px] font-medium">
+                      {runStatus || t('runningCode')}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <span className="text-[11px] font-medium">
+                      {executionResult ? t('rerunCode') : t('runCode')}
+                    </span>
+                  </>
+                )}
+              </button>
+            )}
             <button
               type="button"
-              onClick={handleRunPython}
-              className={`flex items-center gap-1.5 px-2 py-0.5 rounded transition-colors cursor-pointer ${
-                isRunning
-                  ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20'
-                  : 'hover:bg-black/5 dark:hover:bg-[#32363e] text-emerald-600 dark:text-emerald-400'
-              }`}
-              title={isRunning ? t('cancelRun') : t('runCode')}
+              onClick={handleCopy}
+              className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-black/5 dark:hover:bg-[#32363e] text-zinc-600 dark:text-[#b0b4bd] transition-colors cursor-pointer"
+              title={t('copyCodeTooltip')}
             >
-              {isRunning ? (
+              {copied ? (
                 <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span className="text-[11px] font-medium">
-                    {runStatus || t('runningCode')}
-                  </span>
+                  <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
+                  <span className="text-emerald-600 dark:text-emerald-400 text-[11px]">{t('copied')}</span>
                 </>
               ) : (
                 <>
-                  <Play className="w-3.5 h-3.5 fill-current" />
-                  <span className="text-[11px] font-medium">
-                    {executionResult ? t('rerunCode') : t('runCode')}
-                  </span>
+                  <Copy className="w-3.5 h-3.5" />
+                  <span className="text-[11px]">{isEn ? 'Copy Code' : '复制代码'}</span>
                 </>
               )}
             </button>
-          )}
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-black/5 dark:hover:bg-[#32363e] text-zinc-600 dark:text-[#b0b4bd] transition-colors cursor-pointer"
-            title={t('copyCodeTooltip')}
-          >
-            {copied ? (
-              <>
-                <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
-                <span className="text-emerald-600 dark:text-emerald-400 text-[11px]">{t('copied')}</span>
-              </>
-            ) : (
-              <>
-                <Copy className="w-3.5 h-3.5" />
-                <span className="text-[11px]">{isEn ? 'Copy Code' : '复制代码'}</span>
-              </>
-            )}
-          </button>
-          <button
-            type="button"
-            onClick={() => setCollapsed(!collapsed)}
-            className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-black/5 dark:hover:bg-[#32363e] text-zinc-600 dark:text-[#b0b4bd] transition-colors cursor-pointer"
-            title={collapsed ? t('expandCodeTooltip') : t('collapseCodeTooltip')}
-          >
-            {collapsed ? (
-              <>
-                <ChevronDown className="w-3.5 h-3.5" />
-                <span className="text-[11px]">{t('expandCode')}</span>
-              </>
-            ) : (
-              <>
-                <ChevronUp className="w-3.5 h-3.5" />
-                <span className="text-[11px]">{t('collapseCode')}</span>
-              </>
-            )}
-          </button>
+            <button
+              type="button"
+              onClick={() => setCodeCollapsed(!codeCollapsed)}
+              className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-black/5 dark:hover:bg-[#32363e] text-zinc-600 dark:text-[#b0b4bd] transition-colors cursor-pointer"
+              title={codeCollapsed ? t('expandCodeTooltip') : t('collapseCodeTooltip')}
+            >
+              {codeCollapsed ? (
+                <>
+                  <ChevronDown className="w-3.5 h-3.5" />
+                  <span className="text-[11px]">{t('expandCode')}</span>
+                </>
+              ) : (
+                <>
+                  <ChevronUp className="w-3.5 h-3.5" />
+                  <span className="text-[11px]">{t('collapseCode')}</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
+
+        <pre
+          className={`!m-0 !p-3.5 overflow-x-auto overflow-y-hidden text-[0.88em] font-mono leading-relaxed text-[#1f2328] dark:text-[#f0f3f6] bg-transparent border-0 whitespace-pre cursor-text ${
+            codeCollapsed ? 'hidden' : ''
+          }`}
+        >
+          <code className="!bg-transparent !p-0 !text-inherit font-mono whitespace-pre">{code}</code>
+        </pre>
       </div>
 
-      <pre
-        className={`!m-0 !p-3.5 overflow-x-auto overflow-y-hidden text-[0.88em] font-mono leading-relaxed text-[#1f2328] dark:text-[#f0f3f6] bg-transparent border-0 whitespace-pre cursor-text ${
-          collapsed ? 'hidden' : ''
-        }`}
-      >
-        <code className="!bg-transparent !p-0 !text-inherit font-mono whitespace-pre">{code}</code>
-      </pre>
-
-      {/* Code execution output panel */}
-      {!collapsed && (executionResult || (isRunning && streamingStdout)) && (
+      {/* Layer 2: Independent Output Block */}
+      {(executionResult || (isRunning && streamingStdout)) && (
         <div
           data-copy-ignore="true"
-          className="border-t border-[#d0d7de] dark:border-[#33363d] bg-[#f2f4f8] dark:bg-[#16171a] p-3 text-xs select-text"
+          className="rounded-lg overflow-hidden border border-[#d0d7de] dark:border-[#33363d] bg-[#f8f9fb] dark:bg-[#1a1b1e] text-xs shadow-xs"
         >
-          {/* Header of output */}
-          <div className="flex items-center justify-between pb-2 mb-2 border-b border-black/5 dark:border-white/5 select-none text-zinc-500 dark:text-zinc-400">
+          {/* Output Header */}
+          <div
+            className={`flex items-center justify-between px-3.5 py-1.5 bg-[#f0f2f5] dark:bg-[#22242a] text-xs text-zinc-500 dark:text-[#9aa0a6] select-none ${
+              outputCollapsed ? '' : 'border-b border-[#d0d7de] dark:border-[#33363d]'
+            }`}
+          >
             <div className="flex items-center gap-1.5 font-medium text-[11px]">
               <Terminal className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
               <span>{t('codeOutput')}</span>
@@ -204,50 +212,77 @@ const CodeBlock: React.FC<CodeBlockProps> = React.memo(({ language, code }) => {
                 </span>
               )}
             </div>
-            {!isRunning && (
+
+            <div className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => {
-                  setExecutionResult(null);
-                  setStreamingStdout('');
-                }}
-                className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/5 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors"
-                title={t('clearOutput')}
+                onClick={() => setOutputCollapsed(!outputCollapsed)}
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-black/5 dark:hover:bg-[#32363e] text-zinc-600 dark:text-[#b0b4bd] transition-colors cursor-pointer text-[11px]"
+                title={outputCollapsed ? t('expandOutputTooltip') : t('collapseOutputTooltip')}
               >
-                <X className="w-3.5 h-3.5" />
+                {outputCollapsed ? (
+                  <>
+                    <ChevronDown className="w-3.5 h-3.5" />
+                    <span>{t('expandOutput')}</span>
+                  </>
+                ) : (
+                  <>
+                    <ChevronUp className="w-3.5 h-3.5" />
+                    <span>{t('collapseOutput')}</span>
+                  </>
+                )}
               </button>
-            )}
+
+              {!isRunning && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExecutionResult(null);
+                    setStreamingStdout('');
+                  }}
+                  className="p-1 rounded hover:bg-black/5 dark:hover:bg-[#32363e] text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors"
+                  title={t('clearOutput')}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
 
-          {/* Standard output text */}
-          {(executionResult?.stdout || streamingStdout) && (
-            <pre className="!m-0 !p-0 font-mono text-[12px] leading-relaxed text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap break-words bg-transparent border-0">
-              {executionResult ? executionResult.stdout : streamingStdout}
-            </pre>
-          )}
+          {/* Output Body */}
+          {!outputCollapsed && (
+            <div className="p-3 select-text space-y-2">
+              {/* Standard output text */}
+              {(executionResult?.stdout || streamingStdout) && (
+                <pre className="!m-0 !p-0 font-mono text-[12px] leading-relaxed text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap break-words bg-transparent border-0">
+                  {executionResult ? executionResult.stdout : streamingStdout}
+                </pre>
+              )}
 
-          {/* Evaluated last expression result (if any) */}
-          {executionResult?.result && (
-            <div className="mt-1.5 pt-1.5 border-t border-black/5 dark:border-white/5 flex items-start gap-1 font-mono text-[12px] text-emerald-700 dark:text-emerald-300 font-medium whitespace-pre-wrap break-words">
-              <span className="text-[11px] opacity-60 mr-1 select-none flex items-center gap-0.5 text-zinc-500 dark:text-zinc-400">
-                <CornerDownRight className="w-3 h-3 text-emerald-500" />
-                Out:
-              </span>
-              <span>{executionResult.result}</span>
-            </div>
-          )}
+              {/* Evaluated last expression result (if any) */}
+              {executionResult?.result && (
+                <div className="pt-1.5 border-t border-black/5 dark:border-white/5 flex items-start gap-1 font-mono text-[12px] text-emerald-700 dark:text-emerald-300 font-medium whitespace-pre-wrap break-words">
+                  <span className="text-[11px] opacity-60 mr-1 select-none flex items-center gap-0.5 text-zinc-500 dark:text-zinc-400">
+                    <CornerDownRight className="w-3 h-3 text-emerald-500" />
+                    Out:
+                  </span>
+                  <span>{executionResult.result}</span>
+                </div>
+              )}
 
-          {/* Error / Traceback (if any) */}
-          {executionResult?.error && (
-            <pre className="!m-0 mt-1.5 !p-2 rounded bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 font-mono text-[11.5px] leading-relaxed text-rose-700 dark:text-rose-300 whitespace-pre-wrap break-words">
-              {executionResult.error}
-            </pre>
-          )}
+              {/* Error / Traceback (if any) */}
+              {executionResult?.error && (
+                <pre className="!m-0 !p-2 rounded bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 font-mono text-[11.5px] leading-relaxed text-rose-700 dark:text-rose-300 whitespace-pre-wrap break-words">
+                  {executionResult.error}
+                </pre>
+              )}
 
-          {/* Fallback if finished with nothing printed and no result */}
-          {executionResult && !executionResult.stdout && !executionResult.result && !executionResult.error && (
-            <div className="text-[11px] text-zinc-400 italic">
-              {t('noOutput')}
+              {/* Fallback if finished with nothing printed and no result */}
+              {executionResult && !executionResult.stdout && !executionResult.result && !executionResult.error && (
+                <div className="text-[11px] text-zinc-400 italic">
+                  {t('noOutput')}
+                </div>
+              )}
             </div>
           )}
         </div>
