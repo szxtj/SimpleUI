@@ -462,7 +462,7 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
           onMouseEnter={() => setIsHovered(true)}
           onMouseLeave={() => setIsHovered(false)}
           onClick={handleClick}
-          className={`interactive-math relative my-2.5 rounded-lg py-2.5 px-3 transition-all duration-150 select-none cursor-pointer ${
+          className={`interactive-math relative my-2.5 rounded-lg py-2.5 px-3 transition-all duration-150 select-none cursor-pointer max-w-full min-w-0 ${
             isEffectiveSelected
               ? 'border border-solid border-blue-500 bg-blue-50/70 dark:border-blue-400 dark:bg-blue-950/40 shadow-xs'
               : isHovered
@@ -475,7 +475,7 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
               {toolbarContent}
             </div>
           )}
-          <div className="overflow-x-auto overflow-y-hidden text-center">{children}</div>
+          <div className="overflow-x-auto overflow-y-hidden text-center max-w-full">{children}</div>
         </div>
       );
     }
@@ -486,7 +486,7 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
         onClick={handleClick}
-        className={`interactive-math relative inline-block align-baseline rounded px-1 py-0.5 mx-0.5 transition-all duration-150 select-none cursor-pointer ${
+        className={`interactive-math relative inline-block align-baseline rounded px-1 py-0.5 mx-0.5 transition-all duration-150 select-none cursor-pointer max-w-full ${
           isEffectiveSelected
             ? 'border border-solid border-blue-500 bg-blue-50/80 dark:border-blue-400 dark:bg-blue-950/40 shadow-xs'
             : isHovered
@@ -503,7 +503,7 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
             {toolbarContent}
           </span>
         )}
-        <span className="inline-block align-baseline">{children}</span>
+        <span className="inline-block align-baseline max-w-full overflow-x-auto overflow-y-hidden align-bottom">{children}</span>
       </span>
     );
   }

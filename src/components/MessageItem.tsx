@@ -46,11 +46,11 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
   };
 
   return (
-    <div className={`w-full ${isUser ? 'flex justify-end' : ''}`}>
+    <div className={`w-full min-w-0 ${isUser ? 'flex justify-end' : ''}`}>
       {isUser ? (
         /* User Message: Rounded pill bubble on the right with icon-only copy button below */
-        <div className="flex flex-col items-end max-w-[90%] cq-md:max-w-[85%] cq-lg:max-w-[75%] group">
-          <div className="rounded-[20px] px-3.5 cq-md:px-4 py-2 cq-md:py-2.5 bg-[#e9ebf0] text-[#1f2328] dark:bg-[#2d3037] dark:text-[#f1f3f7] border border-black/5 dark:border-white/5 shadow-sm">
+        <div className="flex flex-col items-end max-w-[90%] cq-md:max-w-[85%] cq-lg:max-w-[75%] min-w-0 w-fit group">
+          <div className="w-fit max-w-full min-w-0 rounded-[20px] px-3.5 cq-md:px-4 py-2 cq-md:py-2.5 bg-[#e9ebf0] text-[#1f2328] dark:bg-[#2d3037] dark:text-[#f1f3f7] border border-black/5 dark:border-white/5 shadow-sm">
             {/* User image attachments */}
             {message.images && message.images.length > 0 && (
               <div data-copy-ignore="true" className="flex flex-wrap gap-2 mb-2 select-none">
@@ -67,13 +67,13 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
               </div>
             )}
             <div
-              className="break-words leading-relaxed"
+              className="break-words leading-relaxed max-w-full min-w-0"
               style={{ fontSize: 'var(--chat-font-size, 15px)' }}
             >
               <MarkdownRenderer
                 content={message.content}
                 breaks={true}
-                className="markdown-user text-[#1f2328] dark:text-[#f1f3f7]"
+                className="markdown-user text-[#1f2328] dark:text-[#f1f3f7] max-w-full min-w-0"
               />
             </div>
           </div>
@@ -104,7 +104,7 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
         </div>
       ) : (
         /* Assistant Message: Clean full-width flow on the left (Qianwen Style) */
-        <div className="space-y-2 w-full text-[#1f2328] dark:text-[#ecedf1]">
+        <div className="space-y-2 w-full min-w-0 text-[#1f2328] dark:text-[#ecedf1]">
           {/* 知识库 / 引擎阶段阶梯（一层一层往下固化，带各阶段耗时）——
               渲染在思考条**上方**，思考条始终在最下面（用户要求）。两窗口共用本组件。 */}
           <StageLadder
@@ -126,7 +126,7 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
           {/* Assistant Text / Markdown / KaTeX
               （思考中且尚无正文时不再额外渲染"Thinking..."——折叠条头部已表达同样状态） */}
           {message.content ? (
-            <div className="leading-relaxed" style={{ fontSize: 'var(--chat-font-size, 15px)' }}>
+            <div className="leading-relaxed min-w-0 max-w-full" style={{ fontSize: 'var(--chat-font-size, 15px)' }}>
               <MarkdownRenderer content={message.content} />
             </div>
           ) : null}

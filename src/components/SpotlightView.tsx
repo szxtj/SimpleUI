@@ -989,9 +989,9 @@ export const SpotlightView: React.FC = () => {
             if (msg.role === 'user') {
               const isCopied = copiedMsgId === msg.id;
               return (
-                <div key={msg.id} className="flex flex-col items-end group">
+                <div key={msg.id} className="w-full min-w-0 flex flex-col items-end group">
                   <div
-                    className="max-w-[85%] rounded-[20px] px-3.5 py-2 bg-[#e9ebf0] text-[#1f2328] dark:bg-[#2d3037] dark:text-[#f1f3f7] border border-black/5 dark:border-white/5 shadow-sm leading-relaxed break-words"
+                    className="max-w-[85%] min-w-0 w-fit rounded-[20px] px-3.5 py-2 bg-[#e9ebf0] text-[#1f2328] dark:bg-[#2d3037] dark:text-[#f1f3f7] border border-black/5 dark:border-white/5 shadow-sm leading-relaxed break-words"
                     style={{ fontSize: 'var(--chat-font-size, 14.5px)' }}
                   >
                     {msg.images && msg.images.length > 0 && (
@@ -1008,11 +1008,11 @@ export const SpotlightView: React.FC = () => {
                         ))}
                       </div>
                     )}
-                    <div className="break-words leading-relaxed">
+                    <div className="break-words leading-relaxed max-w-full min-w-0">
                       <MarkdownRenderer
                         content={msg.content}
                         breaks={true}
-                        className="markdown-user text-[#1f2328] dark:text-[#f1f3f7]"
+                        className="markdown-user text-[#1f2328] dark:text-[#f1f3f7] max-w-full min-w-0"
                       />
                     </div>
                   </div>
@@ -1047,7 +1047,7 @@ export const SpotlightView: React.FC = () => {
 
             // Assistant message
             return (
-              <div key={msg.id} className="space-y-2">
+              <div key={msg.id} className="space-y-2 w-full min-w-0">
                 <StageLadder
                   messageId={msg.id}
                   records={msg.stages}
@@ -1066,7 +1066,7 @@ export const SpotlightView: React.FC = () => {
 
                 {msg.content && (
                   <div
-                    className="leading-relaxed text-[#1f2328] dark:text-[#ecedf1]"
+                    className="leading-relaxed min-w-0 max-w-full text-[#1f2328] dark:text-[#ecedf1]"
                     style={{ fontSize: 'var(--chat-font-size, 14.5px)' }}
                   >
                     <MarkdownRenderer content={msg.content} />
