@@ -2017,6 +2017,14 @@ class SubtitleService {
     for (const sentence of sentences) {
       this.commitSentence(sentence);
     }
+    // 断句模型断出句子后及时轮转会话：R2T2 是从首个声音累积计算到最新声音，
+    // 必须在断出 2 句（或 1 句且流已持续 >= 5.2s）后立即轮转，防止长音频累积导致 GPU 显存与算力爆炸
+    if (this.state === 'listening' && this.asrSession && sentences.length > 0) {
+      const elapsed = this.sessionStartedAt ? Date.now() - this.sessionStartedAt : 0;
+      if (this.sentencesSinceSession >= 2 || (this.sentencesSinceSession >= 1 && elapsed >= 5200)) {
+        this.closeAsrSession('sentences');
+      }
+    }
   }
 
   async flushRemainingDraft() {
@@ -2368,17 +2376,16 @@ class SubtitleService {
     }
 
     if (!this.asrSession) return;
-    const elapsed = now - this.sessionStartedAt;
-    const quietMs = this.lastDeltaAt ? now - this.lastDeltaAt : 0;
+    const elapsed = this.sessionStartedAt ? now - this.sessionStartedAt : 0;
 
-    // 优先在句后自然停顿（已切出完整句且静默 >= 600ms）时优雅轮转，绝不强行截断正在说话的话语
-    if (this.sentencesSinceSession >= 2 && quietMs >= 600) {
+    // 核心防积压机制：R2T2 单次 live 流是从首个声音累积计算到最新声音，
+    // 将单条流控制在 <= 9.6s（若已切出句子则 >= 5.2s 或累计满 2 句即刻轮转），使单次分块 GPU 耗时恒定，
+    // 杜绝长音频累积导致 GPU 显存与算力爆炸。
+    if (this.sentencesSinceSession >= 2 || (this.sentencesSinceSession >= 1 && elapsed >= 5200)) {
       this.closeAsrSession('sentences');
       return;
     }
-
-    // 连续无停顿说话时的安全上限：25s 硬上限轮转，防止长流无限占用音频缓冲
-    if (elapsed >= 25000) {
+    if (elapsed >= 9600) {
       this.closeAsrSession('rotate');
     }
   }

@@ -1,5 +1,4 @@
-// 单句+滑动上下文翻译：Index-Translate-2B Q4_K_M via llama-server。
-// 支持结合最近 2 句已完成翻译的上下文（基于 Index-Translate-2B 原生 instTrans 约束格式）消除指代不明与断句碎片感。
+// Index-Translate-2B Q4_K_M 官方基准单句翻译引擎 (via llama-server)
 
 import http from 'http';
 import { SubtitleError } from './ml_helper.js';
@@ -7,7 +6,7 @@ import { SubtitleError } from './ml_helper.js';
 const SOURCE_NAMES = { en: '英语', zh: '中文', ja: '日文' };
 const TARGET_NAMES = { en: '英文', zh: '中文', ja: '日文' };
 
-function stripThinkBlock(text) {
+function cleanTranslation(text) {
   if (!text || typeof text !== 'string') return '';
   let out = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
   if (out.includes('</think>')) {
@@ -16,37 +15,6 @@ function stripThinkBlock(text) {
   return out.replace(/^<think>/i, '').trim();
 }
 
-function sanitizeTranslation(text) {
-  if (!text || typeof text !== 'string') return '';
-  let out = stripThinkBlock(text);
-
-  // 1. 去除格式残留（如 "xxx -> yyy" 或 "【译文】"）
-  if (out.includes('->')) {
-    out = out.split('->').pop();
-  }
-  out = out.replace(/^【?译文】?[:：\s]*/i, '');
-  out = out.replace(/^翻译结果[:：\s]*/i, '');
-
-  // 2. 去除小模型偶发泄漏的指令性元文案或 prompt 约束说明
-  out = out
-    .replace(/[（(]?\s*【?注意】?[\s\S]*$/gi, '')
-    .replace(/[（(]?\s*【?约束要求】?[\s\S]*$/gi, '')
-    .replace(/[（(]?\s*结合前文语境[\s\S]*$/gi, '')
-    .replace(/[（(]?\s*保持人称指代[\s\S]*$/gi, '')
-    .replace(/[（(]?\s*仅翻译【?源?原?文】?本身[\s\S]*$/gi, '')
-    .replace(/[（(]?\s*严禁重复输出前文[\s\S]*$/gi, '')
-    .replace(/[（(]?\s*只输出译文[\s\S]*$/gi, '')
-    .replace(/[（(]?\s*不要有任何额外说明[\s\S]*$/gi, '')
-    .replace(/[（(]?\s*不要进行任何解释[\s\S]*$/gi, '');
-
-  // 3. 去除首尾不匹配的悬挂括号
-  out = out.replace(/^[）)\]}\s]+/, '').replace(/[（(\[{]\s*$/, '');
-  if (!out.includes('（') && !out.includes('(')) {
-    out = out.replace(/[）)]+$/, '');
-  }
-
-  return out.trim();
-}
 
 export class TranslationEngine {
   constructor({ port = 1249, timeoutMs = 15000 } = {}) {
@@ -126,7 +94,7 @@ export class TranslationEngine {
               );
               return;
             }
-            const cleaned = sanitizeTranslation(rawContent);
+            const cleaned = cleanTranslation(rawContent);
             if (!cleaned) {
               reject(new SubtitleError('translation', 'TRANSLATION_EMPTY', '翻译结果为空'));
               return;
