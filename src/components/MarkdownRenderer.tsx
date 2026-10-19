@@ -5,7 +5,7 @@ import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkCjkFriendly from 'remark-cjk-friendly';
 import remarkBreaks from 'remark-breaks';
-import { Check, Copy, Table as TableIcon, FileText } from 'lucide-react';
+import { Check, Copy, Table as TableIcon, FileText, ChevronDown, ChevronUp } from 'lucide-react';
 import { useI18n } from '../i18n';
 
 import { preprocessMarkdown } from '../utils/markdownPipeline';
@@ -33,6 +33,7 @@ interface CodeBlockProps {
 const CodeBlock: React.FC<CodeBlockProps> = React.memo(({ language, code }) => {
   const { t, lang } = useI18n();
   const [copied, setCopied] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
 
   const handleCopy = async () => {
     try {
@@ -55,31 +56,57 @@ const CodeBlock: React.FC<CodeBlockProps> = React.memo(({ language, code }) => {
     >
       <div
         data-copy-ignore="true"
-        className="flex items-center justify-between px-3.5 py-1.5 bg-[#f0f2f5] dark:bg-[#22242a] border-b border-[#d0d7de] dark:border-[#33363d] text-xs text-zinc-500 dark:text-[#9aa0a6] select-none"
+        className={`flex items-center justify-between px-3.5 py-1.5 bg-[#f0f2f5] dark:bg-[#22242a] text-xs text-zinc-500 dark:text-[#9aa0a6] select-none ${
+          collapsed ? '' : 'border-b border-[#d0d7de] dark:border-[#33363d]'
+        }`}
       >
         <span className="font-mono uppercase font-semibold text-[11px] tracking-wider text-zinc-600 dark:text-[#abb2bf]">
           {language || 'text'}
         </span>
-        <button
-          type="button"
-          onClick={handleCopy}
-          className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-black/5 dark:hover:bg-[#32363e] text-zinc-600 dark:text-[#b0b4bd] transition-colors cursor-pointer"
-          title={t('copyCodeTooltip')}
-        >
-          {copied ? (
-            <>
-              <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
-              <span className="text-emerald-600 dark:text-emerald-400 text-[11px]">{t('copied')}</span>
-            </>
-          ) : (
-            <>
-              <Copy className="w-3.5 h-3.5" />
-              <span className="text-[11px]">{isEn ? 'Copy Code' : '复制代码'}</span>
-            </>
-          )}
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-black/5 dark:hover:bg-[#32363e] text-zinc-600 dark:text-[#b0b4bd] transition-colors cursor-pointer"
+            title={t('copyCodeTooltip')}
+          >
+            {copied ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
+                <span className="text-emerald-600 dark:text-emerald-400 text-[11px]">{t('copied')}</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-3.5 h-3.5" />
+                <span className="text-[11px]">{isEn ? 'Copy Code' : '复制代码'}</span>
+              </>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setCollapsed(!collapsed)}
+            className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-black/5 dark:hover:bg-[#32363e] text-zinc-600 dark:text-[#b0b4bd] transition-colors cursor-pointer"
+            title={collapsed ? t('expandCodeTooltip') : t('collapseCodeTooltip')}
+          >
+            {collapsed ? (
+              <>
+                <ChevronDown className="w-3.5 h-3.5" />
+                <span className="text-[11px]">{t('expandCode')}</span>
+              </>
+            ) : (
+              <>
+                <ChevronUp className="w-3.5 h-3.5" />
+                <span className="text-[11px]">{t('collapseCode')}</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
-      <pre className="!m-0 !p-3.5 overflow-x-auto overflow-y-hidden text-[0.88em] font-mono leading-relaxed text-[#1f2328] dark:text-[#f0f3f6] bg-transparent border-0 whitespace-pre cursor-text">
+      <pre
+        className={`!m-0 !p-3.5 overflow-x-auto overflow-y-hidden text-[0.88em] font-mono leading-relaxed text-[#1f2328] dark:text-[#f0f3f6] bg-transparent border-0 whitespace-pre cursor-text ${
+          collapsed ? 'hidden' : ''
+        }`}
+      >
         <code className="!bg-transparent !p-0 !text-inherit font-mono whitespace-pre">{code}</code>
       </pre>
     </div>

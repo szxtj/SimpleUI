@@ -94,6 +94,10 @@ export const translations = {
     retry: '重试',
     delete: '删除',
     copyCodeTooltip: '复制代码',
+    collapseCode: '收起',
+    expandCode: '展开',
+    collapseCodeTooltip: '收起代码',
+    expandCodeTooltip: '展开代码',
     thinkingNotice: '正在思考...',
 
     // ThinkingAccordion
@@ -634,6 +638,10 @@ export const translations = {
     retry: 'Retry',
     delete: 'Delete',
     copyCodeTooltip: 'Copy code',
+    collapseCode: 'Collapse',
+    expandCode: 'Expand',
+    collapseCodeTooltip: 'Collapse code',
+    expandCodeTooltip: 'Expand code',
     thinkingNotice: 'Thinking...',
 
     // ThinkingAccordion
