@@ -732,9 +732,9 @@ export const SubtitleOverlay: React.FC = () => {
         style={{
           // 液态玻璃表面：原生材质负责真正的模糊/折射（NSGlassEffectView），
           // 叠一层深色 scrim 保住浅色画面/白色背景下的白字与控件对比，外加顶部高光与内缘亮线。
-          backgroundColor: 'rgba(12, 14, 18, 0.68)',
+          backgroundColor: 'rgba(12, 14, 18, 0.72)',
           backgroundImage:
-            'linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 34%, rgba(0,0,0,0.12) 100%)',
+            'linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.01) 34%, rgba(0,0,0,0.15) 100%)',
           boxShadow:
             'inset 0 1px 0 rgba(255,255,255,0.25), inset 0 -1px 0 rgba(255,255,255,0.08), inset 0 0 26px rgba(0,0,0,0.3)',
         }}
@@ -860,9 +860,9 @@ export const SubtitleOverlay: React.FC = () => {
           </div>
 
           {/* 右侧：行数档位标签 / 清空 / 暂停 / 关闭 */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 text-white/95" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.7)' }}>
             {allReady && modelsLoaded && !showLoadingScreen && (
-              <span className="text-[10px] font-mono text-neutral-300 px-1 select-none">
+              <span className="text-[11px] font-mono font-medium text-white/95 px-1 select-none">
                 {isSingleTrack ? `${linePairs}L` : `${linePairs}+${linePairs}`}
               </span>
             )}
@@ -872,7 +872,7 @@ export const SubtitleOverlay: React.FC = () => {
                 type="button"
                 onClick={handleClearHistory}
                 title={t('subtitleClearHistory')}
-                className="p-1 rounded hover:bg-white/10 text-neutral-300 hover:text-white transition cursor-pointer"
+                className="p-1 rounded hover:bg-white/10 text-white/90 hover:text-white transition cursor-pointer"
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
@@ -883,7 +883,7 @@ export const SubtitleOverlay: React.FC = () => {
                 type="button"
                 onClick={toggleListening}
                 title={isRunning ? t('subtitlePauseCapture') : t('subtitleResumeCapture')}
-                className="p-1 rounded hover:bg-white/10 text-neutral-300 hover:text-white transition cursor-pointer"
+                className="p-1 rounded hover:bg-white/10 text-white/90 hover:text-white transition cursor-pointer"
               >
                 {isRunning ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
               </button>
@@ -1091,7 +1091,7 @@ export const SubtitleOverlay: React.FC = () => {
               </div>
             ) : (
               <>
-                {/* 上轨：linePairs 行源文字幕连续流（保持与译文一致的白字高对比与清晰投影） */}
+                {/* 上轨：linePairs 行源文字幕连续流（与译文完全统一配色与字重） */}
                 {(showOriginal || isNone) && (
                   <div
                     ref={enStreamRef}
@@ -1099,12 +1099,10 @@ export const SubtitleOverlay: React.FC = () => {
                       height: `${(isNone ? singleTrackLineHeight : fontCfg.enLineHeight) * linePairs}px`,
                       fontSize: `${isNone ? (sourceLang === 'zh' ? fontCfg.zhFontSize : fontCfg.enFontSize) : fontCfg.enFontSize}px`,
                       lineHeight: `${(isNone ? singleTrackLineHeight : fontCfg.enLineHeight)}px`,
-                      // 玻璃底与浅色背景上保住高对比：白字加双重投影，任何背景下均始终清晰
-                      textShadow: '0 1px 3px rgba(0,0,0,0.75), 0 0 10px rgba(0,0,0,0.5)',
+                      // 玻璃底与浅色背景上保住高对比：与译文完全统一的纯白双重高对比文字阴影
+                      textShadow: '0 1px 3px rgba(0,0,0,0.85), 0 0 10px rgba(0,0,0,0.6)',
                     }}
-                    className={`w-full overflow-y-hidden break-words scroll-smooth shrink-0 ${
-                      isNone ? 'font-bold text-white tracking-wide' : 'font-semibold text-white/90 tracking-normal'
-                    }`}
+                    className="w-full overflow-y-hidden font-bold text-white tracking-wide break-words scroll-smooth shrink-0"
                   >
                     {continuousSourceText}
                   </div>
@@ -1118,13 +1116,13 @@ export const SubtitleOverlay: React.FC = () => {
                       height: `${fontCfg.zhLineHeight * linePairs}px`,
                       fontSize: `${fontCfg.zhFontSize}px`,
                       lineHeight: `${fontCfg.zhLineHeight}px`,
-                      textShadow: '0 1px 3px rgba(0,0,0,0.75), 0 0 10px rgba(0,0,0,0.5)',
+                      textShadow: '0 1px 3px rgba(0,0,0,0.85), 0 0 10px rgba(0,0,0,0.6)',
                     }}
                     className="w-full overflow-y-hidden font-bold text-white tracking-wide break-words scroll-smooth shrink-0"
                   >
                     {continuousTargetText}
                     {hasPendingTarget && (
-                      <span className="ml-1 text-white/55 font-normal text-[0.8em]">
+                      <span className="ml-1 text-white/70 font-normal text-[0.8em]">
                         {t('subtitlePendingTranslation')}
                       </span>
                     )}
