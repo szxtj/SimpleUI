@@ -289,7 +289,7 @@ export interface VoicePermissionStatus {
   inputMonitoring: boolean;
 }
 
-export type SubtitleModelKey = 'asr' | 'translate' | 'segment' | 'turn';
+export type SubtitleModelKey = 'asr' | 'translate' | 'segment';
 
 export interface SubtitleFatalError {
   stage: string;

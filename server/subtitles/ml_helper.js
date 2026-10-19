@@ -150,17 +150,6 @@ export class SubtitleMlHelper {
     return msg.probs;
   }
 
-  async turn(pcmBuffer) {
-    const msg = await this._request(
-      { cmd: 'turn', pcm: Buffer.from(pcmBuffer).toString('base64') },
-      3000
-    );
-    if (typeof msg.probability !== 'number') {
-      throw new SubtitleError('segmentation', 'ML_HELPER_PROTOCOL', 'turn 响应缺少 probability');
-    }
-    return msg.probability;
-  }
-
   close() {
     this.closing = true;
     this.pending.clear();

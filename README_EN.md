@@ -32,10 +32,10 @@ SimpleUI is deeply tuned for [TurboFieldfare](https://github.com/drumih/turbo-fi
 ## Highlights
 
 - **Local-first**: inference, knowledge retrieval, speech recognition, subtitles, and translation all run on-device — no Python virtualenv, vector database, or cloud API required.
-- **Model integration services**: unified management for base models, SenseVoice speech input, R2T2 streaming captions, Index-Translate, and CoreML segmentation/endpoint models.
+- **Model integration services**: unified management for base models, SenseVoice speech input, R2T2 streaming captions, Index-Translate, and CoreML segmentation models.
 - **DeepSeek API integration**: independent Base URL / API key / model / context / temperature / top_p / reasoning effort / stop strings / system prompt; requests go directly to the official endpoint, with cache-friendly context trimming.
 - **Offline Wiki RAG**: Kiwix ZIM + multi-channel retrieval + direct raw-text injection; no summarization, no rewriting, no mechanical truncation, with clickable citations.
-- **Real-time bilingual subtitles**: SOTA SaT sentence segmentation, Smart Turn semantic endpointing, R2T2 streaming ASR, and Index-Translate sentence translation; source text streams live while translations are appended per sentence.
+- **Real-time bilingual subtitles**: SOTA SaT sentence segmentation, R2T2 streaming ASR, and Index-Translate sentence translation; source text streams live while translations are appended per sentence.
 - **Strong frontend & scientific computing**: Markdown / KaTeX / Mermaid, one-click code-block collapse/copy; built-in **Pyodide Python scientific computing sandbox** running client-side with zero local environment setup, two independent collapsible layers for source and execution output; formulas copyable as native Word/WPS equations, and tables retain formatting when pasted into Word.
 - **Native macOS**: main window, Spotlight panel, quick translate, subtitle overlay, and voice capsule; Chinese/English UI with light/dark themes.
 
@@ -57,7 +57,6 @@ Node.js proxy (127.0.0.1:31235)
         │     ├── R2T2 Q8_0 streaming ASR (:1250 · Metal)
         │     ├── SaT-3L-sm CoreML segmentation (ANE / CPU)
         │     ├── Index-Translate-2B Q4_K_M (:1249 · Metal)
-        │     └── Smart Turn v3.2 CoreML semantic endpoint (ANE)
         └── Quick Translate (separate native floating panel)
 ```
 
@@ -129,7 +128,7 @@ Query
 
 ### Offline Real-time Bilingual Subtitles
 
-SimpleUI's subtitles run entirely on Apple Silicon: **audio is never uploaded and no cloud API is called** — ASR, segmentation, endpointing, and translation are all local. It is designed for videos, meetings, talks, and podcasts.
+SimpleUI's subtitles run entirely on Apple Silicon: **audio is never uploaded and no cloud API is called** — ASR, segmentation, and translation are all local. It is designed for videos, meetings, talks, and podcasts.
 
 ```text
 System audio (16 kHz mono PCM)
@@ -137,8 +136,6 @@ System audio (16 kHz mono PCM)
   → SaT-3L-sm segmentation (CoreML · ANE)
   → Index-Translate-2B sentence translation (llama.cpp · Metal)
   → live source stream / per-sentence target stream
-         ↑
-   Smart Turn v3.2 (CoreML · ANE, bypass endpoint)
 ```
 
 | Component | Model / version | Size | Runtime |
@@ -146,20 +143,20 @@ System audio (16 kHz mono PCM)
 | Streaming ASR | Confucius4-R2T2 Q8_0 | 2.31 GiB | audiocpp · Metal (`:1250`) |
 | Sentence segmentation | [SaT-3L-sm](https://huggingface.co/segment-any-text/sat-3l-sm) CoreML FP16 | 240 MB | CoreML · ANE / CPU |
 | Sentence translation | [Index-Translate-2B](https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF) Q4_K_M | 1.22 GiB | llama-server · Metal (`:1249`) |
-| Semantic endpoint | [Smart Turn v3.2](https://huggingface.co/aufklarer/Smart-Turn-v3.2-CoreML) CoreML FP16 | 16.8 MB | CoreML · ANE |
 | Segmentation tokenizer | XLM-R `tokenizer.json` | 9 MB | Node |
 
 > Subtitle models follow their upstream licenses; SaT weights are MIT — verify the distribution terms of the CoreML conversion package.
 
 How it works:
 
-- **All audio goes directly to R2T2**: no energy VAD, no silence trimming, no dropped frames; Smart Turn is a bypass semantic endpoint and never gates audio.
+- **All audio goes directly to R2T2**: no energy VAD, no silence trimming, no dropped frames.
 - **Sentence-level translation**: SaT cuts complete sentences; translation only handles complete sentences. A trailing half-sentence is translated only at close.
-- **Smart close**: Smart Turn decides when a turn has ended and closes the live request; rotation can also happen after 3 committed sentences plus a 700 ms pause, with a 30 s hard cap.
-- **Stable tail flush**: a 1 s trailing silence is appended before closing so R2T2 returns its final uncommitted text.
+- **Session rotation**: rotate as soon as two sentences are committed; also rotate when one sentence is committed and the live stream has run for 5.2 s; 9.6 s is a hard cap so a single stream can never accumulate enough to blow up GPU re-computation.
+- **Silence close**: after 1.8 s of continuous silence with recognized text, the stream is closed and the trailing half-sentence is committed as a complete sentence.
+- **Stable tail flush**: a 360 ms trailing silence is appended before closing so R2T2 returns its final uncommitted text.
 - **Language directions**: English → Chinese/Japanese and Chinese → English/Japanese; source and target are switchable in the subtitle overlay.
 - **Strictly on-demand**: models load when the subtitle window opens and unload when it closes; failures are fatal with no auto-restart or reconnect.
-- **Model directory**: `~/Library/Application Support/SimpleUI/models/subtitles_pipeline/`; the Service Manager supports speed-tested downloads and resumable transfers for all four models.
+- **Model directory**: `~/Library/Application Support/SimpleUI/models/subtitles_pipeline/`; the Service Manager supports speed-tested downloads and resumable transfers for all three models.
 
 ### Quick Translate
 
@@ -233,7 +230,7 @@ Builds the Swift native shell, frontend assets, and bundled runtimes, then insta
 
 - Base models: prepare TTF / Mference repositories and weights yourself, connect another OpenAI-compatible service, or configure a DeepSeek API key in Settings.
 - Speech model: SenseVoice is bundled; if missing, download it in Service Manager.
-- Subtitle models: download in Service Manager; the set includes R2T2, SaT, Index-Translate, Smart Turn, and the tokenizer.
+- Subtitle models: download in Service Manager; the set includes R2T2, SaT, Index-Translate, and the tokenizer.
 - Offline wiki: select a local ZIM file under Service Manager → Knowledge Base.
 
 ---

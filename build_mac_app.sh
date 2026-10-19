@@ -97,7 +97,7 @@ swiftc -O \
     mac_app/src/TranslationPanelController.swift \
     -o "$MACOS_DIR/SimpleUI"
 
-# 编译字幕 CoreML helper（SaT 断句 + Smart Turn 端点）
+# 编译字幕 CoreML helper（SaT 断句）
 echo "  · 编译字幕 CoreML helper..."
 mkdir -p "bin" "$RESOURCES_DIR/bin"
 swiftc -O \

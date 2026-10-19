@@ -178,7 +178,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     return s;
   };
 
-  const handleSubtitleDownload = async (model: 'all' | 'asr' | 'translate' | 'segment' | 'turn' = 'all') => {
+  const handleSubtitleDownload = async (model: 'all' | 'asr' | 'translate' | 'segment' = 'all') => {
     setSubtitleBusy(true);
     try {
       await SubtitleServiceAPI.startDownload(model);
@@ -1748,7 +1748,6 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                     { key: 'asr' as const, label: t('subtitleModelStage1'), fallbackSize: '2.31 GB' },
                     { key: 'segment' as const, label: t('subtitleModelStage2'), fallbackSize: '250 MB' },
                     { key: 'translate' as const, label: t('subtitleModelStage3'), fallbackSize: '1.25 GB' },
-                    { key: 'turn' as const, label: t('subtitleModelStage4'), fallbackSize: '16.8 MB' },
                   ]
                 ).map((item) => {
                   const m = subtitleStatus?.modelsStatus?.[item.key];

@@ -268,7 +268,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 实时双语字幕服务 API（R2T2 + SaT 断句 + Index-Translate-2B + Smart Turn 端侧离线流）
+  // 实时双语字幕服务 API（R2T2 + SaT 断句 + Index-Translate-2B 端侧离线流）
   if (req.url.startsWith('/api/subtitles/')) {
     subtitleService.handleApi(req, res);
     return;

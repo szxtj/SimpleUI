@@ -32,10 +32,10 @@ SimpleUI 为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 深度�
 ## 核心亮点
 
 - **本地优先**：模型推理、知识库、语音识别、字幕和翻译都在本机完成；无需 Python 虚拟环境、向量数据库或云端 API。
-- **模型集成服务**：统一托管基础模型、SenseVoice 语音识别、R2T2 流式字幕、Index-Translate 翻译与 CoreML 断句/端点模型。
+- **模型集成服务**：统一托管基础模型、SenseVoice 语音识别、R2T2 流式字幕、Index-Translate 翻译与 CoreML 断句模型。
 - **DeepSeek API 深度适配**：官方 Base URL / API Key / 模型 / 上下文 / 温度 / top_p / 推理强度 / 停止串 / 系统提示词独立配置，直接请求官方接口，并针对缓存命中做上下文修剪。
 - **离线维基 RAG**：Kiwix ZIM + 多通道检索 + 原文直注；不摘要、不改写、不机械截断，答案带可点击引用。
-- **实时双语字幕**：SOTA SaT 断句、Smart Turn 语义端点、R2T2 流式识别、Index-Translate 整句翻译，原文实时、译文按句追加。
+- **实时双语字幕**：SOTA SaT 断句、R2T2 流式识别、Index-Translate 整句翻译，原文实时、译文按句追加。
 - **强大前端与科学计算**：Markdown / KaTeX / Mermaid，代码块支持一键收起与复制代码；内置 **Pyodide Python 科学计算沙盒**，免配置环境在浏览器沙盒内一键运行代码，源码与运行结果双层独立折叠；公式块可复制为 Word / WPS 原生公式，表格可保留格式粘贴到 Word。
 - **原生 macOS**：主窗口 + Spotlight 浮窗 + 快捷翻译 + 字幕悬浮窗，支持中英文界面与深浅色主题。
 
@@ -57,7 +57,6 @@ Node.js 代理（127.0.0.1:31235）
         │     ├── R2T2 Q8_0 流式识别（:1250 · Metal）
         │     ├── SaT-3L-sm CoreML 断句（ANE / CPU）
         │     ├── Index-Translate-2B Q4_K_M（:1249 · Metal）
-        │     └── Smart Turn v3.2 CoreML 语义端点（ANE）
         └── 快捷翻译（独立原生悬浮窗）
 ```
 
@@ -137,8 +136,6 @@ SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传
   → SaT-3L-sm 断句（CoreML · ANE）
   → Index-Translate-2B 整句翻译（llama.cpp · Metal）
   → 原文实时流 / 译文按句追加
-         ↑
-   Smart Turn v3.2（CoreML · ANE，旁路判断是否说完）
 ```
 
 | 组件 | 模型 / 版本 | 体积 | 运行位置 |
@@ -146,20 +143,20 @@ SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传
 | 流式识别 | Confucius4-R2T2 Q8_0 | 2.31 GiB | audiocpp · Metal（`:1250`） |
 | 智能断句 | [SaT-3L-sm](https://huggingface.co/segment-any-text/sat-3l-sm) CoreML FP16 | 240 MB | CoreML · ANE / CPU |
 | 整句翻译 | [Index-Translate-2B](https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF) Q4_K_M | 1.22 GiB | llama-server · Metal（`:1249`） |
-| 语义端点 | [Smart Turn v3.2](https://huggingface.co/aufklarer/Smart-Turn-v3.2-CoreML) CoreML FP16 | 16.8 MB | CoreML · ANE |
 | 断句分词 | XLM-R `tokenizer.json` | 9 MB | Node |
 
 > 字幕模型遵循各自上游许可证；SaT 权重为 MIT，其 CoreML 转换包请自行确认分发授权。
 
 工作方式：
 
-- **音频全量直连 R2T2**：不使用能量 VAD、不裁剪静音、不丢帧；Smart Turn 只做旁路语义端点，不门控音频。
+- **音频全量直连 R2T2**：不使用能量 VAD、不裁剪静音、不丢帧。
 - **完整句翻译**：SaT 按完整句切分，翻译只处理完整句；只有收尾时的尾部半句才会单独翻译。
-- **智能收尾**：Smart Turn 判断“这一轮说完了”后结束 live 请求；已断出 3 句且停顿 700ms 也可安全轮换，30 秒为硬上限。
-- **稳定吐出尾部**：关闭请求前补 1 秒静音，确保 R2T2 返回最后未提交的文本。
+- **会话轮转**：断出 2 句立即轮转；只有 1 句但 live 流已满 5.2 秒也轮转；9.6 秒为硬上限，防止单条流无限累积导致 GPU 重算开销爆炸。
+- **静音收尾**：连续静音超过 1.8 秒且已有识别文本时收尾，此时才把尾部半句作为完整句提交。
+- **稳定吐出尾部**：关闭请求前补 360ms 静音，确保 R2T2 返回最后未提交的文本。
 - **语言方向**：支持英文→中文/日文、中文→英文/日文；声音源与目标语言在字幕悬浮窗切换。
 - **严格按需**：打开字幕窗口才加载，关闭即卸载；失败直接 fatal，不自动重启/重连。
-- **模型目录**：`~/Library/Application Support/SimpleUI/models/subtitles_pipeline/`；服务管理面板支持四模型测速下载与断点续传。
+- **模型目录**：`~/Library/Application Support/SimpleUI/models/subtitles_pipeline/`；服务管理面板支持三模型测速下载与断点续传。
 
 ### 快捷翻译
 
@@ -233,7 +230,7 @@ npm run dev
 
 - 基础模型：自行准备 TTF / Mference 本体与权重；也可连接其它 OpenAI 兼容服务，或在设置中直接配置 DeepSeek API Key。
 - 语音模型：随包内置 SenseVoice；缺失时可在「服务管理」下载。
-- 字幕模型：在「服务管理」下载，包含 R2T2、SaT、Index-Translate、Smart Turn 与 tokenizer。
+- 字幕模型：在「服务管理」下载，包含 R2T2、SaT、Index-Translate 与 tokenizer。
 - 离线维基：在「服务管理 → 知识库」中指定本地 ZIM 文件。
 
 ---

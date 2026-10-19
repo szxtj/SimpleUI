@@ -579,7 +579,7 @@ export const SubtitleOverlay: React.FC = () => {
     } catch {}
   };
 
-  const readyDiskCount = Math.max(0, 4 - missingModels.length);
+  const readyDiskCount = Math.max(0, 3 - missingModels.length);
   const showLoadingScreen = allReady && (!modelsLoaded || isLoading);
   const activeStepDisplay = Math.min(3, loadingStage + 1);
   const progressPercent = modelsLoaded ? 100 : Math.min(92, Math.max(20, loadingStage * 30 + 30));
@@ -767,7 +767,7 @@ export const SubtitleOverlay: React.FC = () => {
                 <span
                   title={
                     !allReady
-                      ? `${t('subtitlePreparingModels')} (${readyDiskCount}/4)`
+                      ? `${t('subtitlePreparingModels')} (${readyDiskCount}/3)`
                       : showLoadingScreen
                       ? `${t('subtitleLoadingModelsTitle')} (${activeStepDisplay}/3)`
                       : isRunning

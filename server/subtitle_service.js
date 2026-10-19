@@ -7,7 +7,6 @@
 //   - 第 2 级：IndexTeam/Index-Translate-2B-GGUF Q4_K_M -> llama-server 端口 1249。
 //   - 断句：segment-any-text/sat-3l-sm CoreML FP16（240MB），Swift helper 跑 ANE/CPU；
 //           XLM-R fast tokenizer 提供 offset mapping，模型概率直接切原文。
-//   - 语义端点：Smart Turn v3.2 CoreML FP16（16.8MB），旁路判断“这一轮说完了”，只触发 live 收尾。
 //
 // 关键契约：
 //   - 无 VAD：所有 PCM 都直连 R2T2，不做 RMS/静音门控、不丢帧。
@@ -40,7 +39,7 @@ const CONFIG_FILE = path.join(userConfigDir, 'subtitles_config.json');
 // PID 文件（与 ttf_service / asr_service 统一纳入 watchdog 与启动/退出清扫体系）
 const ASR_PID_FILE = '/tmp/simpleui_subtitle_audiocpp.pid'; // audiocpp_server (R2T2 流式 ASR, 端口 1250)
 const TRANS_PID_FILE = '/tmp/simpleui_subtitle_trans.pid'; // llama-server (Index-Translate, 端口 1249)
-const ML_PID_FILE = '/tmp/simpleui_subtitle_ml.pid'; // Swift CoreML helper (SaT / Smart Turn)
+const ML_PID_FILE = '/tmp/simpleui_subtitle_ml.pid'; // Swift CoreML helper (SaT 断句)
 
 // 字幕 ASR 服务（audio.cpp）端口与派生配置文件
 const ASR_SERVER_PORT = 1250;
@@ -156,54 +155,12 @@ export const MODEL_SPECS = {
       },
     ],
   },
-  /**
-   * Smart Turn v3.2 CoreML FP16 语义端点模型。
-   * 只做“这一轮说完了没有”的概率判断；不门控音频、不切句。
-   */
-  turn: {
-    name: 'Smart Turn v3.2 CoreML (语义端点检测)',
-    shortName: 'Smart Turn v3.2 (CoreML)',
-    repo: 'aufklarer/Smart-Turn-v3.2-CoreML',
-    sizeDesc: '16.8 MB',
-    expectedBytes: 16775094,
-    dstPrefix: 'smart_turn.mlmodelc',
-    files: [
-      {
-        src: 'smart_turn.mlmodelc/coremldata.bin',
-        dst: 'smart_turn.mlmodelc/coremldata.bin',
-        minBytes: 400,
-        expectedBytes: 643,
-        optional: false,
-      },
-      {
-        src: 'smart_turn.mlmodelc/analytics/coremldata.bin',
-        dst: 'smart_turn.mlmodelc/analytics/coremldata.bin',
-        minBytes: 100,
-        expectedBytes: 243,
-        optional: false,
-      },
-      {
-        src: 'smart_turn.mlmodelc/model.mil',
-        dst: 'smart_turn.mlmodelc/model.mil',
-        minBytes: 50000,
-        expectedBytes: 69968,
-        optional: false,
-      },
-      {
-        src: 'smart_turn.mlmodelc/weights/weight.bin',
-        dst: 'smart_turn.mlmodelc/weights/weight.bin',
-        minBytes: 15 * 1024 * 1024,
-        expectedBytes: 16714240,
-        optional: false,
-      },
-    ],
-  },
 };
 
 export const REQUIRED_MODELS = MODEL_SPECS;
 
-// 面板/下载/状态统一按实际链路顺序：ASR -> SaT 断句 -> 翻译；Smart Turn 为旁路端点，列最后。
-export const MODEL_ORDER = ['asr', 'segment', 'translate', 'turn'];
+// 面板/下载/状态统一按实际链路顺序：ASR -> SaT 断句 -> 翻译。
+export const MODEL_ORDER = ['asr', 'segment', 'translate'];
 
 const DEFAULT_CONFIG = {
   enabled: true,
@@ -215,8 +172,6 @@ const DEFAULT_CONFIG = {
   // SaT 句界阈值（0~1）；0.5 为官方默认附近，避免在逗号处过切
   segmentThreshold: 0.5,
   segmentLookaheadTokens: 10,
-  // Smart Turn 语义端点阈值（提高至 0.62 避免换气停顿误切半句）
-  turnThreshold: 0.62,
   sourceLang: 'en',
   targetLang: 'zh',
 };
@@ -774,12 +729,8 @@ class SubtitleService {
     this.sourceText = ''; // 前端原文流快照（最多保留最近 200k 字符）
     this.targetRecords = []; // 前端译文记录（最多 200 条）
     this.pendingFrames = []; // 收尾 waiting done 期间缓存的 PCM
-    this.turnRing = []; // 最近 8s PCM Buffer 列表
-    this.turnSamples = 0;
     this.lastDeltaAt = 0;
     this.lastGlobalDeltaAt = 0;
-    this.lastTurnProbeAt = 0;
-    this.turnProbeInFlight = false;
     this.segmentationInFlight = false;
     this.segmentationQueued = false;
     this.sessionStartedAt = 0;
@@ -788,7 +739,6 @@ class SubtitleService {
     this.lastSpeechPcmAt = 0;
     this.lastSilentPreRoll = null;
     this.finishTimer = null;
-    this.turnTimer = null;
     this.rotationTimer = null;
     this.asrDoneTimeoutMs = 6000;
 
@@ -834,13 +784,29 @@ class SubtitleService {
         if (!merged.segmentLookaheadTokens || merged.segmentLookaheadTokens <= 4) {
           merged.segmentLookaheadTokens = 10;
         }
-        if (!merged.turnThreshold || merged.turnThreshold <= 0.5) {
-          merged.turnThreshold = 0.62;
+        // 清理已下线能力的遗留键：Smart Turn 语义端点阈值、已删除的 qwen3_coreml 实验分支。
+        const staleKeys = [
+          'turnThreshold',
+          'asrEngine',
+          'pipelines',
+          'utteranceEndSilenceMs',
+          'asrChunkMs',
+          'sampleRate',
+        ];
+        let droppedStaleKeys = false;
+        for (const key of staleKeys) {
+          if (Object.prototype.hasOwnProperty.call(merged, key)) {
+            delete merged[key];
+            droppedStaleKeys = true;
+          }
         }
-        delete merged.utteranceEndSilenceMs;
-        delete merged.asrChunkMs;
-        delete merged.sampleRate;
         this.config = merged;
+        // 只有确实存在残留时才回写，避免每次启动都触碰用户配置文件。
+        if (droppedStaleKeys) {
+          try {
+            fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2));
+          } catch {}
+        }
       }
     } catch (e) {
       console.warn('[Subtitles] 读取配置文件失败，使用默认配置:', e.message);
@@ -983,7 +949,7 @@ class SubtitleService {
   }
 
   /**
-   * 完整校验四级字幕模型/运行时资产的每一个必需文件是否完整就绪
+   * 完整校验三级字幕模型/运行时资产的每一个必需文件是否完整就绪
    */
   checkModelsReadiness() {
     const status = {};
@@ -1393,12 +1359,8 @@ class SubtitleService {
     this.asrStreamText = '';
     this.draft = '';
     this.pendingFrames = [];
-    this.turnRing = [];
-    this.turnSamples = 0;
     this.lastDeltaAt = 0;
     this.lastGlobalDeltaAt = 0;
-    this.lastTurnProbeAt = 0;
-    this.turnProbeInFlight = false;
     this.segmentationInFlight = false;
     this.segmentationQueued = false;
     this.sessionStartedAt = 0;
@@ -1415,10 +1377,6 @@ class SubtitleService {
       clearTimeout(this.finishTimer);
       this.finishTimer = null;
     }
-    if (this.turnTimer) {
-      clearInterval(this.turnTimer);
-      this.turnTimer = null;
-    }
     if (this.rotationTimer) {
       clearInterval(this.rotationTimer);
       this.rotationTimer = null;
@@ -1427,9 +1385,6 @@ class SubtitleService {
 
   startSessionTimers() {
     this.clearSessionTimers();
-    this.turnTimer = setInterval(() => {
-      this.maybeProbeTurn().catch((err) => this.fail(err));
-    }, 400);
     this.rotationTimer = setInterval(() => {
       this.checkStreamRotation();
     }, 400);
@@ -1461,7 +1416,7 @@ class SubtitleService {
   }
 
   /**
-   * 打开字幕窗口：加载 ASR、翻译、CoreML helper（SaT + Smart Turn）。
+   * 打开字幕窗口：加载 ASR、翻译、CoreML helper（SaT 断句）。
    */
   async start() {
     if (this.state === 'loading') {
@@ -1538,7 +1493,7 @@ class SubtitleService {
     this.startSessionTimers();
     this.openAsrSession();
     this.broadcastStatus();
-    console.log('[Subtitles] ✅ R2T2 + SaT + Index-Translate + Smart Turn 已全部就绪');
+    console.log('[Subtitles] ✅ R2T2 + SaT + Index-Translate 已全部就绪');
     return true;
   }
 
@@ -1640,7 +1595,7 @@ class SubtitleService {
         `CoreML helper 不存在: ${runtime.mlHelperPath}`
       );
     }
-    console.log('[Subtitles] [2/3] 正在加载 CoreML helper（SaT 断句 + Smart Turn 端点）...');
+    console.log('[Subtitles] [2/3] 正在加载 CoreML helper（SaT 断句）...');
     const helper = new SubtitleMlHelper({
       helperPath: runtime.mlHelperPath,
       modelsDir: SUBTITLE_MODELS_DIR,
@@ -2152,7 +2107,7 @@ class SubtitleService {
     if (this.segmenter && this.draft.trim()) {
       const trimmedDraft = this.draft.trim();
       // 仅在长静音收尾 (idle)、草稿已带句末终结标点、或草稿累积过长时才允许 final=true 落盘尾部；
-      // 常规轮转 (rotate / sentences / 换气 turn) 只提取已确认的完整句，剩余半句留在 this.draft 中与下一会话无缝拼接。
+      // 常规轮转 (rotate / sentences) 只提取已确认的完整句，剩余半句留在 this.draft 中与下一会话无缝拼接。
       const hasTerminalPunct = /[.?!。？！…][”"'’）)\]]*$/.test(trimmedDraft);
       const forceFinal = reason === 'idle' || hasTerminalPunct || trimmedDraft.length >= 220;
       const { sentences, consumed } = await this.segmenter.split(this.draft, { final: forceFinal });
@@ -2250,20 +2205,6 @@ class SubtitleService {
       this.lastSpeechPcmAt = now;
     }
 
-    // Smart Turn 环形缓冲：只保留最近 8s。
-    this.turnRing.push(pcmBuffer);
-    this.turnSamples += pcmBuffer.length / 2;
-    while (this.turnSamples > 128000 && this.turnRing.length > 0) {
-      const head = this.turnRing[0];
-      const headSamples = head.length / 2;
-      if (this.turnSamples - headSamples >= 128000) {
-        this.turnRing.shift();
-        this.turnSamples -= headSamples;
-      } else {
-        break;
-      }
-    }
-
     // 连续纯静音超过 1.8s 时进入静音休眠门控：若当前会话已有识别文本则触发收尾，否则缓存 1 帧 pre-roll 并暂停向 Metal 喂静音帧
     const silenceDurationMs = this.lastSpeechPcmAt ? now - this.lastSpeechPcmAt : Infinity;
     if (silent && silenceDurationMs > 1800) {
@@ -2295,40 +2236,6 @@ class SubtitleService {
       throw new SubtitleError('asr', 'ASR_WRITE_FAILED', '写入 R2T2 live 请求失败');
     }
     return { ok: true };
-  }
-
-  getTurnPcm() {
-    let merged = Buffer.concat(this.turnRing);
-    if (merged.length > 128000 * 2) merged = merged.subarray(merged.length - 128000 * 2);
-    if (merged.length < 128000 * 2) {
-      merged = Buffer.concat([Buffer.alloc(128000 * 2 - merged.length), merged]);
-    }
-    return merged;
-  }
-
-  async maybeProbeTurn() {
-    if (this.state !== 'listening' || !this.mlHelper?.ready) return;
-    if (!this.asrStreamText.trim()) return;
-    if (this.turnSamples < 16000 * 4) return; // 至少 4s 音频才有意义
-    const now = Date.now();
-    const elapsed = this.sessionStartedAt ? now - this.sessionStartedAt : 0;
-    // 仅在会话已超过 4.5s 且出现 >= 550ms 停顿时探测一次 Smart Turn，辅助在自然语调落点处轮转会话
-    if (elapsed < 4500) return;
-    if (!this.lastDeltaAt || now - this.lastDeltaAt < 550) return;
-    if (this.lastTurnProbeAt >= this.lastDeltaAt) return;
-    if (now - this.lastTurnProbeAt < 800) return;
-    if (this.turnProbeInFlight) return;
-    this.turnProbeInFlight = true;
-    this.lastTurnProbeAt = now;
-    try {
-      const prob = await this.mlHelper.turn(this.getTurnPcm());
-      if (this.state !== 'listening') return;
-      if (prob > (this.config.turnThreshold ?? 0.62) && this.asrSession) {
-        this.closeAsrSession('turn');
-      }
-    } finally {
-      this.turnProbeInFlight = false;
-    }
   }
 
   checkStreamRotation() {
@@ -2394,7 +2301,7 @@ class SubtitleService {
       return;
     }
 
-    // 2. 状态查询（含运行环境校验、四级模型完整状态、自动测速下载进度）
+    // 2. 状态查询（含运行环境校验、三级模型完整状态、自动测速下载进度）
     if (pathname === '/api/subtitles/status' && req.method === 'GET') {
       res.writeHead(200, {
         'Content-Type': 'application/json',

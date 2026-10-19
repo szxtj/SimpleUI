@@ -3,7 +3,6 @@ import CoreML
 
 // 双语字幕 CoreML helper：
 // - segment：输入 XLM-R token ids，返回 SaT 每个 token 的句界概率
-// - turn：输入最近 8s 16kHz mono Int16 PCM，返回 Smart Turn “说完了”的概率
 //
 // 该 helper 只做模型推理；分词、断句、翻译、ASR 生命周期全部在 Node 侧。
 // 任何模型加载/推理/协议错误都会以非零退出，Node 侧统一转成 fatal。
@@ -40,31 +39,25 @@ guard let modelsDir = argumentValue("--models-dir") else {
 
 let modelsURL = URL(fileURLWithPath: modelsDir, isDirectory: true)
 let satURL = modelsURL.appendingPathComponent("SaT.mlmodelc", isDirectory: true)
-let turnURL = modelsURL.appendingPathComponent("smart_turn.mlmodelc", isDirectory: true)
 
 let config = MLModelConfiguration()
-// 明确不使用 GPU：ASR / 翻译在 Metal 上，断句/端点放 ANE + CPU。
+// 明确不使用 GPU：ASR / 翻译在 Metal 上，断句放 ANE + CPU。
 config.computeUnits = .cpuAndNeuralEngine
 
 let satModel: MLModel
-let turnModel: MLModel
 do {
     satModel = try MLModel(contentsOf: satURL, configuration: config)
-    turnModel = try MLModel(contentsOf: turnURL, configuration: config)
 } catch {
-    fail("failed to load CoreML models: \(error.localizedDescription)")
+    fail("failed to load CoreML model: \(error.localizedDescription)")
 }
 
 let satSize = 512
-let turnSize = 128_000
 
 let satInputIds: MLMultiArray
 let satAttentionMask: MLMultiArray
-let turnAudio: MLMultiArray
 do {
     satInputIds = try MLMultiArray(shape: [1, NSNumber(value: satSize)], dataType: .int32)
     satAttentionMask = try MLMultiArray(shape: [1, NSNumber(value: satSize)], dataType: .int32)
-    turnAudio = try MLMultiArray(shape: [1, NSNumber(value: turnSize)], dataType: .float32)
 } catch {
     fail("failed to allocate CoreML input arrays: \(error)")
 }
@@ -104,45 +97,14 @@ func runSat(ids: [Int], isFinal: Bool = true) throws -> [Float] {
     return probs
 }
 
-func runTurn(pcm: Data) throws -> Float {
-    guard pcm.count % 2 == 0 else {
-        throw HelperError(message: "TURN_PCM_ODD_BYTES")
-    }
-    let sampleCount = pcm.count / 2
-    let take = min(sampleCount, turnSize)
-    let offset = turnSize - take
-    let audioPtr = turnAudio.dataPointer.bindMemory(to: Float32.self, capacity: turnSize)
-    if offset > 0 {
-        audioPtr.update(repeating: 0, count: offset)
-    }
-    pcm.withUnsafeBytes { raw in
-        guard let base = raw.baseAddress else { return }
-        let ptr = base.bindMemory(to: Int16.self, capacity: sampleCount)
-        let startIdx = sampleCount - take
-        let scale: Float32 = 1.0 / 32768.0
-        for i in 0..<take {
-            audioPtr[offset + i] = Float32(ptr[startIdx + i]) * scale
-        }
-    }
-    let input = try MLDictionaryFeatureProvider(dictionary: [
-        "audio": MLFeatureValue(multiArray: turnAudio)
-    ])
-    let output = try turnModel.prediction(from: input)
-    guard let prob = output.featureValue(for: "probability")?.multiArrayValue else {
-        throw HelperError(message: "TURN_OUTPUT_MISSING")
-    }
-    return prob[0].floatValue
-}
-
 // 预热：CoreML 首次 prediction 会编译/放置算子，必须在 ready 之前完成。
 do {
     _ = try runSat(ids: [6], isFinal: true)
-    _ = try runTurn(pcm: Data(count: 3200)) // 100ms 静音
 } catch {
     fail("warmup failed: \(error)")
 }
 
-writeJSON(["ready": true, "satSize": satSize, "turnSize": turnSize])
+writeJSON(["ready": true, "satSize": satSize])
 
 while let line = readLine(strippingNewline: true) {
     if line.isEmpty { continue }
@@ -164,13 +126,6 @@ while let line = readLine(strippingNewline: true) {
             let isFinal = (obj["final"] as? Bool) ?? true
             let probs = try runSat(ids: ids, isFinal: isFinal)
             writeJSON(["id": id, "probs": probs.map { Double($0) }])
-        case "turn":
-            guard let pcmBase64 = obj["pcm"] as? String,
-                  let pcm = Data(base64Encoded: pcmBase64) else {
-                throw HelperError(message: "INVALID_PCM")
-            }
-            let prob = try runTurn(pcm: pcm)
-            writeJSON(["id": id, "probability": Double(prob)])
         case "ping":
             writeJSON(["id": id, "ok": true])
         default:
