@@ -1,5 +1,5 @@
-// 单句翻译：Index-Translate-2B Q4_K_M via llama-server。
-// 无上下文、无重试、无截断；任何异常直接 reject，由上层转 fatal。
+// 单句+滑动上下文翻译：Index-Translate-2B Q4_K_M via llama-server。
+// 支持结合最近 2 句已完成翻译的上下文（基于 Index-Translate-2B 原生 instTrans 约束格式）消除指代不明与断句碎片感。
 
 import http from 'http';
 import { SubtitleError } from './ml_helper.js';
@@ -7,13 +7,22 @@ import { SubtitleError } from './ml_helper.js';
 const SOURCE_NAMES = { en: '英语', zh: '中文', ja: '日文' };
 const TARGET_NAMES = { en: '英文', zh: '中文', ja: '日文' };
 
+function stripThinkBlock(text) {
+  if (!text || typeof text !== 'string') return '';
+  let out = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  if (out.includes('</think>')) {
+    out = out.split('</think>').pop();
+  }
+  return out.replace(/^<think>/i, '').trim();
+}
+
 export class TranslationEngine {
   constructor({ port = 1249, timeoutMs = 15000 } = {}) {
     this.port = port;
     this.timeoutMs = timeoutMs;
   }
 
-  translate(text, sourceLang, targetLang) {
+  translate(text, sourceLang, targetLang, contextRecords = []) {
     const source = String(text || '').trim();
     if (!source) return Promise.reject(new SubtitleError('translation', 'EMPTY_SOURCE', '空句子'));
     if (targetLang === 'none') return Promise.resolve('');
@@ -24,13 +33,36 @@ export class TranslationEngine {
         new SubtitleError('translation', 'UNSUPPORTED_LANGUAGE', `${sourceLang}->${targetLang}`)
       );
     }
-    const prompt =
-      `请将以下${sourceName}文本翻译为${targetName}，直接输出翻译结果，不要进行任何解释。\n\n` +
-      source;
+
+    // 提取最近最多 2 句已完成翻译的上下文，利用 Index-Translate-2B 原生 instTrans 约束格式提升指代消解与口语连贯度
+    const validContext = Array.isArray(contextRecords)
+      ? contextRecords
+          .filter((r) => r && r.source_text && r.target_text && r.status === 'finalized')
+          .slice(-2)
+      : [];
+
+    let prompt;
+    if (validContext.length > 0) {
+      const ctxLines = validContext
+        .map((r) => `${String(r.source_text).trim()} -> ${String(r.target_text).trim()}`)
+        .join(' | ');
+      prompt =
+        `请将以下${sourceName}字幕翻译成${targetName}，并且严格遵循所有约束要求。\n` +
+        `【源文】\n${source}\n` +
+        `【约束要求】\n` +
+        `1. 【注意】结合前文语境（${ctxLines}）保持人称指代、术语与口语语气自然连贯，仅翻译【源文】本身，严禁重复输出前文。\n` +
+        `只输出译文，不要有任何额外说明。`;
+    } else {
+      prompt =
+        `请将以下${sourceName}文本翻译为${targetName}，直接输出翻译结果，不要进行任何解释。\n\n` +
+        source;
+    }
+
     const body = JSON.stringify({
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1024,
+      max_tokens: 512,
       temperature: 0,
+      chat_template_kwargs: { enable_thinking: false },
     });
 
     return new Promise((resolve, reject) => {
@@ -70,7 +102,7 @@ export class TranslationEngine {
               return;
             }
             const choice = json.choices?.[0];
-            const content = choice?.message?.content;
+            const rawContent = choice?.message?.content;
             if (choice?.finish_reason !== 'stop') {
               reject(
                 new SubtitleError(
@@ -81,11 +113,12 @@ export class TranslationEngine {
               );
               return;
             }
-            if (typeof content !== 'string' || !content.trim()) {
+            const cleaned = stripThinkBlock(rawContent);
+            if (!cleaned) {
               reject(new SubtitleError('translation', 'TRANSLATION_EMPTY', '翻译结果为空'));
               return;
             }
-            resolve(content.trim());
+            resolve(cleaned);
           });
         }
       );

@@ -69,14 +69,21 @@ do {
     fail("failed to allocate CoreML input arrays: \(error)")
 }
 
-func runSat(ids: [Int]) throws -> [Float] {
-    guard ids.count <= satSize - 2 else {
-        throw HelperError(message: "SAT_INPUT_TOO_LONG")
-    }
-    let sequence = [0] + ids + [2] // XLM-R: <s> ... </s>
+func runSat(ids: [Int], isFinal: Bool = true) throws -> [Float] {
+    let maxTokens = satSize - 2
+    let clippedIds = ids.count > maxTokens ? Array(ids.prefix(maxTokens)) : ids
+    // 流式非终态 (isFinal=false) 不在未完草稿末尾强塞 </s>(2)，避免 XLM-R/SaT 因句末结束符偏置把半句末尾误判为高概率句界
+    let sequence = isFinal ? ([0] + clippedIds + [2]) : ([0] + clippedIds)
+    let idsPtr = satInputIds.dataPointer.bindMemory(to: Int32.self, capacity: satSize)
+    let maskPtr = satAttentionMask.dataPointer.bindMemory(to: Int32.self, capacity: satSize)
     for i in 0..<satSize {
-        satInputIds[i] = NSNumber(value: i < sequence.count ? Int32(sequence[i]) : 1) // pad id
-        satAttentionMask[i] = NSNumber(value: i < sequence.count ? 1 : 0)
+        if i < sequence.count {
+            idsPtr[i] = Int32(sequence[i])
+            maskPtr[i] = 1
+        } else {
+            idsPtr[i] = 1 // pad id
+            maskPtr[i] = 0
+        }
     }
     let input = try MLDictionaryFeatureProvider(dictionary: [
         "input_ids": MLFeatureValue(multiArray: satInputIds),
@@ -86,8 +93,11 @@ func runSat(ids: [Int]) throws -> [Float] {
     guard let logits = output.featureValue(for: "logits")?.multiArrayValue else {
         throw HelperError(message: "SAT_OUTPUT_MISSING")
     }
-    var probs = [Float](repeating: 0, count: sequence.count)
-    for i in 0..<sequence.count {
+    // 始终返回 clippedIds.count + 2 长度（probs[0] 为 BOS，probs[1...N] 对应各 token，末尾补位保持协议兼容）
+    let outCount = clippedIds.count + 2
+    var probs = [Float](repeating: 0, count: outCount)
+    let computeCount = min(sequence.count, outCount)
+    for i in 0..<computeCount {
         let x = logits[i].floatValue
         probs[i] = 1.0 / (1.0 + exp(-x))
     }
@@ -98,16 +108,21 @@ func runTurn(pcm: Data) throws -> Float {
     guard pcm.count % 2 == 0 else {
         throw HelperError(message: "TURN_PCM_ODD_BYTES")
     }
-    let samples: [Int16] = pcm.withUnsafeBytes { raw in
-        guard let base = raw.baseAddress else { return [] }
-        let ptr = base.bindMemory(to: Int16.self, capacity: pcm.count / 2)
-        return Array(UnsafeBufferPointer(start: ptr, count: pcm.count / 2))
-    }
-    for i in 0..<turnSize { turnAudio[i] = 0 }
-    let take = min(samples.count, turnSize)
+    let sampleCount = pcm.count / 2
+    let take = min(sampleCount, turnSize)
     let offset = turnSize - take
-    for i in 0..<take {
-        turnAudio[offset + i] = NSNumber(value: Float(samples[samples.count - take + i]) / 32768.0)
+    let audioPtr = turnAudio.dataPointer.bindMemory(to: Float32.self, capacity: turnSize)
+    if offset > 0 {
+        audioPtr.update(repeating: 0, count: offset)
+    }
+    pcm.withUnsafeBytes { raw in
+        guard let base = raw.baseAddress else { return }
+        let ptr = base.bindMemory(to: Int16.self, capacity: sampleCount)
+        let startIdx = sampleCount - take
+        let scale: Float32 = 1.0 / 32768.0
+        for i in 0..<take {
+            audioPtr[offset + i] = Float32(ptr[startIdx + i]) * scale
+        }
     }
     let input = try MLDictionaryFeatureProvider(dictionary: [
         "audio": MLFeatureValue(multiArray: turnAudio)
@@ -121,7 +136,7 @@ func runTurn(pcm: Data) throws -> Float {
 
 // 预热：CoreML 首次 prediction 会编译/放置算子，必须在 ready 之前完成。
 do {
-    _ = try runSat(ids: [6])
+    _ = try runSat(ids: [6], isFinal: true)
     _ = try runTurn(pcm: Data(count: 3200)) // 100ms 静音
 } catch {
     fail("warmup failed: \(error)")
@@ -146,7 +161,8 @@ while let line = readLine(strippingNewline: true) {
             guard let ids = obj["ids"] as? [Int] else {
                 throw HelperError(message: "MISSING_IDS")
             }
-            let probs = try runSat(ids: ids)
+            let isFinal = (obj["final"] as? Bool) ?? true
+            let probs = try runSat(ids: ids, isFinal: isFinal)
             writeJSON(["id": id, "probs": probs.map { Double($0) }])
         case "turn":
             guard let pcmBase64 = obj["pcm"] as? String,

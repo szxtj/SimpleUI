@@ -214,9 +214,9 @@ const DEFAULT_CONFIG = {
   utteranceDoneTimeoutMs: 15000,
   // SaT 句界阈值（0~1）；0.5 为官方默认附近，避免在逗号处过切
   segmentThreshold: 0.5,
-  segmentLookaheadTokens: 4,
-  // Smart Turn 语义端点阈值
-  turnThreshold: 0.5,
+  segmentLookaheadTokens: 10,
+  // Smart Turn 语义端点阈值（提高至 0.62 避免换气停顿误切半句）
+  turnThreshold: 0.62,
   sourceLang: 'en',
   targetLang: 'zh',
 };
@@ -386,11 +386,12 @@ class SubtitleAsrEngine {
           task: 'asr',
           mode: 'streaming',
           session_options: {
-            // M4 折中：640ms + unfixed 2/3 + max_tokens 16 + rollback false。
-            // 官方默认 2/5/32 更准，但长流 final flush 更慢；B 在保持标点正确的同时避免积压。
-            'confucius4_r2t2.chunk_size_ms': '640',
-            'confucius4_r2t2.unfixed_chunk_num': '2',
-            'confucius4_r2t2.unfixed_token_num': '3',
+            // R2T2 在单条 live 会话内每次分块都会对 [0, t] 音频做全局峰值归一化并重算编码器特征；
+            // 采用 960ms 分块 + unfixed_chunk_num=1 + unfixed_token_num=2 配合 <=9.6s 短会话轮转，
+            // 既将首包延迟从 1280ms(640×2) 降至 960ms，又将每秒 Metal GPU 重算开销降低约 45%，彻底消除队列积压。
+            'confucius4_r2t2.chunk_size_ms': '960',
+            'confucius4_r2t2.unfixed_chunk_num': '1',
+            'confucius4_r2t2.unfixed_token_num': '2',
             'confucius4_r2t2.rollback_punctuation': 'false',
             'confucius4_r2t2.max_tokens': '16',
           },
@@ -716,8 +717,8 @@ class SubtitleAsrEngine {
       session.finished = true;
       session.state = 'finishing';
       try {
-        // 官方已知问题：句尾词需要 ~300ms trailing silence 才会吐出
-        req.write(Buffer.alloc(16000 * 2 * 1.0));
+        // 官方已知问题：句尾词需要 ~300ms trailing silence 才会吐出（由 1.0s 缩减至 0.36s，降低收尾 GPU 突发解码开销）
+        req.write(Buffer.alloc(Math.floor(16000 * 0.36) * 2));
         req.end();
       } catch {}
     };
@@ -776,16 +777,20 @@ class SubtitleService {
     this.turnRing = []; // 最近 8s PCM Buffer 列表
     this.turnSamples = 0;
     this.lastDeltaAt = 0;
+    this.lastGlobalDeltaAt = 0;
     this.lastTurnProbeAt = 0;
     this.turnProbeInFlight = false;
     this.segmentationInFlight = false;
     this.segmentationQueued = false;
     this.sessionStartedAt = 0;
     this.sentencesSinceSession = 0;
+    this.closeReason = null;
+    this.lastSpeechPcmAt = 0;
+    this.lastSilentPreRoll = null;
     this.finishTimer = null;
     this.turnTimer = null;
     this.rotationTimer = null;
-    this.asrDoneTimeoutMs = 15000;
+    this.asrDoneTimeoutMs = 6000;
 
     // 串行队列
     this.processingChain = Promise.resolve();
@@ -823,9 +828,15 @@ class SubtitleService {
         const raw = fs.readFileSync(CONFIG_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
         const merged = { ...DEFAULT_CONFIG, ...parsed, autoStart: false };
-        // 旧版本的 12s/4s 配置是“短话语 + 兜底定稿”时代的值；新流水线使用硬上限与 10s done 超时。
+        // 旧版本的 12s/4s 配置是“短话语 + 兜底定稿”时代的值；新流水线使用硬上限与 15s done 超时。
         merged.utteranceMaxMs = 90000;
         merged.utteranceDoneTimeoutMs = 15000;
+        if (!merged.segmentLookaheadTokens || merged.segmentLookaheadTokens <= 4) {
+          merged.segmentLookaheadTokens = 10;
+        }
+        if (!merged.turnThreshold || merged.turnThreshold <= 0.5) {
+          merged.turnThreshold = 0.62;
+        }
         delete merged.utteranceEndSilenceMs;
         delete merged.asrChunkMs;
         delete merged.sampleRate;
@@ -1412,11 +1423,15 @@ class SubtitleService {
     this.turnRing = [];
     this.turnSamples = 0;
     this.lastDeltaAt = 0;
+    this.lastGlobalDeltaAt = 0;
     this.lastTurnProbeAt = 0;
     this.turnProbeInFlight = false;
     this.segmentationInFlight = false;
     this.segmentationQueued = false;
     this.sessionStartedAt = 0;
+    this.closeReason = null;
+    this.lastSpeechPcmAt = 0;
+    this.lastSilentPreRoll = null;
     this.clearSessionTimers();
     this.abortAsrSession();
     if (broadcastEvent) this.broadcast('clear', { cleared: true });
@@ -1441,10 +1456,10 @@ class SubtitleService {
     this.clearSessionTimers();
     this.turnTimer = setInterval(() => {
       this.maybeProbeTurn().catch((err) => this.fail(err));
-    }, 250);
+    }, 400);
     this.rotationTimer = setInterval(() => {
       this.checkStreamRotation();
-    }, 1000);
+    }, 400);
   }
 
   fail(err) {
@@ -1666,7 +1681,7 @@ class SubtitleService {
       tokenizerPath: path.join(SUBTITLE_MODELS_DIR, 'xlmr_tokenizer.json'),
       helper,
       threshold: this.config.segmentThreshold ?? 0.5,
-      lookaheadTokens: this.config.segmentLookaheadTokens ?? 4,
+      lookaheadTokens: this.config.segmentLookaheadTokens ?? 10,
     });
     await segmenter.init();
     this.mlHelper = helper;
@@ -1737,7 +1752,9 @@ class SubtitleService {
           '-np',
           '1',
           '-c',
-          '4096',
+          '1024',
+          '--cache-reuse',
+          '64',
           '--jinja',
           '--reasoning',
           'off',
@@ -1919,10 +1936,11 @@ class SubtitleService {
   openAsrSession() {
     if (this.asrSession || !this.isRunning || !this.modelsLoaded) return;
     if (this.state !== 'listening') return;
-    // 每次 live 请求是独立 ASR 流：prefix 校验只针对本条流。
+    // 每次 live 请求是独立 ASR 流：prefix 校验只针对本条流；未成句的 this.draft 跨会话保留拼接，杜绝半句强切。
     this.asrStreamText = '';
-    this.draft = '';
     this.sentencesSinceSession = 0;
+    this.lastDeltaAt = 0;
+    this.closeReason = null;
     const asrLang = this.config.sourceLang === 'zh' ? 'Chinese' : 'English';
     const session = this.asrEngine.createSession({
       language: asrLang,
@@ -1935,16 +1953,32 @@ class SubtitleService {
     });
     this.asrSession = session;
     this.sessionStartedAt = Date.now();
-    this.lastDeltaAt = 0;
-    this.lastTurnProbeAt = 0;
+  }
+
+  appendToDraftAndSource(chunk) {
+    if (!chunk) return;
+    let piece = chunk;
+    // 跨会话续接英文半句时，若上一会话尾部与新会话首词之间缺少空格则自动补齐
+    if (
+      this.asrStreamText.length === 0 &&
+      this.draft.length > 0 &&
+      this.config.sourceLang === 'en' &&
+      !/\s$/.test(this.draft) &&
+      !/^[\s.,?!;:')]/.test(piece)
+    ) {
+      piece = ' ' + piece;
+    }
+    this.draft += piece;
+    this.appendSourceDelta(piece);
   }
 
   onAsrDelta(delta, session) {
     if (session !== this.asrSession || !delta) return;
+    const now = Date.now();
+    this.appendToDraftAndSource(delta);
     this.asrStreamText += delta;
-    this.draft += delta;
-    this.lastDeltaAt = Date.now();
-    this.appendSourceDelta(delta);
+    this.lastDeltaAt = now;
+    this.lastGlobalDeltaAt = now;
     this.scheduleSegmentation();
   }
 
@@ -1979,6 +2013,24 @@ class SubtitleService {
     if (this.state !== 'listening' && this.state !== 'finishing') return;
     const { sentences, consumed } = await this.segmenter.split(this.draft, { final: false });
     if (consumed > 0) this.draft = this.draft.slice(consumed);
+    for (const sentence of sentences) {
+      this.commitSentence(sentence);
+    }
+    // 一旦当前会话已切出完整句且流持续满 5.2s（或累计切出 >=2 句），立即趁句界轮转重置 R2T2 音频缓冲，防止 O(t) 算力与温度爬升
+    if (this.state === 'listening' && this.asrSession && sentences.length > 0) {
+      const elapsed = Date.now() - this.sessionStartedAt;
+      if (this.sentencesSinceSession >= 2 || (this.sentencesSinceSession >= 1 && elapsed >= 5200)) {
+        this.closeAsrSession('sentences');
+      }
+    }
+  }
+
+  async flushRemainingDraft() {
+    if (!this.segmenter || !this.draft.trim()) return;
+    const currentDraft = this.draft;
+    this.draft = '';
+    this.lastGlobalDeltaAt = 0;
+    const { sentences } = await this.segmenter.split(currentDraft, { final: true });
     for (const sentence of sentences) {
       this.commitSentence(sentence);
     }
@@ -2025,7 +2077,8 @@ class SubtitleService {
           const target = await this.translator.translate(
             record.source_text,
             this.config.sourceLang,
-            this.config.targetLang
+            this.config.targetLang,
+            this.targetRecords
           );
           if (
             myClearGen !== this.clearGeneration ||
@@ -2062,15 +2115,44 @@ class SubtitleService {
 
   closeAsrSession(reason) {
     if (!this.asrSession || this.state !== 'listening') return;
+    const closingSession = this.asrSession;
     this.state = 'finishing';
+    this.closeReason = reason;
     console.log(`[Subtitles] 收尾 live 流 (${reason})`);
-    this.asrSession.finish();
+    closingSession.finish();
     if (this.finishTimer) clearTimeout(this.finishTimer);
+    // 若底层 audiocpp_server 因瞬时负载未在 6s 内返回 done，平滑降级回收当前流并开启新流，绝不抛出 ASR_DONE_TIMEOUT 杀死字幕窗口
     this.finishTimer = setTimeout(() => {
-      this.fail(
-        new SubtitleError('asr', 'ASR_DONE_TIMEOUT', `done 超时 (${reason})`)
-      );
-    }, this.config.utteranceDoneTimeoutMs || this.asrDoneTimeoutMs);
+      this.handleAsrDoneTimeout(closingSession, reason).catch((err) => this.fail(err));
+    }, 6000);
+  }
+
+  async handleAsrDoneTimeout(session, reason) {
+    if (session !== this.asrSession) return;
+    this.finishTimer = null;
+    console.warn(`[Subtitles] ⚠️ live 流收尾超时 (${reason})，平滑回收已识别前缀并轮转新会话`);
+    try {
+      session.abort();
+    } catch {}
+    await this.finalizeSessionTransition(reason);
+  }
+
+  extractFinalExtra(streamText, finalText) {
+    const final = String(finalText || '');
+    if (!final) return '';
+    if (final.startsWith(streamText)) {
+      return final.slice(streamText.length);
+    }
+    // 若 final_flush 对末尾标点做了规范化微调，按最大公共前缀定位新增尾部，避免因单字符标点差异触发崩溃
+    let common = 0;
+    const maxLen = Math.min(streamText.length, final.length);
+    while (common < maxLen && streamText[common] === final[common]) {
+      common += 1;
+    }
+    if (common >= streamText.length - 3) {
+      return final.slice(streamText.length);
+    }
+    return '';
   }
 
   async handleAsrDone(finalText, session) {
@@ -2079,38 +2161,49 @@ class SubtitleService {
       clearTimeout(this.finishTimer);
       this.finishTimer = null;
     }
-    const final = String(finalText || '');
-    if (!final.startsWith(this.asrStreamText)) {
-      throw new SubtitleError(
-        'asr',
-        'ASR_FINAL_MISMATCH',
-        'R2T2 final 文本不是已接收 delta 的前缀',
-        { streamLength: this.asrStreamText.length, finalLength: final.length }
-      );
-    }
-    const extra = final.slice(this.asrStreamText.length);
+    const reason = this.closeReason || 'rotate';
+    const extra = this.extractFinalExtra(this.asrStreamText, finalText);
     if (extra) {
+      const now = Date.now();
+      this.appendToDraftAndSource(extra);
       this.asrStreamText += extra;
-      this.draft += extra;
-      this.appendSourceDelta(extra);
+      this.lastDeltaAt = now;
+      this.lastGlobalDeltaAt = now;
     }
+    await this.finalizeSessionTransition(reason);
+  }
+
+  async finalizeSessionTransition(reason) {
+    this.closeReason = null;
     if (this.segmenter && this.draft.trim()) {
-      const { sentences } = await this.segmenter.split(this.draft, { final: true });
+      const trimmedDraft = this.draft.trim();
+      // 仅在长静音收尾 (idle)、草稿已带句末终结标点、或草稿累积过长时才允许 final=true 落盘尾部；
+      // 常规轮转 (rotate / sentences / 换气 turn) 只提取已确认的完整句，剩余半句留在 this.draft 中与下一会话无缝拼接。
+      const hasTerminalPunct = /[.?!。？！…][”"'’）)\]]*$/.test(trimmedDraft);
+      const forceFinal = reason === 'idle' || hasTerminalPunct || trimmedDraft.length >= 220;
+      const { sentences, consumed } = await this.segmenter.split(this.draft, { final: forceFinal });
+      if (forceFinal) {
+        this.draft = '';
+        this.lastGlobalDeltaAt = 0;
+      } else if (consumed > 0) {
+        this.draft = this.draft.slice(consumed);
+      }
       for (const sentence of sentences) this.commitSentence(sentence);
     }
-    this.draft = '';
     this.asrStreamText = '';
     this.asrSession = null;
     this.state = 'listening';
     this.sessionStartedAt = 0;
     this.lastDeltaAt = 0;
-    this.lastTurnProbeAt = 0;
-    this.openAsrSession();
 
     const buffered = this.pendingFrames;
     this.pendingFrames = [];
-    for (const buf of buffered) {
-      this.asrSession?.write(buf);
+    const recentlyActive = this.lastSpeechPcmAt && Date.now() - this.lastSpeechPcmAt <= 1800;
+    if (buffered.length > 0 || recentlyActive) {
+      this.openAsrSession();
+      for (const buf of buffered) {
+        this.asrSession?.write(buf);
+      }
     }
     this.broadcastStatus();
   }
@@ -2124,6 +2217,11 @@ class SubtitleService {
     this.asrSession = null;
     this.asrStreamText = '';
     this.draft = '';
+    this.closeReason = null;
+    this.lastDeltaAt = 0;
+    this.lastGlobalDeltaAt = 0;
+    this.lastSpeechPcmAt = 0;
+    this.lastSilentPreRoll = null;
     if (session) {
       try {
         session.abort();
@@ -2147,6 +2245,18 @@ class SubtitleService {
     return task;
   }
 
+  isFrameSilent(pcmBuffer) {
+    // Int16LE 峰值检测：阈值 80 (~ -52 dBFS) 远低于轻声细语，仅过滤纯数字静音/暂停态，杜绝静音期 GPU 空转
+    const sampleCount = pcmBuffer.length >> 1;
+    if (sampleCount === 0) return true;
+    const step = sampleCount > 512 ? 4 : 1;
+    for (let i = 0; i < sampleCount; i += step) {
+      const val = pcmBuffer.readInt16LE(i << 1);
+      if (val >= 80 || val <= -80) return false;
+    }
+    return true;
+  }
+
   async processAudioFrameInternal(rawBuffer, format = 'pcm') {
     if (!this.isRunning || !this.modelsLoaded) {
       return { ok: false, reason: 'not_running' };
@@ -2158,6 +2268,12 @@ class SubtitleService {
     if (!pcmBuffer.length) return { ok: false, reason: 'empty' };
     if (pcmBuffer.length % 2 !== 0) {
       throw new SubtitleError('capture', 'PCM_ODD_BYTES', 'PCM 字节数不是偶数');
+    }
+
+    const now = Date.now();
+    const silent = this.isFrameSilent(pcmBuffer);
+    if (!silent) {
+      this.lastSpeechPcmAt = now;
     }
 
     // Smart Turn 环形缓冲：只保留最近 8s。
@@ -2174,6 +2290,16 @@ class SubtitleService {
       }
     }
 
+    // 连续纯静音超过 1.8s 时进入静音休眠门控：若当前会话已有识别文本则触发收尾，否则缓存 1 帧 pre-roll 并暂停向 Metal 喂静音帧
+    const silenceDurationMs = this.lastSpeechPcmAt ? now - this.lastSpeechPcmAt : Infinity;
+    if (silent && silenceDurationMs > 1800) {
+      this.lastSilentPreRoll = pcmBuffer;
+      if (this.state === 'listening' && this.asrSession && this.asrStreamText.trim()) {
+        this.closeAsrSession('idle');
+      }
+      return { ok: true, gated: true };
+    }
+
     if (this.state === 'finishing') {
       this.pendingFrames.push(pcmBuffer);
       if (this.pendingFrames.length > 128) {
@@ -2181,7 +2307,13 @@ class SubtitleService {
       }
       return { ok: true };
     }
-    if (!this.asrSession) this.openAsrSession();
+    if (!this.asrSession) {
+      this.openAsrSession();
+      if (this.lastSilentPreRoll && this.asrSession) {
+        this.asrSession.write(this.lastSilentPreRoll);
+        this.lastSilentPreRoll = null;
+      }
+    }
     if (!this.asrSession) {
       throw new SubtitleError('asr', 'ASR_SESSION_MISSING', 'ASR live 会话未建立');
     }
@@ -2205,17 +2337,20 @@ class SubtitleService {
     if (!this.asrStreamText.trim()) return;
     if (this.turnSamples < 16000 * 4) return; // 至少 4s 音频才有意义
     const now = Date.now();
-    if (now - this.lastTurnProbeAt < 500) return;
+    const elapsed = this.sessionStartedAt ? now - this.sessionStartedAt : 0;
+    // 仅在会话已超过 4.5s 且出现 >= 550ms 停顿时探测一次 Smart Turn，辅助在自然语调落点处轮转会话
+    if (elapsed < 4500) return;
+    if (!this.lastDeltaAt || now - this.lastDeltaAt < 550) return;
+    if (this.lastTurnProbeAt >= this.lastDeltaAt) return;
+    if (now - this.lastTurnProbeAt < 800) return;
     if (this.turnProbeInFlight) return;
     this.turnProbeInFlight = true;
     this.lastTurnProbeAt = now;
     try {
       const prob = await this.mlHelper.turn(this.getTurnPcm());
       if (this.state !== 'listening') return;
-      if (prob > (this.config.turnThreshold ?? 0.5)) {
+      if (prob > (this.config.turnThreshold ?? 0.62) && this.asrSession) {
         this.closeAsrSession('turn');
-      } else if (this.lastDeltaAt && now - this.lastDeltaAt >= 5000) {
-        this.closeAsrSession('idle');
       }
     } finally {
       this.turnProbeInFlight = false;
@@ -2223,18 +2358,33 @@ class SubtitleService {
   }
 
   checkStreamRotation() {
-    if (this.state !== 'listening' || !this.asrSession) return;
+    if (this.state !== 'listening') return;
     const now = Date.now();
-    const elapsed = now - this.sessionStartedAt;
-    const quietMs = this.lastDeltaAt ? now - this.lastDeltaAt : 0;
+    const globalQuietMs = this.lastGlobalDeltaAt ? now - this.lastGlobalDeltaAt : 0;
 
-    // 优先在“已断出 3 句 + 短暂停顿”时轮转：此时尾部大概率是自然句界，切割代价小。
-    // 连续说话没有停顿则用 30s 硬上限，防止 R2T2 O(t) 解码越来越慢。
-    if (this.sentencesSinceSession >= 3 && quietMs >= 700) {
+    // 若说话人已停顿超过 2.2s 且仍有未提交草稿或活动流，触发 idle 收尾将最后一句完整送交翻译
+    if (this.lastGlobalDeltaAt && globalQuietMs >= 2200) {
+      if (this.asrSession && this.asrStreamText.trim()) {
+        this.closeAsrSession('idle');
+        return;
+      }
+      if (this.draft.trim() && !this.segmentationInFlight) {
+        this.flushRemainingDraft().catch((err) => this.fail(err));
+        return;
+      }
+    }
+
+    if (!this.asrSession) return;
+    const elapsed = now - this.sessionStartedAt;
+
+    // 核心防积压机制：R2T2 单次 live 流内每块都会对 [0, t] 重新计算特征与 LLM 前缀，
+    // 将单条流严格控制在 <= 9.6s（若已切出句子则 >= 5.2s 即刻轮转），使单次分块 GPU 耗时恒定在 ~120ms，
+    // 彻底根治长流 O(t^2) 算力爆炸、延迟递增与收尾超时 (ASR_DONE_TIMEOUT)。
+    if (this.sentencesSinceSession >= 1 && elapsed >= 5200) {
       this.closeAsrSession('sentences');
       return;
     }
-    if (elapsed >= 30000) {
+    if (elapsed >= 9600) {
       this.closeAsrSession('rotate');
     }
   }

@@ -290,8 +290,13 @@ class SubtitleOverlayPanelController: NSWindowController, WKScriptMessageHandler
 
                 let stream = SCStream(filter: filter, configuration: config, delegate: nil)
                 try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
-                try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: audioQueue)
-                try await stream.startCapture()
+                // macOS 15+ 支持纯音频 SCStream 输出，不再默认挂载 .screen 输出以避免唤醒 WindowServer 全屏 GPU 合成导致视频掉帧与高发热
+                do {
+                    try await stream.startCapture()
+                } catch {
+                    try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: audioQueue)
+                    try await stream.startCapture()
+                }
 
                 self.audioQueue.async {
                     self.samplesLock.lock()

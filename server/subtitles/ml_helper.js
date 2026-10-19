@@ -142,8 +142,8 @@ export class SubtitleMlHelper {
     });
   }
 
-  async segment(ids) {
-    const msg = await this._request({ cmd: 'segment', ids }, 3000);
+  async segment(ids, { final = true } = {}) {
+    const msg = await this._request({ cmd: 'segment', ids, final: Boolean(final) }, 3000);
     if (!Array.isArray(msg.probs)) {
       throw new SubtitleError('segmentation', 'ML_HELPER_PROTOCOL', 'segment 响应缺少 probs');
     }
