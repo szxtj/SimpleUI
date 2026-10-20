@@ -14,6 +14,8 @@ import {
   getActiveContextMessages,
 } from '../services/chatTurn';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { SpeakButton } from './SpeakButton';
+import { markdownToSpeechText } from '../utils/speechText';
 import { ThinkingAccordion } from './ThinkingAccordion';
 import { StageLadder } from './StageLadder';
 import { ImageAttachment } from './ImageAttachment';
@@ -1008,7 +1010,7 @@ export const SpotlightView: React.FC = () => {
                         ))}
                       </div>
                     )}
-                    <div className="break-words leading-relaxed max-w-full min-w-0">
+                    <div data-readable="true" className="break-words leading-relaxed max-w-full min-w-0">
                       <MarkdownRenderer
                         content={msg.content}
                         breaks={true}
@@ -1066,6 +1068,7 @@ export const SpotlightView: React.FC = () => {
 
                 {msg.content && (
                   <div
+                    data-readable="true"
                     className="leading-relaxed min-w-0 max-w-full text-[#1f2328] dark:text-[#ecedf1]"
                     style={{ fontSize: 'var(--chat-font-size, 14.5px)' }}
                   >
@@ -1130,6 +1133,10 @@ export const SpotlightView: React.FC = () => {
                         >
                           <FileText className="w-3.5 h-3.5" />
                         </button>
+                      )}
+
+                      {msg.content && (
+                        <SpeakButton text={markdownToSpeechText(msg.content)} title={t('speakMessage')} />
                       )}
 
                       <button

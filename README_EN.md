@@ -31,7 +31,7 @@ SimpleUI is deeply tuned for [TurboFieldfare](https://github.com/drumih/turbo-fi
 
 ## Highlights
 
-- **Local-first**: inference, knowledge retrieval, speech recognition, subtitles, and translation all run on-device — no Python virtualenv, vector database, or cloud API required.
+- **Local-first**: inference, knowledge retrieval, speech recognition, subtitles, and translation all run on-device — no need to install or configure Python yourself, no vector database, and no cloud API.
 - **Model integration services**: unified management for base models, SenseVoice speech input, R2T2 streaming captions, Index-Translate, and CoreML segmentation models.
 - **DeepSeek API integration**: independent Base URL / API key / model / context / temperature / top_p / reasoning effort / stop strings / system prompt; requests go directly to the official endpoint, with cache-friendly context trimming.
 - **Offline Wiki RAG**: Kiwix ZIM + multi-channel retrieval + direct raw-text injection; no summarization, no rewriting, no mechanical truncation, with clickable citations.
@@ -146,6 +146,11 @@ System audio (16 kHz mono PCM)
 | Segmentation tokenizer | XLM-R `tokenizer.json` | 9 MB | Node |
 
 > Subtitle models follow their upstream licenses; SaT weights are MIT — verify the distribution terms of the CoreML conversion package.
+>
+> R2T2 only accepts GGUF files in the **audio.cpp package format** (currently `Q8_0`, 2.31 GiB). The official
+> [netease-youdao/Confucius4-R2T2-GGUF](https://huggingface.co/netease-youdao/Confucius4-R2T2-GGUF) uses the
+> llama.cpp layout (`blk.*` plus a separate `mmproj`), which audio.cpp cannot load — so its `Q4_K_M` and other
+> low-bit variants are not usable yet.
 
 How it works:
 
@@ -157,6 +162,16 @@ How it works:
 - **Language directions**: English → Chinese/Japanese and Chinese → English/Japanese; source and target are switchable in the subtitle overlay.
 - **Strictly on-demand**: models load when the subtitle window opens and unload when it closes; failures are fatal with no auto-restart or reconnect.
 - **Model directory**: `~/Library/Application Support/SimpleUI/models/subtitles_pipeline/`; the Service Manager supports speed-tested downloads and resumable transfers for all three models.
+
+### Read Selection Aloud
+
+- Select any text in a message; two rounded buttons appear next to the selection — **Qwen** (local Qwen3-TTS) and **System** (macOS system voice). Click again (or press `Esc`) to stop.
+- Every answer also has a read-aloud button in its footer, to the left of Retry, which reads the whole answer.
+- Model: Qwen3-TTS 0.6B CustomVoice (MLX 4bit, ~1.6 GB including the separate speech codec); default voice `serena`.
+- Formula blocks are `select-none`, so they are skipped naturally; code blocks are read as plain text.
+- Loaded on demand: the first click waits for the model (roughly 3–12 s), and it **unloads and exits after 5 idle minutes**; endpoint `POST /api/tts/speak`.
+- “Service Manager → Text-to-Speech” provides a master switch and model download; turning it off hides every read-aloud entry point and releases the model immediately.
+- Inference runs on the bundled mlx-audio (Python) runtime; the main chat path still needs no Python.
 
 ### Quick Translate
 
@@ -229,7 +244,7 @@ Builds the Swift native shell, frontend assets, and bundled runtimes, then insta
 ### Models and knowledge base
 
 - Base models: prepare TTF / Mference repositories and weights yourself, connect another OpenAI-compatible service, or configure a DeepSeek API key in Settings.
-- Speech model: SenseVoice is bundled; if missing, download it in Service Manager.
+- Speech model: SenseVoice Q8_0 is bundled (no in-app download; if missing, place it manually under `~/Library/Application Support/SimpleUI/models/`).
 - Subtitle models: download in Service Manager; the set includes R2T2, SaT, Index-Translate, and the tokenizer.
 - Offline wiki: select a local ZIM file under Service Manager → Knowledge Base.
 

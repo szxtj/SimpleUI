@@ -31,7 +31,7 @@ SimpleUI 为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 深度�
 
 ## 核心亮点
 
-- **本地优先**：模型推理、知识库、语音识别、字幕和翻译都在本机完成；无需 Python 虚拟环境、向量数据库或云端 API。
+- **本地优先**：模型推理、知识库、语音识别、字幕和翻译都在本机完成；无需自行安装或配置 Python 环境、向量数据库或云端 API。
 - **模型集成服务**：统一托管基础模型、SenseVoice 语音识别、R2T2 流式字幕、Index-Translate 翻译与 CoreML 断句模型。
 - **DeepSeek API 深度适配**：官方 Base URL / API Key / 模型 / 上下文 / 温度 / top_p / 推理强度 / 停止串 / 系统提示词独立配置，直接请求官方接口，并针对缓存命中做上下文修剪。
 - **离线维基 RAG**：Kiwix ZIM + 多通道检索 + 原文直注；不摘要、不改写、不机械截断，答案带可点击引用。
@@ -128,7 +128,7 @@ SimpleUI 使用本地 Kiwix ZIM 构建端到端离线知识库。核心原则是
 
 ### 离线实时双语字幕
 
-SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传，不调用云端 API**，ASR、断句、端点和翻译均由本地模型完成。适用于看剧、会议、演讲、播客等场景。
+SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传，不调用云端 API**，ASR、断句和翻译均由本地模型完成。适用于看剧、会议、演讲、播客等场景。
 
 ```text
 系统音频（16kHz mono PCM）
@@ -146,6 +146,10 @@ SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传
 | 断句分词 | XLM-R `tokenizer.json` | 9 MB | Node |
 
 > 字幕模型遵循各自上游许可证；SaT 权重为 MIT，其 CoreML 转换包请自行确认分发授权。
+>
+> R2T2 只接受 **audio.cpp 打包格式**的 GGUF（当前随下载提供 `Q8_0`，2.31 GiB）。官方
+> [netease-youdao/Confucius4-R2T2-GGUF](https://huggingface.co/netease-youdao/Confucius4-R2T2-GGUF)
+> 是 llama.cpp 布局（`blk.*` + 独立 `mmproj`），audio.cpp 无法加载，因此其中的 `Q4_K_M` 等低比特档位暂不可用。
 
 工作方式：
 
@@ -157,6 +161,16 @@ SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传
 - **语言方向**：支持英文→中文/日文、中文→英文/日文；声音源与目标语言在字幕悬浮窗切换。
 - **严格按需**：打开字幕窗口才加载，关闭即卸载；失败直接 fatal，不自动重启/重连。
 - **模型目录**：`~/Library/Application Support/SimpleUI/models/subtitles_pipeline/`；服务管理面板支持三模型测速下载与断点续传。
+
+### 划选朗读
+
+- 在任意消息正文中划选文本，选区旁会出现两个圆角按钮：**Qwen**（本地 Qwen3-TTS）与**系统**（macOS 系统语音）；再点一次或按 `Esc` 停止。
+- 每条回答下方也有一个朗读按钮（在「重试」左侧），用于通读整条回答。
+- 模型：Qwen3-TTS 0.6B CustomVoice（MLX 4bit，约 1.6 GB，含独立语音 codec），默认音色 `serena`。
+- 公式块带 `select-none`，划选时会自然跳过；代码块按原文朗读，不解释语法。
+- 按需加载：首次点击需等待模型载入（约 3–12 秒），**闲置 5 分钟后自动卸载**并退出进程；对应接口 `POST /api/tts/speak`。
+- 「服务管理 → 文字转语音」提供总开关与模型下载；关闭后上述朗读入口全部隐藏，并立即释放模型。
+- 该功能的推理走随包分发的 mlx-audio（Python）运行时，主对话链路仍不依赖 Python。
 
 ### 快捷翻译
 
@@ -229,7 +243,7 @@ npm run dev
 ### 模型与知识库
 
 - 基础模型：自行准备 TTF / Mference 本体与权重；也可连接其它 OpenAI 兼容服务，或在设置中直接配置 DeepSeek API Key。
-- 语音模型：随包内置 SenseVoice；缺失时可在「服务管理」下载。
+- 语音模型：SenseVoice Q8_0 随包内置（不提供在线下载；若缺失，需手动放入 `~/Library/Application Support/SimpleUI/models/`）。
 - 字幕模型：在「服务管理」下载，包含 R2T2、SaT、Index-Translate 与 tokenizer。
 - 离线维基：在「服务管理 → 知识库」中指定本地 ZIM 文件。
 

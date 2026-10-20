@@ -27,7 +27,8 @@ class ProcessManager {
         "/tmp/simpleui_audiocpp.pid",
         "/tmp/simpleui_subtitle_audiocpp.pid",
         "/tmp/simpleui_subtitle_trans.pid",
-        "/tmp/simpleui_subtitle_ml.pid"
+        "/tmp/simpleui_subtitle_ml.pid",
+        "/tmp/simpleui_tts.pid"
     ]
 
     /// 启动入口：先检测并彻底清理任何上次残留的旧代理、旧模型与孤儿进程，再拉起全新服务，杜绝模块版本不一致

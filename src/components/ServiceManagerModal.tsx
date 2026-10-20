@@ -7,7 +7,7 @@ import {
   SERVICE_STATE_CARD_TEXT_CLASS,
   toServiceState,
 } from '../utils/serviceState';
-import { X, RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen, FileText, Check, Loader2 } from 'lucide-react';
+import { X, RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen, FileText, Check, Loader2, Volume2 } from 'lucide-react';
 
 interface ServiceManagerModalProps {
   isOpen: boolean;
@@ -198,6 +198,73 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     }
   };
 
+  // ---- 文字转语音服务（Qwen3-TTS 0.6B CustomVoice · MLX 4bit）----
+  const [ttsStatus, setTtsStatus] = useState<{
+    enabled: boolean;
+    status: string;
+    running: boolean;
+    ready: boolean;
+    voices: string[];
+    port: number;
+    model: { ready: boolean; bytes: number; dir: string };
+    config: { voice: string; speed: number };
+  } | null>(null);
+  const [ttsDownload, setTtsDownload] = useState<{
+    active: boolean;
+    doneBytes: number;
+    totalBytes: number;
+    currentFile: string | null;
+    error: string | null;
+  } | null>(null);
+  const [ttsBusy, setTtsBusy] = useState(false);
+
+  const refreshTtsStatus = async () => {
+    try {
+      const r = await fetch('/api/tts/status');
+      const d = await r.json();
+      setTtsStatus(d);
+      setTtsDownload(d.download || null);
+    } catch {}
+  };
+
+  const handleTtsToggle = async (next: boolean) => {
+    setTtsBusy(true);
+    try {
+      await fetch('/api/tts/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: next }),
+      });
+      await refreshTtsStatus();
+    } finally {
+      setTtsBusy(false);
+    }
+  };
+
+  const handleTtsDownload = async () => {
+    setTtsBusy(true);
+    try {
+      await fetch('/api/tts/download', { method: 'POST' });
+      await refreshTtsStatus();
+    } finally {
+      setTtsBusy(false);
+    }
+  };
+
+  const handleTtsVoice = async (voice: string) => {
+    setTtsBusy(true);
+    try {
+      await fetch('/api/tts/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice }),
+      });
+      await refreshTtsStatus();
+    } finally {
+      setTtsBusy(false);
+    }
+  };
+
   const handleSubtitleOpenDir = async () => {
     await SubtitleServiceAPI.openModelsDir();
   };
@@ -304,6 +371,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
       });
 
       refreshSubtitleStatus();
+      refreshTtsStatus();
       try {
         subtitleEs = new EventSource('/api/subtitles/stream');
         subtitleEs.addEventListener('status', (e: MessageEvent) => {
@@ -321,6 +389,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
         refreshSvcStatus();
         refreshAsrStatus();
         refreshSubtitleStatus();
+        refreshTtsStatus();
         if (logsOpenRef.current) {
           ModelServiceAPI.getLogs(200, selectedEngineRef.current).then((d) => setLogLines(d?.lines ?? null));
         }
@@ -1367,7 +1436,9 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                   />
                   <span className={SERVICE_STATE_CARD_TEXT_CLASS[toServiceState(asrStatus?.status)]}>
                     {toServiceState(asrStatus?.status) === 'online'
-                      ? `${t('statusReady')} : ${String(asrStatus?.port ?? 10095).replace(/^:/, '')}`
+                      ? asrStatus?.port
+                        ? `${t('statusReady')} : ${String(asrStatus.port).replace(/^:/, '')}`
+                        : t('statusReady')
                       : toServiceState(asrStatus?.status) === 'starting'
                       ? t('statusStarting')
                       : t('statusOffline')}
@@ -1645,6 +1716,151 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
             {cardResetButton(handleAsrCardReset)}
           </div>
 
+          {/* 文字转语音服务卡片（Qwen3-TTS 0.6B CustomVoice · MLX 4bit · 按需加载） */}
+          <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
+            <div className="flex items-start justify-between mb-3">
+              <div className="flex items-center gap-2 pt-0.5">
+                <Volume2 className="w-4 h-4 text-sky-600 dark:text-sky-400 flex-shrink-0" />
+                <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
+                  {t('ttsServiceTitle')}
+                </span>
+              </div>
+              <div className="flex flex-col items-end gap-1">
+                <div className="flex items-center gap-1.5 text-[11px]">
+                  <span
+                    className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                      SERVICE_STATE_CARD_DOT_CLASS[
+                        ttsStatus?.enabled === false || !ttsStatus?.model?.ready
+                          ? 'offline'
+                          : ttsStatus?.status === 'loading'
+                          ? 'starting'
+                          : 'online'
+                      ]
+                    }`}
+                  />
+                  <span
+                    className={
+                      SERVICE_STATE_CARD_TEXT_CLASS[
+                        ttsStatus?.enabled === false || !ttsStatus?.model?.ready
+                          ? 'offline'
+                          : ttsStatus?.status === 'loading'
+                          ? 'starting'
+                          : 'online'
+                      ]
+                    }
+                  >
+                    {ttsStatus?.enabled === false
+                      ? t('serviceDisabled')
+                      : !ttsStatus?.model?.ready
+                      ? t('ttsModelMissing')
+                      : ttsStatus?.status === 'loading'
+                      ? t('statusStarting')
+                      : ttsStatus?.running && ttsStatus?.port
+                      ? `${t('statusReady')} : ${ttsStatus.port}`
+                      : t('statusReady')}
+                  </span>
+                </div>
+                <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight">
+                  {ttsStatus?.enabled === false ? t('ttsToggleOffHint') : t('ttsDetailHint')}
+                </span>
+              </div>
+            </div>
+
+            {/* 总开关 */}
+            <div className="flex items-center justify-between gap-3 pb-3 mb-3 border-b border-black/5 dark:border-white/5">
+              <button
+                type="button"
+                onClick={() => handleTtsToggle(!(ttsStatus?.enabled ?? true))}
+                disabled={ttsBusy}
+                className="flex-1 min-w-0 text-left cursor-pointer disabled:cursor-not-allowed"
+              >
+                <div className="font-medium text-zinc-700 dark:text-zinc-200">{t('ttsServiceToggle')}</div>
+                <div className="text-[10px] text-zinc-500 dark:text-zinc-400">{t('ttsServiceToggleDesc')}</div>
+              </button>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={ttsStatus?.enabled ?? true}
+                disabled={ttsBusy}
+                onClick={() => handleTtsToggle(!(ttsStatus?.enabled ?? true))}
+                className={`relative w-10 h-[22px] rounded-full transition-colors flex-shrink-0 cursor-pointer disabled:opacity-50 ${
+                  ttsStatus?.enabled ?? true ? 'bg-sky-600' : 'bg-zinc-300 dark:bg-zinc-600'
+                }`}
+              >
+                <span
+                  className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] rounded-full bg-white shadow transition-transform duration-200 ${
+                    ttsStatus?.enabled ?? true ? 'translate-x-[18px]' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {/* 模型状态 / 下载 */}
+            <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
+              <div className="min-w-0">
+                <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
+                  {t('ttsModelLabel')}
+                </div>
+                <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
+                  {ttsStatus?.model?.ready
+                    ? `${(ttsStatus.model.bytes / 1024 ** 3).toFixed(2)} GB · ${t('ttsModelReady')}`
+                    : t('ttsModelMissing')}
+                </div>
+              </div>
+              {!ttsStatus?.model?.ready && (
+                <button
+                  type="button"
+                  onClick={handleTtsDownload}
+                  disabled={ttsBusy || ttsDownload?.active}
+                  className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-sky-600 hover:bg-sky-700 text-white disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {ttsDownload?.active ? t('ttsDownloading') : t('ttsDownloadBtn')}
+                </button>
+              )}
+            </div>
+
+            {/* 下载进度 */}
+            {ttsDownload?.active && ttsDownload.totalBytes > 0 && (
+              <div className="mt-2">
+                <div className="h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                  <div
+                    className="h-full bg-sky-500 transition-all"
+                    style={{
+                      width: `${Math.min(100, (ttsDownload.doneBytes / ttsDownload.totalBytes) * 100).toFixed(1)}%`,
+                    }}
+                  />
+                </div>
+                <div className="mt-1 text-[10px] text-zinc-500 dark:text-zinc-400 font-mono truncate">
+                  {(ttsDownload.doneBytes / 1024 ** 2).toFixed(0)} /{' '}
+                  {(ttsDownload.totalBytes / 1024 ** 2).toFixed(0)} MB
+                  {ttsDownload.currentFile ? ` · ${ttsDownload.currentFile}` : ''}
+                </div>
+              </div>
+            )}
+            {ttsDownload?.error && (
+              <div className="mt-1.5 text-[10px] text-red-500 break-all">{ttsDownload.error}</div>
+            )}
+
+            {/* 默认音色 */}
+            {ttsStatus?.model?.ready && (
+              <div className="mt-2.5 flex items-center justify-between gap-2">
+                <span className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('ttsVoiceLabel')}</span>
+                <select
+                  value={ttsStatus?.config?.voice || 'serena'}
+                  onChange={(e) => handleTtsVoice(e.target.value)}
+                  disabled={ttsBusy}
+                  className="px-2 py-1 rounded-lg text-[11px] bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 text-zinc-700 dark:text-zinc-200 cursor-pointer"
+                >
+                  {(ttsStatus?.voices || ['serena']).map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
           {/* 实时字幕服务卡片（无常驻开关 · 纯状态提示 + 运行环境与两级模型完备校验 + 自动双源测速一键下载） */}
           <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
             {/* 头部：标题 + 整体状态指示（无启停开关） */}
@@ -1660,28 +1876,32 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                   <div className="flex items-center gap-1.5 text-[11px]">
                     <span
                       className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                        subtitleStatus.downloadState?.active || subtitleStatus.loading
-                          ? 'bg-amber-500 animate-pulse'
-                          : subtitleStatus.running
-                          ? 'bg-emerald-500 animate-pulse shadow-[0_0_6px_rgba(16,185,129,0.8)]'
-                          : subtitleStatus.paused || subtitleStatus.allReady
-                          ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.8)]'
-                          : 'bg-red-500'
+                        SERVICE_STATE_CARD_DOT_CLASS[
+                          subtitleStatus.downloadState?.active || subtitleStatus.loading
+                            ? 'starting'
+                            : subtitleStatus.running || subtitleStatus.paused || subtitleStatus.allReady
+                            ? 'online'
+                            : 'offline'
+                        ]
                       }`}
                     />
                     <span
                       className={
-                        subtitleStatus.downloadState?.active || subtitleStatus.loading
-                          ? 'text-amber-600 dark:text-amber-400 font-medium'
-                          : subtitleStatus.running || subtitleStatus.paused || subtitleStatus.allReady
-                          ? 'text-emerald-600 dark:text-emerald-400 font-medium'
-                          : 'text-red-500 font-medium'
+                        SERVICE_STATE_CARD_TEXT_CLASS[
+                          subtitleStatus.downloadState?.active || subtitleStatus.loading
+                            ? 'starting'
+                            : subtitleStatus.running || subtitleStatus.paused || subtitleStatus.allReady
+                            ? 'online'
+                            : 'offline'
+                        ]
                       }
                     >
                       {subtitleStatus.downloadState?.active || subtitleStatus.loading
                         ? t('statusStarting')
-                        : subtitleStatus.running || subtitleStatus.paused || subtitleStatus.allReady
+                        : subtitleStatus.running
                         ? `${t('statusReady')} : ${subtitleStatus.asrPort ?? 1250}/${subtitleStatus.port ?? 1249}`
+                        : subtitleStatus.paused || subtitleStatus.allReady
+                        ? t('statusReady')
                         : t('statusOffline')}
                     </span>
                   </div>

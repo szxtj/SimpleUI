@@ -17,6 +17,8 @@ export type ServiceState = 'online' | 'offline' | 'starting';
 export function toServiceState(status?: string | null): ServiceState {
   switch (status) {
     case 'running':
+    // 文字转语音服务用自己的词表：ready=已加载可合成
+    case 'ready':
       return 'online';
     // 'start' / 'restart' 是 pendingOp 的原始值（见 ttf_service/asr_service 的 getStatus）：
     // 启动动作进行中时 status 直接就是这两个词，漏掉会把「正在启动」误判成离线。
@@ -25,7 +27,7 @@ export function toServiceState(status?: string | null): ServiceState {
     case 'start':
     case 'restart':
       return 'starting';
-    // stopped / stopping / stop 以及接口不可达：一律离线
+    // standby = 懒加载服务已就绪但未拉起；disabled / stopped / stopping / stop 一律离线
     default:
       return 'offline';
   }

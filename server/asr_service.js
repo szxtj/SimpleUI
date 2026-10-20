@@ -421,7 +421,7 @@ class AsrService {
     }
     const model = this.findModel();
     if (!model) {
-      this.lastActionLog = `SenseVoice GGUF 模型未找到（可点击「下载模型」或手动放置到 ${MODELS_DIR}）`;
+      this.lastActionLog = `SenseVoice GGUF 模型未找到（请手动放置到 ${MODELS_DIR}）`;
       this.lastActionAt = Date.now();
       return { accepted: false, reason: 'model_not_found' };
     }

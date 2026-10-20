@@ -7,6 +7,8 @@ import { StageLadder } from './StageLadder';
 import { Check, Copy, AlertCircle, BookOpen, ExternalLink, RotateCcw, Trash2, FileText } from 'lucide-react';
 import { RawMarkdownModal } from './RawMarkdownModal';
 import { ImagePreviewModal } from './ImagePreviewModal';
+import { SpeakButton } from './SpeakButton';
+import { markdownToSpeechText } from '../utils/speechText';
 
 interface MessageItemProps {
   message: ChatMessage;
@@ -67,6 +69,7 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
               </div>
             )}
             <div
+              data-readable="true"
               className="break-words leading-relaxed max-w-full min-w-0"
               style={{ fontSize: 'var(--chat-font-size, 15px)' }}
             >
@@ -126,7 +129,7 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
           {/* Assistant Text / Markdown / KaTeX
               （思考中且尚无正文时不再额外渲染"Thinking..."——折叠条头部已表达同样状态） */}
           {message.content ? (
-            <div className="leading-relaxed min-w-0 max-w-full" style={{ fontSize: 'var(--chat-font-size, 15px)' }}>
+            <div data-readable="true" className="leading-relaxed min-w-0 max-w-full" style={{ fontSize: 'var(--chat-font-size, 15px)' }}>
               <MarkdownRenderer content={message.content} />
             </div>
           ) : null}
@@ -193,6 +196,11 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
                   >
                     <FileText className="w-3.5 h-3.5" />
                   </button>
+                )}
+
+                {/* 朗读本条回答（在重试左边） */}
+                {message.content && (
+                  <SpeakButton text={markdownToSpeechText(message.content)} title={t('speakMessage')} />
                 )}
 
                 {/* 重试 */}

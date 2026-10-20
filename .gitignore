@@ -50,3 +50,6 @@ bin/node/
 
 # 字幕 CoreML helper 构建产物（由 build_mac_app.sh 编译）
 bin/subtitle_ml_helper
+
+# TTS 运行时（可移植 Python + mlx），构建时复制进 App，不入库
+bin/tts_runtime/

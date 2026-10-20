@@ -187,6 +187,7 @@ import { ttfService } from './ttf_service.js';
 import { asrService } from './asr_service.js';
 import { mediaService } from './media_service.js';
 import { subtitleService } from './subtitle_service.js';
+import { ttsService } from './tts_service.js';
 import { sessionService } from './session_service.js';
 
 // 本进程是否成功抢到端口、从而成为受管服务的管理方。
@@ -274,6 +275,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // 文字转语音服务 API（Qwen3-TTS 0.6B CustomVoice · MLX · 按需加载）
+  if (req.url.startsWith('/api/tts/')) {
+    ttsService.handleApi(req, res);
+    return;
+  }
+
   // 本地媒体资源存储 API（上传、按哈希寻址获取、持久化图片库）
   if (req.url.startsWith('/api/media/')) {
     mediaService.handleApi(req, res);
@@ -325,6 +332,8 @@ server.listen(PORT, '127.0.0.1', () => {
   asrService.init();
   // 实时双语字幕服务初始化
   subtitleService.init();
+  // 文字转语音服务初始化（按需加载，不在启动时拉起模型）
+  ttsService.init();
 
   // Automatically exit if parent process (e.g. SimpleUI app) terminates
   if (process.ppid && process.ppid > 1) {
@@ -394,6 +403,14 @@ function cleanupAndExit(code = 0) {
       // ignore
     }
   }
+  // 文字转语音服务（首次朗读时懒加载，退出时一并终止）
+  if (ttsService) {
+    try {
+      ttsService.shutdownSync();
+    } catch (e) {
+      // ignore
+    }
+  }
   process.exit(code);
 }
 
@@ -425,6 +442,13 @@ process.on('exit', () => {
   if (subtitleService) {
     try {
       subtitleService.shutdownForce();
+    } catch (e) {
+      // ignore
+    }
+  }
+  if (ttsService) {
+    try {
+      ttsService.shutdownForce();
     } catch (e) {
       // ignore
     }

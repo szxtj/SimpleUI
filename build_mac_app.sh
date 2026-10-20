@@ -402,6 +402,14 @@ copy_item dist "$RESOURCES_DIR/dist"
 copy_item server "$RESOURCES_DIR/server"
 copy_item package.json "$RESOURCES_DIR/package.json"
 
+# 文字转语音运行时（可移植 Python + mlx），随包分发；缺失时 TTS 功能自动降级（前端隐藏入口）
+if [ -d "bin/tts_runtime/python" ]; then
+    echo "  · 打包 TTS 运行时（Python + mlx）..."
+    copy_item "bin/tts_runtime/python" "$RESOURCES_DIR/server/tts/python"
+else
+    echo "  ⚠ 未找到 bin/tts_runtime/python，TTS 将回落到系统 Python（仅开发机可用）"
+fi
+
 SERVER_DEPS=$(node -e '
 const fs=require("fs"), path=require("path");
 const specs=new Set();

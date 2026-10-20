@@ -25,6 +25,7 @@ import {
   getActiveContextMessages,
 } from './services/chatTurn';
 import { SpotlightView } from './components/SpotlightView';
+import { SelectionSpeak } from './components/SelectionSpeak';
 import { VoiceOverlay } from './components/VoiceOverlay';
 import { SubtitleOverlay } from './components/SubtitleOverlay';
 import { WikiSidebar } from './components/WikiSidebar';
@@ -189,6 +190,7 @@ export const App: React.FC = () => {
     return (
       <I18nProvider preference={settings.language}>
         <SpotlightView />
+        <SelectionSpeak />
       </I18nProvider>
     );
   }
@@ -669,6 +671,9 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
             onFinished={handleStartupFinished}
           />
         )}
+
+        {/* 划选朗读浮标（正文选区旁的按钮） */}
+        <SelectionSpeak />
       </div>
     </I18nProvider>
   );
