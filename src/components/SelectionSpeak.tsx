@@ -3,11 +3,16 @@ import { createPortal } from 'react-dom';
 import { Volume2, Speaker, Square, Loader2 } from 'lucide-react';
 import { useI18n } from '../i18n';
 import { useTtsEnabled } from '../hooks/useTtsEnabled';
+import { primeSystemVoices, speakSystemTts, stopSystemTts } from '../utils/systemTts';
 
 /**
  * 划选朗读浮标：两个圆角矩形按钮。
  *   - Qwen：走本地 Qwen3-TTS（短选区会扩到整句，避免模型拖长音）
  *   - 系统：走 Web Speech API（macOS 系统语音），读所选原文
+ *
+ * 两个来源互相独立：
+ *   - Qwen 受「服务管理 → 文字转语音」开关控制，关闭后只隐藏 Qwen；
+ *   - 系统语音不依赖该服务，始终可用。
  */
 type Phase = 'idle' | 'loading' | 'playing';
 
@@ -15,6 +20,8 @@ const MIN_CHARS = 2;
 const MAX_CHARS = 4000;
 const EXPAND_BELOW = 12;
 const BLOCK_SELECTOR = 'p, li, td, th, h1, h2, h3, h4, h5, blockquote, pre';
+const TOOLBAR_WIDTH_BOTH = 148;
+const TOOLBAR_WIDTH_SYSTEM_ONLY = 82;
 
 function isEditable(el: Element | null): boolean {
   if (!el) return false;
@@ -54,47 +61,51 @@ function expandToSentence(selection: Selection, raw: string): string {
   return blockText.slice(0, 200);
 }
 
-function speakWithSystem(text: string) {
-  const synth = window.speechSynthesis;
-  if (!synth) return () => {};
-  synth.cancel();
-  const utter = new SpeechSynthesisUtterance(text);
-  const voices = synth.getVoices();
-  const zh = voices.find((v) => /^zh/i.test(v.lang));
-  const en = voices.find((v) => /^en/i.test(v.lang));
-  const target = /[\u4e00-\u9fff]/.test(text) ? zh || en : en || zh;
-  if (target) utter.voice = target;
-  utter.rate = 1.0;
-  synth.speak(utter);
-  return () => synth.cancel();
-}
-
 export function SelectionSpeak() {
   const { t } = useI18n();
-  const enabled = useTtsEnabled();
+  const qwenEnabled = useTtsEnabled();
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
-  const [phase, setPhase] = useState<Phase>('idle');
+  const [phase, setPhase] = useState<Phase>('idle'); // 仅表示 Qwen 播放状态
   const [systemOn, setSystemOn] = useState(false);
   const textRef = useRef('');
   const qwenTextRef = useRef('');
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const urlRef = useRef<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const generationRef = useRef(0);
   const timerRef = useRef<number | null>(null);
-  const systemStopRef = useRef<(() => void) | null>(null);
 
-  const stopAll = useCallback(() => {
-    audioRef.current?.pause();
+  useEffect(() => {
+    primeSystemVoices();
+  }, []);
+
+  const stopQwen = useCallback(() => {
+    generationRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    const audio = audioRef.current;
+    if (audio) {
+      audio.onended = null;
+      audio.onerror = null;
+      audio.pause();
+    }
     audioRef.current = null;
     if (urlRef.current) {
       URL.revokeObjectURL(urlRef.current);
       urlRef.current = null;
     }
-    systemStopRef.current?.();
-    systemStopRef.current = null;
-    window.speechSynthesis?.cancel();
-    setSystemOn(false);
     setPhase('idle');
   }, []);
+
+  const stopSystem = useCallback(() => {
+    stopSystemTts();
+    setSystemOn(false);
+  }, []);
+
+  const stopAll = useCallback(() => {
+    stopQwen();
+    stopSystem();
+  }, [stopQwen, stopSystem]);
 
   const evaluateSelection = useCallback(() => {
     if (phase !== 'idle') return;
@@ -121,7 +132,7 @@ export function SelectionSpeak() {
     if (rect.width === 0 && rect.height === 0 && range.getClientRects().length) {
       rect = range.getClientRects()[range.getClientRects().length - 1];
     }
-    const width = 148;
+    const width = qwenEnabled ? TOOLBAR_WIDTH_BOTH : TOOLBAR_WIDTH_SYSTEM_ONLY;
     const height = 32;
     const x = Math.min(Math.max(8, rect.right - width), window.innerWidth - width - 8);
     const above = rect.top - height - 6;
@@ -129,7 +140,7 @@ export function SelectionSpeak() {
     textRef.current = raw;
     qwenTextRef.current = expandToSentence(sel, raw);
     setPos({ x, y });
-  }, [phase]);
+  }, [phase, qwenEnabled]);
 
   useEffect(() => {
     const onSelectionChange = () => {
@@ -161,60 +172,85 @@ export function SelectionSpeak() {
     return () => window.removeEventListener('keydown', onKey);
   }, [stopAll]);
 
-  useEffect(() => () => stopAll(), [stopAll]);
+  useEffect(
+    () => () => {
+      // 组件卸载时两路都停，避免离开后还在后台朗读
+      stopQwen();
+      stopSystemTts();
+    },
+    [stopQwen]
+  );
 
-  // 服务被关掉时立即收起浮标
+  // 服务被关掉时只停 Qwen；系统语音不依赖 Qwen 服务，浮标保持可用
   useEffect(() => {
-    if (!enabled) {
-      stopAll();
-      setPos(null);
-    }
-  }, [enabled, stopAll]);
+    if (!qwenEnabled) stopQwen();
+  }, [qwenEnabled, stopQwen]);
 
   const speakQwen = useCallback(async () => {
     const text = qwenTextRef.current;
     if (!text) return;
     if (phase !== 'idle') {
-      stopAll();
+      stopQwen();
       return;
     }
+
+    stopSystem();
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setPhase('loading');
+
     try {
       const res = await fetch('/api/tts/speak', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
+        signal: controller.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
+      // 下载期间用户已点停止 / 开始了新的朗读
+      if (generation !== generationRef.current) return;
+
       const url = URL.createObjectURL(blob);
       urlRef.current = url;
       const audio = new Audio(url);
       audioRef.current = audio;
-      audio.onended = stopAll;
-      audio.onerror = stopAll;
+      audio.onended = stopQwen;
+      audio.onerror = stopQwen;
       await audio.play();
+      if (generation !== generationRef.current) {
+        audio.pause();
+        return;
+      }
       setPhase('playing');
     } catch {
-      stopAll();
+      if (generation === generationRef.current) stopQwen();
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
     }
-  }, [phase, stopAll]);
+  }, [phase, stopQwen, stopSystem]);
 
   const speakSystem = useCallback(() => {
     const raw = textRef.current;
     if (!raw) return;
     if (systemOn) {
-      stopAll();
+      stopSystem();
       return;
     }
-    audioRef.current?.pause();
-    audioRef.current = null;
-    const stop = speakWithSystem(raw);
-    systemStopRef.current = stop;
-    setSystemOn(true);
-  }, [systemOn, stopAll]);
 
-  if (!enabled || !pos) return null;
+    // Qwen 与系统语音互斥，避免两路同时出声
+    stopQwen();
+    setSystemOn(true);
+    speakSystemTts(raw, {
+      onStart: () => setSystemOn(true),
+      onEnd: () => setSystemOn(false),
+      onError: () => setSystemOn(false),
+    });
+  }, [systemOn, stopQwen, stopSystem]);
+
+  if (!pos) return null;
 
   const busy = phase !== 'idle' || systemOn;
   return createPortal(
@@ -224,25 +260,27 @@ export function SelectionSpeak() {
       style={{ left: pos.x, top: pos.y }}
       className="fixed z-[9999] flex items-center gap-1 p-1 rounded-xl bg-white/95 dark:bg-[#1e2025]/95 border border-black/10 dark:border-[#3a3d45] shadow-lg backdrop-blur-sm select-none"
     >
-      <button
-        type="button"
-        onClick={speakQwen}
-        className={`flex items-center gap-1 px-2 h-6 rounded-lg text-[11px] font-medium transition-colors cursor-pointer ${
-          phase !== 'idle'
-            ? 'bg-indigo-500 text-white'
-            : 'text-zinc-600 dark:text-zinc-300 hover:bg-black/5 dark:hover:bg-white/10'
-        }`}
-        title={t('selectionSpeakQwen')}
-      >
-        {phase === 'loading' ? (
-          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-        ) : phase === 'playing' ? (
-          <Square className="w-3 h-3" fill="currentColor" />
-        ) : (
-          <Volume2 className="w-3.5 h-3.5" />
-        )}
-        <span>Qwen</span>
-      </button>
+      {qwenEnabled && (
+        <button
+          type="button"
+          onClick={speakQwen}
+          className={`flex items-center gap-1 px-2 h-6 rounded-lg text-[11px] font-medium transition-colors cursor-pointer ${
+            phase !== 'idle'
+              ? 'bg-indigo-500 text-white'
+              : 'text-zinc-600 dark:text-zinc-300 hover:bg-black/5 dark:hover:bg-white/10'
+          }`}
+          title={phase === 'idle' ? t('selectionSpeakQwen') : t('selectionSpeakStop')}
+        >
+          {phase === 'loading' ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : phase === 'playing' ? (
+            <Square className="w-3 h-3" fill="currentColor" />
+          ) : (
+            <Volume2 className="w-3.5 h-3.5" />
+          )}
+          <span>Qwen</span>
+        </button>
+      )}
       <button
         type="button"
         onClick={speakSystem}
@@ -251,7 +289,7 @@ export function SelectionSpeak() {
             ? 'bg-zinc-700 text-white dark:bg-zinc-200 dark:text-zinc-900'
             : 'text-zinc-600 dark:text-zinc-300 hover:bg-black/5 dark:hover:bg-white/10'
         }`}
-        title={t('selectionSpeakSystem')}
+        title={systemOn ? t('selectionSpeakStop') : t('selectionSpeakSystem')}
       >
         {systemOn ? <Square className="w-3 h-3" fill="currentColor" /> : <Speaker className="w-3.5 h-3.5" />}
         <span>{t('selectionSpeakSystemShort')}</span>

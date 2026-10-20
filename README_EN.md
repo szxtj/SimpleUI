@@ -165,12 +165,12 @@ How it works:
 
 ### Read Selection Aloud
 
-- Select any text in a message; two rounded buttons appear next to the selection — **Qwen** (local Qwen3-TTS) and **System** (macOS system voice). Click again (or press `Esc`) to stop.
+- Select any text in a message; rounded buttons appear next to the selection — **Qwen** (local Qwen3-TTS) and **System** (macOS system voice). Click again (or press `Esc`) to stop. When the Qwen service is off, only **System** remains.
 - Every answer also has a read-aloud button in its footer, to the left of Retry, which reads the whole answer.
 - Model: Qwen3-TTS 0.6B CustomVoice (MLX 4bit, ~1.6 GB including the separate speech codec); default voice `serena`.
 - Formula blocks are `select-none`, so they are skipped naturally; code blocks are read as plain text.
 - Loaded on demand: the first click waits for the model (roughly 3–12 s), and it **unloads and exits after 5 idle minutes**; endpoint `POST /api/tts/speak`.
-- “Service Manager → Text-to-Speech” provides a master switch and model download; turning it off hides every read-aloud entry point and releases the model immediately.
+- “Service Manager → Text-to-Speech” provides the Qwen master switch and model download; turning it off hides only the Qwen read-aloud entries (system voice still works) and releases the model immediately.
 - Inference runs on the bundled mlx-audio (Python) runtime; the main chat path still needs no Python.
 
 ### Quick Translate

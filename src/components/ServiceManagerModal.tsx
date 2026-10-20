@@ -7,6 +7,7 @@ import {
   SERVICE_STATE_CARD_TEXT_CLASS,
   toServiceState,
 } from '../utils/serviceState';
+import { refreshTtsEnabled, setTtsEnabled } from '../hooks/useTtsEnabled';
 import { X, RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen, FileText, Check, Loader2, Volume2 } from 'lucide-react';
 
 interface ServiceManagerModalProps {
@@ -230,11 +231,16 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
   const handleTtsToggle = async (next: boolean) => {
     setTtsBusy(true);
     try {
-      await fetch('/api/tts/config', {
+      const res = await fetch('/api/tts/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: next }),
       });
+      if (res.ok) {
+        // 立即同步所有朗读入口（含 Spotlight 窗口），不用等 15s 轮询
+        setTtsEnabled(next);
+        void refreshTtsEnabled();
+      }
       await refreshTtsStatus();
     } finally {
       setTtsBusy(false);

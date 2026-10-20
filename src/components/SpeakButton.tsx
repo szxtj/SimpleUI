@@ -19,9 +19,19 @@ export function SpeakButton({ text, title }: SpeakButtonProps) {
   const [phase, setPhase] = useState<Phase>('idle');
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const urlRef = useRef<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const generationRef = useRef(0);
 
   const stop = useCallback(() => {
-    audioRef.current?.pause();
+    generationRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    const audio = audioRef.current;
+    if (audio) {
+      audio.onended = null;
+      audio.onerror = null;
+      audio.pause();
+    }
     audioRef.current = null;
     if (urlRef.current) {
       URL.revokeObjectURL(urlRef.current);
@@ -30,7 +40,13 @@ export function SpeakButton({ text, title }: SpeakButtonProps) {
     setPhase('idle');
   }, []);
 
-  useEffect(() => () => stop(), [stop]);
+  useEffect(
+    () => () => {
+      if (currentStop === stop) currentStop = null;
+      stop();
+    },
+    [stop]
+  );
 
   const toggle = useCallback(async () => {
     if (phase !== 'idle') {
@@ -39,17 +55,27 @@ export function SpeakButton({ text, title }: SpeakButtonProps) {
     }
     const payload = String(text || '').trim();
     if (!payload) return;
+
     currentStop?.();
     currentStop = stop;
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setPhase('loading');
+
     try {
       const res = await fetch('/api/tts/speak', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: payload.slice(0, 4000) }),
+        signal: controller.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
+      // 下载期间用户已点停止 / 组件已卸载
+      if (generation !== generationRef.current) return;
+
       const url = URL.createObjectURL(blob);
       urlRef.current = url;
       const audio = new Audio(url);
@@ -57,9 +83,15 @@ export function SpeakButton({ text, title }: SpeakButtonProps) {
       audio.onended = stop;
       audio.onerror = stop;
       await audio.play();
+      if (generation !== generationRef.current) {
+        audio.pause();
+        return;
+      }
       setPhase('playing');
     } catch {
-      stop();
+      if (generation === generationRef.current) stop();
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
     }
   }, [phase, text, stop]);
 
