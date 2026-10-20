@@ -374,6 +374,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         userContent.add(self, name: "setAppLanguage")
         userContent.add(self, name: "setAppTheme")
         userContent.add(self, name: "setTranslatorConfig")
+        userContent.add(self, name: "translateSelection")
         userContent.add(self, name: "copyWordEquation")
         userContent.add(self, name: "copyRichData")
         userContent.add(self, name: "openTableInWord")
@@ -528,7 +529,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             AppLocale.update(lang: lang)
             (NSApp.delegate as? AppDelegate)?.setupMainMenu()
             (NSApp.delegate as? AppDelegate)?.statusBarController?.refreshMenuLanguage()
-            (NSApp.delegate as? AppDelegate)?.translationPanelController?.refreshLocaleAndTheme()
+            (NSApp.delegate as? AppDelegate)?.translationPanelController?.refreshLocaleAndSettings()
         } else if message.name == "setAppTheme", let dict = message.body as? [String: Any] {
             let isDark = (dict["isDark"] as? Bool) ?? false
             UserDefaults.standard.set(isDark, forKey: "simpleui_is_dark")
@@ -537,11 +538,20 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
                 ? NSColor(red: 24/255.0, green: 25/255.0, blue: 28/255.0, alpha: 1.0)
                 : NSColor(red: 248/255.0, green: 249/255.0, blue: 251/255.0, alpha: 1.0)
             window?.backgroundColor = winBg
-            (NSApp.delegate as? AppDelegate)?.translationPanelController?.refreshLocaleAndTheme()
         } else if message.name == "setTranslatorConfig", let dict = message.body as? [String: Any] {
             DispatchQueue.main.async {
                 TranslationProfileStore.shared.updateFromWebDict(dict)
-                (NSApp.delegate as? AppDelegate)?.translationPanelController?.refreshLocaleAndTheme()
+                (NSApp.delegate as? AppDelegate)?.translationPanelController?.refreshLocaleAndSettings()
+            }
+        } else if message.name == "translateSelection", let dict = message.body as? [String: Any] {
+            let text = (dict["text"] as? String) ?? ""
+            let trimmed = String(
+                text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(4000)
+            )
+            guard !trimmed.isEmpty else { return }
+            DispatchQueue.main.async {
+                (NSApp.delegate as? AppDelegate)?.translationPanelController?.present(
+                    text: trimmed, mode: .quick, autoTranslate: true)
             }
         } else if message.name == "copyWordEquation", let dict = message.body as? [String: Any] {
             let mathml = dict["mathml"] as? String ?? ""

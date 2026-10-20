@@ -36,6 +36,8 @@ struct TranslationInputTextView: NSViewRepresentable {
         textView.isAutomaticTextReplacementEnabled = false
         textView.backgroundColor = .clear
         textView.font = .systemFont(ofSize: 15)
+        textView.textColor = .white
+        textView.insertionPointColor = .white
         textView.delegate = context.coordinator
         textView.string = text
         textView.textContainerInset = NSSize(width: 8, height: 10)
@@ -55,6 +57,7 @@ struct TranslationInputTextView: NSViewRepresentable {
             textView.string = text
         }
 
+        textView.textColor = .white
         textView.isEditable = isEditable
         textView.onSubmit = onSubmit
         textView.onEscape = onEscape

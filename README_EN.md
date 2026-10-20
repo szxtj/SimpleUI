@@ -163,9 +163,10 @@ How it works:
 - **Strictly on-demand**: models load when the subtitle window opens and unload when it closes; failures are fatal with no auto-restart or reconnect.
 - **Model directory**: `~/Library/Application Support/SimpleUI/models/subtitles_pipeline/`; the Service Manager supports speed-tested downloads and resumable transfers for all three models.
 
-### Read Selection Aloud
+### Selection Toolbar (Translate / Read)
 
-- Select any text in a message; rounded buttons appear next to the selection — **Qwen** (local Qwen3-TTS) and **System** (macOS system voice). Click again (or press `Esc`) to stop. When the Qwen service is off, only **System** remains.
+- Select any text in a message; two rounded buttons appear next to the selection — **Translate** and **Read**. Translate opens the Quick Translate panel with the selected plain text filled in and starts translating immediately in Quick mode; Read uses the macOS system voice, and clicking again (or pressing `Esc`) stops it.
+- The selection toolbar is shared by the main window and the Spotlight panel, so both behave identically; the Translate button is hidden in plain-browser development where the native bridge is unavailable.
 - Every answer also has a read-aloud button in its footer, to the left of Retry, which reads the whole answer.
 - Model: Qwen3-TTS 0.6B CustomVoice (MLX 4bit, ~1.6 GB including the separate speech codec); default voice `serena`.
 - Formula blocks are `select-none`, so they are skipped naturally; code blocks are read as plain text.
@@ -177,7 +178,11 @@ How it works:
 
 - Global hotkey `⌃ Control + Space`; a native non-activating panel that does not steal focus.
 - Modes: Auto, ZH → EN, EN → ZH, Detail; `Enter` to translate, `⌘C` to copy, bidirectional TTS.
+- In Detail mode the result read-aloud button is disabled by default: select text in the result box to enable it, and only the selected text is read. Quick mode still reads the whole result in one click. When the button is unavailable, it shows a bilingual hint and keeps the standard arrow cursor. A single click inside the result box clears the selection, and reopening the panel also resets it.
+- The result box supports basic Markdown: headings, lists, blockquotes, code blocks, horizontal rules, bold, italic, inline code, strikethrough, and links. Tables and deep heading levels are shown as plain text.
+- The result box uses a native selectable text view with `⌘C`, `⌘A`, and context-menu copy, a subtle rounded container, and an accent selection border.
 - Providers: TTF, Mference, OpenAI-compatible services, or DeepSeek; dedicated prompt, thinking disabled by default.
+- If the service is unreachable, it retries the connection three times before showing a bilingual error. The old 3-second hard timeout is gone, so longer Detail results can complete normally.
 
 ---
 

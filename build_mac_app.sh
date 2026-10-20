@@ -93,6 +93,7 @@ swiftc -O \
     mac_app/src/TranslationService.swift \
     mac_app/src/TranslationViewModel.swift \
     mac_app/src/TranslationInputTextView.swift \
+    mac_app/src/TranslationResultTextView.swift \
     mac_app/src/TranslationMainView.swift \
     mac_app/src/TranslationPanelController.swift \
     -o "$MACOS_DIR/SimpleUI"

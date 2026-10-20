@@ -6,6 +6,9 @@ final class TranslationSpeechManager: NSObject, AVSpeechSynthesizerDelegate, Obs
     @Published var isSpeaking = false
 
     private let synthesizer = AVSpeechSynthesizer()
+    /// 只有当前这条 utterance 的 didStart / didFinish / didCancel 才能改变播放状态，
+    /// 避免切换朗读内容时旧 utterance 的取消回调把新朗读状态误清掉。
+    private var activeUtterance: AVSpeechUtterance?
 
     override init() {
         super.init()
@@ -40,6 +43,7 @@ final class TranslationSpeechManager: NSObject, AVSpeechSynthesizerDelegate, Obs
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
         utterance.volume = 1.0
 
+        activeUtterance = utterance
         synthesizer.speak(utterance)
         isSpeaking = true
     }
@@ -48,6 +52,7 @@ final class TranslationSpeechManager: NSObject, AVSpeechSynthesizerDelegate, Obs
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
         }
+        activeUtterance = nil
         isSpeaking = false
     }
 
@@ -55,18 +60,23 @@ final class TranslationSpeechManager: NSObject, AVSpeechSynthesizerDelegate, Obs
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
         Task { @MainActor in
+            guard self.activeUtterance === utterance else { return }
             self.isSpeaking = true
         }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         Task { @MainActor in
+            guard self.activeUtterance === utterance else { return }
+            self.activeUtterance = nil
             self.isSpeaking = false
         }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
         Task { @MainActor in
+            guard self.activeUtterance === utterance else { return }
+            self.activeUtterance = nil
             self.isSpeaking = false
         }
     }

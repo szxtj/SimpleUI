@@ -19,6 +19,7 @@ public enum TranslationServiceError: LocalizedError, Equatable {
     case emptyResult
     case requestFailed(String)
     case timeout
+    case connectionFailed(retries: Int)
     case cancelled
 
     public var errorDescription: String? {
@@ -35,7 +36,11 @@ public enum TranslationServiceError: LocalizedError, Equatable {
         case .requestFailed(let message):
             return isZh ? "翻译请求失败: \(message)" : "Translation request failed: \(message)"
         case .timeout:
-            return isZh ? "连接翻译服务超时（3秒），已自动终止。" : "Connection to translation service timed out (3s)."
+            return isZh ? "翻译服务响应超时，请稍后重试。" : "The translation service took too long to respond. Please try again."
+        case .connectionFailed(let retries):
+            return isZh
+                ? "无法连接翻译服务（已重连 \(retries) 次），请确认服务已启动后重试。"
+                : "Could not reach the translation service after \(retries) retries. Please make sure it is running and try again."
         case .cancelled:
             return isZh ? "已终止翻译。" : "Translation stopped."
         }
@@ -132,57 +137,76 @@ public struct TranslationService: TranslationServiceProtocol {
             ]
         }
 
-        request.timeoutInterval = 3.0
+        // 只保留一个足够宽松的兜底超时（避免请求永久挂起），不再用 3 秒硬截断。
+        // 生成较长的详解结果时，服务端需要的时间会明显超过 3 秒。
+        request.timeoutInterval = 120
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let session = self.session
-        let timeoutDuration: UInt64 = 3_000_000_000 // 3秒超时
+        let maxConnectRetries = 3
 
-        do {
-            let translation = try await withThrowingTaskGroup(of: String.self) { group in
-                // 任务1：发起网络翻译请求
-                group.addTask {
-                    let (data, response) = try await session.data(for: request)
-                    try Task.checkCancellation()
+        // 连接级重试：服务端未启动 / 端口未监听时重连 3 次后再报错。
+        // HTTP 4xx/5xx 说明服务已连上，不做重试；超时也不重试，避免成倍等待。
+        for attempt in 0...maxConnectRetries {
+            do {
+                let (data, response) = try await session.data(for: request)
+                try Task.checkCancellation()
 
-                    guard let httpResponse = response as? HTTPURLResponse else {
-                        throw TranslationServiceError.invalidResponse
-                    }
-
-                    guard (200..<300).contains(httpResponse.statusCode) else {
-                        throw TranslationServiceError.serverError(httpResponse.statusCode)
-                    }
-
-                    return try Self.extractTranslation(from: data)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw TranslationServiceError.invalidResponse
                 }
 
-                // 任务2：3秒硬超时监视器
-                group.addTask {
-                    try await Task.sleep(nanoseconds: timeoutDuration)
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    throw TranslationServiceError.serverError(httpResponse.statusCode)
+                }
+
+                return try Self.extractTranslation(from: data)
+            } catch is CancellationError {
+                throw TranslationServiceError.cancelled
+            } catch let error as TranslationServiceError {
+                throw error
+            } catch {
+                let nsError = error as NSError
+                guard nsError.domain == NSURLErrorDomain else {
+                    throw TranslationServiceError.requestFailed(error.localizedDescription)
+                }
+
+                if nsError.code == NSURLErrorCancelled {
+                    throw TranslationServiceError.cancelled
+                }
+
+                if Self.isConnectionFailure(nsError.code) {
+                    if attempt < maxConnectRetries {
+                        // 短暂退避，给服务刚启动或端口刚监听留出时间
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        continue
+                    }
+                    throw TranslationServiceError.connectionFailed(retries: maxConnectRetries)
+                }
+
+                if nsError.code == NSURLErrorTimedOut {
                     throw TranslationServiceError.timeout
                 }
 
-                // 获取最先完成的任务结果
-                guard let result = try await group.next() else {
-                    throw TranslationServiceError.emptyResult
-                }
-                group.cancelAll()
-                return result
+                throw TranslationServiceError.requestFailed(error.localizedDescription)
             }
-            return translation
-        } catch is CancellationError {
-            throw TranslationServiceError.cancelled
-        } catch let error as TranslationServiceError {
-            throw error
-        } catch {
-            let nsError = error as NSError
-            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut {
-                throw TranslationServiceError.timeout
-            }
-            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
-                throw TranslationServiceError.cancelled
-            }
-            throw TranslationServiceError.requestFailed(error.localizedDescription)
+        }
+
+        throw TranslationServiceError.connectionFailed(retries: maxConnectRetries)
+    }
+
+    /// 仅这些错误代表「服务端没有连上」，值得重连；请求已到达服务端后的失败不重试。
+    private static func isConnectionFailure(_ code: Int) -> Bool {
+        switch code {
+        case NSURLErrorCannotFindHost,
+            NSURLErrorCannotConnectToHost,
+            NSURLErrorNetworkConnectionLost,
+            NSURLErrorDNSLookupFailed,
+            NSURLErrorNotConnectedToInternet,
+            NSURLErrorSecureConnectionFailed:
+            return true
+        default:
+            return false
         }
     }
 

@@ -99,7 +99,7 @@ public final class TranslationPanelController: NSObject {
         self.panel = p
 
         MainActor.assumeIsolated {
-            viewModel.refreshLocaleAndTheme()
+            viewModel.refreshLocaleAndSettings()
         }
 
         // 每次重新打开均强制全屏居中归位
@@ -109,6 +109,33 @@ public final class TranslationPanelController: NSObject {
         p.makeKeyAndOrderFront(nil)
         p.orderFrontRegardless()
         focusInput()
+    }
+
+    /// 从划选浮标一键呼出：代入纯文本、切换模式，并可直接开始翻译。
+    public func present(text: String, mode: TranslationMode, autoTranslate: Bool) {
+        if Thread.isMainThread {
+            self.performPresent(text: text, mode: mode, autoTranslate: autoTranslate)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.performPresent(text: text, mode: mode, autoTranslate: autoTranslate)
+            }
+        }
+    }
+
+    private func performPresent(text: String, mode: TranslationMode, autoTranslate: Bool) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        MainActor.assumeIsolated {
+            viewModel.loadSelectionText(trimmed, mode: mode)
+        }
+        performShow()
+
+        if autoTranslate {
+            MainActor.assumeIsolated {
+                viewModel.startTranslation()
+            }
+        }
     }
 
     public func hide() {
@@ -125,6 +152,7 @@ public final class TranslationPanelController: NSObject {
         panel?.orderOut(nil)
         MainActor.assumeIsolated {
             viewModel.stopSpeech()
+            viewModel.clearOutputSelection()
         }
     }
 
@@ -157,9 +185,9 @@ public final class TranslationPanelController: NSObject {
         }
     }
 
-    public func refreshLocaleAndTheme() {
+    public func refreshLocaleAndSettings() {
         MainActor.assumeIsolated {
-            viewModel.refreshLocaleAndTheme()
+            viewModel.refreshLocaleAndSettings()
         }
     }
 
@@ -172,6 +200,7 @@ public final class TranslationPanelController: NSObject {
                 defer: false
             )
 
+            p.appearance = NSAppearance(named: .darkAqua)
             p.isFloatingPanel = true
             p.level = .floating
             p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -190,7 +219,6 @@ public final class TranslationPanelController: NSObject {
                 self?.hide()
             }
 
-            let isDark = UserDefaults.standard.object(forKey: "simpleui_is_dark") as? Bool ?? false
             let rootView = TranslationMainView(
                 viewModel: viewModel,
                 onPreferredHeightChange: { [weak self, weak p] height in
@@ -204,7 +232,7 @@ public final class TranslationPanelController: NSObject {
                     self?.hide()
                 }
             )
-            .preferredColorScheme(isDark ? .dark : .light)
+            .preferredColorScheme(.dark)
 
             p.contentViewController = NSHostingController(rootView: rootView)
             p.setContentSize(NSSize(width: Layout.width, height: Layout.minHeight))

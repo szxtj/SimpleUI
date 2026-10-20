@@ -127,6 +127,7 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         userContent.add(self, name: "chooseFile")
         userContent.add(self, name: "openImageInPreview")
         userContent.add(self, name: "saveImage")
+        userContent.add(self, name: "translateSelection")
         config.userContentController = userContent
 
         webView = WKWebView(frame: panel.contentView?.bounds ?? .zero, configuration: config)
@@ -416,6 +417,16 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
                 DispatchQueue.main.async {
                     self.showSaveImagePanel(urlString: urlString)
                 }
+            }
+        } else if message.name == "translateSelection", let dict = message.body as? [String: Any] {
+            let text = (dict["text"] as? String) ?? ""
+            let trimmed = String(
+                text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(4000)
+            )
+            guard !trimmed.isEmpty else { return }
+            DispatchQueue.main.async {
+                (NSApp.delegate as? AppDelegate)?.translationPanelController?.present(
+                    text: trimmed, mode: .quick, autoTranslate: true)
             }
         }
     }
