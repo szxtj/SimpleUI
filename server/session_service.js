@@ -873,11 +873,11 @@ class SessionService {
     // A chat that receives a new message is now the most recent one and leads the list.
     this.promoteSessionToFront(sessionId);
 
-    // If user initiated send from Spotlight, automatically focus this session in Main Window too
-    const selectInMain = origin === 'SPOTLIGHT' || this.mainSessionId === sessionId;
-    if (origin === 'SPOTLIGHT') {
-      this.mainSessionId = sessionId;
-    }
+    // Send requests from Spotlight must NEVER hijack the session the Main Window is viewing.
+    // Only mirror the new turn into Main when Main is already showing this very session
+    // (e.g. Main -> Spotlight handoff on the same chat); otherwise the Main Window keeps
+    // its current pointer untouched. Use the explicit "Open in Main" handoff to switch it.
+    const selectInMain = this.mainSessionId === sessionId;
 
     const abortController = new AbortController();
     const rawInitialEstimate = estimateHistoryTokens(

@@ -486,7 +486,7 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
         onClick={handleClick}
-        className={`interactive-math relative inline-block align-baseline rounded px-1 py-0.5 mx-0.5 transition-all duration-150 select-none cursor-pointer max-w-full ${
+        className={`interactive-math relative inline-block align-baseline rounded pl-1 pr-0.5 py-0.5 mx-0.5 transition-all duration-150 select-none cursor-pointer max-w-full ${
           isEffectiveSelected
             ? 'border border-solid border-blue-500 bg-blue-50/80 dark:border-blue-400 dark:bg-blue-950/40 shadow-xs'
             : isHovered
@@ -503,7 +503,12 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
             {toolbarContent}
           </span>
         )}
-        <span className="inline-block align-baseline max-w-full overflow-x-auto overflow-y-hidden align-bottom">{children}</span>
+        {/* KaTeX 的上下标 vlist 内部带有一个 2px 宽的定位占位（.vlist-s，配合 .vlist-t2 的
+            margin-right:-2px 抵消布局），它会不可见地越出公式盒子右缘 2px。滚动容器一旦设了
+            overflow-x:auto，这 2px 就会被当成"内容溢出"，导致每个小公式下方都出现一条无意义的
+            横向滚动条。这里让滚动容器补 2px 右内边距（外层同步减少 2px，视觉与排版完全不变）来
+            吸收该占位；真正的长公式仍会超出并正常横向滚动。 */}
+        <span className="inline-block align-baseline max-w-full overflow-x-auto overflow-y-hidden align-bottom pr-0.5">{children}</span>
       </span>
     );
   }

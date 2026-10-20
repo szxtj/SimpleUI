@@ -37,8 +37,10 @@ const LEGACY_LOCALSTORAGE_KEYS = [
  * 1. 会话数据与流式生成状态由服务端 `server/session_service.js` 唯一权威持有，通过 SSE 实时推送到所有窗口。
  * 2. 彻底消除前端双写、localStorage 全量覆盖、isSyncingRef 定时器防抖与 completedTurnsRef 合并回滚。
  * 3. 视图焦点解耦：
- *    - `MAIN` 窗口跟随 `mainSessionId`（支持多会话并发生成、响应 Spotlight 新提问自动聚焦与“在主窗口打开”交接）；
- *    - `SPOTLIGHT` 窗口维护独立的 `spotlightSessionId`（启动/新建/15 分钟闲置重置仅切换自身到空白会话，绝不劫持主窗口正在查看的会话）。
+ *    - `MAIN` 窗口跟随 `mainSessionId`（支持多会话并发生成与“在主窗口打开”的显式交接）；
+ *    - `SPOTLIGHT` 窗口维护独立的会话指针（启动/新建/15 分钟闲置重置仅切换自身到空白会话）。
+ *    两个窗口互相独立：在 Spotlight 里发送提问只会推进浮窗自身，**绝不劫持主窗口正在查看的会话**
+ *    （只有当主窗口本来就停在该会话上时才会同步跟随）；主窗口若需切换，必须走显式的“在主窗口打开”。
  */
 export function useSessionStore(
   role: WindowRole,
