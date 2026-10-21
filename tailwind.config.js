@@ -59,6 +59,8 @@ export default {
      * (see `.chat-container` in src/index.css).
      */
     plugin(({ addVariant }) => {
+      // >= 400px container: 窄面板里才保留标题/尺寸这类次要信息
+      addVariant('cq-sm', '@container (min-width: 25rem)');
       // >= 480px column: room for the full input toolbar (labels + wider gaps)
       addVariant('cq-md', '@container (min-width: 30rem)');
       // >= 640px column: desktop-grade paddings

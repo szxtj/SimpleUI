@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 class TitleBarDragView: NSView {
     var isSidebarOpen: Bool = true
     var isWikiPanelOpen: Bool = false
+    /** 右侧面板当前宽度（由前端 usePanelWidth 通过 setPanelWidth 同步；关闭时忽略） */
+    var panelWidth: CGFloat = 440.0
 
     // —— 手动拖拽状态（不用 performDrag，是为了在最大尺寸下拖动时能先还原原尺寸再继续拖）——
     private var dragging = false
@@ -22,12 +24,11 @@ class TitleBarDragView: NSView {
         let x = localPoint.x
         let totalWidth = bounds.width
 
-        // Mirror the web layout constants (App.tsx / WikiSidebar.tsx / Sidebar.tsx)
+        // Mirror the web layout constants (Sidebar.tsx / usePanelWidth.ts)
         let sidebarWidth: CGFloat = 260.0
-        let wikiPanelWidth: CGFloat = 440.0
 
-        let panelWidth: CGFloat = isWikiPanelOpen ? wikiPanelWidth : 0.0
-        let chatRight: CGFloat = totalWidth - panelWidth
+        let liveWidth: CGFloat = isWikiPanelOpen ? panelWidth : 0.0
+        let chatRight: CGFloat = totalWidth - liveWidth
 
         // 1. Native macOS Traffic Lights (x: 0 ... 78):
         // Always pass through so close/minimize/zoom buttons work!
@@ -35,12 +36,11 @@ class TitleBarDragView: NSView {
             return nil
         }
 
-        // 2. Wiki Knowledge Panel header (x: chatRight ... totalWidth):
-        // Only the header's own action buttons (collapse / open external) are
-        // interactive — they occupy the panel's right-most ~80px. Everywhere else
-        // on the panel header drags the window, just like the other two top bars.
+        // 2. 右侧面板顶栏（x: chatRight ... totalWidth）：
+        // 现在这里整条都是**标签栏**（标签 / + / 收起），全部必须可点 → 整块穿透。
+        // 面板不再是"拖拽区"，拖窗交给对话区顶栏与左侧栏顶栏。
         if isWikiPanelOpen && x >= chatRight {
-            return x >= (totalWidth - 80.0) ? nil : self
+            return nil
         }
 
         // 3. Sessions Sidebar header (x: 0 ... sidebarWidth)
@@ -365,6 +365,8 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         userContent.add(self, name: "setModalOpen")
         userContent.add(self, name: "setSidebarOpen")
         userContent.add(self, name: "setWikiPanelOpen")
+        userContent.add(self, name: "setPanelWidth")
+        userContent.add(self, name: "growWindow")
         userContent.add(self, name: "shrinkToSpotlight")
         // 语音输入权限桥（设置页「语音识别服务」卡片据此展示/申请三件套权限）
         userContent.add(self, name: "voiceInput")
@@ -431,18 +433,18 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
 
     func updateWindowMinSize(isSidebarOpen: Bool) {
         guard let win = window else { return }
-        // When sidebar is closed, user can shrink the window down to chat-only width (~450px)
-        // Wiki panel (440px) adds to the minimum so sidebars keep constant width
-        let wikiWidth: CGFloat = (dragView?.isWikiPanelOpen == true) ? 440.0 : 0.0
-        let minWidth: CGFloat = (isSidebarOpen ? 700.0 : 450.0) + wikiWidth
+        // 宽度模型与前端 src/layout.ts 一致：
+        //   窗口最小宽 = 左栏(0/260) + 中部最小 460 + 右栏(0/面板宽)
+        // 左右两栏宽度固定，只有中部可伸缩 —— 拖动窗口边缘时右栏宽度锁死。
+        let livePanelWidth: CGFloat = (dragView?.isWikiPanelOpen == true) ? (dragView?.panelWidth ?? 0) : 0
+        let leftWidth: CGFloat = isSidebarOpen ? 260.0 : 0.0
+        let minWidth: CGFloat = leftWidth + 460.0 + livePanelWidth
         let minHeight: CGFloat = 400.0
         win.minSize = NSSize(width: minWidth, height: minHeight)
-
-        if win.frame.width < minWidth {
-            var newFrame = win.frame
-            newFrame.size.width = minWidth
-            unzoomAndDragWithOverlay(targetFrame: newFrame)
-        }
+        // 这里**不再**主动把窗口撑到 minSize：
+        // 开合侧边栏时 minSize 会跳变，若在此强行 setFrame 会出现"点一下侧栏窗口猛跳一下"
+        // （还会连带触发缩放态还原）。缺口由前端按 shortfall 调 growWindow 平滑补齐；
+        // 这条 minSize 只用于约束用户手动拖窗口的下限。
     }
 
     func loadContent() {
@@ -505,6 +507,15 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         } else if message.name == "setWikiPanelOpen", let isOpen = message.body as? Bool {
             dragView?.isWikiPanelOpen = isOpen
             updateWindowMinSize(isSidebarOpen: dragView?.isSidebarOpen ?? true)
+        } else if message.name == "setPanelWidth", let width = message.body as? Double {
+            // 面板左沿可拖拽改宽：只记值 + 重算最小宽度，不动窗口实际尺寸
+            dragView?.panelWidth = CGFloat(width)
+            updateWindowMinSize(isSidebarOpen: dragView?.isSidebarOpen ?? true)
+        } else if message.name == "growWindow", let dict = message.body as? [String: Any] {
+            // 展开/收起侧边栏：窗口同步伸缩，让中部对话列宽度不变
+            let delta = (dict["delta"] as? Double) ?? 0
+            let anchor = (dict["anchor"] as? String) ?? "right"
+            growWindow(by: CGFloat(delta), anchor: anchor)
         } else if message.name == "shrinkToSpotlight" {
             let dict = message.body as? [String: Any]
             let sessionId = dict?["sessionId"] as? String
@@ -1050,6 +1061,62 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         webView.autoresizingMask = [.width, .height]
         // 留存时间与双击一致：0.08s 纯色遮盖排版 + 0.24s 平滑淡出
         resizeOverlayView.hideAnimated(delay: 0.08, duration: 0.24)
+    }
+
+    /// 展开/收起侧边栏时的窗口伸缩：中部对话列在屏幕上保持原宽度。
+    ///
+    /// - `anchor == "left"`：左边缘外扩（展开左栏时中部与右栏原地不动）
+    /// - `anchor == "right"`：右边缘外扩（展开右栏时左栏与中部原地不动）
+    /// - 全屏态不动 frame（中部只能被压缩，前端已用遮罩覆盖）
+    /// - 自定义缩放态先回到双击前的尺寸再伸缩，避免把最大尺寸当基准
+    /// - 屏幕挤不下时先保宽度再修 origin，最小不低于 `minSize`
+    func growWindow(by delta: CGFloat, anchor: String) {
+        guard let win = window, delta != 0 else { return }
+        guard !win.styleMask.contains(.fullScreen) else { return }
+        // 注意：**不动** preZoomFrame / 不进/出全屏。
+        // 全屏态上面已经 return；自定义缩放态就以当前 frame 为基准，
+        // 缺口通常会被屏幕钳制掉 —— 绝不"顺手还原成原始尺寸"。
+        cancelZoomAnimation()
+
+        let base = win.frame
+        var target = base
+        if anchor == "left" {
+            target.origin.x -= delta
+            target.size.width += delta
+        } else {
+            target.size.width += delta
+        }
+
+        if let screen = (win.screen ?? NSScreen.main)?.visibleFrame {
+            if target.maxX > screen.maxX {
+                target.size.width -= (target.maxX - screen.maxX)
+            }
+            if target.minX < screen.minX {
+                let overflow = screen.minX - target.minX
+                target.origin.x = screen.minX
+                target.size.width -= overflow
+            }
+        }
+        target.size.width = max(target.size.width, win.minSize.width)
+        guard target.size.width > 100 else { return }
+
+        isInternalFrameChange = true
+        let done: () -> Void = { [weak self] in self?.isInternalFrameChange = false }
+
+        if abs(target.size.width - base.size.width) < 0.5 && abs(target.origin.x - base.origin.x) < 0.5 {
+            // 已被屏幕/最小宽度卡住：只把基准帧应用回去（缩放态还原）
+            if base != win.frame {
+                win.setFrame(base, display: true)
+            }
+            done()
+            return
+        }
+
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.2
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            win.animator().setFrame(target, display: true)
+        }, completionHandler: done)
     }
 
     // MARK: - 双击缩放（极速遮罩过渡）

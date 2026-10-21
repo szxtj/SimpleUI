@@ -7,6 +7,8 @@ interface TurnRailProps {
   centerIndex: number;
   startIndex: number;
   endIndex: number;
+  /** 已经真实测量过的轮次（滚动离开后仍保持“已加载”观感） */
+  visited?: ReadonlySet<string>;
   onJump: (index: number) => void;
   /** 浮窗用更窄的刻度与卡片 */
   compact?: boolean;
@@ -40,6 +42,7 @@ export const TurnRail: React.FC<TurnRailProps> = ({
   centerIndex,
   startIndex,
   endIndex,
+  visited,
   onJump,
   compact = false,
 }) => {
@@ -66,7 +69,7 @@ export const TurnRail: React.FC<TurnRailProps> = ({
   const commitTimerRef = useRef(0);
 
   const total = turns.length;
-  const displayCenter = pending ?? centerIndex;
+  const displayCenter = Math.max(0, Math.min(total - 1, pending ?? centerIndex));
 
   const updatePending = useCallback((next: number | null) => {
     pendingRef.current = next;
@@ -85,6 +88,13 @@ export const TurnRail: React.FC<TurnRailProps> = ({
     },
     [centerIndex, onJump, total, updatePending]
   );
+
+  // 轮次减少（删除/切会话）时把 pending 收进合法区间
+  useEffect(() => {
+    if (pendingRef.current != null && pendingRef.current > total - 1) {
+      updatePending(Math.max(0, total - 1));
+    }
+  }, [total, updatePending]);
 
   // 落点确认后把 pending 交还给真实中心；异常情况兜底清掉，避免卡在中间态
   useEffect(() => {
@@ -117,7 +127,9 @@ export const TurnRail: React.FC<TurnRailProps> = ({
     if (steps === 0) return;
     steps = Math.max(-4, Math.min(4, steps));
     wheelAccRef.current -= steps * WHEEL_UNIT;
-    stepTo((pendingRef.current ?? centerIndex) + steps, COMMIT_DELAY);
+    // 滚轮在长会话里按比例加速；**按住拖动仍然固定 1 格 = 1 轮**。
+    const stepSize = total > 24 ? Math.ceil(total / 24) : 1;
+    stepTo((pendingRef.current ?? centerIndex) + steps * stepSize, COMMIT_DELAY);
   };
 
   const onSlotPointerDown = (idx: number) => (e: React.PointerEvent<HTMLDivElement>) => {
@@ -254,7 +266,9 @@ export const TurnRail: React.FC<TurnRailProps> = ({
       <div className="rail-fade absolute inset-0 overflow-hidden">
         {ticks.map((idx) => {
           const isCurrent = idx === displayCenter;
-          const isLoaded = idx >= startIndex && idx <= endIndex;
+          const isLoaded = visited
+            ? visited.has(turns[idx]?.key ?? '')
+            : idx >= startIndex && idx <= endIndex;
           const isHovered = hoverIndex === idx;
           const width = isCurrent ? (compact ? 12 : 14) : isLoaded ? (compact ? 8 : 10) : 6;
           const height = isCurrent ? 3 : 2;

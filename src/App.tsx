@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
 import { SettingsModal } from './components/SettingsModal';
@@ -28,13 +28,15 @@ import { SpotlightView } from './components/SpotlightView';
 import { SelectionSpeak } from './components/SelectionSpeak';
 import { VoiceOverlay } from './components/VoiceOverlay';
 import { SubtitleOverlay } from './components/SubtitleOverlay';
-import { WikiSidebar } from './components/WikiSidebar';
+import { SidePanel } from './components/SidePanel';
 import { StartupOverlay } from './components/StartupOverlay';
 import { I18nProvider, resolveLanguage } from './i18n';
 import { useTheme } from './hooks/useTheme';
 import { useSessionStore } from './hooks/useSessionStore';
+import { usePanelTabs } from './hooks/usePanelTabs';
+import { LEFT_SIDEBAR_WIDTH, MIDDLE_MIN_WIDTH, PANEL_DEFAULT_WIDTH } from './layout';
+import { resizeHud } from './utils/resizeHud';
 import { estimateHistoryTokens, applyTokenCalibration } from './utils/token';
-import { deleteUnreferencedMedia } from './services/mediaCleanup';
 
 export const App: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings>(loadSettings());
@@ -254,9 +256,114 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     articleCount: 0,
     mediaCount: 0,
   });
-  const [activeWikiArticle, setActiveWikiArticle] = useState<string | null>(null);
-  const [activeWikiContext, setActiveWikiContext] = useState<string | null>(null);
-  const [isWikiPanelOpen, setIsWikiPanelOpen] = useState(false);
+  /**
+   * 右侧面板：浏览器式多标签。
+   *
+   * 取代此前的「单布尔 isWikiPanelOpen + 单个 activeWikiArticle/Context 槽位」——
+   * 那个模型同一时刻只能显示一件事，后开的会把先开的顶掉。
+   */
+  const panel = usePanelTabs();
+  /** 正在拖拽右侧面板宽度：对话列同时冻结并盖遮罩（拖拽期间谁都不重排） */
+  const [panelResizing, setPanelResizing] = useState(false);
+  /**
+   * 正在展开/收起某一侧侧边栏。
+   * 与拖拽共用同一套遮罩（中部 + 右栏）与淡出时间轴：只要中部或右栏的尺寸在变，就一定有遮罩盖着。
+   */
+  const [layoutBusy, setLayoutBusy] = useState<null | 'left' | 'right'>(null);
+  const layoutTimerRef = useRef<number | null>(null);
+  const leftWidth = isSidebarOpen ? LEFT_SIDEBAR_WIDTH : 0;
+  const leftWidthRef = useRef(leftWidth);
+  leftWidthRef.current = leftWidth;
+  /** 右栏「提交后」的宽度（拖拽松手/复位才更新；拖拽中走 onLiveWidth 的 DOM 路径） */
+  const [panelW, setPanelW] = useState(PANEL_DEFAULT_WIDTH);
+  const panelWidthRef = useRef(panelW);
+  panelWidthRef.current = panelW;
+  const handlePanelWidthCommit = useCallback((w: number) => setPanelW(w), []);
+
+  useEffect(
+    () => () => {
+      if (layoutTimerRef.current) window.clearTimeout(layoutTimerRef.current);
+    },
+    []
+  );
+
+  /** 通知原生按差值伸缩窗口 frame（左栏向左、右栏向右），中部因此保持原宽度 */
+  const growWindow = useCallback((delta: number, anchor: 'left' | 'right') => {
+    if (!delta) return;
+    try {
+      // @ts-expect-error WebKit bridge
+      window.webkit?.messageHandlers?.growWindow?.postMessage({ delta, anchor });
+    } catch {
+      /* 非 macOS / 测试环境无桥 */
+    }
+  }, []);
+
+  const beginLayoutTransition = useCallback((which: 'left' | 'right') => {
+    setLayoutBusy(which);
+    if (layoutTimerRef.current) window.clearTimeout(layoutTimerRef.current);
+    // 略长于 200ms 过渡：让遮罩盖到内容重新适配完，之后走统一淡出
+    layoutTimerRef.current = window.setTimeout(() => setLayoutBusy(null), 240);
+  }, []);
+
+  /** 拖拽右栏：中部宽度 = 窗口宽 − 左栏 − 右栏（纯算术，不读布局，零渲染） */
+  const handleLivePanelWidth = useCallback((w: number) => {
+    resizeHud.setPanel(w);
+    resizeHud.setMiddle(window.innerWidth - leftWidthRef.current - w);
+  }, []);
+
+  const toggleLeftSidebar = useCallback(() => {
+    beginLayoutTransition('left'); // 先上遮罩，再改布局（同一帧内，不会闪）
+    setIsSidebarOpen((v) => !v);
+  }, [beginLayoutTransition]);
+
+  const toggleRightPanel = useCallback(() => {
+    beginLayoutTransition('right');
+    panel.toggleVisible();
+  }, [beginLayoutTransition, panel]);
+
+  /**
+   * 窗口几何的唯一出口：**任何**导致左/右栏宽度变化的路径（开合、关掉最后一个标签、
+   * 双击复位…）都会走到这里，按差值让原生伸缩窗口，中部因此保持原宽度。
+   * 用 layout effect：在绘制前把 growWindow 发出去，和 CSS 过渡同帧起步。
+   */
+  /**
+   * 侧边栏开合的布局规则（现代常见做法）：
+   *   1. **窗口尺寸尽量不动** —— 侧边栏向中间挤，中部让出空间；
+   *   2. 左右两栏各自保持自身宽度（右栏用它记住的宽度）；
+   *   3. 只有当「中部会被压到小于最小宽度」时，才把**整个窗口**扩出缺口那一段；
+   *   4. 收起侧边栏时窗口不缩回（中部自己长回来）。
+   *
+   * 全屏态由原生直接忽略 frame 变更：不会退出全屏、也不会还原成原始尺寸。
+   * 拖拽右栏宽度是**有意让中部吸收**的，同样不动窗口。
+   */
+  const visRef = useRef<{ left: boolean; right: boolean } | null>(null);
+  useLayoutEffect(() => {
+    const prev = visRef.current;
+    if (!prev) {
+      visRef.current = { left: isSidebarOpen, right: panel.visible };
+      return;
+    }
+    const dLeft = (isSidebarOpen ? 1 : 0) - (prev.left ? 1 : 0);
+    const dRight = (panel.visible ? 1 : 0) - (prev.right ? 1 : 0);
+    if (!dLeft && !dRight) return;
+    visRef.current = { left: isSidebarOpen, right: panel.visible };
+
+    const right = panel.visible ? panelW : 0;
+    const middleAfter = window.innerWidth - leftWidth - right;
+
+    // 开合是瞬时的整块滑入：遮罩只负责盖住中部的重排，不显示数字（也就不用逐帧算）
+    beginLayoutTransition(dLeft ? 'left' : 'right');
+
+    // 只有缺口才扩窗口：中部永远不窄于最小宽度；房间够就完全不动窗口
+    const shortfall = MIDDLE_MIN_WIDTH - middleAfter;
+    if (shortfall > 0) growWindow(shortfall, dLeft ? 'left' : 'right');
+  }, [isSidebarOpen, panel.visible, leftWidth, panelW, beginLayoutTransition, growWindow]);
+
+  /**
+   * 知识库是否可用：服务总开关 && ZIM 就绪 && 非 DeepSeek。
+   * 不可用时页面照常能打开，只是显示统一「未连接」提示且不发任何请求。
+   */
+  const kbReady = wikiStatus.enabled && wikiStatus.connected && settings.apiProvider !== 'deepseek';
   /** 语音识别服务状态（左下角服务行） */
   const [asrStatus, setAsrStatus] = useState<AsrServiceStatus | null>(null);
   /** 基础模型服务状态（左下角服务行；带 status 字段，可区分启动中） */
@@ -352,12 +459,12 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     setSettings,
   ]);
 
-  // DeepSeek 模式下自动关闭知识库面板
+  // 面板可见性通知原生侧（用于窗口最小宽度与顶栏拖拽区判定）。
+  // 注意：DeepSeek 模式下**不再自动关闭面板**——现在页面可以打开、只是显示「未连接」提示。
   useEffect(() => {
-    if (settings.apiProvider === 'deepseek' && isWikiPanelOpen) {
-      setIsWikiPanelOpen(false);
-    }
-  }, [settings.apiProvider, isWikiPanelOpen]);
+    // @ts-expect-error WebKit bridge
+    window.webkit?.messageHandlers?.setWikiPanelOpen?.postMessage?.(panel.visible);
+  }, [panel.visible]);
 
   // Poll local offline Wiki status (bail out if unchanged to avoid idle re-renders)
   useEffect(() => {
@@ -413,12 +520,6 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     window.webkit?.messageHandlers?.setSidebarOpen?.postMessage?.(isSidebarOpen);
   }, [isSidebarOpen]);
 
-  // Notify native macOS wrapper about wiki panel state (window min-size accounting)
-  useEffect(() => {
-    // @ts-expect-error WebKit bridge
-    window.webkit?.messageHandlers?.setWikiPanelOpen?.postMessage?.(isWikiPanelOpen);
-  }, [isWikiPanelOpen]);
-
   // Persistent conversation history baseline tokens (excluding temporary RAG prompts & reasoning tokens)
   const persistentHistoryTokens = useMemo(() => {
     if (!messages || messages.length === 0) return 0;
@@ -440,17 +541,13 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
   // Clear unsendable image attachments if Mference is selected
   useEffect(() => {
     if (settings.apiProvider === 'mference' && images.length > 0) {
-      const staleDrafts = [...images];
       setImages([]);
-      deleteUnreferencedMedia(staleDrafts, []);
     }
   }, [settings.apiProvider, images]);
 
   const handleNewSession = async () => {
     if (images.length > 0) {
-      const staleDrafts = [...images];
       setImages([]);
-      deleteUnreferencedMedia(staleDrafts, []);
     }
     await createOrReuseEmptySession(defaultTitle);
     setInput('');
@@ -502,23 +599,43 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     });
   };
 
-  const handleRetry = async (assistantMessageId: string) => {
-    const isDeepSeek = settings.apiProvider === 'deepseek';
-    const sessionEnableThinking = currentSession?.enableThinking ?? false;
-    const sessionEnableWiki = isDeepSeek ? false : (currentSession?.enableWikiSearch ?? false);
-    const sessionSettings = buildSessionSettings(settings, sessionEnableThinking, sessionEnableWiki);
+  // 注意：依赖只取原始值。流式 chunk 会让 currentSession 对象每帧变化，
+  // 直接依赖对象会让 MessageItem 的 memo 全部失效。
+  const sessionThinking = currentSession?.enableThinking ?? false;
+  const sessionWiki = currentSession?.enableWikiSearch ?? false;
 
-    await retryTurn({
-      assistantMessageId,
-      settings: sessionSettings,
-      lang: activeLang,
-      sessionId: currentSessionId,
-    });
-  };
+  const handleRetry = useCallback(
+    async (assistantMessageId: string) => {
+      const isDeepSeek = settings.apiProvider === 'deepseek';
+      const sessionSettings = buildSessionSettings(
+        settings,
+        sessionThinking,
+        isDeepSeek ? false : sessionWiki
+      );
 
-  const handleDeleteTurn = async (assistantMessageId: string) => {
-    await deleteTurn(assistantMessageId, currentSessionId);
-  };
+      await retryTurn({
+        assistantMessageId,
+        settings: sessionSettings,
+        lang: activeLang,
+        sessionId: currentSessionId,
+      });
+    },
+    [settings, sessionThinking, sessionWiki, retryTurn, activeLang, currentSessionId]
+  );
+
+  const handleDeleteTurn = useCallback(
+    async (assistantMessageId: string) => {
+      await deleteTurn(assistantMessageId, currentSessionId);
+    },
+    [deleteTurn, currentSessionId]
+  );
+
+  const handleOpenWiki = useCallback(
+    (title: string, context?: string) => {
+      panel.openArticle(title, context ?? null);
+    },
+    [panel.openArticle]
+  );
 
   const handleStop = async (sessionIdToStop?: string) => {
     const targetId =
@@ -564,7 +681,7 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
           wikiStatus={wikiStatus}
           asrStatus={asrStatus}
           isOpen={isSidebarOpen}
-          onToggleOpen={() => setIsSidebarOpen(!isSidebarOpen)}
+          onToggleOpen={toggleLeftSidebar}
         />
 
         {/* Main Chat Interface */}
@@ -615,7 +732,9 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
           lastMetrics={lastMetrics}
           onOpenSettings={() => setIsSettingsOpen(true)}
           isSidebarOpen={isSidebarOpen}
-          onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+          onToggleSidebar={toggleLeftSidebar}
+          resizing={panelResizing}
+          layoutMask={layoutBusy !== null}
           enableWikiSearch={currentSession?.enableWikiSearch ?? false}
           setEnableWikiSearch={(val) => {
             if (!currentSessionId) return;
@@ -623,30 +742,33 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
           }}
           wikiConnected={wikiStatus.connected}
           wikiEnabled={wikiStatus.enabled}
-          wikiPanelOpen={isWikiPanelOpen}
-          onToggleWikiPanel={() => setIsWikiPanelOpen((v) => !v)}
-          onOpenWiki={(title, context) => {
-            setActiveWikiArticle(title);
-            setActiveWikiContext(context ?? null);
-            setIsWikiPanelOpen(true);
-          }}
+          wikiPanelOpen={panel.visible}
+          onToggleWikiPanel={toggleRightPanel}
+          onOpenWiki={handleOpenWiki}
+          onOpenRawText={panel.openRawText}
+          onOpenImage={panel.openImage}
           onRetry={handleRetry}
           onDelete={handleDeleteTurn}
           onShrinkToSpotlight={handleShrinkToSpotlight}
         />
 
-        {/* Wikipedia Offline Article Reader — right docked sidebar */}
-        <WikiSidebar
-          isOpen={isWikiPanelOpen}
-          title={activeWikiArticle}
-          context={activeWikiContext}
+        {/* 右侧面板：浏览器式多标签（知识库搜索 / 条目 / 原文 / 图片） */}
+        <SidePanel
+          tabs={panel.tabs}
+          activeId={panel.activeId}
+          visible={panel.visible}
+          kbReady={kbReady}
           wikiEnabled={wikiStatus.enabled}
-          wikiConnected={wikiStatus.connected}
-          onClose={() => {
-            setIsWikiPanelOpen(false);
-            setActiveWikiArticle(null);
-            setActiveWikiContext(null);
-          }}
+          onActivate={panel.activateTab}
+          onCloseTab={panel.closeTab}
+          onNewTab={panel.openSearch}
+          onCollapse={toggleRightPanel}
+          onOpenArticle={(title) => panel.openArticle(title, null)}
+          onQueryChange={panel.setSearchQuery}
+          onResizeStateChange={setPanelResizing}
+          onLiveWidth={handleLivePanelWidth}
+          onWidthChange={handlePanelWidthCommit}
+          reservedLeft={leftWidth}
         />
 
         {/* Settings Modal */}

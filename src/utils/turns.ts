@@ -1,4 +1,4 @@
-import { ChatMessage } from '../types/chat';
+import type { ChatMessage } from '../types/chat';
 
 /**
  * 一轮问答（turn）的结构化视图。

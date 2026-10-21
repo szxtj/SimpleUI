@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Image as ImageIcon,
   ExternalLink,
@@ -13,6 +14,8 @@ import {
   X,
 } from 'lucide-react';
 import { useI18n } from '../i18n';
+import type { PageChrome } from '../types/panel';
+import { pageHeaderClass } from './pageHeader';
 
 interface ImagePreviewModalProps {
   isOpen: boolean;
@@ -20,6 +23,15 @@ interface ImagePreviewModalProps {
   images: string[];
   initialIndex?: number;
   isSpotlight?: boolean;
+  /**
+   * 嵌入模式：作为右侧面板 / 浮窗的「图片页」渲染，而不是全屏弹窗。
+   * 只换外壳（不铺背景遮罩、不居中、不投影），**缩放/平移/画廊/复制/下载全部原样保留**。
+   */
+  embedded?: boolean;
+  /** 嵌入模式下当前页是否可见（不可见时不抢键盘快捷键、不响应滚轮） */
+  active?: boolean;
+  /** 嵌入模式下由外层页面注入的页头插槽（← / ✕） */
+  chrome?: PageChrome;
 }
 
 // 辅助函数：计算当前缩放和尺寸下的有效平移边界
@@ -74,6 +86,9 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
   images,
   initialIndex = 0,
   isSpotlight,
+  embedded = false,
+  active = true,
+  chrome,
 }) => {
   const { t } = useI18n();
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
@@ -160,20 +175,23 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
     setPan({ x: 0, y: 0 });
   }, [applyTransform]);
 
-  // 弹窗开启或切换索引时同步初始化
+  // 弹窗开启或切换索引时同步初始化（**不动 naturalSize**：
+  // 它属于"当前这张图"，由下面的预读 effect 按 currentUrl 负责。
+  // 早前在这里 setNaturalSize(null)，只要父级 render 让 images 换了身份，
+  // 就会把已经量好的尺寸清掉 → 缩放按钮点了没反应。）
   useEffect(() => {
     if (isOpen) {
       setCurrentIndex(Math.max(0, Math.min(initialIndex, images.length - 1)));
       transformRef.current = { x: 0, y: 0, zoom: 1 };
       setZoom(1);
       setPan({ x: 0, y: 0 });
-      setNaturalSize(null);
     }
   }, [isOpen, initialIndex, images]);
 
   // 预读并同步图片原始物理尺寸（支持缓存立即命中）
   useEffect(() => {
     if (!isOpen || !currentUrl) return;
+    setNaturalSize(null); // 换图才重置
     const img = new Image();
     img.src = currentUrl;
     if (img.complete && img.naturalWidth && img.naturalHeight) {
@@ -269,11 +287,14 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
     setPan({ x: clampedX, y: clampedY });
   }, [naturalSize, containerSize, getFitScale, applyTransform]);
 
-  // 快捷键支持
+  const interactive = isOpen && active;
+
+  // 快捷键支持（嵌入模式下只有当前可见的图片页可以抢键盘）
   useEffect(() => {
-    if (!isOpen) return;
+    if (!interactive) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (embedded) return; // 页面形态由标签 ✕ / 返回键关闭，Esc 不关标签
         e.stopPropagation();
         e.preventDefault();
         onClose();
@@ -301,7 +322,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
     };
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [isOpen, onClose, handlePrev, handleNext, handleZoomIn, handleZoomOut, resetTransform]);
+  }, [interactive, embedded, onClose, handlePrev, handleNext, handleZoomIn, handleZoomOut, resetTransform]);
 
   // 滚轮与触控板双指缩放：以鼠标焦点为中心（Focal-point Zoom），杜绝画面漂移
   const handleWheel = (e: React.WheelEvent) => {
@@ -636,41 +657,40 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
 
   const actualScale = fitScale * zoom;
 
-  return (
+  const dialogCard = (
     <div
-      className={`fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 select-none animate-in fade-in duration-150 ${
-        inSpotlight ? 'rounded-[22px] overflow-hidden' : ''
-      }`}
+      onClick={(e) => e.stopPropagation()}
+      style={{ containerType: 'inline-size' }}
+      className={
+        embedded
+          ? 'relative z-10 flex h-full w-full flex-col overflow-hidden bg-[#f8f9fb] dark:bg-[#1b1c20]'
+          : `relative z-10 w-full flex flex-col rounded-2xl bg-white dark:bg-[#1e2025] border border-black/10 dark:border-[#333640] shadow-2xl overflow-hidden transition-all ${
+              inSpotlight ? 'max-w-[460px] h-[520px] max-h-[88vh]' : 'max-w-4xl h-[680px] max-h-[88vh]'
+            }`
+      }
     >
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/55 dark:bg-black/75 backdrop-blur-sm"
-        onClick={onClose}
-      />
-
-      {/* Dialog Card */}
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{ containerType: 'inline-size' }}
-        className={`relative z-10 w-full flex flex-col rounded-2xl bg-white dark:bg-[#1e2025] border border-black/10 dark:border-[#333640] shadow-2xl overflow-hidden transition-all ${
-          inSpotlight
-            ? 'max-w-[460px] h-[520px] max-h-[88vh]'
-            : 'max-w-4xl h-[680px] max-h-[88vh]'
-        }`}
-      >
         {/* Header */}
-        <div className="flex items-center justify-between px-3 sm:px-4 py-2.5 sm:py-3 border-b border-black/5 dark:border-white/5 select-none gap-2">
+        <div
+          className={
+            embedded
+              ? pageHeaderClass({ gap: 'gap-2', padding: chrome?.padding })
+              : 'flex items-center justify-between border-b border-black/5 dark:border-white/5 select-none gap-2 px-3 sm:px-4 py-2.5 sm:py-3'
+          }
+        >
+          {chrome?.leading}
           {/* Left: Icon & Title & Stats */}
           <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1">
             <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-zinc-100 dark:bg-white/10 text-zinc-600 dark:text-zinc-300 flex items-center justify-center flex-shrink-0">
               <ImageIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             </div>
             <div className="flex items-baseline gap-1.5 sm:gap-2 min-w-0 overflow-hidden">
-              <span className="font-semibold text-xs sm:text-sm text-[#1f2328] dark:text-[#f1f3f7] tracking-tight whitespace-nowrap flex-shrink-0">
-                {t('imagePreview')}
+              {/* 窄面板（440）里按钮很占位置：让标题先截断，尺寸信息保持完整 */}
+              <span className="hidden min-w-0 truncate font-semibold text-xs sm:text-sm text-[#1f2328] tracking-tight whitespace-nowrap cq-sm:block dark:text-[#f1f3f7]">
+                {/* 页面形态用短名词（与标签同名），窄面板里才放得下后面的尺寸信息 */}
+                {embedded ? t('panelTabImage') : t('imagePreview')}
               </span>
-              {!inSpotlight && imageStatsText && (
-                <span className="hidden cq-md:inline-block sm:inline-block text-[11px] font-mono text-zinc-400 dark:text-zinc-500 truncate whitespace-nowrap">
+              {(!inSpotlight || embedded) && imageStatsText && (
+                <span className="hidden flex-shrink-0 whitespace-nowrap text-[11px] font-mono text-zinc-400 cq-sm:inline dark:text-zinc-500">
                   {imageStatsText}
                 </span>
               )}
@@ -759,20 +779,23 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
               <ExternalLink className="w-3.5 h-3.5" />
             </button>
 
-            {/* Close Button */}
-            <button
-              type="button"
-              onClick={onClose}
-              className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer"
-              title={t('close')}
-            >
-              <X className="w-4 h-4" />
-            </button>
+            {/* Close Button（嵌入模式由页头 ✕ / 标签 ✕ 关闭，不再重复一颗） */}
+            {!embedded && (
+              <button
+                type="button"
+                onClick={onClose}
+                className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer"
+                title={t('close')}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+            {chrome?.trailing}
           </div>
         </div>
 
         {/* Content Body Container：画板背景随深浅色模式自动切换 */}
-        <div className="flex-1 min-h-0 p-3 flex flex-col">
+        <div className={`flex-1 min-h-0 flex flex-col ${embedded ? 'p-0' : 'p-3'}`}>
           <div
             ref={containerRef}
             onWheel={handleWheel}
@@ -781,7 +804,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
             onPointerUp={handlePointerUp}
             onPointerCancel={handlePointerUp}
             onDoubleClick={handleDoubleClick}
-            className={`relative flex-1 min-h-0 rounded-xl preview-canvas-bg overflow-hidden flex items-center justify-center select-none border border-black/5 dark:border-white/5 ${
+            className={`relative flex-1 min-h-0 preview-canvas-bg overflow-hidden flex items-center justify-center select-none ${embedded ? '' : 'rounded-xl border border-black/5 dark:border-white/5'} ${
               zoom > 1.05 ? (isDragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-zoom-in'
             }`}
             style={{ touchAction: 'none' }}
@@ -853,13 +876,42 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
         </div>
 
         {/* Subtle Footer Hint */}
-        {!inSpotlight && (
-          <div className="px-4 pb-3 flex items-center justify-between text-[11px] text-zinc-400 dark:text-zinc-500 select-none">
-            <span className="truncate mr-2">{t('imagePreviewHint')}</span>
+        {(!inSpotlight || embedded) && (
+          <div className={`flex items-center justify-between text-[11px] text-zinc-400 dark:text-zinc-500 select-none ${
+            embedded ? 'px-3 py-1.5 border-t border-black/5 dark:border-white/5' : 'px-4 pb-3'
+          }`}>
+            <span className="truncate mr-2">
+              {embedded ? t('imagePreviewPageHint') : t('imagePreviewHint')}
+            </span>
             <span className="font-mono flex-shrink-0">{Math.round(zoom * 100)}%</span>
           </div>
         )}
       </div>
+  );
+
+  if (embedded) {
+    return (
+      <div className="relative flex h-full w-full flex-col select-none">
+        {dialogCard}
+      </div>
+    );
+  }
+
+  const modalNode = (
+    <div
+      className={`fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-5 select-none animate-in fade-in duration-150 ${
+        inSpotlight ? 'rounded-[22px] overflow-hidden' : ''
+      }`}
+    >
+      <div
+        className="absolute inset-0 bg-black/55 dark:bg-black/75 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      {dialogCard}
     </div>
   );
+
+  return typeof document !== 'undefined'
+    ? createPortal(modalNode, document.body)
+    : modalNode;
 };

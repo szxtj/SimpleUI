@@ -157,15 +157,6 @@ class SessionService {
     this.loadSettingsFromDisk();
     this.loadFromDisk();
 
-    // Run a single safe server-side GC after sessions are loaded on startup
-    setTimeout(() => {
-      try {
-        mediaService.runGC([], 300);
-      } catch (err) {
-        console.warn('[SessionService] Startup media GC skipped:', err);
-      }
-    }, 5000);
-
     // Keep SSE connections alive across WKWebView instances
     this.heartbeatTimer = setInterval(() => {
       for (const client of this.sseClients) {
@@ -324,35 +315,22 @@ class SessionService {
 
   /**
    * Converts any inline data:image/... URLs into content-addressed files in mediaService
-   * and strips any broken or missing image references so sessions never fail on dead links.
+   * so sessions.json is not bloated with huge base64 strings.
+   * Never removes or alters user image references.
    */
   normalizeSessionImages(sessions) {
+    if (!Array.isArray(sessions)) return;
     for (const s of sessions) {
       if (!Array.isArray(s.messages)) continue;
       for (const m of s.messages) {
         if (!Array.isArray(m.images) || m.images.length === 0) continue;
-        const validImages = [];
+        const normalized = [];
         for (const rawImg of m.images) {
+          if (!rawImg || typeof rawImg !== 'string') continue;
           const persisted = this.persistDataUrlIfNeeded(rawImg);
-          if (!persisted || typeof persisted !== 'string') continue;
-          if (persisted.includes('/api/media/')) {
-            if (mediaService.hasFile(persisted)) {
-              validImages.push(persisted);
-            } else {
-              console.warn(`[SessionService] Pruning missing media reference from session ${s.id}: ${persisted}`);
-            }
-          } else if (persisted.startsWith('data:image/') || persisted.startsWith('http://') || persisted.startsWith('https://')) {
-            validImages.push(persisted);
-          }
+          normalized.push(persisted || rawImg);
         }
-        if (validImages.length > 0) {
-          m.images = validImages;
-        } else {
-          delete m.images;
-          if (m.role === 'user' && (!m.content || !m.content.trim())) {
-            m.content = '[图片已丢失]';
-          }
-        }
+        m.images = normalized;
       }
     }
   }
@@ -771,7 +749,6 @@ class SessionService {
     let currentImages = Array.isArray(images)
       ? images.map((img) => this.persistDataUrlIfNeeded(img)).filter(Boolean)
       : [];
-    const discardedImages = [];
 
     // Handle Retry: slice history before the user message of the target assistant turn
     if (retryAssistantMessageId) {
@@ -787,22 +764,13 @@ class SessionService {
         if (userIdx !== -1) {
           const origUser = historyMessages[userIdx];
           textToSend = origUser.content || '';
-          currentImages = Array.isArray(origUser.images)
-            ? origUser.images.filter((u) => !u.includes('/api/media/') || mediaService.hasFile(u))
-            : [];
-          for (let i = userIdx + 1; i < historyMessages.length; i++) {
-            if (Array.isArray(historyMessages[i].images)) {
-              discardedImages.push(...historyMessages[i].images);
-            }
-          }
+          currentImages = Array.isArray(origUser.images) ? [...origUser.images] : [];
           historyMessages = historyMessages.slice(0, userIdx);
         }
       } else if (historyMessages.length > 0 && historyMessages[historyMessages.length - 1].role === 'user') {
         const origUser = historyMessages[historyMessages.length - 1];
         textToSend = origUser.content || '';
-        currentImages = Array.isArray(origUser.images)
-          ? origUser.images.filter((u) => !u.includes('/api/media/') || mediaService.hasFile(u))
-          : [];
+        currentImages = Array.isArray(origUser.images) ? [...origUser.images] : [];
         historyMessages = historyMessages.slice(0, -1);
       }
     }
@@ -895,9 +863,6 @@ class SessionService {
     });
 
     this.flushSync();
-    if (discardedImages.length > 0) {
-      this.cleanupUnreferencedMedia(discardedImages);
-    }
     this.broadcast('session-upserted', {
       session: updatedSession,
       mainSessionId: this.mainSessionId,

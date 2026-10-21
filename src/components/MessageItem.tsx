@@ -17,6 +17,12 @@ interface MessageItemProps {
   onDelete?: (messageId: string) => void;
   /** 用户气泡的重试目标：紧随其后的助手回复 id（与浮窗的用户气泡重试一致） */
   retryTargetId?: string;
+  /**
+   * 回答原文 / 发送的图片：主窗口传回调 → 在右侧面板开标签页。
+   * 不传则退回组件内部的旧弹窗（防御：漏接一处只会"没升级"，不会点了没反应）。
+   */
+  onOpenRawText?: (payload: { messageId: string; content: string }) => void;
+  onOpenImage?: (payload: { messageId: string; images: string[]; index: number }) => void;
 }
 
 export const MessageItem: React.FC<MessageItemProps> = React.memo(({
@@ -25,6 +31,8 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
   onRetry,
   onDelete,
   retryTargetId,
+  onOpenRawText,
+  onOpenImage,
 }) => {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
@@ -62,7 +70,12 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
                     src={imgUrl}
                     alt={`upload-${i}`}
                     draggable={false}
-                    onClick={() => setPreviewImageIndex(i)}
+                    data-message-image="true"
+                    onClick={() =>
+                      onOpenImage
+                        ? onOpenImage({ messageId: message.id, images: message.images || [], index: i })
+                        : setPreviewImageIndex(i)
+                    }
                     className="max-w-[200px] cq-md:max-w-[240px] max-h-[200px] cq-md:max-h-[240px] rounded-xl object-cover border border-black/10 dark:border-white/10 shadow-sm select-none cursor-zoom-in hover:opacity-90 active:scale-[0.98] transition-all"
                   />
                 ))}
@@ -187,10 +200,15 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
                   )}
                 </button>
 
-                {/* 查看原始 Markdown */}
+                {/* 查看原始 Markdown —— 主窗口走右侧面板的「原文」标签页 */}
                 {message.content && (
                   <button
-                    onClick={() => setShowRawModal(true)}
+                    onClick={() =>
+                      onOpenRawText
+                        ? onOpenRawText({ messageId: message.id, content: message.content })
+                        : setShowRawModal(true)
+                    }
+                    data-open-raw="true"
                     className="p-1.5 rounded-lg hover:text-zinc-900 hover:bg-black/5 dark:hover:text-white dark:hover:bg-white/5 transition-colors cursor-pointer"
                     title={t('viewRawMarkdown')}
                   >

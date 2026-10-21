@@ -20,15 +20,13 @@ import { ThinkingAccordion } from './ThinkingAccordion';
 import { StageLadder } from './StageLadder';
 import { ImageAttachment } from './ImageAttachment';
 import { ContextRing } from './ContextRing';
-import { WikiDrawer } from './WikiDrawer';
 import { extractImagesFromPaste, fileToDataURL, isImageFile } from '../utils/image';
-import { deleteUnreferencedMedia } from '../services/mediaCleanup';
 import { useImeInput } from '../hooks/useImeInput';
 import { useSessionStore } from '../hooks/useSessionStore';
 import { useChatFontSize } from '../hooks/useChatFontSize';
 import { useTurnWindow } from '../hooks/useTurnWindow';
-import { disableScrollAnchor } from '../utils/scrollAnchor';
 import { TurnRail } from './TurnRail';
+import { MeasuredTurn } from './MeasuredTurn';
 import {
   ArrowUp,
   Square,
@@ -47,8 +45,8 @@ import {
   ExternalLink,
   FileText,
 } from 'lucide-react';
-import { RawMarkdownModal } from './RawMarkdownModal';
-import { ImagePreviewModal } from './ImagePreviewModal';
+import { SpotlightPageLayer } from './SpotlightPageLayer';
+import { useSpotlightPage } from '../hooks/useSpotlightPage';
 import { useI18n } from '../i18n';
 import { useTheme } from '../hooks/useTheme';
 import { estimateHistoryTokens, applyTokenCalibration } from '../utils/token';
@@ -78,14 +76,11 @@ export const SpotlightView: React.FC = () => {
     mediaCount: 0,
   });
   const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
-  const [activeWikiArticle, setActiveWikiArticle] = useState<string | null>(null);
-  const [activeWikiContext, setActiveWikiContext] = useState<string | null>(null);
-  /** 小窗口「搜索」按钮打开的知识库面板（与大窗口侧边栏等价） */
-  const [isWikiPanelOpen, setIsWikiPanelOpen] = useState(false);
-  /** 弹出显示原 Markdown 文本的目标内容 */
-  const [rawMarkdownTarget, setRawMarkdownTarget] = useState<string | null>(null);
-  /** 弹出大图预览的目标图片列表与初始序号 */
-  const [previewImageTarget, setPreviewImageTarget] = useState<{ images: string[]; initialIndex: number } | null>(null);
+  /**
+   * 浮窗的整页浏览：搜索 / 条目 / 原文 / 图片共用一条页面栈。
+   * **没有标签栏**（500px 宽放不下），也不与主窗口共享任何状态。
+   */
+  const page = useSpotlightPage();
 
   // 对话内容字号独立调节（小窗口快捷键 ⌘+ / ⌘-，不影响其他区域）
   const { fontSize: chatFontSize } = useChatFontSize({
@@ -206,15 +201,27 @@ export const SpotlightView: React.FC = () => {
   const isExpanded = hasMessages || isGenerating || isMultiline;
 
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
-  const userScrolledSinceSwitchRef = useRef(false);
-
-  const handleUserScrollAction = useCallback(() => {
-    userScrolledSinceSwitchRef.current = true;
-  }, []);
+  const contentRef = useRef<HTMLDivElement | null>(null);
 
   /** 与主窗口同一套窗口化 + 定位横线（浮窗用紧凑刻度） */
-  const { visibleTurns, turns, centerIndex, startIndex, endIndex, centerOnLatest, jumpTo } =
-    useTurnWindow({ messages, sessionId: currentSessionId, containerRef: scrollContainerRef });
+  const {
+    visibleTurns,
+    turns,
+    centerIndex,
+    startIndex,
+    endIndex,
+    centerOnLatest,
+    jumpTo,
+    topSpacer,
+    bottomSpacer,
+    onMeasure,
+    visitedKeys,
+  } = useTurnWindow({
+    messages,
+    sessionId: currentSessionId,
+    containerRef: scrollContainerRef,
+    contentRef,
+  });
 
   /**
    * 自动切入空白会话（复用已有空会话，若无则新建）。
@@ -228,6 +235,8 @@ export const SpotlightView: React.FC = () => {
     setLocalThinking(false);
     setLocalWiki(false);
     lastResizeSentRef.current = null;
+    // 先清页面栈再缩窗口：顺序反了会出现「640 高的页面塞进 88px 胶囊」
+    page.clear();
     notifyResize(false, false, true);
     recordActivity();
   }, [createOrReuseEmptySession, defaultTitle, notifyResize, recordActivity]);
@@ -316,74 +325,88 @@ export const SpotlightView: React.FC = () => {
     }
   }, [isExpanded, messages.length]);
 
+  // 页面开着的时候不要缩回胶囊：否则 640 高的页面会被塞进 88px 的窗口
   useEffect(() => {
-    if (!isWikiPanelOpen) {
+    if (!page.top) {
       notifyResize(isExpanded, images.length > 0, true);
     }
-  }, [isExpanded, images.length, isWikiPanelOpen, notifyResize]);
-
-  const openWikiPanel = () => {
-    setIsWikiPanelOpen(true);
-    if (!isExpanded) notifyResize(true, images.length > 0, true);
-  };
-
-  const closeWikiPanel = () => {
-    setIsWikiPanelOpen(false);
-    setActiveWikiArticle(null);
-    setActiveWikiContext(null);
-    if (!isExpanded) notifyResize(false, images.length > 0, true);
-  };
+  }, [isExpanded, images.length, page.top, notifyResize]);
 
   const closeSpotlightWindow = () => {
     // @ts-expect-error WebKit bridge
     window.webkit?.messageHandlers?.closeSpotlight?.postMessage?.({});
   };
 
-  const wikiDrawerNode = (
-    <WikiDrawer
-      isOpen={isWikiPanelOpen || !!activeWikiArticle}
-      title={activeWikiArticle}
-      context={activeWikiContext}
-      onClose={closeWikiPanel}
-      onCloseWindow={closeSpotlightWindow}
-      wikiEnabled={wikiStatus.enabled}
-      wikiConnected={wikiStatus.connected}
-    />
-  );
+  /** 打开整页前先确保窗口是展开态（胶囊 88px 高装不下页面） */
+  const ensurePageExpanded = () => {
+    if (!isExpanded) notifyResize(true, images.length > 0, true);
+  };
+
+  const openWikiSearchPage = () => {
+    ensurePageExpanded();
+    page.open({ kind: 'wiki-search', key: 'search' });
+  };
+
+  const openWikiArticlePage = (title: string, injected?: string | null) => {
+    ensurePageExpanded();
+    page.open({ kind: 'wiki-article', key: `article:${title}`, title, injected: injected ?? null });
+  };
+
+  const openRawTextPage = (messageId: string, content: string) => {
+    ensurePageExpanded();
+    page.open({ kind: 'raw-text', key: `raw:${messageId}`, title: '', content });
+  };
+
+  const openImagePage = (messageId: string, images: string[], index: number) => {
+    ensurePageExpanded();
+    page.open({ kind: 'image', key: `img:${messageId}`, images, index });
+  };
+
+  /** 会话切换 / 清空会话时收起页面栈（否则会盖在另一段对话上） */
+  useEffect(() => {
+    page.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSessionId]);
 
   const isDeepSeek = settings.apiProvider === 'deepseek';
   const isMference = settings.apiProvider === 'mference';
 
   useEffect(() => {
     if (isMference && images.length > 0) {
-      const staleDrafts = [...images];
       setImages([]);
-      deleteUnreferencedMedia(staleDrafts, []);
     }
   }, [isMference, images]);
 
+  /** 知识库是否可用：服务开启 && ZIM 就绪 && 非 DeepSeek（与主窗口口径一致） */
+  const kbReady = wikiStatus.enabled && wikiStatus.connected && !isDeepSeek;
+
+  /**
+   * 搜索按钮：整页打开搜索界面。
+   * 不再随供应商置灰——DeepSeek / 未就绪时页面照开，内部显示统一「未连接」提示。
+   */
   const wikiSearchButton = (
     <button
       type="button"
-      onClick={isDeepSeek ? undefined : openWikiPanel}
-      disabled={isDeepSeek}
-      className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
-        isDeepSeek
-          ? 'opacity-40 cursor-not-allowed bg-black/5 text-zinc-400 dark:bg-white/5 dark:text-zinc-500'
-          : 'bg-black/5 hover:bg-black/10 text-zinc-600 hover:text-black dark:bg-white/5 dark:hover:bg-white/10 dark:text-zinc-300 dark:hover:text-white cursor-pointer'
-      }`}
-      title={isDeepSeek ? t('wikiDisabledInDeepSeek') : t('expandWikiPanel')}
+      onClick={openWikiSearchPage}
+      data-spotlight-search="true"
+      className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 transition-colors bg-black/5 hover:bg-black/10 text-zinc-600 hover:text-black dark:bg-white/5 dark:hover:bg-white/10 dark:text-zinc-300 dark:hover:text-white cursor-pointer"
+      title={t('expandWikiPanel')}
     >
       <Search className="w-3.5 h-3.5 stroke-[2.5]" />
     </button>
   );
 
-  useEffect(() => {
-    if (isDeepSeek && isWikiPanelOpen) {
-      closeWikiPanel();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDeepSeek, isWikiPanelOpen]);
+  /** 整页层：盖满卡片，渲染页面栈顶（没有栈就没有这个节点） */
+  const pageLayerNode = page.top ? (
+    <SpotlightPageLayer
+      stack={page.stack}
+      kbReady={kbReady}
+      wikiEnabled={wikiStatus.enabled}
+      onOpenArticle={(title) => openWikiArticlePage(title)}
+      onBack={page.back}
+      onClose={page.clear}
+    />
+  ) : null;
 
   /**
    * 浮窗外层消息容器滚动策略（与主窗口完全一致）：
@@ -393,7 +416,6 @@ export const SpotlightView: React.FC = () => {
    *    外层容器完全固定、绝不自动滚动、绝不抢夺用户的滚动条。
    */
   useEffect(() => {
-    const el = scrollContainerRef.current;
     const isSessionSwitch = currentSessionId !== prevSessionIdRef.current;
 
     let lastUserMsgId: string | undefined = undefined;
@@ -411,43 +433,8 @@ export const SpotlightView: React.FC = () => {
     prevSessionIdRef.current = currentSessionId;
     prevLastUserMsgIdRef.current = lastUserMsgId;
 
-    if (!el) return;
-
-    if (isSessionSwitch) {
-      userScrolledSinceSwitchRef.current = false;
-      centerOnLatest();
-      disableScrollAnchor(el, 600);
-      el.scrollTop = el.scrollHeight;
-
-      let raf1 = 0;
-      let raf2 = 0;
-      raf1 = requestAnimationFrame(() => {
-        if (!userScrolledSinceSwitchRef.current && scrollContainerRef.current) {
-          scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
-        }
-        raf2 = requestAnimationFrame(() => {
-          if (!userScrolledSinceSwitchRef.current && scrollContainerRef.current) {
-            scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
-          }
-        });
-      });
-
-      const timer = setTimeout(() => {
-        if (!userScrolledSinceSwitchRef.current && scrollContainerRef.current) {
-          scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
-        }
-      }, 80);
-
-      return () => {
-        cancelAnimationFrame(raf1);
-        cancelAnimationFrame(raf2);
-        clearTimeout(timer);
-      };
-    } else if (isNewUserTurnSent) {
-      centerOnLatest();
-      disableScrollAnchor(el, 600);
-      el.scrollTop = el.scrollHeight;
-    }
+    // 会话切换由 useTurnWindow 统一贴底；这里只处理“刚发出新问题”
+    if (isNewUserTurnSent) centerOnLatest();
   }, [currentSessionId, messages, centerOnLatest]);
 
   // Check backend health & Wiki status
@@ -718,12 +705,7 @@ export const SpotlightView: React.FC = () => {
   };
 
   const handleRemoveDraftImage = (index: number) => {
-    const removedUrl = images[index];
-    const remaining = images.filter((_, i) => i !== index);
-    setImages(remaining);
-    if (removedUrl) {
-      deleteUnreferencedMedia([removedUrl], remaining);
-    }
+    setImages((prev) => prev.filter((_, i) => i !== index));
   };
 
   /* ========================================================================= */
@@ -908,7 +890,7 @@ export const SpotlightView: React.FC = () => {
           </div>
         </div>
 
-        {wikiDrawerNode}
+        {pageLayerNode}
       </div>
     );
   }
@@ -933,7 +915,8 @@ export const SpotlightView: React.FC = () => {
       )}
       <div className="w-full h-full flex flex-col bg-white dark:bg-[#1c1d22] border border-black/10 dark:border-white/10 rounded-[22px] overflow-hidden text-[#1f2328] dark:text-[#f1f3f7] select-none">
         {/* Top Header Row */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/5 cursor-grab active:cursor-grabbing select-none">
+        {/* 高度与页面二级头严格一致（52 含底边）：开页面时顶部带子不换厚度 → 内容不上跳 */}
+        <div className="flex h-[52px] items-center justify-between px-4 border-b border-black/5 dark:border-white/5 cursor-grab active:cursor-grabbing select-none">
           <div className="flex items-center gap-2.5">
             <button
               onClick={closeSpotlightWindow}
@@ -976,17 +959,23 @@ export const SpotlightView: React.FC = () => {
         <div className="relative flex-1 min-h-0">
         <div
           ref={scrollContainerRef}
-          onWheel={handleUserScrollAction}
-          onTouchMove={handleUserScrollAction}
-          onMouseDown={handleUserScrollAction}
-          onKeyDown={handleUserScrollAction}
           style={{
             '--chat-font-size': `${chatFontSize}px`,
           } as React.CSSProperties}
-          className="h-full overflow-y-auto scrollbar-invisible p-4 pb-6 space-y-4 text-sm overscroll-y-contain"
+          className="chat-scroller h-full overflow-y-auto overflow-x-hidden scrollbar-invisible p-4 pr-[22px] pb-6 text-sm overscroll-y-contain"
         >
+          <div ref={contentRef} data-chat-content="true">
+          {topSpacer > 0 && (
+            <div aria-hidden="true" style={{ height: topSpacer }} />
+          )}
           {visibleTurns.map((turn) => (
-          <div key={turn.key} data-turn-key={turn.key} data-turn-index={turn.index} className="space-y-4">
+          <MeasuredTurn
+            key={turn.key}
+            turnKey={turn.key}
+            turnIndex={turn.index}
+            onMeasure={onMeasure}
+            className="space-y-4 pb-4"
+          >
           {messages.slice(turn.startMessageIndex, turn.endMessageIndex + 1).map((msg) => {
             if (msg.role === 'user') {
               const isCopied = copiedMsgId === msg.id;
@@ -1004,7 +993,8 @@ export const SpotlightView: React.FC = () => {
                             src={url}
                             alt="preview"
                             draggable={false}
-                            onClick={() => setPreviewImageTarget({ images: msg.images || [], initialIndex: i })}
+                            data-message-image="true"
+                            onClick={() => openImagePage(msg.id, msg.images || [], i)}
                             className="max-w-[180px] max-h-[180px] rounded-xl object-cover border border-black/10 dark:border-white/10 shadow-sm select-none cursor-zoom-in hover:opacity-90 active:scale-[0.98] transition-all"
                           />
                         ))}
@@ -1089,8 +1079,7 @@ export const SpotlightView: React.FC = () => {
                         onClick={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
-                          setActiveWikiArticle(c.title);
-                          setActiveWikiContext(c.context ?? null);
+                          openWikiArticlePage(c.title, c.context ?? null);
                         }}
                         className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-emerald-500/10 hover:bg-emerald-500/20 active:bg-emerald-500/30 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 hover:border-emerald-500/35 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer select-none"
                         title={c.title}
@@ -1127,7 +1116,8 @@ export const SpotlightView: React.FC = () => {
 
                       {msg.content && (
                         <button
-                          onClick={() => setRawMarkdownTarget(msg.content)}
+                          data-open-raw="true"
+                          onClick={() => openRawTextPage(msg.id, msg.content)}
                           className="p-1.5 rounded-lg hover:text-zinc-900 hover:bg-black/5 dark:hover:text-white dark:hover:bg-white/5 transition-colors cursor-pointer"
                           title={t('viewRawMarkdown')}
                         >
@@ -1169,9 +1159,13 @@ export const SpotlightView: React.FC = () => {
               </div>
             );
           })}
-          </div>
+          </MeasuredTurn>
           ))}
+          {bottomSpacer > 0 && (
+            <div aria-hidden="true" style={{ height: bottomSpacer }} />
+          )}
           <div ref={scrollEndRef} className="h-6 flex-shrink-0" />
+          </div>
         </div>
 
         <TurnRail
@@ -1179,6 +1173,7 @@ export const SpotlightView: React.FC = () => {
           centerIndex={centerIndex}
           startIndex={startIndex}
           endIndex={endIndex}
+          visited={visitedKeys}
           onJump={jumpTo}
           compact
         />
@@ -1321,22 +1316,7 @@ export const SpotlightView: React.FC = () => {
         </div>
       </div>
 
-      {wikiDrawerNode}
-
-      <RawMarkdownModal
-        isOpen={rawMarkdownTarget !== null}
-        onClose={() => setRawMarkdownTarget(null)}
-        content={rawMarkdownTarget || ''}
-        isSpotlight
-      />
-
-      <ImagePreviewModal
-        isOpen={previewImageTarget !== null}
-        onClose={() => setPreviewImageTarget(null)}
-        images={previewImageTarget?.images || []}
-        initialIndex={previewImageTarget?.initialIndex || 0}
-        isSpotlight
-      />
+      {pageLayerNode}
     </div>
   );
 };

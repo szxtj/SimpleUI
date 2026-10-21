@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { FileText, Copy, Check, X } from 'lucide-react';
 import { useI18n } from '../i18n';
 
@@ -54,28 +55,16 @@ export const RawMarkdownModal: React.FC<RawMarkdownModalProps> = ({
 
   const statsText = `${charCount.toLocaleString()} ${t('charsCount')} · ${lineCount.toLocaleString()} ${t('linesCount')}`;
 
-  return (
+  const dialogCard = (
     <div
-      className={`fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 select-none animate-in fade-in duration-150 ${
-        inSpotlight ? 'rounded-[22px] overflow-hidden' : ''
+      onClick={(e) => e.stopPropagation()}
+      style={{ containerType: 'inline-size' }}
+      className={`relative z-10 w-full flex flex-col rounded-2xl bg-white dark:bg-[#1e2025] border border-black/10 dark:border-[#333640] shadow-2xl overflow-hidden transition-all ${
+        inSpotlight
+          ? 'max-w-[450px] h-[520px] max-h-[88vh]'
+          : 'max-w-2xl h-[560px] max-h-[85vh]'
       }`}
     >
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/50 dark:bg-black/70 backdrop-blur-sm"
-        onClick={onClose}
-      />
-
-      {/* Dialog Card */}
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{ containerType: 'inline-size' }}
-        className={`relative z-10 w-full flex flex-col rounded-2xl bg-white dark:bg-[#1e2025] border border-black/10 dark:border-[#333640] shadow-2xl overflow-hidden transition-all ${
-          inSpotlight
-            ? 'max-w-[450px] h-[520px] max-h-[88vh]'
-            : 'max-w-2xl h-[560px] max-h-[85vh]'
-        }`}
-      >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/5 select-none">
           <div className="flex items-center gap-2.5 min-w-0" title={statsText}>
@@ -145,6 +134,23 @@ export const RawMarkdownModal: React.FC<RawMarkdownModalProps> = ({
           <span>{t('rawMarkdownHint')}</span>
         </div>
       </div>
+  );
+
+  const modalNode = (
+    <div
+      className={`fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-5 select-none animate-in fade-in duration-150 ${
+        inSpotlight ? 'rounded-[22px] overflow-hidden' : ''
+      }`}
+    >
+      <div
+        className="absolute inset-0 bg-black/50 dark:bg-black/70 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      {dialogCard}
     </div>
   );
+
+  return typeof document !== 'undefined'
+    ? createPortal(modalNode, document.body)
+    : modalNode;
 };

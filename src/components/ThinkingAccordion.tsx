@@ -70,6 +70,7 @@ export const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({
       {isOpen && (
         <div
           {...boxProps}
+          data-chat-inner-scroll="true"
           className="mt-1.5 mb-1 ml-[7px] pl-3.5 border-l-2 border-black/[0.07] dark:border-white/[0.09] max-h-48 overflow-y-auto overscroll-contain selectable-chat-content cursor-text [overflow-anchor:none]"
         >
           {displayContent ? (

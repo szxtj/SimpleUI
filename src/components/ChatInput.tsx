@@ -5,7 +5,6 @@ import { ContextRing } from './ContextRing';
 import { ImageAttachment } from './ImageAttachment';
 import { ImagePreviewModal } from './ImagePreviewModal';
 import { extractImagesFromPaste, fileToDataURL } from '../utils/image';
-import { deleteUnreferencedMedia } from '../services/mediaCleanup';
 import { useImeInput } from '../hooks/useImeInput';
 
 interface ChatInputProps {
@@ -118,12 +117,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         images={images}
         onPreview={setPreviewDraftIndex}
         onRemove={(idx) => {
-          const removed = images[idx];
-          const remaining = images.filter((_, i) => i !== idx);
-          setImages(remaining);
-          if (removed) {
-            deleteUnreferencedMedia([removed], remaining);
-          }
+          setImages((prev) => prev.filter((_, i) => i !== idx));
         }}
       />
 
@@ -187,29 +181,28 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             )}
           </button>
 
-          {/* Offline Wiki Knowledge Toggle Button — 服务总开关关闭时完全不渲染，DeepSeek模式下显示不可用 */}
-          {wikiEnabled && (<button
+          {/* Offline Wiki Knowledge Toggle Button — 服务总开关关闭或 DeepSeek 模式下完全不渲染
+              （DeepSeek 用不到知识库，留着只会误导；知识库面板本身仍可打开查看） */}
+          {wikiEnabled && !isDeepSeek && (<button
             type="button"
-            onClick={() => !isDeepSeek && wikiConnected && setEnableWikiSearch?.(!enableWikiSearch)}
-            disabled={isDeepSeek || !wikiConnected}
+            onClick={() => wikiConnected && setEnableWikiSearch?.(!enableWikiSearch)}
+            disabled={!wikiConnected}
             className={`flex items-center gap-1.5 px-2 cq-md:px-3 py-1.5 rounded-full text-xs font-medium transition-all active:scale-95 border flex-shrink-0 ${
-              isDeepSeek || !wikiConnected
+              !wikiConnected
                 ? 'opacity-40 cursor-not-allowed bg-black/5 text-zinc-400 dark:bg-white/5 dark:text-zinc-500 border-transparent'
                 : enableWikiSearch
                 ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border-emerald-500/40 dark:hover:bg-emerald-900/80 shadow-sm'
                 : 'bg-black/5 text-zinc-600 border-black/5 hover:bg-black/10 hover:text-black dark:bg-white/5 dark:text-zinc-300 dark:border-white/5 dark:hover:bg-white/10 dark:hover:text-white'
             }`}
             title={
-              isDeepSeek
-                ? t('wikiDisabledInDeepSeek')
-                : !wikiConnected
+              !wikiConnected
                 ? t('wikiDisconnectedTooltip')
                 : enableWikiSearch
                 ? t('wikiSearchOnTooltip')
                 : t('wikiSearchOffTooltip')
             }
           >
-            <BookOpen className={`w-3.5 h-3.5 ${!isDeepSeek && enableWikiSearch && wikiConnected ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
+            <BookOpen className={`w-3.5 h-3.5 ${enableWikiSearch && wikiConnected ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
             <span className="hidden cq-md:inline">{t('offlineWiki')}</span>
           </button>)}
         </div>

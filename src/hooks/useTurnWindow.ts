@@ -1,272 +1,755 @@
-import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ChatMessage } from '../types/chat';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import type { RefObject } from 'react';
+import type { ChatMessage } from '../types/chat';
 import { buildTurns } from '../utils/turns';
-import { contentYOf, disableScrollAnchor } from '../utils/scrollAnchor';
+import { contentYOf } from '../utils/scrollAnchor';
+import type { Range, TurnSize } from '../utils/virtualWindow';
+import {
+  buildOffsets,
+  coreRange,
+  desiredRange,
+  fillRange,
+  shouldMountAll,
+  tailRange,
+  trimRange,
+} from '../utils/virtualWindow';
 
-/** 当前轮次上下各保留的轮数（用户口径：默认 5 轮 = 1 + 2 + 2） */
+/** 可见区上下各保留的轮数 */
 const PAD = 2;
-/** 兜底填充视口时的渲染上限（连续短消息不至于把整段会话全挂上去） */
-const MAX_RENDERED_TURNS = 9;
-/** 视口顶部往下 56px 作为"正在读哪一轮"的判定线 */
+/** 上下各预载约 1.5 屏 */
+const OVERSCAN_SCREENS = 1.5;
+const OVERSCAN_MIN = 800;
+/** 软上限：只裁可见区 ± PAD 之外的内容 */
+const MAX_MOUNTED_TURNS = 36;
+const MAX_MOUNTED_SCREENS = 8;
+/** 短会话直接全量挂载 */
+const ALL_MOUNT_TURNS = 20;
+const ALL_MOUNT_SCREENS = 8;
+/** 视口顶部往下 56px 作为“正在读哪一轮”的判定线 */
 const READING_LINE = 56;
-/** 贴顶跳转时留的余量 */
 const JUMP_TOP_GAP = 24;
-/** 滚动停止多久后把窗口收回到"中心 ± PAD" */
-const TRIM_DELAY = 700;
+/** 滚动静止多久后收拢 */
+const TRIM_DELAY = 1200;
+/** 切会话/发送后贴底保持多久 */
+const PIN_HOLD_MS = 1500;
+
+const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+
+interface WinState {
+  sessionId: string | null;
+  start: number;
+  end: number;
+  /** 每次主动改窗口 +1，用来驱动 layout effect 里的锚点恢复 */
+  nonce: number;
+}
+
+interface CenterState {
+  key: string | null;
+  index: number;
+}
+
+interface AnchorSnapshot {
+  key: string;
+  index: number;
+  /** 阅读线处命中的最深元素；换宽度/折叠等场景用它保持屏幕位置 */
+  el: HTMLElement | null;
+  elTop: number;
+  /** 兜底：整轮的 top */
+  turnTop: number;
+  /** 阅读线在轮内的偏移（宽度变化时按比例恢复） */
+  turnOffset: number;
+  turnHeight: number;
+  width: number;
+  scrollTop: number;
+}
+
+function findTurnEl(container: HTMLElement, key: string): HTMLElement | null {
+  const nodes = container.querySelectorAll<HTMLElement>('[data-turn-key]');
+  for (let i = 0; i < nodes.length; i++) {
+    if (nodes[i].dataset.turnKey === key) return nodes[i];
+  }
+  return null;
+}
+
+function hasSelectionInside(el: HTMLElement): boolean {
+  try {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+    const anchor = sel.anchorNode;
+    const focus = sel.focusNode;
+    return !!(
+      (anchor && el.contains(anchor)) ||
+      (focus && el.contains(focus))
+    );
+  } catch {
+    return false;
+  }
+}
 
 /**
- * 一屏内挂载的轮次窗口。
+ * 对话窗口化（测量式虚拟列表）。
  *
- * 2026-10-18 架构调整：**位置校准交给浏览器原生滚动锚定**（`overflow-anchor: auto`）。
- *
- * 只要容器允许锚定，往视口上方插/删内容时浏览器会在布局管线里自动调偏移，
- * 既不打断滚动惯性、也不产生"写 scrollTop → 触发 scroll 事件 → 再补偿"的反馈环。
- * 本 hook 因此**不再写任何 scrollTop**（只有用户点/拖横线跳转时写一次，且那一下临时关掉锚定）。
- *
- * 职责缩到两件：
- * 1. 统计"正在读哪一轮"（给横线高亮，纯 UI）；
- * 2. 维护挂载区间：贴边才补、只增不减、停下 700ms 才收回 ±2。
+ * 架构要点（2026-10 重构）：
+ * 1. **不再依赖浏览器原生 scroll anchoring**。Safari / WKWebView 在 Safari 27
+ *    之前完全不支持 `overflow-anchor`，上方补内容会直接把视野顶走。
+ * 2. 未挂载的轮次用上下 spacer 占位，`scrollHeight` 始终约等于全部内容，
+ *    滚轮/惯性不会撞到“假底”。
+ * 3. 只挂载“可见区 ± 2 轮 + 上下各约 1.2 屏”，短会话直接全量挂载。
+ * 4. 任何窗口增删、高度变化、宽度变化后，都在 paint 前把“阅读线处的元素”
+ *    恢复到原屏幕位置。流式生成本身不跟随滚动（产品决策）。
  */
-export function useTurnWindow({ messages, sessionId, containerRef }: Params) {
+export function useTurnWindow({ messages, sessionId, containerRef, contentRef }: Params) {
   const turns = useMemo(() => buildTurns(messages), [messages]);
   const turnsRef = useRef(turns);
   turnsRef.current = turns;
+  /** 只在轮次结构变化时变（流式 chunk 更新正文不会触发锚点恢复） */
+  const turnsSignature = useMemo(() => turns.map((t) => t.key).join('|'), [turns]);
+
+  const sessionKey = sessionId ?? '__none__';
+
+  /** 每个会话一份高度缓存（只存数字），LRU 保留 4 个会话 */
+  const heightsStoreRef = useRef(new Map<string, Map<string, TurnSize>>());
+  const heights = useMemo(() => {
+    const store = heightsStoreRef.current;
+    let map = store.get(sessionKey);
+    if (!map) {
+      map = new Map();
+      store.set(sessionKey, map);
+    }
+    if (store.size > 4) {
+      for (const key of store.keys()) {
+        if (key !== sessionKey) {
+          store.delete(key);
+          break;
+        }
+      }
+    }
+    return map;
+  }, [sessionKey]);
+  const heightsRef = useRef(heights);
+  heightsRef.current = heights;
+
+  const aliveRef = useRef(true);
+  const [version, setVersion] = useState(0);
+  const bumpRafRef = useRef(0);
+  const scheduleBump = useCallback(() => {
+    if (bumpRafRef.current || !aliveRef.current) return;
+    bumpRafRef.current = window.requestAnimationFrame(() => {
+      bumpRafRef.current = 0;
+      if (!aliveRef.current) return;
+      setVersion((v) => v + 1);
+    });
+  }, []);
+
+  const widthRef = useRef(0);
+  const contentWidth = useCallback(() => {
+    const content = contentRef?.current;
+    if (content) return content.clientWidth || 0;
+    const scroller = containerRef.current;
+    if (!scroller) return 0;
+    const turn = scroller.querySelector<HTMLElement>('[data-turn-key]');
+    return turn?.clientWidth || scroller.clientWidth || 0;
+  }, [contentRef, containerRef]);
+
+  const { offsets } = useMemo(
+    () => buildOffsets(turns, heights, widthRef.current),
+    // version 用来在 Map 原地更新后触发重算
+    [turns, heights, version]
+  );
+  const offsetsRef = useRef(offsets);
+  offsetsRef.current = offsets;
+
+  const [viewportH, setViewportH] = useState(800);
+  const viewportRef = useRef(viewportH);
+  viewportRef.current = viewportH;
 
   const [win, setWin] = useState<WinState>({
-    sessionId: sessionId ?? null,
-    centerId: null,
-    centerIndex: 0,
-    viewStart: -1,
-    viewEnd: -1,
+    sessionId: null,
+    start: 0,
+    end: -1,
+    nonce: 0,
   });
+  const winRef = useRef(win);
+  winRef.current = win;
 
-  const sessionKey = sessionId ?? null;
-  const sameSession = win.sessionId === sessionKey;
-
-  const centerIndex = useMemo(() => {
-    if (turns.length === 0) return -1;
-    const id = sameSession ? win.centerId : null;
-    if (!id) return turns.length - 1;
-    const found = turns.findIndex((t) => t.key === id);
-    if (found >= 0) return found;
-    return Math.min(Math.max(win.centerIndex, 0), turns.length - 1);
-  }, [turns, sameSession, win.centerId, win.centerIndex]);
-
-  const lastIndex = Math.max(0, turns.length - 1);
-  const hasView = sameSession && win.viewStart >= 0;
-  const startIndex = Math.min(
-    hasView ? Math.max(0, Math.min(win.viewStart, lastIndex)) : Math.max(0, lastIndex - PAD),
-    lastIndex
-  );
-  const endIndex = Math.max(
-    startIndex,
-    hasView ? Math.max(0, Math.min(win.viewEnd, lastIndex)) : lastIndex
-  );
-  // 依赖里**不能带 centerIndex**：中心每变一次就生成新数组，会让整棵列表白重渲染
-  const visibleTurns = useMemo(
-    () => (turns.length === 0 ? [] : turns.slice(startIndex, endIndex + 1)),
-    [turns, startIndex, endIndex]
+  const commitWin = useCallback(
+    (range: Range, force = false) => {
+      const prev = winRef.current;
+      if (
+        !force &&
+        prev.sessionId === sessionKey &&
+        prev.start === range.start &&
+        prev.end === range.end
+      ) {
+        return;
+      }
+      const next: WinState = {
+        sessionId: sessionKey,
+        start: range.start,
+        end: range.end,
+        nonce: prev.nonce + 1,
+      };
+      winRef.current = next;
+      setWin(next);
+    },
+    [sessionKey]
   );
 
-  const jumpRef = useRef<string | null>(null);
-  const scrollRafRef = useRef(0);
+  const [center, setCenter] = useState<CenterState>({ key: null, index: 0 });
+  const centerRef = useRef(center);
+  centerRef.current = center;
+  const updateCenter = useCallback((key: string | null, index: number) => {
+    const cur = centerRef.current;
+    if (cur.key === key && cur.index === index) return;
+    const next: CenterState = { key, index };
+    centerRef.current = next;
+    setCenter(next);
+  }, []);
 
-  /** 视口判定线处是哪一轮（返回 turns 下标） */
-  const readCurrentTurn = useCallback((): number => {
+  const anchorRef = useRef<AnchorSnapshot | null>(null);
+
+  /** 记录“阅读线处是什么”。滚动时同步调用，保证高度变化前拿到最新位置。 */
+  const captureAnchor = useCallback((): AnchorSnapshot | null => {
     const el = containerRef.current;
-    if (!el) return centerIndex;
+    if (!el) return null;
+    const sr = el.getBoundingClientRect();
+    const lineY = sr.top + READING_LINE;
     const nodes = el.querySelectorAll<HTMLElement>('[data-turn-index]');
-    if (nodes.length === 0) return centerIndex;
-    const lineY = el.getBoundingClientRect().top + READING_LINE;
-    let current = Number(nodes[0].dataset.turnIndex ?? 0);
+    if (nodes.length === 0) {
+      anchorRef.current = null;
+      return null;
+    }
+
+    let turnEl: HTMLElement = nodes[0];
     for (let i = 0; i < nodes.length; i++) {
       const rect = nodes[i].getBoundingClientRect();
-      const idx = Number(nodes[i].dataset.turnIndex ?? 0);
-      if (rect.top <= lineY) current = idx;
+      if (rect.top <= lineY) turnEl = nodes[i];
       else break;
     }
-    return current;
-  }, [containerRef, centerIndex]);
+    const tr = turnEl.getBoundingClientRect();
+    const key = turnEl.dataset.turnKey;
+    if (!key) return null;
+    const index = Number(turnEl.dataset.turnIndex ?? 0);
 
-  /** 只改"中心"（横线高亮），不动已挂载区间 */
-  const setCenter = useCallback(
-    (key: string | null, index: number) => {
-      setWin((prev) => ({
-        sessionId: sessionKey,
-        centerId: key,
-        centerIndex: Math.max(0, index),
-        viewStart: prev.sessionId === sessionKey ? prev.viewStart : -1,
-        viewEnd: prev.sessionId === sessionKey ? prev.viewEnd : -1,
-      }));
-    },
-    [sessionKey]
-  );
+    let hit: HTMLElement | null = null;
+    try {
+      const x = sr.left + Math.min(Math.max(sr.width * 0.32, 16), 260);
+      const y = Math.min(Math.max(lineY, sr.top + 1), sr.bottom - 1);
+      const candidate = document.elementFromPoint(x, y) as HTMLElement | null;
+      if (
+        candidate &&
+        el.contains(candidate) &&
+        !candidate.closest('[data-chat-inner-scroll]') &&
+        candidate.closest('[data-turn-index]') === turnEl
+      ) {
+        hit = candidate;
+      }
+    } catch {
+      hit = null;
+    }
 
-  /** 把区间设到"某轮 ± PAD"（跳转 / 切会话 / 收拢时用） */
-  const setViewAround = useCallback(
-    (index: number, key?: string | null) => {
-      const list = turnsRef.current;
-      const last = Math.max(0, list.length - 1);
-      const center = Math.max(0, Math.min(index, last));
-      setWin({
-        sessionId: sessionKey,
-        centerId: key !== undefined ? key : (list[center]?.key ?? null),
-        centerIndex: center,
-        viewStart: Math.max(0, center - PAD),
-        viewEnd: Math.min(last, center + PAD),
-      });
-    },
-    [sessionKey]
-  );
+    const snapshot: AnchorSnapshot = {
+      key,
+      index,
+      el: hit,
+      elTop: hit ? hit.getBoundingClientRect().top : tr.top,
+      turnTop: tr.top,
+      turnOffset: lineY - tr.top,
+      turnHeight: tr.height,
+      width: contentWidth(),
+      scrollTop: el.scrollTop,
+    };
+    anchorRef.current = snapshot;
+    updateCenter(key, index);
+    return snapshot;
+  }, [containerRef, contentWidth, updateCenter]);
 
-  const centerOnLatest = useCallback(() => {
-    const list = turnsRef.current;
-    if (list.length === 0) {
-      setViewAround(0, null);
+  /**
+   * 恢复到锚点位置。
+   *
+   * 高度变化：`delta = 当前 top - 记录 top + 用户自上次记录后滚动的距离`。
+   * 这样既补偿了上方 DOM 增高，又不会把用户刚滚的那一下“吃掉”。
+   *
+   * 宽度变化：按轮内比例恢复——换宽度后文本会重排，绝对像素偏移没有意义。
+   */
+  const restoreAnchor = useCallback(() => {
+    const el = containerRef.current;
+    const a = anchorRef.current;
+    if (!el || !a) return;
+
+    const sr = el.getBoundingClientRect();
+    const scrollTop = el.scrollTop;
+    const currentWidth = contentWidth();
+
+    if (a.width > 0 && Math.abs(currentWidth - a.width) > 1) {
+      const node = findTurnEl(el, a.key);
+      if (node) {
+        const tr = node.getBoundingClientRect();
+        const ratio = a.turnHeight > 0 ? a.turnOffset / a.turnHeight : 0;
+        const desired = sr.top + READING_LINE;
+        const delta = tr.top + ratio * tr.height - desired;
+        if (Math.abs(delta) > 0.5) el.scrollTop = scrollTop + delta;
+      }
+      captureAnchor();
       return;
     }
-    setViewAround(list.length - 1);
-  }, [setViewAround]);
+
+    const ds = scrollTop - a.scrollTop;
+    let node: HTMLElement | null = a.el;
+    let oldTop = a.elTop;
+    if (!node || !node.isConnected || !el.contains(node)) {
+      node = findTurnEl(el, a.key);
+      oldTop = a.turnTop;
+    }
+    if (!node) return;
+
+    const delta = node.getBoundingClientRect().top - oldTop + ds;
+    if (Math.abs(delta) > 0.5) el.scrollTop = scrollTop + delta;
+    captureAnchor();
+  }, [containerRef, contentWidth, captureAnchor]);
+
+  const pinBottomRef = useRef(false);
+  const pinUntilRef = useRef(0);
+
+  const pinToBottom = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    if (Date.now() > pinUntilRef.current) {
+      pinBottomRef.current = false;
+      captureAnchor();
+      return;
+    }
+    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    captureAnchor();
+    // 贴底时“当前轮”明确是最后一轮；短会话内容不足一屏时尤其重要
+    const list = turnsRef.current;
+    if (list.length > 0) updateCenter(list[list.length - 1].key, list.length - 1);
+  }, [containerRef, captureAnchor, updateCenter]);
+
+  const pendingMeasuresRef = useRef(new Map<string, number>());
+  const measureRafRef = useRef(0);
+
+  /** 子轮次用 ResizeObserver 上报高度；同一帧内合并处理。 */
+  const onMeasure = useCallback(
+    (key: string, height: number) => {
+      if (!aliveRef.current) return;
+      pendingMeasuresRef.current.set(key, height);
+      if (measureRafRef.current) return;
+      measureRafRef.current = window.requestAnimationFrame(() => {
+        measureRafRef.current = 0;
+        if (!aliveRef.current) return;
+        const map = heightsRef.current;
+        const w = contentWidth();
+        let changed = false;
+        pendingMeasuresRef.current.forEach((h, k) => {
+          const prev = map.get(k);
+          if (!prev || Math.abs(prev.h - h) > 0.5 || Math.abs(prev.w - w) > 1) {
+            map.set(k, { h, w, visited: true });
+            changed = true;
+          }
+        });
+        pendingMeasuresRef.current.clear();
+        if (!changed) return;
+
+        if (pinBottomRef.current) pinToBottom();
+        else restoreAnchor();
+        scheduleBump();
+      });
+    },
+    [contentWidth, pinToBottom, restoreAnchor, scheduleBump]
+  );
+
+  const hasTurns = turns.length > 0;
+  const totalHeight = offsets[turns.length] ?? 0;
+  const allMounted = useMemo(
+    () =>
+      shouldMountAll(
+        turns.length,
+        totalHeight,
+        viewportH,
+        ALL_MOUNT_TURNS,
+        ALL_MOUNT_SCREENS
+      ),
+    [turns.length, totalHeight, viewportH]
+  );
+  const allMountedRef = useRef(allMounted);
+  allMountedRef.current = allMounted;
+
+  const sessionChanged = win.sessionId !== sessionKey;
+  const tail = useMemo(
+    () =>
+      tailRange(
+        offsets,
+        viewportH,
+        PAD,
+        Math.max(OVERSCAN_MIN, viewportH * OVERSCAN_SCREENS)
+      ),
+    [offsets, viewportH]
+  );
+
+  const rawStart = sessionChanged ? tail.start : win.start;
+  const rawEnd = sessionChanged ? tail.end : win.end;
+  const startIndex = hasTurns
+    ? allMounted
+      ? 0
+      : clamp(rawStart, 0, turns.length - 1)
+    : 0;
+  const endIndex = hasTurns
+    ? allMounted
+      ? turns.length - 1
+      : Math.max(startIndex, clamp(rawEnd, 0, turns.length - 1))
+    : -1;
+
+  const visibleTurns = useMemo(
+    () => (hasTurns ? turns.slice(startIndex, endIndex + 1) : []),
+    [turns, hasTurns, startIndex, endIndex]
+  );
+
+  const topSpacer =
+    allMounted || !hasTurns ? 0 : Math.max(0, offsets[startIndex] ?? 0);
+  const bottomSpacer =
+    allMounted || !hasTurns
+      ? 0
+      : Math.max(0, totalHeight - (offsets[endIndex + 1] ?? totalHeight));
+
+  const centerIndex = useMemo(() => {
+    if (!hasTurns) return -1;
+    const found = center.key
+      ? turns.findIndex((t) => t.key === center.key)
+      : -1;
+    if (found >= 0) return found;
+    return clamp(center.index, 0, turns.length - 1);
+  }, [turns, center, hasTurns]);
+  const effectiveCenterIndex =
+    sessionChanged && hasTurns ? turns.length - 1 : centerIndex;
+
+  const jumpRef = useRef<string | null>(null);
+  const trimTimerRef = useRef(0);
+  const scheduleTrimRef = useRef<() => void>(() => {});
+
+  const maybeTrim = useCallback(() => {
+    const el = containerRef.current;
+    const cur = winRef.current;
+    if (!el || cur.sessionId !== sessionKey) return;
+    if (allMountedRef.current) return;
+    if (hasSelectionInside(el)) {
+      scheduleTrimRef.current();
+      return;
+    }
+    const core = coreRange(offsetsRef.current, el.scrollTop, el.clientHeight || viewportRef.current, PAD);
+    const next = trimRange({ start: cur.start, end: cur.end }, core);
+    if (next) commitWin(next);
+  }, [containerRef, sessionKey, commitWin]);
+
+  const scheduleTrim = useCallback(() => {
+    window.clearTimeout(trimTimerRef.current);
+    if (!aliveRef.current) return;
+    trimTimerRef.current = window.setTimeout(maybeTrim, TRIM_DELAY);
+  }, [maybeTrim]);
+  scheduleTrimRef.current = scheduleTrim;
+
+  const centerOnLatest = useCallback(() => {
+    const el = containerRef.current;
+    const list = turnsRef.current;
+    const n = list.length;
+    pinBottomRef.current = true;
+    pinUntilRef.current = Date.now() + PIN_HOLD_MS;
+    jumpRef.current = null;
+    if (n === 0) {
+      commitWin({ start: 0, end: -1 }, true);
+      updateCenter(null, -1);
+      return;
+    }
+    const vh = el?.clientHeight || viewportRef.current;
+    const tailWindow = tailRange(
+      offsetsRef.current,
+      vh,
+      PAD,
+      Math.max(OVERSCAN_MIN, vh * OVERSCAN_SCREENS),
+      MAX_MOUNTED_TURNS,
+      vh * MAX_MOUNTED_SCREENS
+    );
+    commitWin({ start: tailWindow.start, end: tailWindow.end }, true);
+    updateCenter(list[n - 1].key, n - 1);
+    if (el) {
+      el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    }
+    scheduleTrim();
+  }, [containerRef, commitWin, updateCenter, scheduleTrim]);
 
   const jumpTo = useCallback(
     (index: number) => {
       const list = turnsRef.current;
-      const turn = list[Math.max(0, Math.min(index, list.length - 1))];
+      const n = list.length;
+      if (n === 0) return;
+      const target = clamp(index, 0, n - 1);
+      const turn = list[target];
       if (!turn) return;
       const el = containerRef.current;
-      if (!el) return;
+      const offs = offsetsRef.current;
+      const vh = el?.clientHeight || viewportRef.current;
 
-      // 跳转是"主动挪视野"，先关掉锚定，等位置落定再恢复
-      disableScrollAnchor(el);
-
-      if (index === centerIndex && sameSession) {
-        const node = el.querySelector<HTMLElement>(
-          `[data-turn-key="${typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(turn.key) : turn.key}"]`
-        );
-        if (node) el.scrollTop = Math.max(0, contentYOf(el, node) - JUMP_TOP_GAP);
-        return;
+      const maxHeight = vh * MAX_MOUNTED_SCREENS;
+      let end = target;
+      while (
+        end < n - 1 &&
+        end - target + 1 < MAX_MOUNTED_TURNS &&
+        (offs[end + 1] - offs[target] < vh + OVERSCAN_MIN || end - target < PAD)
+      ) {
+        end++;
       }
+      // 目标轮下面如果都是超高轮次，不要把 24 轮全挂上
+      while (
+        end > target + PAD &&
+        offs[end + 1] - offs[target] > maxHeight
+      ) {
+        end--;
+      }
+      const start = Math.max(0, target - PAD);
+
+      pinBottomRef.current = false;
+      pinUntilRef.current = 0;
       jumpRef.current = turn.key;
-      setViewAround(index, turn.key);
+      commitWin({ start, end }, true);
+      updateCenter(turn.key, target);
+      scheduleTrim();
     },
-    [centerIndex, sameSession, containerRef, setViewAround]
+    [containerRef, commitWin, updateCenter, scheduleTrim]
   );
 
-  /** 窗口变化后执行跳转定位（唯一一处写 scrollTop） */
+  /** 窗口/高度/全量切换后统一在这里恢复锚点。 */
   useLayoutEffect(() => {
     const el = containerRef.current;
-    if (!el) return;
-    const jumpKey = jumpRef.current;
-    if (!jumpKey) return;
-    jumpRef.current = null;
-    const node = el.querySelector<HTMLElement>(
-      `[data-turn-key="${typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(jumpKey) : jumpKey}"]`
-    );
-    if (node) el.scrollTop = Math.max(0, contentYOf(el, node) - JUMP_TOP_GAP);
-  }, [startIndex, endIndex, centerIndex, sessionKey, containerRef]);
+    if (!el || !hasTurns) return;
+    if (winRef.current.sessionId !== sessionKey) return;
 
-  /** 滚动 → 横线高亮跟随；贴边才补 2 轮，其余一律不碰 DOM */
+    if (pinBottomRef.current) {
+      pinToBottom();
+      return;
+    }
+    const jumpKey = jumpRef.current;
+    if (jumpKey) {
+      jumpRef.current = null;
+      const node = findTurnEl(el, jumpKey);
+      if (node) {
+        el.scrollTop = Math.max(0, contentYOf(el, node) - JUMP_TOP_GAP);
+        captureAnchor();
+      }
+      return;
+    }
+    restoreAnchor();
+  }, [
+    win.nonce,
+    win.start,
+    win.end,
+    version,
+    sessionKey,
+    hasTurns,
+    turnsSignature,
+    allMounted,
+    containerRef,
+    pinToBottom,
+    captureAnchor,
+    restoreAnchor,
+  ]);
+
+  /** 同一会话内删除/截断后，把越界的窗口收回来。 */
+  useLayoutEffect(() => {
+    if (!hasTurns) return;
+    const cur = winRef.current;
+    if (cur.sessionId !== sessionKey) return;
+    const last = turns.length - 1;
+    if (cur.start > last || cur.end > last || cur.start < 0 || cur.end < 0) {
+      const start = clamp(cur.start, 0, last);
+      const end = clamp(cur.end, start, last);
+      commitWin({ start, end });
+    }
+  }, [turnsSignature, turns.length, sessionKey, hasTurns, commitWin]);
+
+  /** 切会话：从底部起算窗口，并保持贴底一小段时间。 */
+  useLayoutEffect(() => {
+    if (winRef.current.sessionId === sessionKey) return;
+    centerOnLatest();
+  }, [sessionKey, centerOnLatest]);
+
+  /** 视口高度 / 测量结果变化后，保证当前窗口覆盖可见区，且挂载内容至少一屏。 */
+  useLayoutEffect(() => {
+    if (allMountedRef.current) return;
+    if (pinBottomRef.current) return;
+    const el = containerRef.current;
+    if (!el) return;
+    const cur = winRef.current;
+    if (cur.sessionId !== sessionKey) return;
+    const offs = offsetsRef.current;
+    const n = turnsRef.current.length;
+    if (n === 0) return;
+    const vh = el.clientHeight || viewportRef.current;
+
+    const mountedH = offs[cur.end + 1] - offs[cur.start];
+    const filled =
+      mountedH < vh * 1.05
+        ? fillRange(offs, { start: cur.start, end: cur.end }, vh)
+        : null;
+    const desired =
+      filled ??
+      desiredRange(offs, el.scrollTop, {
+        viewport: vh,
+        padTurns: PAD,
+        overscan: Math.max(OVERSCAN_MIN, vh * OVERSCAN_SCREENS),
+        maxTurns: MAX_MOUNTED_TURNS,
+        maxHeight: vh * MAX_MOUNTED_SCREENS,
+      });
+
+    const start = Math.min(cur.start, desired.start);
+    const end = Math.max(cur.end, desired.end);
+    if (start !== cur.start || end !== cur.end) {
+      commitWin({ start, end });
+    }
+  }, [viewportH, version, sessionKey, containerRef, commitWin]);
+
+  /** 滚动：rAF 里做捕获与扩窗，避免同步 DOM 回流；收拢交给静止定时器。 */
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
+    let raf = 0;
     const onScroll = () => {
-      if (scrollRafRef.current) return;
-      scrollRafRef.current = requestAnimationFrame(() => {
-        scrollRafRef.current = 0;
-        const list = turnsRef.current;
-        if (list.length === 0) return;
-
-        // 1) 横线高亮：纯 UI，跟着视口读数
-        const next = readCurrentTurn();
-        const turn = list[next];
-        if (turn && next !== centerIndex) startTransition(() => setCenter(turn.key, next));
-
-        // 2) 只有真正贴近已挂载区域边缘才补 2 轮；普通翻页一次 DOM 都不动。
-        //    补/删都在视口外发生，位置由浏览器原生锚定自动接住 —— 我们不写 scrollTop。
-        const viewport = el.clientHeight;
-        const nearTop = el.scrollTop < viewport * 0.6;
-        const nearBottom = el.scrollHeight - viewport - el.scrollTop < viewport * 0.6;
-        const lastIdx = list.length - 1;
-        if (nearTop && startIndex > 0) {
-          setWin((prev) => ({
-            ...prev,
-            sessionId: sessionKey,
-            viewStart: Math.max(0, startIndex - PAD),
-          }));
-        } else if (nearBottom && endIndex < lastIdx) {
-          setWin((prev) => ({
-            ...prev,
-            sessionId: sessionKey,
-            viewEnd: Math.min(lastIdx, endIndex + PAD),
-          }));
+      scheduleTrim();
+      if (raf) return;
+      raf = window.requestAnimationFrame(() => {
+        raf = 0;
+        if (!aliveRef.current) return;
+        if (!pinBottomRef.current) captureAnchor();
+        if (allMountedRef.current) return;
+        const cur = winRef.current;
+        if (cur.sessionId !== sessionKey) return;
+        const offs = offsetsRef.current;
+        const n = turnsRef.current.length;
+        if (n === 0) return;
+        const vh = el.clientHeight || viewportRef.current;
+        const desired = desiredRange(offs, el.scrollTop, {
+          viewport: vh,
+          padTurns: PAD,
+          overscan: Math.max(OVERSCAN_MIN, vh * OVERSCAN_SCREENS),
+          maxTurns: MAX_MOUNTED_TURNS,
+          maxHeight: vh * MAX_MOUNTED_SCREENS,
+        });
+        if (desired.start < cur.start || desired.end > cur.end) {
+          commitWin({
+            start: Math.min(cur.start, desired.start),
+            end: Math.max(cur.end, desired.end),
+          });
         }
       });
     };
 
+    const onUserWheel = (e: WheelEvent) => {
+      // 只有用户实际用滚轮/触控板发生有效位移时，才解除贴底锁定
+      if (Math.abs(e.deltaY) > 2 || Math.abs(e.deltaX) > 2) {
+        pinBottomRef.current = false;
+        pinUntilRef.current = 0;
+      }
+      scheduleTrim();
+    };
+
+    const onUserTouch = () => {
+      pinBottomRef.current = false;
+      pinUntilRef.current = 0;
+      scheduleTrim();
+    };
+
     el.addEventListener('scroll', onScroll, { passive: true });
+    el.addEventListener('wheel', onUserWheel as EventListener, { passive: true });
+    el.addEventListener('touchstart', onUserTouch, { passive: true });
     return () => {
       el.removeEventListener('scroll', onScroll);
-      if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+      el.removeEventListener('wheel', onUserWheel as EventListener);
+      el.removeEventListener('touchstart', onUserTouch);
+      if (raf) window.cancelAnimationFrame(raf);
     };
-  }, [containerRef, centerIndex, startIndex, endIndex, sessionKey, readCurrentTurn, setCenter]);
+  }, [containerRef, sessionKey, captureAnchor, scheduleTrim, commitWin]);
 
-  /** 滚动停下 TRIM_DELAY 后收回"中心 ± PAD"（删除的内容都在视口外，锚定会接住） */
-  useEffect(() => {
-    if (!hasView || centerIndex < 0 || turns.length === 0) return;
-    const targetStart = Math.max(0, centerIndex - PAD);
-    const targetEnd = Math.min(turns.length - 1, centerIndex + PAD);
-    if (startIndex === targetStart && endIndex === targetEnd) return;
-    const timer = window.setTimeout(() => setViewAround(centerIndex), TRIM_DELAY);
-    return () => window.clearTimeout(timer);
-  }, [centerIndex, startIndex, endIndex, hasView, turns.length, sessionKey, setViewAround]);
-
-  /** 挂载内容不足一屏时继续补（否则短会话会留一大片空白且无法滚动） */
+  /** 容器尺寸 / 内容宽度变化：换宽度后按比例恢复锚点。 */
   useLayoutEffect(() => {
     const el = containerRef.current;
-    if (!el || turns.length === 0) return;
-    if (endIndex - startIndex + 1 >= MAX_RENDERED_TURNS) return;
-    if (el.scrollHeight >= el.clientHeight * 1.06) return;
-    const last = turns.length - 1;
-    if (endIndex < last) {
-      setWin((prev) => ({
-        ...prev,
-        sessionId: sessionKey,
-        viewEnd: Math.min(last, Math.max(prev.viewEnd, endIndex) + 1),
-      }));
-    } else if (startIndex > 0) {
-      setWin((prev) => ({
-        ...prev,
-        sessionId: sessionKey,
-        viewStart: Math.max(0, Math.min(prev.viewStart, startIndex) - 1),
-      }));
-    }
-  }, [startIndex, endIndex, turns.length, sessionKey, containerRef]);
+    if (!el) return;
+    const content = contentRef?.current ?? el;
+
+    const read = () => {
+      const vh = el.clientHeight || 0;
+      if (vh > 0) {
+        setViewportH((prev) => (Math.abs(prev - vh) > 0.5 ? vh : prev));
+      }
+      const w = content.clientWidth || 0;
+      if (w > 0 && Math.abs(w - widthRef.current) > 1) {
+        widthRef.current = w;
+        restoreAnchor();
+        scheduleBump();
+      }
+    };
+
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    if (content !== el) ro.observe(content);
+    window.addEventListener('resize', read);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', read);
+    };
+  }, [containerRef, contentRef, restoreAnchor, scheduleBump]);
+
+  /** 初始与切会话后安排一次收拢（把预载区收回到可见 ± PAD）。 */
+  useEffect(() => {
+    scheduleTrim();
+    return () => window.clearTimeout(trimTimerRef.current);
+  }, [sessionKey, scheduleTrim]);
+
+  /** 卸载时取消所有延迟任务，避免卸载后 setState / 滚动。 */
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+      if (bumpRafRef.current) window.cancelAnimationFrame(bumpRafRef.current);
+      if (measureRafRef.current) window.cancelAnimationFrame(measureRafRef.current);
+      window.clearTimeout(trimTimerRef.current);
+    };
+  }, []);
+
+  const visitedKeys = useMemo(() => new Set(heights.keys()), [heights, version]);
 
   return {
     turns,
     visibleTurns,
-    centerIndex,
+    centerIndex: effectiveCenterIndex,
     startIndex,
     endIndex,
     centerOnLatest,
     jumpTo,
+    /** 未挂载内容占位，保证滚动几何稳定 */
+    topSpacer,
+    bottomSpacer,
+    /** 子轮次尺寸上报 */
+    onMeasure,
+    /** 刻度条：哪些轮次已经真实测过（用于“已加载”样式） */
+    visitedKeys,
+    /** 供拖拽/开合侧栏前主动拍快照 */
+    captureAnchor,
+    /** 解除宽度冻结/字号变化后手动恢复一次 */
+    restoreAnchor,
   };
-}
-
-interface WinState {
-  sessionId: string | null;
-  /** 居中轮次的 key；null 表示"末尾" */
-  centerId: string | null;
-  /** centerId 失效时的下标兜底（删除轮次后不至于跳到末尾） */
-  centerIndex: number;
-  /** 实际挂载区间（显式保存，滚动中只增不减，停下才收拢） */
-  viewStart: number;
-  viewEnd: number;
 }
 
 interface Params {
   messages: ChatMessage[];
   sessionId?: string | null;
-  containerRef: React.RefObject<HTMLDivElement | null>;
+  containerRef: RefObject<HTMLDivElement | null>;
+  contentRef?: RefObject<HTMLDivElement | null>;
 }

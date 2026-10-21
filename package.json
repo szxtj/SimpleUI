@@ -14,7 +14,8 @@
     "start": "node server/proxy.js",
     "build:app": "./build_mac_app.sh",
     "build:install": "./build_mac_app.sh install",
-    "test:subtitles": "node scripts/test_subtitle_segmentation.js"
+    "test:subtitles": "node scripts/test_subtitle_segmentation.js",
+    "test:virtual": "node --experimental-strip-types scripts/test_virtual_window.js"
   },
   "dependencies": {
     "clsx": "^2.1.1",

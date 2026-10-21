@@ -38,6 +38,29 @@
 }
 
 /**
+ * 对话列自己管理锚点，显式关掉原生 scroll anchoring。
+ *
+ * Safari / WKWebView 在 Safari 27 之前根本不支持 `overflow-anchor`；
+ * 而一旦支持，原生锚定会和我们的“spacer + 手动恢复”双重补偿。
+ * 两条路径都不可接受，所以这里统一关掉，位置由 useTurnWindow 负责。
+ */
+.chat-scroller,
+.chat-turn {
+  overflow-anchor: none;
+}
+
+/**
+ * 「冻结」：直接子元素保留自己的盒子（flex 尺寸照旧），跳过内部布局与绘制。
+ * **只用于右侧面板**（面板里没有依赖 rect 的测量）。
+ * 对话列**绝不能**用：`content-visibility: hidden` 会让子树的 getBoundingClientRect()
+ * 全变成 0，而刻度条/窗口化正是靠 rect 定位 —— 会导致刻度卡死、内容乱跳。
+ */
+.freeze-children > * {
+  content-visibility: hidden;
+}
+
+
+/**
  * 定位横线两端渐隐：刻度滑进滑出时不会硬切在边界上。
  * 用 mask 而不是 backdrop-filter —— 横线背后是空白留白，模糊透明层看不见效果。
  */

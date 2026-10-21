@@ -142,12 +142,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside
-      className={`relative flex-shrink-0 h-full bg-[#f1f3f6] dark:bg-[#1a1b1f] border-r border-black/5 dark:border-white/5 flex flex-col transition-all duration-200 ease-in-out select-none overflow-hidden ${
-        isOpen
-          ? 'w-[260px] min-w-[260px] opacity-100'
-          : 'w-0 min-w-0 opacity-0 pointer-events-none border-r-0'
+      data-left-sidebar="true"
+      // 外层只负责「让出/收回 260px 空间」，内层是**固定 260 宽的整块**：
+      // 开合时内层只做 translateX（合成层动画），内容一次都不重排 → 预载好整块滑入。
+      className={`relative flex-shrink-0 h-full transition-[width] duration-200 ease-in-out select-none overflow-hidden ${
+        isOpen ? 'w-[260px] min-w-[260px]' : 'w-0 min-w-0 pointer-events-none'
       }`}
     >
+      <div
+        data-sidebar-surface="true"
+        className={`absolute left-0 top-0 flex h-full w-[260px] flex-col border-r border-black/5 bg-[#f1f3f6] transition-transform duration-200 ease-in-out dark:border-white/5 dark:bg-[#1a1b1f] ${
+          isOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
       {/* Top 52px Bar: Traffic lights (78px) + Empty drag space + Collapse Button */}
       <div className="h-[52px] flex items-center justify-between px-3 flex-shrink-0 select-none">
         {/* Left space reserved for native traffic lights (78px) */}
@@ -156,6 +163,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {/* Right tools in top bar: Collapse Sidebar Button */}
         <button
           onClick={onToggleOpen}
+          data-sidebar-toggle="true"
           className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
           title={t('collapseSidebar')}
         >
@@ -377,6 +385,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <Settings className="w-4 h-4" />
           </button>
         </div>
+      </div>
       </div>
     </aside>
   );

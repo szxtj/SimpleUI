@@ -658,6 +658,21 @@ try {
   check('快速上滚期间无 >50ms 长任务',
     Array.isArray(jitter.longTasks) && jitter.longTasks.length === 0, JSON.stringify(jitter.longTasks));
 
+  // ---------------------------------------------------------------- 冻结期不测量
+  // 开合侧边栏时中部会被 content-visibility 冻结：那时所有 rect 都是 0，
+  // 若仍去读位置，会把"当前轮"误判成最后一个已挂载轮（刻度跳到末尾、内容闪现）。
+  if (!SPOT) {
+    const before = await currentCenter();
+    await ev(`document.querySelector('[data-sidebar-toggle="true"]').click()`);
+    await sleep(60);
+    const during = await currentCenter();
+    await sleep(900);
+    const after = await currentCenter();
+    check('冻结期间不测量：刻度不会跳到末尾',
+      during === before && after === before,
+      JSON.stringify({ before, during, after }));
+  }
+
   const fails = results.filter((r) => !r.ok);
   console.log(`\n${results.length - fails.length}/${results.length} 通过`);
   if (fails.length) {
