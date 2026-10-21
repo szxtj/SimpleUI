@@ -54,6 +54,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.spotlightController.showWithSession(sessionId: sessionId, isExpanded: isExpanded)
         }
 
+        mainWindowController.onOpenSessionInSpotlight = { [weak self] sessionId, isExpanded in
+            // 仅打开小窗口：不隐藏、不切换主窗口，主窗口当前会话与滚动位置原样保留
+            self?.spotlightController.showWithSession(sessionId: sessionId, isExpanded: isExpanded)
+        }
+
         // Start Proxy if needed and show Main Window
         // 注意：字幕窗口（subtitleOverlayController）严格按需加载，启动时不预加载 WebView 或后台模型
         ProcessManager.shared.startProxyIfNeeded { [weak self] _ in

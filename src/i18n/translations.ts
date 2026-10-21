@@ -278,6 +278,7 @@ export const translations = {
     closeEsc: '关闭 (Esc)',
     openInMainWindow: '在主窗口中打开 (⌘O)',
     shrinkToSpotlight: '缩小为快捷悬浮窗',
+    openSessionInSpotlight: '用小窗口打开',
     serviceNotReady: '服务未就绪',
 
     // Knowledge Base (ZIM)
@@ -876,6 +877,7 @@ export const translations = {
     closeEsc: 'Close (Esc)',
     openInMainWindow: 'Open in Main Window (⌘O)',
     shrinkToSpotlight: 'Shrink to Spotlight',
+    openSessionInSpotlight: 'Open in Mini Window',
     serviceNotReady: 'Service not ready',
 
     // Knowledge Base (ZIM)

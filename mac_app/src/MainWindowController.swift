@@ -305,6 +305,8 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
     private var dragView: TitleBarDragView!
     private var resizeOverlayView: ResizeOverlayView!
     var onShrinkToSpotlight: ((String?, Bool) -> Void)?
+    /** 会话列表右键「用小窗口打开」：只唤出小窗口，主窗口保持原会话与原滚动位置 */
+    var onOpenSessionInSpotlight: ((String?, Bool) -> Void)?
     /** 双击缩放前的原帧（自定义 zoom 态，替代 performZoom，见 toggleZoomAnimated 注释） */
     private var preZoomFrame: NSRect?
     /** 双击缩放的任务句柄 */
@@ -370,6 +372,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         userContent.add(self, name: "setPanelWidth")
         userContent.add(self, name: "growWindow")
         userContent.add(self, name: "shrinkToSpotlight")
+        userContent.add(self, name: "openSessionInSpotlight")
         // 语音输入权限桥（设置页「语音识别服务」卡片据此展示/申请三件套权限）
         userContent.add(self, name: "voiceInput")
         userContent.add(self, name: "openExternal")
@@ -531,6 +534,12 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
                 window?.orderOut(nil)
                 onShrinkToSpotlight?(sessionId, isExpanded)
             }
+        } else if message.name == "openSessionInSpotlight" {
+            let dict = message.body as? [String: Any]
+            guard let sessionId = dict?["sessionId"] as? String, !sessionId.isEmpty else { return }
+            let isExpanded = (dict?["isExpanded"] as? Bool) ?? true
+            // 主窗口保持显示且不切会话：小窗口作为悬浮面板盖在上面，主窗口的滚动位置不动。
+            onOpenSessionInSpotlight?(sessionId, isExpanded)
         } else if message.name == "voiceInput", let dict = message.body as? [String: Any] {
             handleVoiceInputMessage(dict)
         } else if message.name == "openExternal", let urlString = message.body as? String {

@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ChatSession, WikiStatusInfo, AsrServiceStatus } from '../types/chat';
 import { ModelServiceStatus } from '../services/api';
 import { useI18n, formatArticleCount } from '../i18n';
@@ -20,6 +21,7 @@ import {
   MessageSquarePlus,
   PanelLeftClose,
   Loader2,
+  PictureInPicture2,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -27,6 +29,8 @@ interface SidebarProps {
   currentSessionId: string | null;
   generatingSessionIds?: string[];
   onSelectSession: (id: string) => void;
+  /** 在快捷小窗口（Spotlight）中直接打开指定会话，不改变主窗口当前会话与滚动位置 */
+  onOpenSessionInSpotlight?: (id: string) => void;
   onNewSession: () => void;
   onDeleteSession: (id: string) => void;
   onRenameSession: (id: string, newTitle: string) => void;
@@ -76,6 +80,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   currentSessionId,
   generatingSessionIds = [],
   onSelectSession,
+  onOpenSessionInSpotlight,
   onNewSession,
   onDeleteSession,
   onRenameSession,
@@ -92,6 +97,56 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [editingTitle, setEditingTitle] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
+  /** 会话条目右键菜单：仅提供「用小窗口打开」 */
+  const [contextMenu, setContextMenu] = useState<{
+    session: ChatSession;
+    x: number;
+    y: number;
+  } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (contextMenuRef.current?.contains(e.target as Node)) return;
+      setContextMenu(null);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setContextMenu(null);
+    };
+    const close = () => setContextMenu(null);
+    window.addEventListener('mousedown', onMouseDown, true);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', close);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('blur', close);
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown, true);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('blur', close);
+    };
+  }, [contextMenu]);
+
+  const openContextMenu = (session: ChatSession, e: React.MouseEvent) => {
+    // 重命名输入框内保留浏览器/系统原生右键菜单（复制、粘贴）
+    const target = e.target as HTMLElement | null;
+    if (target?.closest('input, textarea, [contenteditable="true"], [contenteditable=""]')) {
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    if (!onOpenSessionInSpotlight) return;
+    // 菜单尺寸估算，用于把菜单钳制在视口内（右/下边缘不溢出）
+    const menuWidth = 184;
+    const menuHeight = 40;
+    setContextMenu({
+      session,
+      x: Math.max(8, Math.min(e.clientX, window.innerWidth - menuWidth - 8)),
+      y: Math.max(8, Math.min(e.clientY, window.innerHeight - menuHeight - 8)),
+    });
+  };
 
   const startRename = (session: ChatSession, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -259,6 +314,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div
                 key={session.id}
                 onClick={() => onSelectSession(session.id)}
+                onContextMenu={(e) => openContextMenu(session, e)}
                 className={`group relative flex items-center justify-between px-3 py-2.5 rounded-xl text-xs cursor-pointer select-none outline-none transition-colors duration-150 border ${
                   isSelected
                     ? 'bg-white dark:bg-[#292a30] text-[#1f2328] dark:text-[#f1f3f7] font-medium shadow-sm dark:shadow-none border-black/5 dark:border-white/5'
@@ -387,6 +443,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
       </div>
+
+      {contextMenu &&
+        createPortal(
+          <div
+            ref={contextMenuRef}
+            data-session-context-menu="true"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onContextMenu={(e) => e.preventDefault()}
+            className="fixed z-[10000] min-w-[176px] p-1 rounded-xl bg-white/95 dark:bg-[#1e2025]/95 border border-black/10 dark:border-[#3a3d45] shadow-lg backdrop-blur-sm select-none"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                const sessionId = contextMenu.session.id;
+                setContextMenu(null);
+                onOpenSessionInSpotlight?.(sessionId);
+              }}
+              className="w-full flex items-center gap-2 px-2.5 h-8 rounded-lg text-left text-xs font-medium text-zinc-600 dark:text-zinc-300 hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
+            >
+              <PictureInPicture2 className="w-3.5 h-3.5 flex-shrink-0" />
+              <span>{t('openSessionInSpotlight')}</span>
+            </button>
+          </div>,
+          document.body
+        )}
     </aside>
   );
 };

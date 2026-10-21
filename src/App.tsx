@@ -661,6 +661,28 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     }
   };
 
+  /**
+   * 会话列表右键 →「用小窗口打开」。
+   *
+   * 与「缩小为快捷悬浮窗」不同：主窗口**保持原会话与原滚动位置**（不 selectSession、不隐藏），
+   * 只把目标会话指针交给小窗口。这样回到主窗口时看到的仍是刚才的对话和阅读位置。
+   */
+  const handleOpenSessionInSpotlight = (sessionId: string) => {
+    const target = sessions.find((s) => s.id === sessionId);
+    const isExpanded =
+      (target?.messages?.length ?? 0) > 0 || generatingSessionIds.includes(sessionId);
+    handoffToSpotlight(sessionId);
+    try {
+      // @ts-expect-error WebKit bridge
+      window.webkit?.messageHandlers?.openSessionInSpotlight?.postMessage({
+        sessionId,
+        isExpanded,
+      });
+    } catch {
+      /* 非 macOS / 测试环境无桥 */
+    }
+  };
+
   return (
     <I18nProvider preference={settings.language}>
       <div className="flex h-screen w-screen overflow-hidden bg-[#f8f9fb] dark:bg-[#18191c] text-[#1f2328] dark:text-[#f1f3f7]">
@@ -672,6 +694,7 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
           onSelectSession={(id) => {
             selectSession(id);
           }}
+          onOpenSessionInSpotlight={handleOpenSessionInSpotlight}
           onNewSession={handleNewSession}
           onDeleteSession={handleDeleteSession}
           onRenameSession={handleRenameSession}

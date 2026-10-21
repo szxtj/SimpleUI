@@ -1,22 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Languages, Volume2, Square } from 'lucide-react';
+import { Check, Copy, Languages, Volume2, Square } from 'lucide-react';
 import { useI18n } from '../i18n';
 import { primeSystemVoices, speakSystemTts, stopSystemTts } from '../utils/systemTts';
 
 /**
- * 划选浮标：选区旁提供「翻译」与「朗读」两个按钮。
+ * 划选浮标：选区旁提供「翻译」「朗读」与「复制」按钮。
  *   - 翻译：走 WebKit 桥把纯文本交给原生快捷翻译窗口（自动翻译）
  *   - 朗读：走 Web Speech API（macOS 系统语音），朗读所选原文
+ *   - 复制：把同一份整理后的纯文本写入系统剪贴板
  *
  * 注意：Qwen TTS 朗读入口只保留在回答底部的 SpeakButton（以及服务管理面板），
  * 划选浮标不再提供 Qwen 朗读，避免同一能力存在两个入口。
  */
 const MIN_CHARS = 2;
 const MAX_CHARS = 4000;
-const TOOLBAR_WIDTH_ZH = 132;
-const TOOLBAR_WIDTH_EN = 158;
-const TOOLBAR_WIDTH_READONLY = 82;
+// 宽度用于把浮标右对齐到选区右缘；新增「复制」后同步加宽，留少量余量避免溢出屏幕。
+const TOOLBAR_WIDTH_ZH = 192;
+const TOOLBAR_WIDTH_EN = 226;
+const TOOLBAR_WIDTH_READONLY = 142;
 const TOOLBAR_HEIGHT = 32;
 
 /** 翻译桥只在原生 WKWebView 里存在；纯浏览器调试时隐藏「翻译」按钮 */
@@ -110,10 +112,12 @@ export function SelectionSpeak() {
   const { t, lang } = useI18n();
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const [systemOn, setSystemOn] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [canTranslate] = useState(() => getTranslateBridge() !== null);
   const textRef = useRef('');
   const translateTextRef = useRef('');
   const timerRef = useRef<number | null>(null);
+  const copiedTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     primeSystemVoices();
@@ -159,6 +163,7 @@ export function SelectionSpeak() {
     const y = above > 8 ? above : Math.min(rect.bottom + 6, window.innerHeight - height - 8);
     textRef.current = raw;
     translateTextRef.current = extractPlainText(range);
+    setCopied(false);
     setPos({ x, y });
   }, [lang, canTranslate]);
 
@@ -196,6 +201,7 @@ export function SelectionSpeak() {
     () => () => {
       // 组件卸载时停止朗读，避免离开后还在后台出声
       stopSystemTts();
+      if (copiedTimerRef.current) window.clearTimeout(copiedTimerRef.current);
     },
     []
   );
@@ -226,6 +232,20 @@ export function SelectionSpeak() {
     bridge.postMessage({ text: raw });
     setPos(null);
   }, [stopSystem]);
+
+  const copy = useCallback(async () => {
+    // 与「翻译」共用同一份提取结果：保留段落/列表结构、去掉 Markdown 标记与工具栏文字
+    const raw = translateTextRef.current || textRef.current;
+    if (!raw) return;
+    try {
+      await navigator.clipboard.writeText(raw);
+      setCopied(true);
+      if (copiedTimerRef.current) window.clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = window.setTimeout(() => setCopied(false), 1600);
+    } catch (e) {
+      console.error('Failed to copy selection:', e);
+    }
+  }, []);
 
   if (!pos) return null;
 
@@ -259,6 +279,19 @@ export function SelectionSpeak() {
       >
         {systemOn ? <Square className="w-3 h-3" fill="currentColor" /> : <Volume2 className="w-3.5 h-3.5" />}
         <span>{t('selectionSpeakShort')}</span>
+      </button>
+      <button
+        type="button"
+        onClick={copy}
+        className="flex items-center gap-1 px-2 h-6 rounded-lg text-[11px] font-medium transition-colors cursor-pointer text-zinc-600 dark:text-zinc-300 hover:bg-black/5 dark:hover:bg-white/10"
+        title={copied ? t('copied') : t('copyTooltip')}
+      >
+        {copied ? (
+          <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
+        ) : (
+          <Copy className="w-3.5 h-3.5" />
+        )}
+        <span>{t('copy')}</span>
       </button>
       {systemOn && <span className="sr-only">playing</span>}
     </div>,
