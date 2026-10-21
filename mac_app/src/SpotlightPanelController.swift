@@ -128,6 +128,10 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         userContent.add(self, name: "openImageInPreview")
         userContent.add(self, name: "saveImage")
         userContent.add(self, name: "translateSelection")
+        userContent.add(self, name: "copyWordEquation")
+        userContent.add(self, name: "copyRichData")
+        userContent.add(self, name: "openTableInWord")
+        userContent.add(self, name: "openExternal")
         config.userContentController = userContent
 
         webView = WKWebView(frame: panel.contentView?.bounds ?? .zero, configuration: config)
@@ -428,6 +432,38 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
                 (NSApp.delegate as? AppDelegate)?.translationPanelController?.present(
                     text: trimmed, mode: .quick, autoTranslate: true)
             }
+        } else if message.name == "copyWordEquation", let dict = message.body as? [String: Any] {
+            let mathml = dict["mathml"] as? String ?? ""
+            DispatchQueue.main.async {
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                // Claude 黄金法则：只写唯一的纯文本 MathML，绝不放任何 HTML/RTF，让 Word 内容嗅探直接命中公式转换！
+                pb.setString(mathml, forType: .string)
+            }
+        } else if message.name == "copyRichData", let dict = message.body as? [String: Any] {
+            let html = dict["html"] as? String ?? ""
+            let plainText = dict["plainText"] as? String ?? ""
+            DispatchQueue.main.async {
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                if !html.isEmpty {
+                    pb.setString(html, forType: .html)
+                }
+                if !plainText.isEmpty {
+                    pb.setString(plainText, forType: .string)
+                }
+            }
+        } else if message.name == "openTableInWord", let dict = message.body as? [String: Any] {
+            if let docXml = dict["documentXml"] as? String {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    MainWindowController.createAndOpenDocx(documentXml: docXml)
+                }
+            }
+        } else if message.name == "openExternal", let urlString = message.body as? String {
+            guard let url = URL(string: urlString),
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https" else { return }
+            NSWorkspace.shared.open(url)
         }
     }
 
