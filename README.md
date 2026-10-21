@@ -31,15 +31,16 @@ SimpleUI 为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 深度�
 
 ## 核心亮点
 
-- **本地优先**：模型推理、知识库、语音识别、字幕和翻译都在本机完成；无需自行安装或配置 Python 环境、向量数据库或云端 API。
-- **模型集成服务**：统一托管基础模型、SenseVoice 语音识别、R2T2 流式字幕、Index-Translate 翻译与 CoreML 断句模型。
+- **本地优先**：模型推理、知识库、语音识别、语音合成、OCR 识图、字幕和翻译都在本机完成；无需自行安装或配置 Python 环境、向量数据库或云端 API。
+- **模型集成服务**：统一托管基础模型、SenseVoice 语音输入、Qwen3-TTS 语音合成、PaddleOCR-VL 视觉文档识别、R2T2 流式字幕、Index-Translate 翻译与 CoreML 断句模型。
+- **视觉图文识别（OCR 提取 Markdown）**：快捷键 `⌘⇧2` 框选屏幕任意区域，由端侧多模态模型 PaddleOCR-VL 自动提取结构化 Markdown（段落、表格、LaTeX 公式、图表）存入剪贴板；纯按需运行，闲置超时自动释放显存。
 - **DeepSeek API 深度适配**：官方 Base URL / API Key / 模型 / 上下文 / 温度 / top_p / 推理强度 / 停止串 / 系统提示词独立配置，直接请求官方接口，并针对缓存命中做上下文修剪。
 - **离线维基 RAG**：Kiwix ZIM + 多通道检索 + 原文直注；不摘要、不改写、不机械截断，答案带可点击引用。
 - **浏览器式多标签侧栏**：右侧集成统一的多标签页抽屉（离线维基检索 / 百科条目 / 回答源码 / 原生大图预览），支持多标签并发切换、拖拽分栏与实时尺寸 HUD，Spotlight 浮窗具备同款轻量单页层。
 - **长对话虚拟化与刻度定位**：采用基于几何测量的虚拟窗口化渲染（20 轮内原生全量挂载，长会话动态预算挂载），彻底消除长对话卡顿掉帧；右侧配备轮次定位轨（Turn Rail），支持悬停预览与一键直达跳转。
 - **实时双语字幕**：SOTA SaT 断句、R2T2 流式识别、Index-Translate 整句翻译，原文实时、译文按句追加。
 - **强大前端与科学计算**：Markdown / KaTeX / Mermaid，代码块支持一键收起与复制代码；内置 **Pyodide Python 科学计算沙盒**，免配置环境在浏览器沙盒内一键运行代码，源码与运行结果双层独立折叠；公式块可复制为 Word / WPS 原生公式，表格可保留格式粘贴到 Word。
-- **原生 macOS**：主窗口 + Spotlight 浮窗 + 快捷翻译 + 字幕悬浮窗，支持中英文界面与深浅色主题。
+- **原生 macOS**：主窗口 + Spotlight 浮窗 + 快捷翻译 + 字幕悬浮窗 + 全屏截图 OCR，支持中英文界面与深浅色主题。
 
 ---
 
@@ -55,6 +56,8 @@ Node.js 代理（127.0.0.1:31235）
         ├── DeepSeek 官方 API（云端）
         ├── 离线维基 RAG（Kiwix :31236 + 本地 ZIM）
         ├── 语音输入（SenseVoice · audio.cpp :1236）
+        ├── 语音合成（Qwen3-TTS 0.6B · MLX :1251）
+        ├── 视觉文档识别（PaddleOCR-VL 1.6 · MLX :1252）
         ├── 实时双语字幕
         │     ├── R2T2 Q8_0 流式识别（:1250 · Metal）
         │     ├── SaT-3L-sm CoreML 断句（ANE / CPU）
@@ -67,12 +70,14 @@ Node.js 代理（127.0.0.1:31235）
 | Node 代理 `proxy.js` | `31235` | 静态托管、SSE 透传、动态路由、受管服务 API |
 | Kiwix 离线百科 | `31236` | 本地 ZIM 条目、标题联想、全文检索 |
 | SenseVoice 语音输入 | `1236` | 长按右 ⌘ 的本地中英语音转文字 |
+| Qwen3-TTS 语音合成 | `1251` | 回复朗读时的端侧语音合成（纯按需，闲置超时自动卸载） |
+| PaddleOCR-VL 视觉识别 | `1252` | `⌘⇧2` 框选屏幕提取 Markdown 到剪贴板（纯按需，闲置超时自动卸载） |
 | R2T2 字幕识别 | `1250` | 追加式流式识别，原生标点 |
 | Index-Translate 字幕翻译 | `1249` | 专精神经机器翻译 |
 | 基础模型 | `1235` / `1241` | TTF / Mference / 兼容 OpenAI 的推理服务 |
 | DeepSeek API | 云端 | 官方 API：对话、推理与快捷翻译 |
 
-> 基础模型本体与权重不随本仓库分发，需要用户自行准备；语音模型随包内置，字幕模型可在应用内按需下载。
+> 基础模型本体与权重不随本仓库分发，需要用户自行准备；语音输入模型随包内置，TTS、OCR 与字幕模型可在应用内「服务管理」按需自动测速下载。
 
 ---
 
@@ -169,11 +174,19 @@ SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传
 - 在任意消息正文中划选文本，选区旁会出现「**翻译**」与「**朗读**」两个圆角按钮：翻译会直接呼出快捷翻译窗口，把选区的纯文本填入，并以快速模式自动翻译；朗读走 macOS 系统语音，再点一次或按 `Esc` 停止。
 - 划选浮标由主窗口与 Spotlight 浮窗共用同一套实现，两个窗口行为完全一致；纯浏览器调试（无原生桥）时自动隐藏「翻译」按钮。
 - 每条回答下方也有一个朗读按钮（在「重试」左侧），用于通读整条回答。
-- 模型：Qwen3-TTS 0.6B CustomVoice（MLX 4bit，约 1.6 GB，含独立语音 codec），默认音色 `serena`。
+- 模型：Qwen3-TTS 0.6B CustomVoice（MLX 4bit，约 1.58 GB，含独立语音 codec），默认音色 `serena`。
 - 公式块带 `select-none`，划选时会自然跳过；代码块按原文朗读，不解释语法。
-- 按需加载：首次点击需等待模型载入（约 3–12 秒），**闲置 5 分钟后自动卸载**并退出进程；对应接口 `POST /api/tts/speak`。
-- 「服务管理 → 文字转语音」与实时字幕服务同构：纯按需运行，不提供常驻启停开关；面板展示内置运行环境、模型完备状态，并提供双源自动测速下载、取消下载与打开模型目录。
+- 按需加载：首次点击需等待模型载入（约 3–12 秒），**闲置超时自动卸载**（默认 30 分钟，可自由指定）并释放显存；对应接口 `POST /api/tts/speak`。
+- 「服务管理 → 语音合成服务」：纯按需运行，面板展示内置 Python 运行环境与模型就绪状态，支持音色切换、闲置释放时长调节、双源自动测速下载与恢复默认配置。
 - 该功能的推理走随包分发的 mlx-audio（Python）运行时，主对话链路仍不依赖 Python。
+
+### 截屏图文识别（OCR 提取 Markdown）
+
+- 全局快捷键 `⌘⇧2`（或通过状态栏菜单触发），调起原生全屏十字框选截屏工具。
+- 模型：PaddleOCR-VL 1.6（MLX 8-bit 量化，约 1.09 GB），纯端侧运行，图像与文本数据不离开本机。
+- 结构化提取：针对复杂版面深度优化，自动提取正文段落、层级标题、Markdown 复杂表格、LaTeX 行内/行间数学公式（`$...$` / `$$...$$`）与图表文本，识别完成后自动存入系统剪贴板并弹出完成通知。
+- 纯按需运行：首次截图触发时拉起 Python MLX-VLM 后端（冷启动预热约 2~5 秒），**闲置超时自动卸载**（默认 30 分钟，可自由指定）并退出进程，彻底释放统一内存与显存；对应接口 `POST /api/ocr/recognize`。
+- 服务管理面板：支持切换识别任务模式（通用文档 / 表格提取 / 公式识别 / 图表解析）、调节图像分辨率预算（均衡 / 高 / 最高）、自定义闲置超时，并提供官方源与国内镜像源自动并发测速下载与断点续传。
 
 ### 快捷翻译
 
@@ -254,8 +267,10 @@ npm run dev
 ### 模型与知识库
 
 - 基础模型：自行准备 TTF / Mference 本体与权重；也可连接其它 OpenAI 兼容服务，或在设置中直接配置 DeepSeek API Key。
-- 语音模型：SenseVoice Q8_0 随包内置（不提供在线下载；若缺失，需手动放入 `~/Library/Application Support/SimpleUI/models/`）。
-- 字幕模型：在「服务管理」下载，包含 R2T2、SaT、Index-Translate 与 tokenizer。
+- 语音输入模型：SenseVoice Q8_0 随包内置（不提供在线下载；若缺失，需手动放入 `~/Library/Application Support/SimpleUI/models/`）。
+- 语音合成模型：在「服务管理 → 语音合成服务」一键测速下载 Qwen3-TTS 0.6B 模型（约 1.58 GB）。
+- 视觉 OCR 模型：在「服务管理 → 视觉图文识别服务」一键测速下载 PaddleOCR-VL 1.6 模型（约 1.09 GB）。
+- 字幕模型：在「服务管理 → 实时字幕服务」下载，包含 R2T2、SaT、Index-Translate 与 tokenizer。
 - 离线维基：在「服务管理 → 知识库」中指定本地 ZIM 文件。
 
 ---
@@ -264,14 +279,18 @@ npm run dev
 
 ```text
 SimpleUI/
-├── src/                  React 前端（聊天、Markdown/KaTeX、知识库、字幕、设置）
+├── src/                  React 前端（聊天、Markdown/KaTeX、知识库、字幕、OCR、设置）
 ├── server/               Node 代理与受管服务
 │   ├── proxy.js          HTTP/SSE 入口（:31235）
-│   ├── subtitle_service.js
-│   ├── asr_service.js
-│   ├── wiki_service.js
+│   ├── ocr_service.js    PaddleOCR-VL 托管服务
+│   ├── tts_service.js    Qwen3-TTS 托管服务
+│   ├── subtitle_service.js 实时字幕流水线服务
+│   ├── asr_service.js    SenseVoice 原生语音输入服务
+│   ├── wiki_service.js   Kiwix 离线维基服务
+│   ├── ocr/              Python MLX-VLM OCR 推理服务
+│   ├── tts/              Python MLX-Audio TTS 推理服务
 │   └── subtitles/        字幕 helper / 断句 / 翻译模块
-├── mac_app/              Swift 原生窗口、悬浮窗、音频采集
+├── mac_app/              Swift 原生应用（主窗口、Spotlight、快捷翻译、字幕悬浮窗、框选截图、系统热键）
 ├── bin/                  Kiwix / audio.cpp / llama.cpp / 字幕 helper
 ├── scripts/              构建、同步与测试脚本
 └── build_mac_app.sh      macOS App 构建与安装

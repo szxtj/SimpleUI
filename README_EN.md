@@ -31,15 +31,16 @@ SimpleUI is deeply tuned for [TurboFieldfare](https://github.com/drumih/turbo-fi
 
 ## Highlights
 
-- **Local-first**: inference, knowledge retrieval, speech recognition, subtitles, and translation all run on-device — no need to install or configure Python yourself, no vector database, and no cloud API.
-- **Model integration services**: unified management for base models, SenseVoice speech input, R2T2 streaming captions, Index-Translate, and CoreML segmentation models.
+- **Local-first**: inference, knowledge retrieval, speech recognition, speech synthesis, OCR, subtitles, and translation all run on-device — no need to install or configure Python yourself, no vector database, and no cloud API.
+- **Model integration services**: unified management for base models, SenseVoice speech input, Qwen3-TTS speech synthesis, PaddleOCR-VL visual OCR, R2T2 streaming captions, Index-Translate, and CoreML segmentation models.
+- **Visual OCR (Screen Capture to Markdown)**: Global hotkey `⌘⇧2` captures any screen region and uses on-device PaddleOCR-VL to extract structured Markdown (paragraphs, headings, tables, LaTeX formulas) directly into the clipboard; runs strictly on demand and unloads on idle timeout to reclaim VRAM.
 - **DeepSeek API integration**: independent Base URL / API key / model / context / temperature / top_p / reasoning effort / stop strings / system prompt; requests go directly to the official endpoint, with cache-friendly context trimming.
 - **Offline Wiki RAG**: Kiwix ZIM + multi-channel retrieval + direct raw-text injection; no summarization, no rewriting, no mechanical truncation, with clickable citations.
 - **Browser-style multi-tab side panel**: unified right-side drawer supporting offline wiki search, article reading, raw Markdown source inspection, and a native image viewer; supports concurrent tabs, draggable split-pane with a live size HUD, and Spotlight single-page layer passthrough.
 - **Virtualized turn window & Turn Rail**: measured virtual window rendering (native mounting for ≤20 turns, dynamic budget for long chats) eliminating scroll lag; sidebar Turn Rail with hover preview and one-click jump navigation.
 - **Real-time bilingual subtitles**: SOTA SaT sentence segmentation, R2T2 streaming ASR, and Index-Translate sentence translation; source text streams live while translations are appended per sentence.
 - **Strong frontend & scientific computing**: Markdown / KaTeX / Mermaid, one-click code-block collapse/copy; built-in **Pyodide Python scientific computing sandbox** running client-side with zero local environment setup, two independent collapsible layers for source and execution output; formulas copyable as native Word/WPS equations, and tables retain formatting when pasted into Word.
-- **Native macOS**: main window, Spotlight panel, quick translate, subtitle overlay, and voice capsule; Chinese/English UI with light/dark themes.
+- **Native macOS**: main window, Spotlight panel, quick translate, subtitle overlay, full-screen OCR capture, and voice capsule; Chinese/English UI with light/dark themes.
 
 ---
 
@@ -55,6 +56,8 @@ Node.js proxy (127.0.0.1:31235)
         ├── DeepSeek official API (cloud)
         ├── Offline Wiki RAG (Kiwix :31236 + local ZIM)
         ├── Speech input (SenseVoice · audio.cpp :1236)
+        ├── Voice synthesis (Qwen3-TTS 0.6B · MLX :1251)
+        ├── Visual OCR (PaddleOCR-VL 1.6 · MLX :1252)
         ├── Real-time bilingual subtitles
         │     ├── R2T2 Q8_0 streaming ASR (:1250 · Metal)
         │     ├── SaT-3L-sm CoreML segmentation (ANE / CPU)
@@ -67,12 +70,14 @@ Node.js proxy (127.0.0.1:31235)
 | Node proxy `proxy.js` | `31235` | Static hosting, SSE passthrough, dynamic routing, managed-service APIs |
 | Kiwix offline encyclopedia | `31236` | Local ZIM articles, title suggestions, full-text search |
 | SenseVoice speech input | `1236` | Local Chinese/English dictation via long-press right ⌘ |
+| Qwen3-TTS voice synthesis | `1251` | On-device speech synthesis for reading aloud (on-demand, unloads on idle) |
+| PaddleOCR-VL visual OCR | `1252` | `⌘⇧2` screen region capture to Markdown clipboard (on-demand, unloads on idle) |
 | R2T2 subtitle ASR | `1250` | Append-only streaming recognition with native punctuation |
 | Index-Translate subtitle translation | `1249` | Specialized neural machine translation |
 | Base models | `1235` / `1241` | TTF / Mference / other OpenAI-compatible services |
 | DeepSeek API | Cloud | Official API: chat, reasoning, and Quick Translate |
 
-> Base-model repositories and weights are not distributed with this project; users provide them. The speech model is bundled; subtitle models can be downloaded in the app.
+> Base-model repositories and weights are not distributed with this project; users provide them. The speech input model is bundled; TTS, OCR, and subtitle models can be downloaded in the app under Service Manager.
 
 ---
 
@@ -170,11 +175,19 @@ How it works:
 - Select any text in a message; two rounded buttons appear next to the selection — **Translate** and **Read**. Translate opens the Quick Translate panel with the selected plain text filled in and starts translating immediately in Quick mode; Read uses the macOS system voice, and clicking again (or pressing `Esc`) stops it.
 - The selection toolbar is shared by the main window and the Spotlight panel, so both behave identically; the Translate button is hidden in plain-browser development where the native bridge is unavailable.
 - Every answer also has a read-aloud button in its footer, to the left of Retry, which reads the whole answer.
-- Model: Qwen3-TTS 0.6B CustomVoice (MLX 4bit, ~1.6 GB including the separate speech codec); default voice `serena`.
+- Model: Qwen3-TTS 0.6B CustomVoice (MLX 4bit, ~1.58 GB including the separate speech codec); default voice `serena`.
 - Formula blocks are `select-none`, so they are skipped naturally; code blocks are read as plain text.
-- Loaded on demand: the first click waits for the model (roughly 3–12 s), and it **unloads and exits after 5 idle minutes**; endpoint `POST /api/tts/speak`.
-- “Service Manager → Text-to-Speech” follows the same design as the live subtitle service: purely on demand, with no persistent on/off switch. The panel shows the bundled runtime and model readiness, and supports dual-source speed-tested downloads, cancellation, and opening the models folder.
+- Loaded on demand: the first click waits for the model (roughly 3–12 s), and it **unloads and exits after the idle timeout** (default 30 minutes, customizable) to release VRAM; endpoint `POST /api/tts/speak`.
+- “Service Manager → Voice Synthesis”: purely on demand, showing the bundled Python runtime and model readiness, with voice selection, customizable idle unload timeout, dual-source speed-tested downloads, and default settings restoration.
 - Inference runs on the bundled mlx-audio (Python) runtime; the main chat path still needs no Python.
+
+### Screen Capture OCR (Markdown Extraction)
+
+- Global hotkey `⌘⇧2` (or triggered via the macOS menubar menu) launches a native full-screen crosshair region capture tool.
+- Model: PaddleOCR-VL 1.6 (MLX 8-bit quantized, ~1.09 GB), runs entirely on-device; screen captures and recognized text never leave the local machine.
+- Structured extraction: Deeply optimized for complex document layouts, automatically extracting paragraphs, hierarchical headings, Markdown tables, LaTeX inline/display math formulas (`$...$` / `$$...$$`), and charts directly into the system clipboard with an instant completion notification.
+- Strictly on-demand: Automatically starts the Python MLX-VLM backend on first capture (2–5s warmup), then stays in standby; **unloads the model and terminates the process after the idle timeout** (default 30 minutes, customizable) to completely free unified memory and VRAM; endpoint `POST /api/ocr/recognize`.
+- Service Manager: Allows switching recognition tasks (general document, table extraction, formula, chart), adjusting resolution budget (balanced, high, max), customizing idle unload timeout, and auto speed-testing official vs. mirror sources with resumable downloads.
 
 ### Quick Translate
 
@@ -255,8 +268,10 @@ Builds the Swift native shell, frontend assets, and bundled runtimes, then insta
 ### Models and knowledge base
 
 - Base models: prepare TTF / Mference repositories and weights yourself, connect another OpenAI-compatible service, or configure a DeepSeek API key in Settings.
-- Speech model: SenseVoice Q8_0 is bundled (no in-app download; if missing, place it manually under `~/Library/Application Support/SimpleUI/models/`).
-- Subtitle models: download in Service Manager; the set includes R2T2, SaT, Index-Translate, and the tokenizer.
+- Speech input model: SenseVoice Q8_0 is bundled (no in-app download; if missing, place it manually under `~/Library/Application Support/SimpleUI/models/`).
+- Voice synthesis model: Download Qwen3-TTS 0.6B (~1.58 GB) via one-click speed-tested download under Service Manager → Voice Synthesis.
+- Visual OCR model: Download PaddleOCR-VL 1.6 (~1.09 GB) via one-click speed-tested download under Service Manager → Visual OCR.
+- Subtitle models: download in Service Manager → Live Subtitles; the set includes R2T2, SaT, Index-Translate, and the tokenizer.
 - Offline wiki: select a local ZIM file under Service Manager → Knowledge Base.
 
 ---
@@ -265,14 +280,18 @@ Builds the Swift native shell, frontend assets, and bundled runtimes, then insta
 
 ```text
 SimpleUI/
-├── src/                  React frontend (chat, Markdown/KaTeX, wiki, subtitles, settings)
+├── src/                  React frontend (chat, Markdown/KaTeX, wiki, subtitles, OCR, settings)
 ├── server/               Node proxy and managed services
 │   ├── proxy.js          HTTP/SSE entry (`:31235`)
-│   ├── subtitle_service.js
-│   ├── asr_service.js
-│   ├── wiki_service.js
+│   ├── ocr_service.js    PaddleOCR-VL management service
+│   ├── tts_service.js    Qwen3-TTS management service
+│   ├── subtitle_service.js Subtitle pipeline service
+│   ├── asr_service.js    SenseVoice native ASR service
+│   ├── wiki_service.js   Kiwix offline encyclopedia service
+│   ├── ocr/              Python MLX-VLM OCR engine
+│   ├── tts/              Python MLX-Audio TTS engine
 │   └── subtitles/        Subtitle helper / segmentation / translation modules
-├── mac_app/              Swift native windows, floating panels, audio capture
+├── mac_app/              Swift native app (main window, Spotlight, Quick Translate, subtitle overlay, screen capture, hotkeys)
 ├── bin/                  Kiwix / audio.cpp / llama.cpp / subtitle helper
 ├── scripts/              Build, sync, and test scripts
 └── build_mac_app.sh      macOS app build & install
