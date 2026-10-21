@@ -240,13 +240,13 @@ struct TranslationMainView: View {
         .onAppear {
             reportPreferredHeight()
         }
-        .onChange(of: viewModel.inputText) { _ in
+        .onChange(of: viewModel.inputText) { _, _ in
             reportPreferredHeight()
         }
-        .onChange(of: viewModel.outputText) { _ in
+        .onChange(of: viewModel.outputText) { _, _ in
             reportPreferredHeight()
         }
-        .onChange(of: viewModel.errorMessage) { _ in
+        .onChange(of: viewModel.errorMessage) { _, _ in
             reportPreferredHeight()
         }
         .onChange(of: viewModel.selectedMode) { _, _ in

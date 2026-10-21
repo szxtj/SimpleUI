@@ -311,6 +311,8 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
     private var zoomWorkItem: DispatchWorkItem?
     /** 用户在全屏下点了关闭：先退全屏，退完再隐藏窗口（避免全屏 Space 残留黑屏） */
     private var pendingCloseAfterFullscreenExit = false
+    /** 用户在全屏下点了「缩小至小窗口」：先退全屏，退完再隐藏主窗口并唤出悬浮窗（否则全屏 Space 会留下大黑屏） */
+    private var pendingShrinkAfterFullscreenExit: (sessionId: String?, isExpanded: Bool)?
     /** 标识是否正在执行受管的帧切换动画，防止重复触发 windowDidResize 遮罩 */
     private var isInternalFrameChange = false
 
@@ -520,8 +522,15 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             let dict = message.body as? [String: Any]
             let sessionId = dict?["sessionId"] as? String
             let isExpanded = (dict?["isExpanded"] as? Bool) ?? true
-            window?.orderOut(nil)
-            onShrinkToSpotlight?(sessionId, isExpanded)
+            // 全屏态下直接 orderOut 会把全屏 Space 留在屏幕上（先见大黑屏、再冒出小窗口）。
+            // macOS 惯例是先退全屏、动画收完再隐藏窗口 —— 用 windowDidExitFullScreen 收尾。
+            if window?.styleMask.contains(.fullScreen) == true {
+                pendingShrinkAfterFullscreenExit = (sessionId, isExpanded)
+                window?.toggleFullScreen(nil)
+            } else {
+                window?.orderOut(nil)
+                onShrinkToSpotlight?(sessionId, isExpanded)
+            }
         } else if message.name == "voiceInput", let dict = message.body as? [String: Any] {
             handleVoiceInputMessage(dict)
         } else if message.name == "openExternal", let urlString = message.body as? String {
@@ -1002,8 +1011,21 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
-        guard pendingCloseAfterFullscreenExit,
-              let win = notification.object as? NSWindow, win === window else { return }
+        guard let win = notification.object as? NSWindow, win === window else { return }
+
+        // 全屏下「缩小至小窗口」：退全屏动画结束后再隐藏主窗口并唤出悬浮窗
+        if let pending = pendingShrinkAfterFullscreenExit {
+            pendingShrinkAfterFullscreenExit = nil
+            // 再让系统跑完 Space 收起的收尾帧，然后隐藏窗口并交接到小窗口
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                guard let self = self else { return }
+                self.window?.orderOut(nil)
+                self.onShrinkToSpotlight?(pending.sessionId, pending.isExpanded)
+            }
+            return
+        }
+
+        guard pendingCloseAfterFullscreenExit else { return }
         pendingCloseAfterFullscreenExit = false
         // 再让系统跑完 Space 收起的收尾帧，然后隐藏窗口
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
