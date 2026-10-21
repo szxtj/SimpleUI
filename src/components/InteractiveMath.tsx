@@ -310,6 +310,10 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
         if (target && target.closest?.('.interactive-math')) {
           return;
         }
+        // 如果按住 Command/Ctrl/Shift 键，用户是在进行跨区域多选（如选中公式后 ⌘-划选文本），不应清除公式选中
+        if (e.metaKey || e.ctrlKey || e.shiftKey) {
+          return;
+        }
         formulaStore.clearSelection();
       };
 
@@ -372,7 +376,17 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
 
     const handleClick = (e: React.MouseEvent) => {
       e.stopPropagation();
+      // 普通单选公式时清空原生文本选区，与普通文本点击逻辑统一（按住 Command/Ctrl/Shift 时支持多选并存）
+      if (!e.metaKey && !e.ctrlKey && !e.shiftKey) {
+        window.getSelection()?.removeAllRanges();
+      }
       formulaStore.select(id, e.shiftKey || e.metaKey);
+    };
+
+    const handleContainerMouseDown = (e: React.MouseEvent) => {
+      if (!e.metaKey && !e.ctrlKey && !e.shiftKey) {
+        window.getSelection()?.removeAllRanges();
+      }
     };
 
     const isEffectiveSelected = isSelected || isCrossedBySelection;
@@ -459,8 +473,10 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
       return (
         <div
           ref={containerRef as React.RefObject<HTMLDivElement>}
+          data-math-selected={isSelected ? 'true' : undefined}
           onMouseEnter={() => setIsHovered(true)}
           onMouseLeave={() => setIsHovered(false)}
+          onMouseDown={handleContainerMouseDown}
           onClick={handleClick}
           className={`interactive-math relative my-2.5 rounded-lg py-2.5 px-3 transition-all duration-150 select-none cursor-pointer max-w-full min-w-0 ${
             isEffectiveSelected
@@ -483,8 +499,10 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
     return (
       <span
         ref={containerRef as React.RefObject<HTMLSpanElement>}
+        data-math-selected={isSelected ? 'true' : undefined}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
+        onMouseDown={handleContainerMouseDown}
         onClick={handleClick}
         className={`interactive-math relative inline-block align-baseline rounded pl-1 pr-0.5 py-0.5 mx-0.5 transition-all duration-150 select-none cursor-pointer max-w-full ${
           isEffectiveSelected

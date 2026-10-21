@@ -100,6 +100,8 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
   const [containerSize, setContainerSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  const [headerWidth, setHeaderWidth] = useState<number>(0);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const transformRef = useRef({ x: 0, y: 0, zoom: 1 });
   const isDraggingRef = useRef(false);
@@ -132,6 +134,30 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
     ro.observe(containerRef.current);
     return () => ro.disconnect();
   }, [isOpen]);
+
+  // 机械监听顶栏横向可用宽度（全屏与非全屏统一基于实际像素宽度，彻底杜绝媒体查询导致的阈值不一致）
+  useEffect(() => {
+    if (!isOpen || !headerRef.current) return;
+    const el = headerRef.current;
+    const updateHeaderWidth = () => {
+      if (el) {
+        const w = el.getBoundingClientRect().width || el.clientWidth;
+        if (w > 0) setHeaderWidth(w);
+      }
+    };
+    updateHeaderWidth();
+
+    const ro = new ResizeObserver(() => {
+      updateHeaderWidth();
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [isOpen]);
+
+  // 机械计算横向空间：480px 为严格统一阈值。
+  // 空间不足（< 480px，如 440px 默认右侧面板）坚决不换行也不截断出 "..."，直接进入极简布局（只保留图标）；
+  // 空间宽裕（>= 480px，如拉宽面板或 Spotlight 浮窗）平整展示标题与尺寸信息。
+  const isMinimal = headerWidth > 0 ? headerWidth < 480 : embedded;
 
   // 计算适合视口的基础缩放比（Fit Scale）
   const getFitScale = useCallback(
@@ -660,7 +686,6 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
   const dialogCard = (
     <div
       onClick={(e) => e.stopPropagation()}
-      style={{ containerType: 'inline-size' }}
       className={
         embedded
           ? 'relative z-10 flex h-full w-full flex-col overflow-hidden bg-[#f8f9fb] dark:bg-[#1b1c20]'
@@ -671,41 +696,49 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
     >
         {/* Header */}
         <div
+          ref={headerRef}
           className={
             embedded
               ? pageHeaderClass({ gap: 'gap-2', padding: chrome?.padding })
-              : 'flex items-center justify-between border-b border-black/5 dark:border-white/5 select-none gap-2 px-3 sm:px-4 py-2.5 sm:py-3'
+              : 'flex items-center justify-between border-b border-black/5 dark:border-white/5 select-none gap-2 px-3.5 py-2.5'
           }
         >
           {chrome?.leading}
           {/* Left: Icon & Title & Stats */}
-          <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1">
-            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-zinc-100 dark:bg-white/10 text-zinc-600 dark:text-zinc-300 flex items-center justify-center flex-shrink-0">
-              <ImageIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+          <div
+            className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden"
+            title={
+              imageStatsText
+                ? `${embedded ? t('panelTabImage') : t('imagePreview')} · ${imageStatsText}`
+                : (embedded ? t('panelTabImage') : t('imagePreview'))
+            }
+          >
+            <div className="w-7 h-7 rounded-lg bg-zinc-100 dark:bg-white/10 text-zinc-600 dark:text-zinc-300 flex items-center justify-center flex-shrink-0">
+              <ImageIcon className="w-3.5 h-3.5" />
             </div>
-            <div className="flex items-baseline gap-1.5 sm:gap-2 min-w-0 overflow-hidden">
-              {/* 窄面板（440）里按钮很占位置：让标题先截断，尺寸信息保持完整 */}
-              <span className="hidden min-w-0 truncate font-semibold text-xs sm:text-sm text-[#1f2328] tracking-tight whitespace-nowrap cq-sm:block dark:text-[#f1f3f7]">
-                {/* 页面形态用短名词（与标签同名），窄面板里才放得下后面的尺寸信息 */}
-                {embedded ? t('panelTabImage') : t('imagePreview')}
-              </span>
-              {(!inSpotlight || embedded) && imageStatsText && (
-                <span className="hidden flex-shrink-0 whitespace-nowrap text-[11px] font-mono text-zinc-400 cq-sm:inline dark:text-zinc-500">
-                  {imageStatsText}
+            {!isMinimal && (
+              <div className="flex items-baseline gap-1.5 min-w-0 overflow-hidden">
+                <span className="flex-shrink-0 font-semibold text-xs text-[#1f2328] tracking-tight whitespace-nowrap dark:text-[#f1f3f7]">
+                  {embedded ? t('panelTabImage') : t('imagePreview')}
                 </span>
-              )}
-            </div>
+                {(!inSpotlight || embedded) && imageStatsText && (
+                  <span className="flex-shrink-0 whitespace-nowrap text-[11px] font-mono text-zinc-400 dark:text-zinc-500">
+                    {imageStatsText}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Right: Actions */}
-          <div className="flex items-center gap-1 sm:gap-1.5 flex-shrink-0">
+          <div className="flex items-center gap-1 flex-shrink-0">
             {/* Zoom Controls */}
             <div className="flex items-center rounded-lg bg-black/5 dark:bg-white/5 p-0.5 border border-black/5 dark:border-white/5">
               <button
                 type="button"
                 onClick={handleZoomOut}
                 disabled={zoom <= 0.25}
-                className="w-7 h-7 sm:w-8 sm:h-8 rounded flex items-center justify-center text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200 disabled:opacity-30 transition-colors cursor-pointer"
+                className="w-7 h-7 rounded flex items-center justify-center text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200 disabled:opacity-30 transition-colors cursor-pointer"
                 title={t('zoomOut')}
               >
                 <ZoomOut className="w-3.5 h-3.5" />
@@ -713,7 +746,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
               <button
                 type="button"
                 onClick={resetTransform}
-                className="px-1.5 h-7 sm:h-8 flex items-center justify-center text-[11px] font-mono font-medium text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white transition-colors cursor-pointer"
+                className="px-1.5 h-7 flex items-center justify-center text-[11px] font-mono font-medium text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white transition-colors cursor-pointer"
                 title={t('resetZoom')}
               >
                 {Math.round(zoom * 100)}%
@@ -722,7 +755,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
                 type="button"
                 onClick={handleZoomIn}
                 disabled={zoom >= 8}
-                className="w-7 h-7 sm:w-8 sm:h-8 rounded flex items-center justify-center text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200 disabled:opacity-30 transition-colors cursor-pointer"
+                className="w-7 h-7 rounded flex items-center justify-center text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200 disabled:opacity-30 transition-colors cursor-pointer"
                 title={t('zoomIn')}
               >
                 <ZoomIn className="w-3.5 h-3.5" />
@@ -734,7 +767,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
               <button
                 type="button"
                 onClick={resetTransform}
-                className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg flex items-center justify-center text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200 hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer"
+                className="w-7 h-7 rounded-lg flex items-center justify-center text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200 hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer"
                 title={t('resetZoom')}
               >
                 <RotateCcw className="w-3.5 h-3.5" />
@@ -745,7 +778,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
             <button
               type="button"
               onClick={handleCopyImage}
-              className={`w-7 h-7 sm:w-8 sm:h-8 rounded-lg flex items-center justify-center transition-all cursor-pointer ${
+              className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all cursor-pointer ${
                 copied
                   ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
                   : 'bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-zinc-600 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white border border-transparent'
@@ -763,7 +796,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
             <button
               type="button"
               onClick={handleDownloadImage}
-              className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg flex items-center justify-center text-zinc-600 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 transition-colors cursor-pointer border border-transparent"
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-zinc-600 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 transition-colors cursor-pointer border border-transparent"
               title={t('downloadImage')}
             >
               <Download className="w-3.5 h-3.5" />
@@ -773,7 +806,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
             <button
               type="button"
               onClick={handleOpenSystemPreview}
-              className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg flex items-center justify-center text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 transition-colors cursor-pointer border border-transparent"
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 transition-colors cursor-pointer border border-transparent"
               title={t('systemPreviewTooltip')}
             >
               <ExternalLink className="w-3.5 h-3.5" />
@@ -784,7 +817,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
               <button
                 type="button"
                 onClick={onClose}
-                className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer"
+                className="w-7 h-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer"
                 title={t('close')}
               >
                 <X className="w-4 h-4" />

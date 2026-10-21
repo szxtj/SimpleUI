@@ -746,6 +746,68 @@ export function handleMarkdownCopyEvent(
       ? (range.commonAncestorContainer as HTMLElement)
       : range.commonAncestorContainer.parentElement;
 
+  // 检查是否有通过 Command 多选的独立公式块落在 range 选区外部
+  const selectedMathEls = Array.from(
+    container.querySelectorAll<HTMLElement>('.interactive-math[data-math-selected="true"]')
+  );
+  const outsideMathEls = selectedMathEls.filter((el) => {
+    try {
+      return !range.intersectsNode(el);
+    } catch {
+      return true;
+    }
+  });
+
+  if (outsideMathEls.length > 0) {
+    // 存在与文本跨区并存选中的公式块：按 DOM 文档自然顺序将文本选区与公式块合并输出
+    interface Piece {
+      node: Node;
+      text: string;
+    }
+    const pieces: Piece[] = [];
+
+    // 1. 文本选区对应的 Markdown 原文
+    const fragment = range.cloneContents();
+    const textMd = serializeDomNodesToMarkdown(fragment.childNodes)
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    if (textMd) {
+      pieces.push({
+        node: range.startContainer,
+        text: textMd,
+      });
+    }
+
+    // 2. 外部选中的公式块提取 LaTeX
+    for (const mathEl of outsideMathEls) {
+      const ann = mathEl.querySelector('annotation[encoding="application/x-tex"]');
+      if (ann?.textContent) {
+        const isDisplay =
+          mathEl.tagName.toLowerCase() === 'div' ||
+          mathEl.classList.contains('katex-display') ||
+          mathEl.querySelector('.katex-display') !== null;
+        pieces.push({
+          node: mathEl,
+          text: isDisplay ? `$$\n${ann.textContent.trim()}\n$$` : `$${ann.textContent.trim()}$`,
+        });
+      }
+    }
+
+    // 3. 严格按 DOM 文档自然顺序排序
+    pieces.sort((a, b) => {
+      if (a.node === b.node) return 0;
+      const pos = a.node.compareDocumentPosition(b.node);
+      return pos & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+    });
+
+    const combined = pieces.map((p) => p.text).filter(Boolean).join('\n\n');
+    if (combined) {
+      e.preventDefault();
+      e.clipboardData.setData('text/plain', combined);
+      return;
+    }
+  }
+
   // 情况 1：选区完全落在某个 KaTeX / InteractiveMath 公式内部 -> 直接提取该公式的 TeX 原文 (LaTeX)
   const mathContainer = ancestorEl?.closest(
     '.interactive-math, .katex-display, .katex'

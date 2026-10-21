@@ -11,15 +11,77 @@ class SpotlightPanel: NSPanel {
     }
 }
 
-/// A dedicated native overlay view across the top 46px header bar of the expanded Spotlight panel.
+/// A dedicated native overlay view across the top 52px header bar of the expanded Spotlight panel.
 /// Tracks mouse events directly to move the NSPanel smoothly, while transparently passing
-/// clicks on the ✖ button (left) and action buttons (right) through to WKWebView.
+/// button clicks through to WKWebView based on the current page layout.
 class SpotlightDragView: NSView {
     var onDidDrag: ((NSPoint) -> Void)?
     private(set) var isDragging: Bool = false
+    private(set) var currentPage: String = "chat"
+    private(set) var pageDepth: Int = 0
 
     override var mouseDownCanMoveWindow: Bool {
         return true
+    }
+
+    func updatePage(pageKind: String, depth: Int) {
+        self.currentPage = pageKind
+        self.pageDepth = depth
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let win = self.window else { return }
+            win.invalidateCursorRects(for: self)
+        }
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        window?.invalidateCursorRects(for: self)
+    }
+
+    /// Determines the draggable horizontal range `(minX, maxX)` for the current page layout.
+    /// Returns `nil` when the top bar should not intercept mouse drags (e.g. search input bar).
+    private func draggableXRange() -> (minX: CGFloat, maxX: CGFloat)? {
+        let totalWidth = bounds.width
+        let hasBackButton = pageDepth > 1
+
+        switch currentPage {
+        case "raw-text":
+            // Raw text page:
+            // Left: Back button (0...48) if depth > 1, otherwise title & icon start at 0
+            // Right: Copy All button (~80px) + Close button (~24px) + margin/gap = ~140px (x >= totalWidth - 140)
+            let minX: CGFloat = hasBackButton ? 48.0 : 0.0
+            let maxX: CGFloat = max(minX, totalWidth - 140.0)
+            return (minX, maxX)
+
+        case "image":
+            // Image preview page:
+            // Left: Back button (0...48) if depth > 1, otherwise icon + "Image WxH" text starts at 0
+            // Right: Zoom controls (~98px) + [Reset (~28px)] + Copy (~28px) + Download (~28px) + Preview (~28px) + Close (~24px) + margins (~36px)
+            // The action button cluster starts around totalWidth - 285.0 (~215.0 on 500px panel)
+            let minX: CGFloat = hasBackButton ? 48.0 : 0.0
+            let maxX: CGFloat = max(minX, totalWidth - 285.0)
+            return (minX, maxX)
+
+        case "wiki-search":
+            // Search input field occupies the middle; pass all mouse events to web
+            return nil
+
+        case "wiki-article":
+            // Wiki article page:
+            // Left: Back button (0...48) if depth > 1
+            // Right: Jump / External / Close buttons (totalWidth - 120 ... totalWidth)
+            let minX: CGFloat = hasBackButton ? 48.0 : 0.0
+            let maxX: CGFloat = max(minX, totalWidth - 120.0)
+            return (minX, maxX)
+
+        default:
+            // Normal Chat view:
+            // Left: Close button (0...44)
+            // Right: New chat + Maximize buttons (totalWidth - 85 ... totalWidth)
+            let minX: CGFloat = 44.0
+            let maxX: CGFloat = max(minX, totalWidth - 85.0)
+            return (minX, maxX)
+        }
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -27,23 +89,17 @@ class SpotlightDragView: NSView {
 
         let localPoint = convert(point, from: superview)
         let x = localPoint.x
-        let totalWidth = bounds.width
 
-        // 1. Left button area (✖ close button at x: 0 ... 44):
-        // Return nil so clicks hit the web button directly
-        if x < 44.0 {
+        guard let range = draggableXRange() else {
             return nil
         }
 
-        // 2. Right action buttons (New Chat & Expand buttons at x: totalWidth - 85 ... totalWidth):
-        // Return nil so clicks hit the web action buttons directly
-        if x > (totalWidth - 85.0) {
-            return nil
+        if x >= range.minX && x <= range.maxX {
+            return self // Intercept mouse to drag window smoothly!
         }
 
-        // 3. Middle header area (x: 44.0 ... totalWidth - 85.0):
-        // Intercept mouse to drag window smoothly
-        return self
+        // Outside draggable range -> pass clicks directly through to WKWebView buttons!
+        return nil
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -60,9 +116,10 @@ class SpotlightDragView: NSView {
 
     override func resetCursorRects() {
         super.resetCursorRects()
-        let draggableWidth = max(0, bounds.width - 129.0)
+        guard let range = draggableXRange() else { return }
+        let draggableWidth = range.maxX - range.minX
         if draggableWidth > 0 {
-            let draggableRect = NSRect(x: 44.0, y: 0, width: draggableWidth, height: bounds.height)
+            let draggableRect = NSRect(x: range.minX, y: 0, width: draggableWidth, height: bounds.height)
             addCursorRect(draggableRect, cursor: isDragging ? .closedHand : .openHand)
         }
     }
@@ -132,6 +189,7 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         userContent.add(self, name: "copyRichData")
         userContent.add(self, name: "openTableInWord")
         userContent.add(self, name: "openExternal")
+        userContent.add(self, name: "spotlightPageStateChanged")
         config.userContentController = userContent
 
         webView = WKWebView(frame: panel.contentView?.bounds ?? .zero, configuration: config)
@@ -159,7 +217,7 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             dragView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             dragView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             dragView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            dragView.heightAnchor.constraint(equalToConstant: 46.0)
+            dragView.heightAnchor.constraint(equalToConstant: 52.0)
         ])
     }
 
@@ -304,6 +362,7 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         guard let panel = window else { return }
         self.isExpanded = false
         self.dragView?.isHidden = true
+        self.dragView?.updatePage(pageKind: "chat", depth: 0)
         self.hasUserCustomPosition = false
         self.customExpandedOrigin = nil
         let width: CGFloat = 540
@@ -464,6 +523,10 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
                   let scheme = url.scheme?.lowercased(),
                   scheme == "http" || scheme == "https" else { return }
             NSWorkspace.shared.open(url)
+        } else if message.name == "spotlightPageStateChanged", let dict = message.body as? [String: Any] {
+            let pageKind = dict["page"] as? String ?? "chat"
+            let depth = (dict["depth"] as? Int) ?? (dict["depth"] as? NSNumber)?.intValue ?? 0
+            dragView?.updatePage(pageKind: pageKind, depth: depth)
         }
     }
 

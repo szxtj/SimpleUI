@@ -82,6 +82,20 @@ export const SpotlightView: React.FC = () => {
    */
   const page = useSpotlightPage();
 
+  // 页面模式改变时通知原生 AppKit 顶栏拖拽遮罩（SpotlightDragView）切换对应的可拖拽区域与光标
+  useEffect(() => {
+    // @ts-expect-error WebKit bridge
+    if (window.webkit?.messageHandlers?.spotlightPageStateChanged) {
+      const pageKind = page.top?.kind ?? 'chat';
+      const depth = page.depth;
+      // @ts-expect-error WebKit bridge
+      window.webkit.messageHandlers.spotlightPageStateChanged.postMessage({
+        page: pageKind,
+        depth,
+      });
+    }
+  }, [page.top?.kind, page.depth]);
+
   // 对话内容字号独立调节（小窗口快捷键 ⌘+ / ⌘-，不影响其他区域）
   const { fontSize: chatFontSize } = useChatFontSize({
     storageKey: 'simpleui_spotlight_chat_font_size',

@@ -40,6 +40,7 @@ interface ChatViewProps {
   availableModels: string[];
   onSelectModel: (model: string) => void;
   visionReady: boolean;
+  serviceOnline?: boolean;
   lastMetrics?: TurnMetrics;
   onOpenSettings?: () => void;
   isSidebarOpen: boolean;
@@ -83,6 +84,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   availableModels,
   onSelectModel,
   visionReady,
+  serviceOnline = false,
   isSidebarOpen,
   onToggleSidebar,
   resizing = false,
@@ -399,6 +401,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </div>
             )}
           </div>
+
+          {/* Model Service Health Indicator */}
+          <span
+            className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+              serviceOnline ? 'bg-emerald-500' : 'bg-red-400'
+            }`}
+            title={serviceOnline ? t('serviceReady') : t('serviceNotReady')}
+          />
         </div>
 
         {/* Center Draggable Space */}

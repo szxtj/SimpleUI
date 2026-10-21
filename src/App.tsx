@@ -729,6 +729,7 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
           isDeepSeek={settings.apiProvider === 'deepseek'}
           isMference={settings.apiProvider === 'mference'}
           visionReady={healthInfo.vision === 'ready'}
+          serviceOnline={healthInfo.online}
           lastMetrics={lastMetrics}
           onOpenSettings={() => setIsSettingsOpen(true)}
           isSidebarOpen={isSidebarOpen}
