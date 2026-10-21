@@ -3,7 +3,6 @@ import { useI18n } from '../i18n';
 import { usePanelWidth } from '../hooks/usePanelWidth';
 import { useFadeOverlay } from '../hooks/useFadeOverlay';
 import { resizeHud } from '../utils/resizeHud';
-import { PAGE_HEADER_HEIGHT } from './pageHeader';
 import { PanelTabStrip } from './PanelTabStrip';
 import { WikiSearchPage } from './pages/WikiSearchPage';
 import { WikiArticlePage } from './pages/WikiArticlePage';
@@ -167,7 +166,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
           onLostPointerCapture={() => onResizeStateChange?.(false)}
           onDoubleClick={reset}
           title={t('panelResizeHint')}
-          className="absolute inset-y-0 -left-[3px] z-20 w-[6px] cursor-col-resize touch-none bg-transparent"
+          className="absolute inset-y-0 -left-[3px] z-40 w-[6px] cursor-col-resize touch-none bg-transparent"
         />
       )}
       {/* 内层 = 固定宽度的整块：开合时只做 translateX（合成层动画），内容一次都不重排 */}
@@ -214,10 +213,10 @@ export const SidePanel: React.FC<SidePanelProps> = ({
         <div
           data-panel-resize-veil="true"
           data-veil-visible={veil.visible ? 'true' : 'false'}
-          className={`absolute inset-x-0 bottom-0 z-30 flex items-center justify-center bg-[#f8f9fb] transition-opacity ease-in-out dark:bg-[#18191c] ${
+          className={`pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-[#f8f9fb] transition-opacity ease-in-out dark:bg-[#18191c] ${
             veil.visible ? 'opacity-100' : 'opacity-0'
           }`}
-          style={{ top: PAGE_HEADER_HEIGHT, transitionDuration: `${veil.durationMs}ms` }}
+          style={{ transitionDuration: `${veil.durationMs}ms` }}
         >
           <div className="flex h-[38px] items-center rounded-[19px] border border-black/[0.08] bg-white/[0.96] px-5 shadow-lg dark:border-white/[0.12] dark:bg-[#22242a]/95">
             <span
