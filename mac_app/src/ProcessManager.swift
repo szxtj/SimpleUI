@@ -28,7 +28,8 @@ class ProcessManager {
         "/tmp/simpleui_subtitle_audiocpp.pid",
         "/tmp/simpleui_subtitle_trans.pid",
         "/tmp/simpleui_subtitle_ml.pid",
-        "/tmp/simpleui_tts.pid"
+        "/tmp/simpleui_tts.pid",
+        "/tmp/simpleui_ocr.pid"
     ]
 
     /// 启动入口：先检测并彻底清理任何上次残留的旧代理、旧模型与孤儿进程，再拉起全新服务，杜绝模块版本不一致
@@ -112,6 +113,8 @@ class ProcessManager {
         pkill -f "llama-server.*--port 1249" 2>/dev/null || true
         pkill -x "subtitle_ml_helper" 2>/dev/null || true
         pkill -x "audiocpp_server" 2>/dev/null || true
+        pkill -f "tts_server.py" 2>/dev/null || true
+        pkill -f "ocr_server.py" 2>/dev/null || true
         pkill -x "TurboFieldfareServer" 2>/dev/null || true
         pkill -x "MferenceServer" 2>/dev/null || true
         pkill -x "kiwix-serve" 2>/dev/null || true

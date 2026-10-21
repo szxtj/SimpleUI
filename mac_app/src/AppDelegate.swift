@@ -70,12 +70,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Register Global HotKeys (Option + Space for Spotlight, Control + Space for Translator)
+        // Register Global HotKeys (Option + Space for Spotlight, Control + Space for Translator, Command + Shift + 2 for OCR)
         HotKeyManager.shared.onTrigger = { [weak self] in
             self?.spotlightController.toggle()
         }
         HotKeyManager.shared.onTranslatorTrigger = { [weak self] in
             self?.translationPanelController.toggle()
+        }
+        HotKeyManager.shared.onOCRTrigger = {
+            OCRManager.shared.startCapture()
         }
         HotKeyManager.shared.register()
 
@@ -212,6 +215,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let toggleTranslatorItem = NSMenuItem(title: isZh ? "快捷翻译" : "Quick Translate", action: #selector(toggleTranslatorWindow), keyEquivalent: " ")
         toggleTranslatorItem.keyEquivalentModifierMask = [.control]
         viewMenu.addItem(toggleTranslatorItem)
+        let ocrCaptureItem = NSMenuItem(title: isZh ? "截屏识别为 Markdown" : "Capture & OCR to Markdown", action: #selector(triggerOCRCapture), keyEquivalent: "2")
+        ocrCaptureItem.keyEquivalentModifierMask = [.command, .shift]
+        viewMenu.addItem(ocrCaptureItem)
         viewMenuItem.submenu = viewMenu
         mainMenu.addItem(viewMenuItem)
 
@@ -237,6 +243,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleTranslatorWindow() {
         translationPanelController?.toggle()
+    }
+
+    @objc private func triggerOCRCapture() {
+        OCRManager.shared.startCapture()
     }
 }
 

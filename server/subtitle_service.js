@@ -1170,7 +1170,7 @@ class SubtitleService {
 
       const best = await this.probeBestMirror(signal, probeRelative);
       if (signal.aborted) throw new Error('cancelled');
-      if (!best) throw new Error('所有下载源均不可达，请检查网络后重试');
+      if (!best) throw new Error('ALL_SOURCES_UNREACHABLE');
       this.downloadState.selectedSource = {
         id: best.id,
         name: best.name,
@@ -1287,7 +1287,7 @@ class SubtitleService {
                         try {
                           const finalSize = fs.statSync(partPath).size;
                           if (file.minBytes && finalSize < file.minBytes) {
-                            reject(new Error(`文件未完整下载 (${finalSize} < ${file.minBytes})`));
+                            reject(new Error(`FILE_SIZE_MISMATCH (${finalSize} < ${file.minBytes})`));
                             return;
                           }
                           fs.renameSync(partPath, dst);

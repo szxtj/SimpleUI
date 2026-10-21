@@ -188,6 +188,7 @@ import { asrService } from './asr_service.js';
 import { mediaService } from './media_service.js';
 import { subtitleService } from './subtitle_service.js';
 import { ttsService } from './tts_service.js';
+import { ocrService } from './ocr_service.js';
 import { sessionService } from './session_service.js';
 
 // 本进程是否成功抢到端口、从而成为受管服务的管理方。
@@ -281,6 +282,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // 视觉文档识别服务 API（PaddleOCR-VL 1.6 MLX 8bit · 按需加载）
+  if (req.url.startsWith('/api/ocr/')) {
+    ocrService.handleApi(req, res);
+    return;
+  }
+
   // 本地媒体资源存储 API（上传、按哈希寻址获取、持久化图片库）
   if (req.url.startsWith('/api/media/')) {
     mediaService.handleApi(req, res);
@@ -334,6 +341,8 @@ server.listen(PORT, '127.0.0.1', () => {
   subtitleService.init();
   // 文字转语音服务初始化（按需加载，不在启动时拉起模型）
   ttsService.init();
+  // 视觉文档识别服务初始化（按需加载）
+  ocrService.init();
 
   // Automatically exit if parent process (e.g. SimpleUI app) terminates
   if (process.ppid && process.ppid > 1) {
@@ -411,6 +420,14 @@ function cleanupAndExit(code = 0) {
       // ignore
     }
   }
+  // 视觉文档识别服务（按需懒加载，退出时一并终止）
+  if (ocrService) {
+    try {
+      ocrService.shutdownSync();
+    } catch (e) {
+      // ignore
+    }
+  }
   process.exit(code);
 }
 
@@ -449,6 +466,13 @@ process.on('exit', () => {
   if (ttsService) {
     try {
       ttsService.shutdownForce();
+    } catch (e) {
+      // ignore
+    }
+  }
+  if (ocrService) {
+    try {
+      ocrService.shutdownForce();
     } catch (e) {
       // ignore
     }

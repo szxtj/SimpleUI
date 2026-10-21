@@ -96,6 +96,7 @@ swiftc -O \
     mac_app/src/TranslationResultTextView.swift \
     mac_app/src/TranslationMainView.swift \
     mac_app/src/TranslationPanelController.swift \
+    mac_app/src/OCRManager.swift \
     -o "$MACOS_DIR/SimpleUI"
 
 # 编译字幕 CoreML helper（SaT 断句）
@@ -407,6 +408,9 @@ copy_item package.json "$RESOURCES_DIR/package.json"
 if [ -d "bin/tts_runtime/python" ]; then
     echo "  · 打包 TTS 运行时（Python + mlx）..."
     copy_item "bin/tts_runtime/python" "$RESOURCES_DIR/server/tts/python"
+    echo "  · 共享 MLX Python 运行时至 OCR 服务..."
+    mkdir -p "$RESOURCES_DIR/server/ocr"
+    ln -sfn "../tts/python" "$RESOURCES_DIR/server/ocr/python"
 else
     echo "  ⚠ 未找到 bin/tts_runtime/python，TTS 将回落到系统 Python（仅开发机可用）"
 fi

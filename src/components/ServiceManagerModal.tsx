@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { AppSettings, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, VoicePermissionStatus, SubtitleServiceStatus, TtsServiceStatus } from '../types/chat';
-import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ASRServiceAPI, SubtitleServiceAPI, TtsServiceAPI } from '../services/api';
+import { AppSettings, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, VoicePermissionStatus, SubtitleServiceStatus, TtsServiceStatus, OcrServiceStatus, OcrConfig } from '../types/chat';
+import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ASRServiceAPI, SubtitleServiceAPI, TtsServiceAPI, OcrServiceAPI } from '../services/api';
 import { resolveLanguage, formatArticleCount, translations, Language, TranslationKeys } from '../i18n';
 import {
+  ServiceState,
   SERVICE_STATE_CARD_DOT_CLASS,
   SERVICE_STATE_CARD_TEXT_CLASS,
   toServiceState,
 } from '../utils/serviceState';
-import { X, RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen, FileText, Check, Loader2, Volume2 } from 'lucide-react';
+import { X, RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen, FileText, Check, Loader2, Volume2, ScanText } from 'lucide-react';
 
 interface ServiceManagerModalProps {
   isOpen: boolean;
@@ -63,6 +64,23 @@ const ASR_CARD_DEFAULTS: Partial<AsrServiceConfig> = {
   keepTags: false,
 };
 
+// 语音合成服务卡片默认值
+const TTS_CARD_DEFAULTS = {
+  voice: 'serena',
+  idleUnloadMin: 30,
+};
+
+// 视觉图文识别服务卡片默认值
+const OCR_CARD_DEFAULTS: {
+  task: OcrConfig['task'];
+  resolution: OcrConfig['resolution'];
+  idleUnloadMin: number;
+} = {
+  task: 'ocr',
+  resolution: 'high',
+  idleUnloadMin: 30,
+};
+
 /**
  * WebKit 原生桥（语音输入权限相关）。
  * TS 的 DOM 类型未内置 `window.webkit`，故在此显式断言一次，
@@ -92,6 +110,130 @@ function openExternalUrl(url?: string | null) {
     window.open(url, '_blank', 'noopener,noreferrer');
   }
 }
+
+/**
+ * 格式化下载源名称（双语国际化）
+ */
+function formatSourceName(
+  source: { id?: string; name?: string } | null | undefined,
+  t: (k: TranslationKeys) => string
+): string {
+  if (!source) return '';
+  if (source.id === 'mirror') return t('downloadSourceMirror');
+  if (source.id === 'official') return t('downloadSourceOfficial');
+  return source.name || '';
+}
+
+/**
+ * 格式化下载错误信息（双语国际化）
+ */
+function formatDownloadError(
+  err: string | null | undefined,
+  t: (k: TranslationKeys) => string
+): string | null {
+  if (!err) return null;
+  if (err.includes('ALL_SOURCES_UNREACHABLE') || err.includes('所有下载源均不可达')) {
+    return t('downloadErrorAllSourcesUnreachable');
+  }
+  if (
+    err.includes('FILE_SIZE_MISMATCH') ||
+    err.includes('文件大小校验失败') ||
+    err.includes('文件未完整下载')
+  ) {
+    return t('downloadErrorSizeMismatch');
+  }
+  if (err.includes('DOWNLOAD_FAILED') || (err.includes('下载') && err.includes('失败'))) {
+    return t('downloadErrorGeneric');
+  }
+  return err;
+}
+
+/**
+ * 获取字幕子模型阶段的国际化显示名称
+ */
+function getSubtitleModelDisplayName(
+  key: string | null | undefined,
+  fallback: string | undefined,
+  t: (k: TranslationKeys) => string
+): string {
+  if (key === 'asr') return t('subtitleModelStage1');
+  if (key === 'segment') return t('subtitleModelStage2');
+  if (key === 'translate') return t('subtitleModelStage3');
+  return fallback || '';
+}
+
+/**
+ * 闲置内存释放时间选择器（支持预设档位与自由自定义分钟）
+ */
+const IdleTimeoutSelector: React.FC<{
+  value?: number;
+  onChange: (val: number) => void;
+  disabled?: boolean;
+  t: (k: TranslationKeys) => string;
+}> = ({ value = 30, onChange, disabled, t }) => {
+  const [isCustom, setIsCustom] = useState(() => ![0, 15, 30, 60, 120].includes(value));
+  const [customVal, setCustomVal] = useState(() => value);
+
+  useEffect(() => {
+    if (![0, 15, 30, 60, 120].includes(value)) {
+      setIsCustom(true);
+      setCustomVal(value);
+    } else {
+      setIsCustom(false);
+    }
+  }, [value]);
+
+  const handleSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const v = e.target.value;
+    if (v === 'custom') {
+      setIsCustom(true);
+    } else {
+      setIsCustom(false);
+      onChange(Number(v));
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[10px] text-zinc-500 dark:text-zinc-400 font-medium">
+        {t('modelIdleTimeoutLabel')}
+      </span>
+      <div className="flex items-center gap-1.5">
+        <select
+          value={isCustom ? 'custom' : String(value)}
+          onChange={handleSelect}
+          disabled={disabled}
+          className="flex-1 px-2 py-1.5 rounded-lg text-[11px] bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 text-zinc-700 dark:text-zinc-200 cursor-pointer focus:border-violet-500 focus:outline-none"
+        >
+          <option value="15">{t('modelIdleTimeout15m')}</option>
+          <option value="30">{t('modelIdleTimeout30m')}</option>
+          <option value="60">{t('modelIdleTimeout60m')}</option>
+          <option value="120">{t('modelIdleTimeout120m')}</option>
+          <option value="0">{t('modelIdleTimeoutNever')}</option>
+          <option value="custom">{t('modelIdleTimeoutCustom')}</option>
+        </select>
+        {isCustom && (
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <input
+              type="number"
+              min={1}
+              max={1440}
+              value={customVal}
+              onChange={(e) => {
+                const n = Math.max(1, Math.min(1440, Number(e.target.value) || 1));
+                setCustomVal(n);
+                onChange(n);
+              }}
+              disabled={disabled}
+              className="w-14 px-1.5 py-1 rounded-lg text-[11px] font-mono bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 text-zinc-700 dark:text-zinc-200 focus:border-violet-500 focus:outline-none"
+            />
+            <span className="text-[10px] text-zinc-400">{t('modelIdleTimeoutMinUnit')}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 /**
  * 服务管理界面：三项受管服务（基础模型 / 知识库 / 语音识别）的全部启停与参数配置。
@@ -201,6 +343,9 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
   // ---- 文字转语音服务（Qwen3-TTS 0.6B CustomVoice · MLX 4bit · 纯按需）----
   const [ttsStatus, setTtsStatus] = useState<TtsServiceStatus | null>(null);
   const [ttsBusy, setTtsBusy] = useState(false);
+  const [ttsForm, setTtsForm] = useState<{ voice?: string; idleUnloadMin?: number }>({});
+  const [isApplyingTts, setIsApplyingTts] = useState(false);
+  const [ttsMsg, setTtsMsg] = useState<{ text: string; isError: boolean } | null>(null);
 
   const refreshTtsStatus = async () => {
     const s = await TtsServiceAPI.getStatus();
@@ -232,18 +377,85 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     await TtsServiceAPI.openModelsDir();
   };
 
-  const handleTtsVoice = async (voice: string) => {
-    setTtsBusy(true);
+  const handleTtsApply = async () => {
+    setIsApplyingTts(true);
+    setTtsMsg(null);
     try {
-      await TtsServiceAPI.updateConfig({ voice });
-      await refreshTtsStatus();
+      const res = await TtsServiceAPI.updateConfig(ttsForm);
+      if (res.ok) {
+        setTtsMsg({ text: t('ttsApplySaved'), isError: false });
+        await refreshTtsStatus();
+      } else {
+        setTtsMsg({ text: t('ttsActionFailed'), isError: true });
+      }
+    } catch {
+      setTtsMsg({ text: t('ttsActionFailed'), isError: true });
     } finally {
-      setTtsBusy(false);
+      setIsApplyingTts(false);
     }
   };
 
   const handleSubtitleOpenDir = async () => {
     await SubtitleServiceAPI.openModelsDir();
+  };
+
+  // ---- 视觉文档识别服务（PaddleOCR-VL 1.6 · MLX 8bit · 纯按需）----
+  const [ocrStatus, setOcrStatus] = useState<OcrServiceStatus | null>(null);
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrForm, setOcrForm] = useState<{
+    task?: OcrConfig['task'];
+    resolution?: OcrConfig['resolution'];
+    idleUnloadMin?: number;
+  }>({});
+  const [isApplyingOcr, setIsApplyingOcr] = useState(false);
+  const [ocrMsg, setOcrMsg] = useState<{ text: string; isError: boolean } | null>(null);
+
+  const refreshOcrStatus = async () => {
+    const s = await OcrServiceAPI.getStatus();
+    if (s) setOcrStatus(s);
+    return s;
+  };
+
+  const handleOcrDownload = async () => {
+    setOcrBusy(true);
+    try {
+      await OcrServiceAPI.startDownload();
+      await refreshOcrStatus();
+    } finally {
+      setOcrBusy(false);
+    }
+  };
+
+  const handleOcrCancelDownload = async () => {
+    setOcrBusy(true);
+    try {
+      await OcrServiceAPI.cancelDownload();
+      await refreshOcrStatus();
+    } finally {
+      setOcrBusy(false);
+    }
+  };
+
+  const handleOcrOpenDir = async () => {
+    await OcrServiceAPI.openModelsDir();
+  };
+
+  const handleOcrApply = async () => {
+    setIsApplyingOcr(true);
+    setOcrMsg(null);
+    try {
+      const res = await OcrServiceAPI.updateConfig(ocrForm);
+      if (res.ok) {
+        setOcrMsg({ text: t('ocrApplySaved'), isError: false });
+        await refreshOcrStatus();
+      } else {
+        setOcrMsg({ text: t('ocrActionFailed'), isError: true });
+      }
+    } catch {
+      setOcrMsg({ text: t('ocrActionFailed'), isError: true });
+    } finally {
+      setIsApplyingOcr(false);
+    }
   };
 
   /** 通过原生桥请求权限快照；无原生桥（浏览器）时置 null 并展示降级提示 */
@@ -348,7 +560,23 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
       });
 
       refreshSubtitleStatus();
-      refreshTtsStatus();
+      refreshTtsStatus().then((s) => {
+        if (s?.config) {
+          setTtsForm({
+            voice: s.config.voice || TTS_CARD_DEFAULTS.voice,
+            idleUnloadMin: s.config.idleUnloadMin ?? TTS_CARD_DEFAULTS.idleUnloadMin,
+          });
+        }
+      });
+      refreshOcrStatus().then((s) => {
+        if (s?.config) {
+          setOcrForm({
+            task: s.config.task || OCR_CARD_DEFAULTS.task,
+            resolution: s.config.resolution || OCR_CARD_DEFAULTS.resolution,
+            idleUnloadMin: s.config.idleUnloadMin ?? OCR_CARD_DEFAULTS.idleUnloadMin,
+          });
+        }
+      });
       try {
         subtitleEs = new EventSource('/api/subtitles/stream');
         subtitleEs.addEventListener('status', (e: MessageEvent) => {
@@ -367,6 +595,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
         refreshAsrStatus();
         refreshSubtitleStatus();
         refreshTtsStatus();
+        refreshOcrStatus();
         if (logsOpenRef.current) {
           ModelServiceAPI.getLogs(200, selectedEngineRef.current).then((d) => setLogLines(d?.lines ?? null));
         }
@@ -617,6 +846,16 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
   const handleAsrCardReset = () => {
     setAsrForm((prev) => ({ ...prev, ...ASR_CARD_DEFAULTS }));
     setAsrMsg(null);
+  };
+
+  const handleTtsCardReset = () => {
+    setTtsForm({ ...TTS_CARD_DEFAULTS });
+    setTtsMsg(null);
+  };
+
+  const handleOcrCardReset = () => {
+    setOcrForm({ ...OCR_CARD_DEFAULTS });
+    setOcrMsg(null);
   };
 
   /** 三件套权限行（无原生桥时返回空数组，界面走降级提示） */
@@ -1394,14 +1633,17 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
             {cardResetButton(handleSvcCardReset)}
           </div>
 
-          {/* 语音识别服务卡片（SenseVoice / audio.cpp）——与基础模型服务同构，
-              紧随其下：SimpleUI 同为 audiocpp_server 的唯一管理方 */}
+          {/* 语音输入服务卡片（SenseVoice / audio.cpp） */}
           <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
-            <div className="flex items-start justify-between mb-3">
+            {/* 头部：标题 + 引擎徽标 + 运行状态指示 */}
+            <div className="flex items-start justify-between mb-2.5">
               <div className="flex items-center gap-2 pt-0.5">
                 <Mic className="w-4 h-4 text-violet-600 dark:text-violet-400 flex-shrink-0" />
                 <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
                   {t('asrServiceTitle')}
+                </span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded-md font-mono bg-violet-500/10 text-violet-600 dark:text-violet-400 font-medium">
+                  {t('asrEngineTag')}
                 </span>
               </div>
               <div className="flex flex-col items-end gap-1">
@@ -1431,15 +1673,30 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
               </div>
             </div>
 
+            {/* 功能定位与快捷键横幅 */}
+            <div className="flex items-center justify-between gap-2 mb-3 px-2.5 py-2 rounded-lg bg-violet-500/5 dark:bg-violet-500/10 border border-violet-500/20">
+              <div className="min-w-0">
+                <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
+                  {t('asrServiceLifecycleTitle')}
+                </div>
+                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 leading-snug">
+                  {t('asrServiceLifecycleHint')}
+                </div>
+              </div>
+              <kbd className="flex-shrink-0 px-2 py-1 rounded-md border border-black/10 dark:border-white/15 bg-white dark:bg-[#202127] text-[10px] font-mono text-zinc-700 dark:text-zinc-200 whitespace-nowrap shadow-sm">
+                {t('asrHotkeyTrigger')}
+              </kbd>
+            </div>
+
             {/* 服务总开关 */}
-            <div className="flex items-center justify-between gap-3 pb-3 mb-3 border-b border-black/5 dark:border-white/5">
+            <div className="flex items-center justify-between gap-3 pb-2.5 mb-2.5 border-b border-black/5 dark:border-white/5">
               <button
                 type="button"
                 onClick={() => handleAsrToggle(!(asrStatus?.enabled ?? true))}
                 disabled={asrBusy !== null}
                 className="flex-1 min-w-0 text-left cursor-pointer disabled:cursor-not-allowed"
               >
-                <div className="font-medium text-zinc-700 dark:text-zinc-200">{t('asrServiceToggle')}</div>
+                <div className="font-medium text-zinc-700 dark:text-zinc-200 text-xs">{t('asrServiceToggle')}</div>
                 <div className="text-[10px] text-zinc-500 dark:text-zinc-400">{t('asrServiceToggleDesc')}</div>
               </button>
               <button
@@ -1460,27 +1717,77 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
               </button>
             </div>
 
-            {/* 快捷键说明（长按右侧 Command） */}
-            <div className="flex items-center justify-between gap-2 mb-3 px-2.5 py-2 rounded-lg bg-violet-500/5 dark:bg-violet-500/10 border border-violet-500/20">
-              <div className="min-w-0">
-                <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
-                  {t('asrHotkeyLabel')}
+            {/* 内置运行环境与模型状态 */}
+            <div className="space-y-2 mb-3">
+              {/* 内置运行环境 */}
+              <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                      asrStatus?.checks?.binary ? 'bg-emerald-500' : 'bg-red-500'
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
+                      {t('runtimeLabel')}
+                    </div>
+                    <div className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate">
+                      {t('asrRuntimeDesc')}
+                    </div>
+                  </div>
                 </div>
-                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 leading-snug">
-                  {t('asrHotkeyDesc')}
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {asrStatus?.checks?.binary ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
+                      <Check className="w-3 h-3" />
+                      <span>{t('runtimeBundledReady')}</span>
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-red-500 font-medium">
+                      {t('runtimeMissing')}
+                    </span>
+                  )}
                 </div>
               </div>
-              <kbd className="flex-shrink-0 px-2 py-1 rounded-md border border-black/10 dark:border-white/15 bg-white dark:bg-[#202127] text-[10px] font-mono text-zinc-700 dark:text-zinc-200 whitespace-nowrap">
-                {t('asrHotkeyValue')}
-              </kbd>
+
+              {/* 模型状态 */}
+              <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                      asrStatus?.checks?.model ? 'bg-emerald-500' : 'bg-red-500'
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
+                      {t('asrModelLabel')}
+                    </div>
+                    <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
+                      {t('asrModelDesc')}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {asrStatus?.checks?.model ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
+                      <Check className="w-3 h-3" />
+                      <span>{t('runtimeBundledReady')}</span>
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-red-500 font-medium">
+                      {t('asrModelMissing')}
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
 
-            {/* 前置检查提示 */}
+            {/* 前置检查错误提示 */}
             {asrStatus && !asrStatus.checks.binary && (
-              <div className="text-[10px] text-zinc-500 dark:text-zinc-400 mb-0.5">{t('asrCheckBinary')}</div>
+              <div className="mt-2 text-[10px] text-red-500">{t('asrCheckBinary')}</div>
             )}
             {asrStatus && !asrStatus.checks.model && (
-              <div className="text-[10px] text-zinc-500 dark:text-zinc-400 mb-0.5">{t('asrCheckModel')}</div>
+              <div className="mt-1 text-[10px] text-red-500">{t('asrCheckModel')}</div>
             )}
             {/* 服务已启用但未运行，且后端留下了失败原因（如 GGUF 读取失败）时直接摊开 */}
             {asrStatus && asrStatus.enabled && asrStatus.status === 'stopped' && asrStatus.lastActionLog && (
@@ -1693,152 +2000,165 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
             {cardResetButton(handleAsrCardReset)}
           </div>
 
-          {/* 文字转语音服务卡片（Qwen3-TTS 0.6B CustomVoice · MLX 4bit · 纯按需，与字幕服务同构） */}
+          {/* 文字转语音服务卡片（Qwen3-TTS 0.6B CustomVoice · MLX 4bit · 纯按需） */}
           <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
-            {/* 头部：标题 + 整体状态指示（无启停开关） */}
+            {/* 头部：标题 + 引擎徽标 + 运行状态指示 */}
             <div className="flex items-start justify-between mb-2.5">
               <div className="flex items-center gap-2 pt-0.5">
                 <Volume2 className="w-4 h-4 text-sky-600 dark:text-sky-400 flex-shrink-0" />
                 <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
                   {t('ttsServiceTitle')}
                 </span>
-              </div>
-              {ttsStatus && (
-                <div className="flex flex-col items-end gap-1">
-                  <div className="flex items-center gap-1.5 text-[11px]">
-                    <span
-                      className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                        SERVICE_STATE_CARD_DOT_CLASS[
-                          ttsStatus.download?.active || ttsStatus.status === 'loading'
-                            ? 'starting'
-                            : ttsStatus.running || ttsStatus.model?.ready
-                            ? 'online'
-                            : 'offline'
-                        ]
-                      }`}
-                    />
-                    <span
-                      className={
-                        SERVICE_STATE_CARD_TEXT_CLASS[
-                          ttsStatus.download?.active || ttsStatus.status === 'loading'
-                            ? 'starting'
-                            : ttsStatus.running || ttsStatus.model?.ready
-                            ? 'online'
-                            : 'offline'
-                        ]
-                      }
-                    >
-                      {ttsStatus.download?.active || ttsStatus.status === 'loading'
-                        ? t('statusStarting')
-                        : !ttsStatus.model?.ready
-                        ? t('statusOffline')
-                        : ttsStatus.running && ttsStatus.port
-                        ? `${t('statusReady')} : ${ttsStatus.port}`
-                        : t('statusReady')}
-                    </span>
-                  </div>
-                  <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
-                    {ttsStatus.download?.active
-                      ? `${t('ttsDetailDownloading')} (${ttsStatus.download.progressPercent.toFixed(1)}%)`
-                      : ttsStatus.status === 'loading'
-                      ? t('ttsDetailLoading')
-                      : ttsStatus.running
-                      ? t('ttsDetailActive')
-                      : ttsStatus.model?.ready
-                      ? t('ttsDetailStandby')
-                      : t('ttsDetailMissing')}
-                  </span>
-                </div>
-              )}
-            </div>
-
-            {/* 按需生命周期说明 */}
-            <div className="mb-3 px-2.5 py-2 rounded-lg bg-sky-500/5 dark:bg-sky-500/10 border border-sky-500/20 text-[10px] text-zinc-600 dark:text-zinc-300 leading-snug">
-              {t('ttsServiceLifecycleHint')}
-            </div>
-
-            {/* 内置运行环境状态 */}
-            <div className="pb-2.5 mb-2.5 border-b border-black/5 dark:border-white/5 flex items-center justify-between gap-2">
-              <div className="min-w-0">
-                <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
-                  {t('ttsRuntimeLabel')}
-                </div>
-                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate">
-                  {t('ttsRuntimeDesc')}
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5 flex-shrink-0">
-                <span
-                  className={`w-1.5 h-1.5 rounded-full ${
-                    ttsStatus?.runtimeReady !== false ? 'bg-emerald-500' : 'bg-red-500'
-                  }`}
-                />
-                <span
-                  className={`text-[10px] font-medium ${
-                    ttsStatus?.runtimeReady !== false
-                      ? 'text-emerald-600 dark:text-emerald-400'
-                      : 'text-red-500'
-                  }`}
-                >
-                  {ttsStatus?.runtimeReady !== false
-                    ? t('ttsRuntimeReady')
-                    : t('ttsRuntimeMissing')}
+                <span className="text-[10px] px-1.5 py-0.5 rounded-md font-mono bg-sky-500/10 text-sky-600 dark:text-sky-400 font-medium">
+                  {t('ttsEngineTag')}
                 </span>
               </div>
+              {ttsStatus && (() => {
+                const ttsCardState: ServiceState =
+                  ttsStatus.status === 'loading'
+                    ? 'starting'
+                    : ttsStatus.running
+                    ? 'online'
+                    : ttsStatus.model?.ready
+                    ? 'standby'
+                    : 'offline';
+                return (
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <span
+                        className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                          SERVICE_STATE_CARD_DOT_CLASS[ttsCardState]
+                        }`}
+                      />
+                      <span className={SERVICE_STATE_CARD_TEXT_CLASS[ttsCardState]}>
+                        {ttsCardState === 'starting'
+                          ? t('statusStarting')
+                          : ttsCardState === 'online'
+                          ? ttsStatus.port
+                            ? `${t('statusReady')} : ${ttsStatus.port}`
+                            : t('statusReady')
+                          : ttsCardState === 'standby'
+                          ? t('statusStandby')
+                          : t('statusOffline')}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
+                      {ttsStatus.download?.active
+                        ? `${t('ttsDetailDownloading')} (${ttsStatus.download.progressPercent.toFixed(1)}%)`
+                        : ttsStatus.status === 'loading'
+                        ? t('ttsDetailLoading')
+                        : ttsStatus.running
+                        ? t('ttsDetailActive')
+                        : ttsStatus.model?.ready
+                        ? t('ttsDetailStandby')
+                        : t('ttsDetailMissing')}
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
 
-            {/* 模型状态 / 下载 */}
-            <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
-              <div className="flex items-center gap-2 min-w-0">
-                <span
-                  className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                    ttsStatus?.model?.ready
-                      ? 'bg-emerald-500'
-                      : ttsStatus?.download?.active
-                      ? 'bg-sky-500 animate-pulse'
-                      : 'bg-red-500'
-                  }`}
-                />
-                <div className="min-w-0">
-                  <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
-                    {t('ttsModelLabel')}
+            {/* 功能定位与触发横幅 */}
+            <div className="flex items-center justify-between gap-2 mb-3 px-2.5 py-2 rounded-lg bg-sky-500/5 dark:bg-sky-500/10 border border-sky-500/20">
+              <div className="min-w-0">
+                <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
+                  {t('ttsServiceLifecycleTitle')}
+                </div>
+                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 leading-snug">
+                  {t('ttsServiceLifecycleHint')}
+                </div>
+              </div>
+              <span className="flex-shrink-0 px-2 py-1 rounded-md border border-black/10 dark:border-white/15 bg-white dark:bg-[#202127] text-[10px] font-medium text-zinc-700 dark:text-zinc-200 whitespace-nowrap shadow-sm">
+                {t('ttsHotkeyTrigger')}
+              </span>
+            </div>
+
+            {/* 内置运行环境与模型状态 */}
+            <div className="space-y-2 mb-3">
+              {/* 内置运行环境 */}
+              <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                      ttsStatus?.runtimeReady !== false ? 'bg-emerald-500' : 'bg-red-500'
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
+                      {t('runtimeLabel')}
+                    </div>
+                    <div className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate">
+                      {t('ttsRuntimeDesc')}
+                    </div>
                   </div>
-                  <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
-                    {ttsStatus?.model?.ready
-                      ? `${(ttsStatus.model.bytes / 1024 ** 3).toFixed(2)} GB · ${t('ttsModelReady')}`
-                      : ttsStatus?.model?.sizeDesc || '1.6 GB'}
-                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {ttsStatus?.runtimeReady !== false ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
+                      <Check className="w-3 h-3" />
+                      <span>{t('runtimeBundledReady')}</span>
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-red-500 font-medium">
+                      {t('runtimeMissing')}
+                    </span>
+                  )}
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 flex-shrink-0">
-                {ttsStatus?.model?.ready ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
-                    <Check className="w-3 h-3" />
-                    <span>{t('ttsModelReady')}</span>
-                  </span>
-                ) : ttsStatus?.download?.active ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-sky-500/10 text-sky-600 dark:text-sky-400 text-[10px] font-medium">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    <span>{t('ttsDownloading')}</span>
-                  </span>
-                ) : (
-                  <>
-                    <span className="text-[10px] text-red-500 font-medium">
-                      {t('ttsModelMissing')}
+              {/* 模型状态 / 下载 */}
+              <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                      ttsStatus?.model?.ready
+                        ? 'bg-emerald-500'
+                        : ttsStatus?.download?.active
+                        ? 'bg-sky-500 animate-pulse'
+                        : 'bg-red-500'
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
+                      {t('ttsModelLabel')}
+                    </div>
+                    <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
+                      {ttsStatus?.model?.ready
+                        ? `${(ttsStatus.model.bytes / 1024 ** 3).toFixed(2)} GB`
+                        : ttsStatus?.model?.sizeDesc || '1.6 GB'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {ttsStatus?.model?.ready ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
+                      <Check className="w-3 h-3" />
+                      <span>{t('ttsModelReady')}</span>
                     </span>
-                    {ttsStatus && !ttsStatus.download?.active && (
-                      <button
-                        type="button"
-                        disabled={ttsBusy}
-                        onClick={handleTtsDownload}
-                        className="px-2 py-0.5 rounded-md bg-sky-600 hover:bg-sky-700 disabled:opacity-50 text-white text-[10px] font-medium transition-colors cursor-pointer"
-                      >
-                        {t('ttsDownloadBtn')}
-                      </button>
-                    )}
-                  </>
-                )}
+                  ) : ttsStatus?.download?.active ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-sky-500/10 text-sky-600 dark:text-sky-400 text-[10px] font-medium">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <span>{t('ttsDownloading')}</span>
+                    </span>
+                  ) : (
+                    <>
+                      <span className="text-[10px] text-red-500 font-medium">
+                        {t('ttsModelMissing')}
+                      </span>
+                      {ttsStatus && !ttsStatus.download?.active && (
+                        <button
+                          type="button"
+                          disabled={ttsBusy}
+                          onClick={handleTtsDownload}
+                          className="px-2 py-0.5 rounded-md bg-sky-600 hover:bg-sky-700 disabled:opacity-50 text-white text-[10px] font-medium transition-colors cursor-pointer"
+                        >
+                          {t('ttsDownloadBtn')}
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -1854,8 +2174,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                         : ttsStatus.download.phase === 'cleaning'
                         ? t('ttsCleaningCache')
                         : ttsStatus.download.currentFile ||
-                          ttsStatus.download.currentModelName ||
-                          t('ttsDownloading')}
+                          t('ttsModelLabel')}
                     </span>
                   </div>
                   <button
@@ -1873,7 +2192,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                     <span>
                       {t('ttsSelectedSourceLabel')}:{' '}
                       <strong className="font-medium text-zinc-700 dark:text-zinc-200">
-                        {ttsStatus.download.selectedSource.name}
+                        {formatSourceName(ttsStatus.download.selectedSource, t)}
                       </strong>{' '}
                       ({ttsStatus.download.selectedSource.latencyMs}ms)
                     </span>
@@ -1932,19 +2251,19 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
               ttsStatus?.download?.phase === 'error' &&
               ttsStatus?.download?.error && (
                 <div className="mt-2.5 text-[11px] text-red-500">
-                  {ttsStatus.download.error}
+                  {formatDownloadError(ttsStatus.download.error, t)}
                 </div>
               )}
 
-            {/* 默认音色 */}
-            {ttsStatus?.model?.ready && (
-              <div className="mt-2.5 flex items-center justify-between gap-2">
-                <span className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('ttsVoiceLabel')}</span>
+            {/* 默认配置项：默认音色与内存闲置释放 */}
+            <div className="mt-3 grid grid-cols-2 gap-2.5">
+              <div className="flex flex-col gap-1">
+                <span className="text-[10px] text-zinc-500 dark:text-zinc-400 font-medium">{t('ttsVoiceLabel')}</span>
                 <select
-                  value={ttsStatus?.config?.voice || 'serena'}
-                  onChange={(e) => handleTtsVoice(e.target.value)}
-                  disabled={ttsBusy}
-                  className="px-2 py-1 rounded-lg text-[11px] bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 text-zinc-700 dark:text-zinc-200 cursor-pointer"
+                  value={ttsForm.voice ?? ttsStatus?.config?.voice ?? 'serena'}
+                  onChange={(e) => setTtsForm((prev) => ({ ...prev, voice: e.target.value }))}
+                  disabled={ttsBusy || isApplyingTts}
+                  className="px-2 py-1.5 rounded-lg text-[11px] bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 text-zinc-700 dark:text-zinc-200 cursor-pointer focus:border-sky-500 focus:outline-none"
                 >
                   {(ttsStatus?.voices || ['serena']).map((v) => (
                     <option key={v} value={v}>
@@ -1953,7 +2272,35 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                   ))}
                 </select>
               </div>
-            )}
+              <IdleTimeoutSelector
+                value={ttsForm.idleUnloadMin ?? ttsStatus?.config?.idleUnloadMin ?? 30}
+                onChange={(min) => setTtsForm((prev) => ({ ...prev, idleUnloadMin: min }))}
+                disabled={ttsBusy || isApplyingTts}
+                t={t}
+              />
+            </div>
+
+            {/* 保存配置按钮与反馈 */}
+            <div className="mt-3 flex items-center justify-between">
+              <button
+                type="button"
+                disabled={ttsBusy || isApplyingTts}
+                onClick={handleTtsApply}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-sky-600 hover:bg-sky-500 active:scale-[0.98] disabled:opacity-50 text-white font-medium shadow-sm transition-all cursor-pointer"
+              >
+                {isApplyingTts && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isApplyingTts ? t('ttsApplying') : t('ttsApplyBtn')}</span>
+              </button>
+              {ttsMsg && (
+                <span
+                  className={`text-xs ${
+                    ttsMsg.isError ? 'text-red-500' : 'text-emerald-600 dark:text-emerald-400'
+                  }`}
+                >
+                  {ttsMsg.text}
+                </span>
+              )}
+            </div>
 
             {/* 底部操作栏：一键测速下载模型 + 打开模型目录 */}
             <div className="mt-3 flex items-center gap-2">
@@ -1976,101 +2323,111 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                 <span>{t('ttsOpenModelsDirBtn')}</span>
               </button>
             </div>
+
+            {cardResetButton(handleTtsCardReset)}
           </div>
 
-          {/* 实时字幕服务卡片（无常驻开关 · 纯状态提示 + 运行环境与两级模型完备校验 + 自动双源测速一键下载） */}
+          {/* 实时字幕服务卡片 */}
           <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
-            {/* 头部：标题 + 整体状态指示（无启停开关） */}
+            {/* 头部：标题 + 引擎徽标 + 运行状态指示 */}
             <div className="flex items-start justify-between mb-2.5">
               <div className="flex items-center gap-2 pt-0.5">
                 <FileText className="w-4 h-4 text-cyan-600 dark:text-cyan-400 flex-shrink-0" />
                 <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
                   {t('subtitleServiceTitle')}
                 </span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded-md font-mono bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 font-medium">
+                  {t('subtitleEngineTag')}
+                </span>
               </div>
-              {subtitleStatus && (
-                <div className="flex flex-col items-end gap-1">
-                  <div className="flex items-center gap-1.5 text-[11px]">
-                    <span
-                      className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                        SERVICE_STATE_CARD_DOT_CLASS[
-                          subtitleStatus.downloadState?.active || subtitleStatus.loading
-                            ? 'starting'
-                            : subtitleStatus.running || subtitleStatus.paused || subtitleStatus.allReady
-                            ? 'online'
-                            : 'offline'
-                        ]
-                      }`}
-                    />
-                    <span
-                      className={
-                        SERVICE_STATE_CARD_TEXT_CLASS[
-                          subtitleStatus.downloadState?.active || subtitleStatus.loading
-                            ? 'starting'
-                            : subtitleStatus.running || subtitleStatus.paused || subtitleStatus.allReady
-                            ? 'online'
-                            : 'offline'
-                        ]
-                      }
-                    >
-                      {subtitleStatus.downloadState?.active || subtitleStatus.loading
-                        ? t('statusStarting')
+              {subtitleStatus && (() => {
+                const subtitleCardState: ServiceState =
+                  subtitleStatus.loading
+                    ? 'starting'
+                    : subtitleStatus.running
+                    ? 'online'
+                    : subtitleStatus.paused || subtitleStatus.allReady
+                    ? 'standby'
+                    : 'offline';
+                return (
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <span
+                        className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                          SERVICE_STATE_CARD_DOT_CLASS[subtitleCardState]
+                        }`}
+                      />
+                      <span className={SERVICE_STATE_CARD_TEXT_CLASS[subtitleCardState]}>
+                        {subtitleCardState === 'starting'
+                          ? t('statusStarting')
+                          : subtitleCardState === 'online'
+                          ? `${t('statusReady')} : ${subtitleStatus.asrPort ?? 1250}/${subtitleStatus.port ?? 1249}`
+                          : subtitleCardState === 'standby'
+                          ? t('statusStandby')
+                          : t('statusOffline')}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
+                      {subtitleStatus.downloadState?.active
+                        ? `${t('subtitleDetailDownloading')} (${subtitleStatus.downloadState.progressPercent.toFixed(1)}%)`
+                        : subtitleStatus.loading
+                        ? `${t('subtitleDetailLoading')} (${Math.min(3, (subtitleStatus.loadingStage || 0) + 1)}/3)`
                         : subtitleStatus.running
-                        ? `${t('statusReady')} : ${subtitleStatus.asrPort ?? 1250}/${subtitleStatus.port ?? 1249}`
-                        : subtitleStatus.paused || subtitleStatus.allReady
-                        ? t('statusReady')
-                        : t('statusOffline')}
+                        ? t('subtitleDetailActive')
+                        : subtitleStatus.paused
+                        ? t('subtitleDetailPaused')
+                        : subtitleStatus.allReady
+                        ? t('subtitleDetailStandby')
+                        : t('subtitleDetailMissing')}
                     </span>
                   </div>
-                  <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
-                    {subtitleStatus.downloadState?.active
-                      ? `${t('subtitleDetailDownloading')} (${subtitleStatus.downloadState.progressPercent.toFixed(1)}%)`
-                      : subtitleStatus.loading
-                      ? `${t('subtitleDetailLoading')} (${Math.min(3, (subtitleStatus.loadingStage || 0) + 1)}/3)`
-                      : subtitleStatus.running
-                      ? t('subtitleDetailActive')
-                      : subtitleStatus.paused
-                      ? t('subtitleDetailPaused')
-                      : subtitleStatus.allReady
-                      ? t('subtitleDetailStandby')
-                      : t('subtitleDetailMissing')}
-                  </span>
-                </div>
-              )}
+                );
+              })()}
             </div>
 
-            {/* 按需生命周期说明 */}
-            <div className="mb-3 px-2.5 py-2 rounded-lg bg-cyan-500/5 dark:bg-cyan-500/10 border border-cyan-500/20 text-[10px] text-zinc-600 dark:text-zinc-300 leading-snug">
-              {t('subtitleServiceLifecycleHint')}
-            </div>
-
-            {/* 内置运行环境状态 */}
-            <div className="pb-2.5 mb-2.5 border-b border-black/5 dark:border-white/5 flex items-center justify-between gap-2">
+            {/* 功能定位与触发横幅 */}
+            <div className="flex items-center justify-between gap-2 mb-3 px-2.5 py-2 rounded-lg bg-cyan-500/5 dark:bg-cyan-500/10 border border-cyan-500/20">
               <div className="min-w-0">
                 <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
-                  {t('subtitleRuntimeLabel')}
+                  {t('subtitleServiceLifecycleTitle')}
                 </div>
-                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate">
-                  {t('subtitleRuntimeDesc')}
+                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 leading-snug">
+                  {t('subtitleServiceLifecycleHint')}
                 </div>
               </div>
-              <div className="flex items-center gap-1.5 flex-shrink-0">
+              <span className="flex-shrink-0 px-2 py-1 rounded-md border border-black/10 dark:border-white/15 bg-white dark:bg-[#202127] text-[10px] font-medium text-zinc-700 dark:text-zinc-200 whitespace-nowrap shadow-sm">
+                {t('subtitleHotkeyTrigger')}
+              </span>
+            </div>
+
+            {/* 内置运行环境 */}
+            <div className="flex items-center justify-between gap-2 mb-3 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
+              <div className="flex items-center gap-2 min-w-0">
                 <span
-                  className={`w-1.5 h-1.5 rounded-full ${
+                  className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
                     subtitleStatus?.runtimeReady !== false ? 'bg-emerald-500' : 'bg-red-500'
                   }`}
                 />
-                <span
-                  className={`text-[10px] font-medium ${
-                    subtitleStatus?.runtimeReady !== false
-                      ? 'text-emerald-600 dark:text-emerald-400'
-                      : 'text-red-500'
-                  }`}
-                >
-                  {subtitleStatus?.runtimeReady !== false
-                    ? t('subtitleRuntimeReady')
-                    : t('subtitleRuntimeMissing')}
-                </span>
+                <div className="min-w-0">
+                  <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
+                    {t('runtimeLabel')}
+                  </div>
+                  <div className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate">
+                    {t('subtitleRuntimeDesc')}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {subtitleStatus?.runtimeReady !== false ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
+                    <Check className="w-3 h-3" />
+                    <span>{t('runtimeBundledReady')}</span>
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-red-500 font-medium">
+                    {t('runtimeMissing')}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -2173,7 +2530,12 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                         ? t('subtitleProbingSource')
                         : subtitleStatus.downloadState.phase === 'cleaning'
                         ? t('subtitleCleaningCache')
-                        : `${subtitleStatus.downloadState.currentFile || subtitleStatus.downloadState.currentModelName}`}
+                        : subtitleStatus.downloadState.currentFile ||
+                          getSubtitleModelDisplayName(
+                            subtitleStatus.downloadState.currentModelKey,
+                            subtitleStatus.downloadState.currentModelName,
+                            t
+                          )}
                     </span>
                   </div>
                   <button
@@ -2191,7 +2553,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                     <span>
                       {t('subtitleSelectedSourceLabel')}:{' '}
                       <strong className="font-medium text-zinc-700 dark:text-zinc-200">
-                        {subtitleStatus.downloadState.selectedSource.name}
+                        {formatSourceName(subtitleStatus.downloadState.selectedSource, t)}
                       </strong>{' '}
                       ({subtitleStatus.downloadState.selectedSource.latencyMs}ms)
                     </span>
@@ -2250,7 +2612,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
               subtitleStatus?.downloadState?.phase === 'error' &&
               subtitleStatus?.downloadState?.error && (
                 <div className="mt-2.5 text-[11px] text-red-500">
-                  {subtitleStatus.downloadState.error}
+                  {formatDownloadError(subtitleStatus.downloadState.error, t)}
                 </div>
               )}
 
@@ -2275,6 +2637,345 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                 <span>{t('subtitleOpenModelsDirBtn')}</span>
               </button>
             </div>
+          </div>
+
+          {/* PaddleOCR 视觉文档识别服务卡片（纯按需 · 快捷键 ⌘⇧2） */}
+          <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
+            {/* 头部：标题 + 引擎徽标 + 运行状态指示 */}
+            <div className="flex items-start justify-between mb-2.5">
+              <div className="flex items-center gap-2 pt-0.5">
+                <ScanText className="w-4 h-4 text-violet-600 dark:text-violet-400 flex-shrink-0" />
+                <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
+                  {t('ocrServiceTitle')}
+                </span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded-md font-mono bg-violet-500/10 text-violet-600 dark:text-violet-400 font-medium">
+                  {t('ocrEngineTag')}
+                </span>
+              </div>
+              {ocrStatus && (() => {
+                const ocrCardState: ServiceState =
+                  ocrStatus.status === 'loading'
+                    ? 'starting'
+                    : ocrStatus.running
+                    ? 'online'
+                    : ocrStatus.model?.ready
+                    ? 'standby'
+                    : 'offline';
+                return (
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <span
+                        className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                          SERVICE_STATE_CARD_DOT_CLASS[ocrCardState]
+                        }`}
+                      />
+                      <span className={SERVICE_STATE_CARD_TEXT_CLASS[ocrCardState]}>
+                        {ocrCardState === 'starting'
+                          ? t('statusStarting')
+                          : ocrCardState === 'online'
+                          ? ocrStatus.port
+                            ? `${t('statusReady')} : ${ocrStatus.port}`
+                            : t('statusReady')
+                          : ocrCardState === 'standby'
+                          ? t('statusStandby')
+                          : t('statusOffline')}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
+                      {ocrStatus.download?.active
+                        ? `${t('ocrDetailDownloading')} (${ocrStatus.download.progressPercent.toFixed(1)}%)`
+                        : ocrStatus.status === 'loading'
+                        ? t('ocrDetailLoading')
+                        : ocrStatus.running
+                        ? t('ocrDetailActive')
+                        : ocrStatus.model?.ready
+                        ? t('ocrDetailStandby')
+                        : t('ocrDetailMissing')}
+                    </span>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* 功能定位与触发横幅 */}
+            <div className="flex items-center justify-between gap-2 mb-3 px-2.5 py-2 rounded-lg bg-violet-500/5 dark:bg-violet-500/10 border border-violet-500/20">
+              <div className="min-w-0">
+                <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
+                  {t('ocrServiceLifecycleTitle')}
+                </div>
+                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 leading-snug">
+                  {t('ocrServiceLifecycleHint')}
+                </div>
+              </div>
+              <kbd className="flex-shrink-0 px-2 py-1 rounded-md border border-black/10 dark:border-white/15 bg-white dark:bg-[#202127] text-[10px] font-mono text-zinc-700 dark:text-zinc-200 whitespace-nowrap shadow-sm">
+                {t('ocrHotkeyTrigger')}
+              </kbd>
+            </div>
+
+            {/* 内置运行环境与模型状态 */}
+            <div className="space-y-2 mb-3">
+              {/* 内置运行环境 */}
+              <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                      ocrStatus?.runtimeReady !== false ? 'bg-emerald-500' : 'bg-red-500'
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
+                      {t('runtimeLabel')}
+                    </div>
+                    <div className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate">
+                      {t('ocrRuntimeDesc')}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {ocrStatus?.runtimeReady !== false ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
+                      <Check className="w-3 h-3" />
+                      <span>{t('runtimeBundledReady')}</span>
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-red-500 font-medium">
+                      {t('runtimeMissing')}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* 模型状态 / 下载 */}
+              <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                      ocrStatus?.model?.ready
+                        ? 'bg-emerald-500'
+                        : ocrStatus?.download?.active
+                        ? 'bg-violet-500 animate-pulse'
+                        : 'bg-red-500'
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium text-zinc-800 dark:text-zinc-200 truncate">
+                      {t('ocrModelLabel')}
+                    </div>
+                    <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
+                      {ocrStatus?.model?.ready
+                        ? `${(ocrStatus.model.bytes / 1024 ** 3).toFixed(2)} GB`
+                        : ocrStatus?.model?.sizeDesc || '1.09 GB'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {ocrStatus?.model?.ready ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
+                      <Check className="w-3 h-3" />
+                      <span>{t('ocrModelReady')}</span>
+                    </span>
+                  ) : ocrStatus?.download?.active ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-violet-500/10 text-violet-600 dark:text-violet-400 text-[10px] font-medium">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <span>{t('ocrDownloading')}</span>
+                    </span>
+                  ) : (
+                    <>
+                      <span className="text-[10px] text-red-500 font-medium">
+                        {t('ocrModelMissing')}
+                      </span>
+                      {ocrStatus && !ocrStatus.download?.active && (
+                        <button
+                          type="button"
+                          disabled={ocrBusy}
+                          onClick={handleOcrDownload}
+                          className="px-2 py-0.5 rounded-md bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-[10px] font-medium transition-colors cursor-pointer"
+                        >
+                          {t('ocrDownloadBtn')}
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* 自动测速与实时下载进度面板 */}
+            {ocrStatus?.download?.active && (
+              <div className="mt-3 p-2.5 rounded-lg bg-violet-500/5 dark:bg-violet-500/10 border border-violet-500/20 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0 text-[11px] font-medium text-violet-700 dark:text-violet-300">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" />
+                    <span className="truncate">
+                      {ocrStatus.download.phase === 'probing'
+                        ? t('ocrProbingSource')
+                        : ocrStatus.download.phase === 'cleaning'
+                        ? t('ocrCleaningCache')
+                        : ocrStatus.download.currentFile ||
+                          t('ocrModelLabel')}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={ocrBusy}
+                    onClick={handleOcrCancelDownload}
+                    className="px-2 py-0.5 rounded-md border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 text-[10px] font-medium transition-colors flex-shrink-0 cursor-pointer"
+                  >
+                    {t('ocrCancelDownloadBtn')}
+                  </button>
+                </div>
+
+                {ocrStatus.download.selectedSource && (
+                  <div className="text-[10px] text-zinc-500 dark:text-zinc-400 flex items-center justify-between">
+                    <span>
+                      {t('ocrSelectedSourceLabel')}:{' '}
+                      <strong className="font-medium text-zinc-700 dark:text-zinc-200">
+                        {formatSourceName(ocrStatus.download.selectedSource, t)}
+                      </strong>{' '}
+                      ({ocrStatus.download.selectedSource.latencyMs}ms)
+                    </span>
+                    <span className="font-mono text-violet-600 dark:text-violet-400 font-semibold">
+                      {ocrStatus.download.progressPercent.toFixed(1)}%
+                    </span>
+                  </div>
+                )}
+
+                <div className="w-full h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-violet-500 to-emerald-500 transition-all duration-200"
+                    style={{
+                      width: `${Math.max(
+                        3,
+                        Math.min(100, ocrStatus.download.progressPercent || 0)
+                      )}%`,
+                    }}
+                  />
+                </div>
+
+                {ocrStatus.download.phase === 'downloading' && (
+                  <div className="flex items-center justify-between text-[10px] font-mono text-zinc-500 dark:text-zinc-400">
+                    <span>
+                      {(ocrStatus.download.downloadedBytes / (1024 * 1024)).toFixed(1)} MB /{' '}
+                      {(ocrStatus.download.totalBytes / (1024 * 1024)).toFixed(1)} MB
+                    </span>
+                    <span>
+                      {(ocrStatus.download.speedBps / (1024 * 1024)).toFixed(2)} MB/s
+                      {ocrStatus.download.etaSeconds !== null &&
+                      ocrStatus.download.etaSeconds > 0
+                        ? ` · ETA ${Math.floor(ocrStatus.download.etaSeconds / 60)}m${String(
+                            ocrStatus.download.etaSeconds % 60
+                          ).padStart(2, '0')}s`
+                        : ''}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 下载结果提示 */}
+            {!ocrStatus?.download?.active &&
+              ocrStatus?.download?.phase === 'completed' && (
+                <div className="mt-2.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                  {t('ocrDownloadCompleted')}
+                </div>
+              )}
+            {!ocrStatus?.download?.active &&
+              ocrStatus?.download?.phase === 'cancelled' && (
+                <div className="mt-2.5 text-[11px] text-amber-600 dark:text-amber-400">
+                  {t('ocrDownloadCancelled')}
+                </div>
+              )}
+            {!ocrStatus?.download?.active &&
+              ocrStatus?.download?.phase === 'error' &&
+              ocrStatus?.download?.error && (
+                <div className="mt-2.5 text-[11px] text-red-500">
+                  {formatDownloadError(ocrStatus.download.error, t)}
+                </div>
+              )}
+
+            {/* 默认配置项：识别任务模式、分辨率预算、内存闲置释放 */}
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div className="flex flex-col gap-1">
+                <span className="text-[10px] text-zinc-500 dark:text-zinc-400 font-medium">{t('ocrTaskLabel')}</span>
+                <select
+                  value={ocrForm.task ?? ocrStatus?.config?.task ?? 'ocr'}
+                  onChange={(e) => setOcrForm((prev) => ({ ...prev, task: e.target.value as OcrConfig['task'] }))}
+                  disabled={ocrBusy || isApplyingOcr}
+                  className="px-2 py-1.5 rounded-lg text-[11px] bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 text-zinc-700 dark:text-zinc-200 cursor-pointer focus:border-violet-500 focus:outline-none"
+                >
+                  <option value="ocr">{t('ocrTaskDoc')}</option>
+                  <option value="table">{t('ocrTaskTable')}</option>
+                  <option value="formula">{t('ocrTaskFormula')}</option>
+                  <option value="chart">{t('ocrTaskChart')}</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-[10px] text-zinc-500 dark:text-zinc-400 font-medium">{t('ocrResolutionLabel')}</span>
+                <select
+                  value={ocrForm.resolution ?? ocrStatus?.config?.resolution ?? 'high'}
+                  onChange={(e) => setOcrForm((prev) => ({ ...prev, resolution: e.target.value as OcrConfig['resolution'] }))}
+                  disabled={ocrBusy || isApplyingOcr}
+                  className="px-2 py-1.5 rounded-lg text-[11px] bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 text-zinc-700 dark:text-zinc-200 cursor-pointer focus:border-violet-500 focus:outline-none"
+                >
+                  <option value="balanced">{t('ocrResBalanced')}</option>
+                  <option value="high">{t('ocrResHigh')}</option>
+                  <option value="max">{t('ocrResMax')}</option>
+                </select>
+              </div>
+              <IdleTimeoutSelector
+                value={ocrForm.idleUnloadMin ?? ocrStatus?.config?.idleUnloadMin ?? 30}
+                onChange={(min) => setOcrForm((prev) => ({ ...prev, idleUnloadMin: min }))}
+                disabled={ocrBusy || isApplyingOcr}
+                t={t}
+              />
+            </div>
+
+            {/* 保存配置按钮与反馈 */}
+            <div className="mt-3 flex items-center justify-between">
+              <button
+                type="button"
+                disabled={ocrBusy || isApplyingOcr}
+                onClick={handleOcrApply}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-violet-600 hover:bg-violet-500 active:scale-[0.98] disabled:opacity-50 text-white font-medium shadow-sm transition-all cursor-pointer"
+              >
+                {isApplyingOcr && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{isApplyingOcr ? t('ocrApplying') : t('ocrApplyBtn')}</span>
+              </button>
+              {ocrMsg && (
+                <span
+                  className={`text-xs ${
+                    ocrMsg.isError ? 'text-red-500' : 'text-emerald-600 dark:text-emerald-400'
+                  }`}
+                >
+                  {ocrMsg.text}
+                </span>
+              )}
+            </div>
+
+            {/* 底部操作栏：一键测速下载模型 + 打开模型目录 */}
+            <div className="mt-3 flex items-center gap-2">
+              {ocrStatus && !ocrStatus.model?.ready && !ocrStatus.download?.active && (
+                <button
+                  type="button"
+                  disabled={ocrBusy}
+                  onClick={handleOcrDownload}
+                  className="flex-1 px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 active:scale-[0.98] disabled:opacity-50 text-white text-xs font-medium transition-all cursor-pointer"
+                >
+                  {t('ocrDownloadAllBtn')}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleOcrOpenDir}
+                className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-zinc-700 dark:text-zinc-200 border border-black/10 dark:border-white/10 text-xs font-medium transition-all active:scale-95 cursor-pointer"
+              >
+                <FolderOpen className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
+                <span>{t('ocrOpenModelsDirBtn')}</span>
+              </button>
+            </div>
+
+            {cardResetButton(handleOcrCardReset)}
           </div>
 
         </div>

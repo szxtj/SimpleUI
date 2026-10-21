@@ -5,10 +5,12 @@ class HotKeyManager {
     static let shared = HotKeyManager()
     private var spotlightHotKeyRef: EventHotKeyRef?
     private var translatorHotKeyRef: EventHotKeyRef?
+    private var ocrHotKeyRef: EventHotKeyRef?
     private var isHandlerInstalled = false
 
     var onTrigger: (() -> Void)?
     var onTranslatorTrigger: (() -> Void)?
+    var onOCRTrigger: (() -> Void)?
 
     func register() {
         if !isHandlerInstalled {
@@ -35,6 +37,10 @@ class HotKeyManager {
                         DispatchQueue.main.async {
                             HotKeyManager.shared.onTranslatorTrigger?()
                         }
+                    } else if hotKeyID.id == 3 {
+                        DispatchQueue.main.async {
+                            HotKeyManager.shared.onOCRTrigger?()
+                        }
                     }
                 }
                 return noErr
@@ -50,6 +56,10 @@ class HotKeyManager {
         // 2. Control + Space -> 快捷翻译框 (Translator)
         let translatorID = EventHotKeyID(signature: OSType(0x54464643), id: 2)
         RegisterEventHotKey(UInt32(kVK_Space), UInt32(controlKey), translatorID, GetApplicationEventTarget(), 0, &translatorHotKeyRef)
+
+        // 3. Command + Shift + 2 -> 截屏识别为 Markdown 并放入剪贴板 (OCR)
+        let ocrID = EventHotKeyID(signature: OSType(0x54464643), id: 3)
+        RegisterEventHotKey(UInt32(kVK_ANSI_2), UInt32(cmdKey | shiftKey), ocrID, GetApplicationEventTarget(), 0, &ocrHotKeyRef)
     }
 
     func unregister() {
@@ -60,6 +70,10 @@ class HotKeyManager {
         if let ref = translatorHotKeyRef {
             UnregisterEventHotKey(ref)
             translatorHotKeyRef = nil
+        }
+        if let ref = ocrHotKeyRef {
+            UnregisterEventHotKey(ref)
+            ocrHotKeyRef = nil
         }
     }
 }

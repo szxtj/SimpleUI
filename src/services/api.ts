@@ -1,4 +1,4 @@
-import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, SubtitleServiceStatus, SubtitleDownloadState, TtsServiceStatus, TtsDownloadState } from '../types/chat';
+import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, SubtitleServiceStatus, SubtitleDownloadState, TtsServiceStatus, TtsDownloadState, OcrServiceStatus, OcrDownloadState, OcrConfig, OcrRecognizeResult } from '../types/chat';
 import { estimateHistoryTokens, setTokenCalibration, CalibrationProvider } from '../utils/token';
 
 /** 服务端 usage 的实际形状（TTF 会给出 cached / reasoning 明细） */
@@ -1091,3 +1091,82 @@ export class TtsServiceAPI {
     return { ok: false };
   }
 }
+
+/**
+ * 视觉文档识别服务 API（PaddleOCR-VL 1.6 MLX 8bit · 按需生命周期）
+ */
+export class OcrServiceAPI {
+  static async getStatus(): Promise<OcrServiceStatus | null> {
+    try {
+      const res = await fetch('/api/ocr/status', { cache: 'no-store' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('OcrService getStatus failed:', e);
+    }
+    return null;
+  }
+
+  static async startDownload(): Promise<{ ok: boolean; downloadState?: OcrDownloadState }> {
+    try {
+      const res = await fetch('/api/ocr/download', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('OcrService startDownload failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async cancelDownload(): Promise<{ ok: boolean; downloadState?: OcrDownloadState }> {
+    try {
+      const res = await fetch('/api/ocr/download/cancel', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('OcrService cancelDownload failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async openModelsDir(): Promise<{ ok: boolean; path?: string }> {
+    try {
+      const res = await fetch('/api/ocr/open-dir', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('OcrService openModelsDir failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async updateConfig(
+    partial: Partial<OcrConfig>
+  ): Promise<{ ok: boolean; config?: OcrConfig }> {
+    try {
+      const res = await fetch('/api/ocr/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(partial),
+      });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('OcrService updateConfig failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async recognize(
+    imagePath: string,
+    options?: { task?: string; resolution?: string }
+  ): Promise<OcrRecognizeResult> {
+    try {
+      const res = await fetch('/api/ocr/recognize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imagePath, ...options }),
+      });
+      return await res.json();
+    } catch (e: any) {
+      console.error('OcrService recognize failed:', e);
+      return { ok: false, error: e?.message || 'REQUEST_FAILED' };
+    }
+  }
+}
+

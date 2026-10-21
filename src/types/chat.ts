@@ -439,3 +439,84 @@ export interface TtsServiceStatus {
   logFile?: string;
   download: TtsDownloadState;
 }
+
+/** 视觉文档识别服务：单个模型文件的磁盘状态 */
+export interface OcrModelFileStatus {
+  path: string;
+  exists: boolean;
+  size: number;
+  minBytes: number;
+  expectedBytes: number;
+  required: boolean;
+  ready: boolean;
+}
+
+/** 视觉文档识别服务：模型目录整体状态 */
+export interface OcrModelStatus {
+  key: 'ocr';
+  name: string;
+  shortName: string;
+  dir: string;
+  ready: boolean;
+  missing: string[];
+  bytes: number;
+  expectedBytes: number;
+  sizeDesc: string;
+  path: string;
+}
+
+/** 视觉文档识别服务：自动双源测速与下载进度状态 */
+export interface OcrDownloadState {
+  active: boolean;
+  phase: 'idle' | 'probing' | 'downloading' | 'cleaning' | 'completed' | 'error' | 'cancelled';
+  targetModel: string | null;
+  currentModelKey: 'ocr' | null;
+  currentModelName: string;
+  currentFile: string;
+  selectedSource: {
+    id: string;
+    name: string;
+    latencyMs: number;
+    speedKbps: number;
+  } | null;
+  downloadedBytes: number;
+  totalBytes: number;
+  progressPercent: number;
+  speedBps: number;
+  etaSeconds: number | null;
+  error: string | null;
+  updatedAt: number;
+}
+
+/** 视觉文档识别服务配置 */
+export interface OcrConfig {
+  task: 'ocr' | 'table' | 'formula' | 'chart' | 'spotting' | 'seal';
+  resolution: 'balanced' | 'high' | 'max';
+  maxPixels?: number;
+  idleUnloadMin?: number;
+}
+
+/** 视觉文档识别服务整体聚合状态 */
+export interface OcrServiceStatus {
+  status: 'incomplete' | 'standby' | 'loading' | 'ready';
+  running: boolean;
+  ready: boolean;
+  modelsReady: boolean;
+  runtimeReady: boolean;
+  model: OcrModelStatus;
+  runtime: { ready: boolean; path: string; bundled: boolean };
+  config: OcrConfig;
+  python: string;
+  port: number;
+  logFile?: string;
+  download: OcrDownloadState;
+}
+
+/** 识别接口返回结果 */
+export interface OcrRecognizeResult {
+  ok: boolean;
+  text?: string;
+  durationMs?: number;
+  task?: string;
+  error?: string;
+}

@@ -994,7 +994,13 @@ export const SubtitleOverlay: React.FC = () => {
                 <div className="flex items-center justify-between text-[10px] text-neutral-400 font-mono">
                   <span>
                     {downloadState.selectedSource
-                      ? `${downloadState.selectedSource.name} (${downloadState.selectedSource.latencyMs}ms)`
+                      ? `${
+                          downloadState.selectedSource.id === 'mirror'
+                            ? t('downloadSourceMirror')
+                            : downloadState.selectedSource.id === 'official'
+                            ? t('downloadSourceOfficial')
+                            : downloadState.selectedSource.name
+                        } (${downloadState.selectedSource.latencyMs}ms)`
                       : ''}
                   </span>
                   <span>

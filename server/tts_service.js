@@ -56,7 +56,7 @@ const DEFAULT_CONFIG = {
   voice: 'serena',
   speed: 1.0,
   language: 'auto',
-  idleUnloadMin: 5,
+  idleUnloadMin: 30,
 };
 
 // ---- 模型清单（与字幕服务对齐：每个文件带 minBytes，按磁盘实际大小校验完整性）----
@@ -377,7 +377,7 @@ class TtsService {
 
       const best = await this.probeBestMirror(signal, probeRelative);
       if (signal.aborted) throw new Error('cancelled');
-      if (!best) throw new Error('所有下载源均不可达，请检查网络后重试');
+      if (!best) throw new Error('ALL_SOURCES_UNREACHABLE');
       this.download.selectedSource = {
         id: best.id,
         name: best.name,
@@ -485,7 +485,7 @@ class TtsService {
                       try {
                         const finalSize = fs.statSync(partPath).size;
                         if (finalSize < file.minBytes) {
-                          reject(new Error(`文件未完整下载 (${finalSize} < ${file.minBytes})`));
+                          reject(new Error(`FILE_SIZE_MISMATCH (${finalSize} < ${file.minBytes})`));
                           return;
                         }
                         fs.renameSync(partPath, dst);
@@ -512,12 +512,12 @@ class TtsService {
             ) {
               throw new Error('cancelled');
             }
-            console.warn(`[TTS] 源 ${srcNode.name} 下载中断，尝试切换备用源:`, err.message);
+            console.warn(`[TTS] Source ${srcNode.name} interrupted, trying backup:`, err.message);
           }
         }
 
         if (!fileDone) {
-          throw lastErr || new Error(`下载失败: ${file.path}`);
+          throw lastErr || new Error(`DOWNLOAD_FAILED: ${file.path}`);
         }
       }
 
@@ -993,6 +993,7 @@ class TtsService {
           ...(body.idleUnloadMin !== undefined ? { idleUnloadMin: Math.max(0, Number(body.idleUnloadMin) || 0) } : {}),
         };
         this.saveConfig();
+        if (this.isRunning()) this.touch();
         sendJson(200, { ok: true, config: { ...this.config } });
         return;
       }
