@@ -35,6 +35,8 @@ SimpleUI is deeply tuned for [TurboFieldfare](https://github.com/drumih/turbo-fi
 - **Model integration services**: unified management for base models, SenseVoice speech input, R2T2 streaming captions, Index-Translate, and CoreML segmentation models.
 - **DeepSeek API integration**: independent Base URL / API key / model / context / temperature / top_p / reasoning effort / stop strings / system prompt; requests go directly to the official endpoint, with cache-friendly context trimming.
 - **Offline Wiki RAG**: Kiwix ZIM + multi-channel retrieval + direct raw-text injection; no summarization, no rewriting, no mechanical truncation, with clickable citations.
+- **Browser-style multi-tab side panel**: unified right-side drawer supporting offline wiki search, article reading, raw Markdown source inspection, and a native image viewer; supports concurrent tabs, draggable split-pane with a live size HUD, and Spotlight single-page layer passthrough.
+- **Virtualized turn window & Turn Rail**: measured virtual window rendering (native mounting for ≤20 turns, dynamic budget for long chats) eliminating scroll lag; sidebar Turn Rail with hover preview and one-click jump navigation.
 - **Real-time bilingual subtitles**: SOTA SaT sentence segmentation, R2T2 streaming ASR, and Index-Translate sentence translation; source text streams live while translations are appended per sentence.
 - **Strong frontend & scientific computing**: Markdown / KaTeX / Mermaid, one-click code-block collapse/copy; built-in **Pyodide Python scientific computing sandbox** running client-side with zero local environment setup, two independent collapsible layers for source and execution output; formulas copyable as native Word/WPS equations, and tables retain formatting when pasted into Word.
 - **Native macOS**: main window, Spotlight panel, quick translate, subtitle overlay, and voice capsule; Chinese/English UI with light/dark themes.
@@ -93,8 +95,8 @@ Query
 
 - Article titles are planned by the primary model; candidates are narrowed by reliability rather than dumping whole articles into context.
 - Long articles use section routing while keeping the full lead; body text is never mechanically truncated.
-- Formulas are preserved as LaTeX; tables are preserved as pipe tables/structured data; images and captions are restored in the knowledge panel.
-- The knowledge panel renders formulas, tables, images, subheadings, and citation source text.
+- Formulas are preserved as LaTeX; tables are preserved as pipe tables/structured data; images and captions are restored in the right-side multi-tab panel.
+- Built-in **browser-style multi-tab side panel**: supports concurrent tabs for offline search, article details, citation source text, and full-resolution images, with tab management, draggable split-pane, and double-click reset.
 - A local ZIM file is required; the Kiwix runtime is bundled and the ZIM path is configured under Service Manager → Knowledge Base.
 
 ### Why Chinese retrieval is accurate
@@ -103,7 +105,7 @@ Query
 2. **Model planning + multi-channel recall**: the primary model only plans 1–2 canonical titles; exact probes, title suggestions, disambiguation pages, and full-text search converge by reliability, with full-text search used only when necessary.
 3. **Model-driven disambiguation**: when an exact hit is a disambiguation page, the primary model picks a sense from the candidate list instead of relying on hardcoded entity-type scores.
 4. **Direct raw-text injection**: the DOM parser injects infoboxes, the full lead, paragraphs, lists, tables, and LaTeX formulas — no model summary, no mechanical truncation; answers can quote the source directly.
-5. **Reviewable citations**: citation chips point to article titles; opening the knowledge panel shows the injected source text for verification.
+5. **Reviewable citations**: citation chips point to article titles; clicking them opens a dedicated tab in the side panel with source text highlighting for verification.
 
 ---
 
@@ -189,6 +191,10 @@ How it works:
 ## Frontend
 
 - **Lightweight**: React 19 + TypeScript + Vite + Tailwind, wrapped in a native Swift/WebKit shell with no heavy frontend framework.
+- **Browser-style multi-tab side panel**: unified tab system for offline knowledge search, article reading, Markdown source inspection, and high-res image viewing; draggable pane width with real-time HUD dimensions and minimum-width protection, consistent across main and Spotlight windows.
+- **Virtualized turn window & Turn Rail**: measured virtualized window rendering (estimated and measured turn offsets, native mounting for short sessions, dynamic budget for long sessions) preventing scroll jank; right-side Turn Rail with hover previews, one-click jump, and drag navigation.
+- **High-res image viewer**: multi-image gallery navigation, smooth wheel/double-click zooming, drag-to-pan, original dimensions display, one-click copy, local download, and direct macOS Preview integration.
+- **Robust media lifecycle**: user images use content-addressed (SHA-256) disk storage strictly bound to explicit turn/session deletion; opening historical sessions automatically and smoothly scrolls to the latest turn.
 - **Rich rendering**: Markdown, KaTeX formulas, Mermaid diagrams, tables, code blocks, image preview, and collapsible thinking.
 - **Built-in Python scientific computing sandbox**:
   - **Zero local setup**: Powered by Pyodide (WebAssembly) running inside an isolated Web Worker sandbox — entirely client-side and offline, bundled with frontend assets without requiring Python, pip, or virtual environments on macOS.
