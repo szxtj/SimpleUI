@@ -374,3 +374,68 @@ export interface SubtitleServiceStatus {
   clientCount: number;
   historyCount: number;
 }
+
+/** 文字转语音服务：单个模型文件的磁盘状态 */
+export interface TtsModelFileStatus {
+  path: string;
+  exists: boolean;
+  size: number;
+  minBytes: number;
+  expectedBytes: number;
+  required: boolean;
+  ready: boolean;
+}
+
+/** 文字转语音服务：模型目录整体状态 */
+export interface TtsModelStatus {
+  key: 'tts';
+  name: string;
+  shortName: string;
+  dir: string;
+  ready: boolean;
+  missing: string[];
+  bytes: number;
+  expectedBytes: number;
+  sizeDesc: string;
+  path: string;
+}
+
+/** 文字转语音服务：自动双源测速与下载进度状态 */
+export interface TtsDownloadState {
+  active: boolean;
+  phase: 'idle' | 'probing' | 'downloading' | 'cleaning' | 'completed' | 'error' | 'cancelled';
+  targetModel: string | null;
+  currentModelKey: 'tts' | null;
+  currentModelName: string;
+  currentFile: string;
+  selectedSource: {
+    id: string;
+    name: string;
+    latencyMs: number;
+    speedKbps: number;
+  } | null;
+  downloadedBytes: number;
+  totalBytes: number;
+  progressPercent: number;
+  speedBps: number;
+  etaSeconds: number | null;
+  error: string | null;
+  updatedAt: number;
+}
+
+/** 文字转语音服务整体聚合状态 */
+export interface TtsServiceStatus {
+  status: 'incomplete' | 'standby' | 'loading' | 'ready';
+  running: boolean;
+  ready: boolean;
+  modelsReady: boolean;
+  runtimeReady: boolean;
+  model: TtsModelStatus;
+  runtime: { ready: boolean; path: string; bundled: boolean };
+  voices: string[];
+  config: { voice: string; speed: number; language?: string; idleUnloadMin?: number };
+  python: string;
+  port: number;
+  logFile?: string;
+  download: TtsDownloadState;
+}

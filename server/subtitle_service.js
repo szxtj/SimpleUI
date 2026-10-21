@@ -1241,12 +1241,20 @@ class SubtitleService {
                     const fileStream = fs.createWriteStream(partPath, {
                       flags: isResume ? 'a' : 'w',
                     });
+                    fileStream.on('error', (err) => {
+                      res.destroy();
+                      reject(err);
+                    });
                     let downloaded = baseOffset;
                     let lastTick = Date.now();
                     let lastBytes = baseOffset;
 
                     res.on('data', (chunk) => {
                       downloaded += chunk.length;
+                      if (!fileStream.write(chunk)) {
+                        res.pause();
+                        fileStream.once('drain', () => res.resume());
+                      }
                       const now = Date.now();
                       if (now - lastTick >= 400) {
                         const dt = (now - lastTick) / 1000;
@@ -1268,6 +1276,10 @@ class SubtitleService {
                     res.on('error', (err) => {
                       fileStream.destroy();
                       reject(err);
+                    });
+                    res.on('aborted', () => {
+                      fileStream.destroy();
+                      reject(new Error('Download aborted'));
                     });
                     res.on('end', () => {
                       fileStream.end();
@@ -2311,19 +2323,21 @@ class SubtitleService {
       return;
     }
 
-    // 3. 启动自动测速与模型一键下载
+    // 3. 启动自动测速与模型一键下载（立即返回，后台继续；进度通过 SSE/轮询获取）
     if (pathname === '/api/subtitles/download' && req.method === 'POST') {
       let body = '';
       req.on('data', (c) => (body += c));
-      req.on('end', async () => {
+      req.on('end', () => {
         let targetModel = 'all';
         try {
           const parsed = JSON.parse(body || '{}');
           if (parsed && parsed.model) targetModel = parsed.model;
         } catch {}
-        const state = await this.startDownload(targetModel);
+        this.startDownload(targetModel).catch((err) => {
+          console.error('[Subtitles] download error:', err.message);
+        });
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ ok: true, downloadState: state }));
+        res.end(JSON.stringify({ ok: true, downloadState: this.downloadState }));
       });
       return;
     }

@@ -173,7 +173,7 @@ How it works:
 - Model: Qwen3-TTS 0.6B CustomVoice (MLX 4bit, ~1.6 GB including the separate speech codec); default voice `serena`.
 - Formula blocks are `select-none`, so they are skipped naturally; code blocks are read as plain text.
 - Loaded on demand: the first click waits for the model (roughly 3–12 s), and it **unloads and exits after 5 idle minutes**; endpoint `POST /api/tts/speak`.
-- “Service Manager → Text-to-Speech” provides the Qwen master switch and model download; turning it off hides only the Qwen read-aloud entries (system voice still works) and releases the model immediately.
+- “Service Manager → Text-to-Speech” follows the same design as the live subtitle service: purely on demand, with no persistent on/off switch. The panel shows the bundled runtime and model readiness, and supports dual-source speed-tested downloads, cancellation, and opening the models folder.
 - Inference runs on the bundled mlx-audio (Python) runtime; the main chat path still needs no Python.
 
 ### Quick Translate

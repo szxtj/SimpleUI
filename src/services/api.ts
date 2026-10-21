@@ -1,4 +1,4 @@
-import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, SubtitleServiceStatus, SubtitleDownloadState } from '../types/chat';
+import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, SubtitleServiceStatus, SubtitleDownloadState, TtsServiceStatus, TtsDownloadState } from '../types/chat';
 import { estimateHistoryTokens, setTokenCalibration, CalibrationProvider } from '../utils/token';
 
 /** 服务端 usage 的实际形状（TTF 会给出 cached / reasoning 明细） */
@@ -1023,6 +1023,70 @@ export class SubtitleServiceAPI {
       if (res.ok) return await res.json();
     } catch (e) {
       console.error('SubtitleService openModelsDir failed:', e);
+    }
+    return { ok: false };
+  }
+}
+
+/**
+ * 文字转语音服务（Qwen3-TTS 0.6B CustomVoice · MLX 4bit）。
+ *
+ * 与字幕服务同构：纯按需生命周期（首次朗读自动加载，闲置自动卸载，无启停开关），
+ * 服务管理面板负责展示运行环境、模型完备状态、双源自动测速下载进度与打开模型目录。
+ */
+export class TtsServiceAPI {
+  static async getStatus(): Promise<TtsServiceStatus | null> {
+    try {
+      const res = await fetch('/api/tts/status', { cache: 'no-store' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('TtsService getStatus failed:', e);
+    }
+    return null;
+  }
+
+  static async startDownload(): Promise<{ ok: boolean; downloadState?: TtsDownloadState }> {
+    try {
+      const res = await fetch('/api/tts/download', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('TtsService startDownload failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async cancelDownload(): Promise<{ ok: boolean; downloadState?: TtsDownloadState }> {
+    try {
+      const res = await fetch('/api/tts/download/cancel', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('TtsService cancelDownload failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async openModelsDir(): Promise<{ ok: boolean; path?: string }> {
+    try {
+      const res = await fetch('/api/tts/open-dir', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('TtsService openModelsDir failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async updateConfig(
+    partial: { voice?: string; speed?: number; language?: string; idleUnloadMin?: number }
+  ): Promise<{ ok: boolean }> {
+    try {
+      const res = await fetch('/api/tts/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(partial),
+      });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('TtsService updateConfig failed:', e);
     }
     return { ok: false };
   }

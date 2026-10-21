@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Volume2, Square, Loader2 } from 'lucide-react';
 import { useI18n } from '../i18n';
-import { useTtsEnabled } from '../hooks/useTtsEnabled';
 
 type Phase = 'idle' | 'loading' | 'playing';
 
@@ -15,7 +14,6 @@ interface SpeakButtonProps {
 
 export function SpeakButton({ text, title }: SpeakButtonProps) {
   const { t } = useI18n();
-  const enabled = useTtsEnabled();
   const [phase, setPhase] = useState<Phase>('idle');
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const urlRef = useRef<string | null>(null);
@@ -94,8 +92,6 @@ export function SpeakButton({ text, title }: SpeakButtonProps) {
       if (abortRef.current === controller) abortRef.current = null;
     }
   }, [phase, text, stop]);
-
-  if (!enabled) return null;
 
   return (
     <button

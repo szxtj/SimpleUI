@@ -1,13 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { AppSettings, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, VoicePermissionStatus, SubtitleServiceStatus } from '../types/chat';
-import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ASRServiceAPI, SubtitleServiceAPI } from '../services/api';
+import { AppSettings, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, VoicePermissionStatus, SubtitleServiceStatus, TtsServiceStatus } from '../types/chat';
+import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ASRServiceAPI, SubtitleServiceAPI, TtsServiceAPI } from '../services/api';
 import { resolveLanguage, formatArticleCount, translations, Language, TranslationKeys } from '../i18n';
 import {
   SERVICE_STATE_CARD_DOT_CLASS,
   SERVICE_STATE_CARD_TEXT_CLASS,
   toServiceState,
 } from '../utils/serviceState';
-import { refreshTtsEnabled, setTtsEnabled } from '../hooks/useTtsEnabled';
 import { X, RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen, FileText, Check, Loader2, Volume2 } from 'lucide-react';
 
 interface ServiceManagerModalProps {
@@ -199,72 +198,44 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     }
   };
 
-  // ---- 文字转语音服务（Qwen3-TTS 0.6B CustomVoice · MLX 4bit）----
-  const [ttsStatus, setTtsStatus] = useState<{
-    enabled: boolean;
-    status: string;
-    running: boolean;
-    ready: boolean;
-    voices: string[];
-    port: number;
-    model: { ready: boolean; bytes: number; dir: string };
-    config: { voice: string; speed: number };
-  } | null>(null);
-  const [ttsDownload, setTtsDownload] = useState<{
-    active: boolean;
-    doneBytes: number;
-    totalBytes: number;
-    currentFile: string | null;
-    error: string | null;
-  } | null>(null);
+  // ---- 文字转语音服务（Qwen3-TTS 0.6B CustomVoice · MLX 4bit · 纯按需）----
+  const [ttsStatus, setTtsStatus] = useState<TtsServiceStatus | null>(null);
   const [ttsBusy, setTtsBusy] = useState(false);
 
   const refreshTtsStatus = async () => {
-    try {
-      const r = await fetch('/api/tts/status');
-      const d = await r.json();
-      setTtsStatus(d);
-      setTtsDownload(d.download || null);
-    } catch {}
-  };
-
-  const handleTtsToggle = async (next: boolean) => {
-    setTtsBusy(true);
-    try {
-      const res = await fetch('/api/tts/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: next }),
-      });
-      if (res.ok) {
-        // 立即同步所有朗读入口（含 Spotlight 窗口），不用等 15s 轮询
-        setTtsEnabled(next);
-        void refreshTtsEnabled();
-      }
-      await refreshTtsStatus();
-    } finally {
-      setTtsBusy(false);
-    }
+    const s = await TtsServiceAPI.getStatus();
+    if (s) setTtsStatus(s);
+    return s;
   };
 
   const handleTtsDownload = async () => {
     setTtsBusy(true);
     try {
-      await fetch('/api/tts/download', { method: 'POST' });
+      await TtsServiceAPI.startDownload();
       await refreshTtsStatus();
     } finally {
       setTtsBusy(false);
     }
   };
 
+  const handleTtsCancelDownload = async () => {
+    setTtsBusy(true);
+    try {
+      await TtsServiceAPI.cancelDownload();
+      await refreshTtsStatus();
+    } finally {
+      setTtsBusy(false);
+    }
+  };
+
+  const handleTtsOpenDir = async () => {
+    await TtsServiceAPI.openModelsDir();
+  };
+
   const handleTtsVoice = async (voice: string) => {
     setTtsBusy(true);
     try {
-      await fetch('/api/tts/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voice }),
-      });
+      await TtsServiceAPI.updateConfig({ voice });
       await refreshTtsStatus();
     } finally {
       setTtsBusy(false);
@@ -1722,130 +1693,248 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
             {cardResetButton(handleAsrCardReset)}
           </div>
 
-          {/* 文字转语音服务卡片（Qwen3-TTS 0.6B CustomVoice · MLX 4bit · 按需加载） */}
+          {/* 文字转语音服务卡片（Qwen3-TTS 0.6B CustomVoice · MLX 4bit · 纯按需，与字幕服务同构） */}
           <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
-            <div className="flex items-start justify-between mb-3">
+            {/* 头部：标题 + 整体状态指示（无启停开关） */}
+            <div className="flex items-start justify-between mb-2.5">
               <div className="flex items-center gap-2 pt-0.5">
                 <Volume2 className="w-4 h-4 text-sky-600 dark:text-sky-400 flex-shrink-0" />
                 <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
                   {t('ttsServiceTitle')}
                 </span>
               </div>
-              <div className="flex flex-col items-end gap-1">
-                <div className="flex items-center gap-1.5 text-[11px]">
-                  <span
-                    className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                      SERVICE_STATE_CARD_DOT_CLASS[
-                        ttsStatus?.enabled === false || !ttsStatus?.model?.ready
-                          ? 'offline'
-                          : ttsStatus?.status === 'loading'
-                          ? 'starting'
-                          : 'online'
-                      ]
-                    }`}
-                  />
-                  <span
-                    className={
-                      SERVICE_STATE_CARD_TEXT_CLASS[
-                        ttsStatus?.enabled === false || !ttsStatus?.model?.ready
-                          ? 'offline'
-                          : ttsStatus?.status === 'loading'
-                          ? 'starting'
-                          : 'online'
-                      ]
-                    }
-                  >
-                    {ttsStatus?.enabled === false
-                      ? t('serviceDisabled')
-                      : !ttsStatus?.model?.ready
-                      ? t('ttsModelMissing')
-                      : ttsStatus?.status === 'loading'
-                      ? t('statusStarting')
-                      : ttsStatus?.running && ttsStatus?.port
-                      ? `${t('statusReady')} : ${ttsStatus.port}`
-                      : t('statusReady')}
+              {ttsStatus && (
+                <div className="flex flex-col items-end gap-1">
+                  <div className="flex items-center gap-1.5 text-[11px]">
+                    <span
+                      className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                        SERVICE_STATE_CARD_DOT_CLASS[
+                          ttsStatus.download?.active || ttsStatus.status === 'loading'
+                            ? 'starting'
+                            : ttsStatus.running || ttsStatus.model?.ready
+                            ? 'online'
+                            : 'offline'
+                        ]
+                      }`}
+                    />
+                    <span
+                      className={
+                        SERVICE_STATE_CARD_TEXT_CLASS[
+                          ttsStatus.download?.active || ttsStatus.status === 'loading'
+                            ? 'starting'
+                            : ttsStatus.running || ttsStatus.model?.ready
+                            ? 'online'
+                            : 'offline'
+                        ]
+                      }
+                    >
+                      {ttsStatus.download?.active || ttsStatus.status === 'loading'
+                        ? t('statusStarting')
+                        : !ttsStatus.model?.ready
+                        ? t('statusOffline')
+                        : ttsStatus.running && ttsStatus.port
+                        ? `${t('statusReady')} : ${ttsStatus.port}`
+                        : t('statusReady')}
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
+                    {ttsStatus.download?.active
+                      ? `${t('ttsDetailDownloading')} (${ttsStatus.download.progressPercent.toFixed(1)}%)`
+                      : ttsStatus.status === 'loading'
+                      ? t('ttsDetailLoading')
+                      : ttsStatus.running
+                      ? t('ttsDetailActive')
+                      : ttsStatus.model?.ready
+                      ? t('ttsDetailStandby')
+                      : t('ttsDetailMissing')}
                   </span>
                 </div>
-                <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight">
-                  {ttsStatus?.enabled === false ? t('ttsToggleOffHint') : t('ttsDetailHint')}
+              )}
+            </div>
+
+            {/* 按需生命周期说明 */}
+            <div className="mb-3 px-2.5 py-2 rounded-lg bg-sky-500/5 dark:bg-sky-500/10 border border-sky-500/20 text-[10px] text-zinc-600 dark:text-zinc-300 leading-snug">
+              {t('ttsServiceLifecycleHint')}
+            </div>
+
+            {/* 内置运行环境状态 */}
+            <div className="pb-2.5 mb-2.5 border-b border-black/5 dark:border-white/5 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
+                  {t('ttsRuntimeLabel')}
+                </div>
+                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate">
+                  {t('ttsRuntimeDesc')}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    ttsStatus?.runtimeReady !== false ? 'bg-emerald-500' : 'bg-red-500'
+                  }`}
+                />
+                <span
+                  className={`text-[10px] font-medium ${
+                    ttsStatus?.runtimeReady !== false
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-red-500'
+                  }`}
+                >
+                  {ttsStatus?.runtimeReady !== false
+                    ? t('ttsRuntimeReady')
+                    : t('ttsRuntimeMissing')}
                 </span>
               </div>
             </div>
 
-            {/* 总开关 */}
-            <div className="flex items-center justify-between gap-3 pb-3 mb-3 border-b border-black/5 dark:border-white/5">
-              <button
-                type="button"
-                onClick={() => handleTtsToggle(!(ttsStatus?.enabled ?? true))}
-                disabled={ttsBusy}
-                className="flex-1 min-w-0 text-left cursor-pointer disabled:cursor-not-allowed"
-              >
-                <div className="font-medium text-zinc-700 dark:text-zinc-200">{t('ttsServiceToggle')}</div>
-                <div className="text-[10px] text-zinc-500 dark:text-zinc-400">{t('ttsServiceToggleDesc')}</div>
-              </button>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={ttsStatus?.enabled ?? true}
-                disabled={ttsBusy}
-                onClick={() => handleTtsToggle(!(ttsStatus?.enabled ?? true))}
-                className={`relative w-10 h-[22px] rounded-full transition-colors flex-shrink-0 cursor-pointer disabled:opacity-50 ${
-                  ttsStatus?.enabled ?? true ? 'bg-sky-600' : 'bg-zinc-300 dark:bg-zinc-600'
-                }`}
-              >
-                <span
-                  className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] rounded-full bg-white shadow transition-transform duration-200 ${
-                    ttsStatus?.enabled ?? true ? 'translate-x-[18px]' : 'translate-x-0'
-                  }`}
-                />
-              </button>
-            </div>
-
             {/* 模型状态 / 下载 */}
             <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
-              <div className="min-w-0">
-                <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
-                  {t('ttsModelLabel')}
-                </div>
-                <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
-                  {ttsStatus?.model?.ready
-                    ? `${(ttsStatus.model.bytes / 1024 ** 3).toFixed(2)} GB · ${t('ttsModelReady')}`
-                    : t('ttsModelMissing')}
+              <div className="flex items-center gap-2 min-w-0">
+                <span
+                  className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                    ttsStatus?.model?.ready
+                      ? 'bg-emerald-500'
+                      : ttsStatus?.download?.active
+                      ? 'bg-sky-500 animate-pulse'
+                      : 'bg-red-500'
+                  }`}
+                />
+                <div className="min-w-0">
+                  <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
+                    {t('ttsModelLabel')}
+                  </div>
+                  <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
+                    {ttsStatus?.model?.ready
+                      ? `${(ttsStatus.model.bytes / 1024 ** 3).toFixed(2)} GB · ${t('ttsModelReady')}`
+                      : ttsStatus?.model?.sizeDesc || '1.6 GB'}
+                  </div>
                 </div>
               </div>
-              {!ttsStatus?.model?.ready && (
-                <button
-                  type="button"
-                  onClick={handleTtsDownload}
-                  disabled={ttsBusy || ttsDownload?.active}
-                  className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-sky-600 hover:bg-sky-700 text-white disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                >
-                  {ttsDownload?.active ? t('ttsDownloading') : t('ttsDownloadBtn')}
-                </button>
-              )}
+
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {ttsStatus?.model?.ready ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
+                    <Check className="w-3 h-3" />
+                    <span>{t('ttsModelReady')}</span>
+                  </span>
+                ) : ttsStatus?.download?.active ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-sky-500/10 text-sky-600 dark:text-sky-400 text-[10px] font-medium">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>{t('ttsDownloading')}</span>
+                  </span>
+                ) : (
+                  <>
+                    <span className="text-[10px] text-red-500 font-medium">
+                      {t('ttsModelMissing')}
+                    </span>
+                    {ttsStatus && !ttsStatus.download?.active && (
+                      <button
+                        type="button"
+                        disabled={ttsBusy}
+                        onClick={handleTtsDownload}
+                        className="px-2 py-0.5 rounded-md bg-sky-600 hover:bg-sky-700 disabled:opacity-50 text-white text-[10px] font-medium transition-colors cursor-pointer"
+                      >
+                        {t('ttsDownloadBtn')}
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
 
-            {/* 下载进度 */}
-            {ttsDownload?.active && ttsDownload.totalBytes > 0 && (
-              <div className="mt-2">
-                <div className="h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+            {/* 自动测速与实时下载进度面板 */}
+            {ttsStatus?.download?.active && (
+              <div className="mt-3 p-2.5 rounded-lg bg-sky-500/5 dark:bg-sky-500/10 border border-sky-500/20 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0 text-[11px] font-medium text-sky-700 dark:text-sky-300">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" />
+                    <span className="truncate">
+                      {ttsStatus.download.phase === 'probing'
+                        ? t('ttsProbingSource')
+                        : ttsStatus.download.phase === 'cleaning'
+                        ? t('ttsCleaningCache')
+                        : ttsStatus.download.currentFile ||
+                          ttsStatus.download.currentModelName ||
+                          t('ttsDownloading')}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={ttsBusy}
+                    onClick={handleTtsCancelDownload}
+                    className="px-2 py-0.5 rounded-md border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 text-[10px] font-medium transition-colors flex-shrink-0 cursor-pointer"
+                  >
+                    {t('ttsCancelDownloadBtn')}
+                  </button>
+                </div>
+
+                {ttsStatus.download.selectedSource && (
+                  <div className="text-[10px] text-zinc-500 dark:text-zinc-400 flex items-center justify-between">
+                    <span>
+                      {t('ttsSelectedSourceLabel')}:{' '}
+                      <strong className="font-medium text-zinc-700 dark:text-zinc-200">
+                        {ttsStatus.download.selectedSource.name}
+                      </strong>{' '}
+                      ({ttsStatus.download.selectedSource.latencyMs}ms)
+                    </span>
+                    <span className="font-mono text-sky-600 dark:text-sky-400 font-semibold">
+                      {ttsStatus.download.progressPercent.toFixed(1)}%
+                    </span>
+                  </div>
+                )}
+
+                <div className="w-full h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
                   <div
-                    className="h-full bg-sky-500 transition-all"
+                    className="h-full rounded-full bg-gradient-to-r from-sky-500 to-emerald-500 transition-all duration-200"
                     style={{
-                      width: `${Math.min(100, (ttsDownload.doneBytes / ttsDownload.totalBytes) * 100).toFixed(1)}%`,
+                      width: `${Math.max(
+                        3,
+                        Math.min(100, ttsStatus.download.progressPercent || 0)
+                      )}%`,
                     }}
                   />
                 </div>
-                <div className="mt-1 text-[10px] text-zinc-500 dark:text-zinc-400 font-mono truncate">
-                  {(ttsDownload.doneBytes / 1024 ** 2).toFixed(0)} /{' '}
-                  {(ttsDownload.totalBytes / 1024 ** 2).toFixed(0)} MB
-                  {ttsDownload.currentFile ? ` · ${ttsDownload.currentFile}` : ''}
-                </div>
+
+                {ttsStatus.download.phase === 'downloading' && (
+                  <div className="flex items-center justify-between text-[10px] font-mono text-zinc-500 dark:text-zinc-400">
+                    <span>
+                      {(ttsStatus.download.downloadedBytes / (1024 * 1024)).toFixed(1)} MB /{' '}
+                      {(ttsStatus.download.totalBytes / (1024 * 1024)).toFixed(1)} MB
+                    </span>
+                    <span>
+                      {(ttsStatus.download.speedBps / (1024 * 1024)).toFixed(2)} MB/s
+                      {ttsStatus.download.etaSeconds !== null &&
+                      ttsStatus.download.etaSeconds > 0
+                        ? ` · ETA ${Math.floor(ttsStatus.download.etaSeconds / 60)}m${String(
+                            ttsStatus.download.etaSeconds % 60
+                          ).padStart(2, '0')}s`
+                        : ''}
+                    </span>
+                  </div>
+                )}
               </div>
             )}
-            {ttsDownload?.error && (
-              <div className="mt-1.5 text-[10px] text-red-500 break-all">{ttsDownload.error}</div>
-            )}
+
+            {/* 下载结果提示 */}
+            {!ttsStatus?.download?.active &&
+              ttsStatus?.download?.phase === 'completed' && (
+                <div className="mt-2.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                  {t('ttsDownloadCompleted')}
+                </div>
+              )}
+            {!ttsStatus?.download?.active &&
+              ttsStatus?.download?.phase === 'cancelled' && (
+                <div className="mt-2.5 text-[11px] text-amber-600 dark:text-amber-400">
+                  {t('ttsDownloadCancelled')}
+                </div>
+              )}
+            {!ttsStatus?.download?.active &&
+              ttsStatus?.download?.phase === 'error' &&
+              ttsStatus?.download?.error && (
+                <div className="mt-2.5 text-[11px] text-red-500">
+                  {ttsStatus.download.error}
+                </div>
+              )}
 
             {/* 默认音色 */}
             {ttsStatus?.model?.ready && (
@@ -1865,6 +1954,28 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                 </select>
               </div>
             )}
+
+            {/* 底部操作栏：一键测速下载模型 + 打开模型目录 */}
+            <div className="mt-3 flex items-center gap-2">
+              {ttsStatus && !ttsStatus.model?.ready && !ttsStatus.download?.active && (
+                <button
+                  type="button"
+                  disabled={ttsBusy}
+                  onClick={handleTtsDownload}
+                  className="flex-1 px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 active:scale-[0.98] disabled:opacity-50 text-white text-xs font-medium transition-all cursor-pointer"
+                >
+                  {t('ttsDownloadAllBtn')}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleTtsOpenDir}
+                className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-zinc-700 dark:text-zinc-200 border border-black/10 dark:border-white/10 text-xs font-medium transition-all active:scale-95 cursor-pointer"
+              >
+                <FolderOpen className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
+                <span>{t('ttsOpenModelsDirBtn')}</span>
+              </button>
+            </div>
           </div>
 
           {/* 实时字幕服务卡片（无常驻开关 · 纯状态提示 + 运行环境与两级模型完备校验 + 自动双源测速一键下载） */}
