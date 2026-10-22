@@ -347,6 +347,13 @@ export const translations = {
     mferenceSystemPromptTip: 'Qwen 3.6 官方推荐：提示词置空，模型直接推理效果最佳；留空即不使用系统提示词',
     restoreDefaults: '恢复默认',
     saveSettings: '保存配置',
+    mediaStorageTitle: '图片与媒体文件',
+    mediaStorageDesc: '聊天里发送过的图片都存在这里（按内容去重）。清理只针对没有任何对话引用的文件。',
+    mediaCleanUnused: '清理未使用图片',
+    mediaCleanConfirm: '确认清理',
+    mediaCleanEmpty: '没有可清理的文件',
+    mediaOpenDir: '在访达中打开',
+    mediaCleaning: '清理中…',
 
     // API Provider & DeepSeek
     apiProviderLabel: 'API 服务商',
@@ -1071,6 +1078,13 @@ export const translations = {
     mferenceSystemPromptTip: 'Qwen 3.6 official recommendation: Leave prompt empty for optimal reasoning performance.',
     restoreDefaults: 'Restore Defaults',
     saveSettings: 'Save Settings',
+    mediaStorageTitle: 'Images & Media Files',
+    mediaStorageDesc: 'Images sent in chats are stored here (deduplicated by content). Cleanup only touches files that no conversation references.',
+    mediaCleanUnused: 'Clean Unused Images',
+    mediaCleanConfirm: 'Confirm Cleanup',
+    mediaCleanEmpty: 'Nothing to clean',
+    mediaOpenDir: 'Show in Finder',
+    mediaCleaning: 'Cleaning…',
 
     // API Provider & DeepSeek
     apiProviderLabel: 'API Provider',

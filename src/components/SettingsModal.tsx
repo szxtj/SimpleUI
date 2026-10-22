@@ -18,7 +18,8 @@ import {
   computeTranslatorPayload,
 } from '../services/storage';
 import { resolveLanguage, translations, Language, TranslationKeys } from '../i18n';
-import { X, RotateCcw, Check, AppWindow, SlidersHorizontal, Eye, EyeOff, Sparkles, Terminal, Languages } from 'lucide-react';
+import { X, RotateCcw, Check, AppWindow, SlidersHorizontal, Eye, EyeOff, Sparkles, Terminal, Languages, HardDrive, FolderOpen, Trash2 } from 'lucide-react';
+import { getMediaStats, openMediaDir, triggerMediaGC, MediaStorageStats } from '../services/mediaCleanup';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -144,6 +145,69 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       return dict[key] || translations.zh[key] || key;
     };
   }, [activeLang]);
+
+  // ---- 图片与媒体文件（设置页最底部的清理入口） ----
+  // 统计只读 /api/media/stats，清理走 /api/media/gc（服务端会再按会话引用做一次保护），
+  // 只有用户手动点「清理未使用图片」才会删文件 —— 没有自动清理。
+  const [mediaStats, setMediaStats] = useState<MediaStorageStats | null>(null);
+  const [mediaBusy, setMediaBusy] = useState<'clean' | null>(null);
+  const [mediaConfirm, setMediaConfirm] = useState(false);
+  const [mediaMsg, setMediaMsg] = useState<{ text: string; isError?: boolean } | null>(null);
+  const mediaConfirmTimer = useRef<number | null>(null);
+
+  const refreshMediaStats = React.useCallback(async () => {
+    const stats = await getMediaStats();
+    setMediaStats(stats);
+    return stats;
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setMediaConfirm(false);
+      setMediaMsg(null);
+      return;
+    }
+    refreshMediaStats();
+  }, [isOpen, refreshMediaStats]);
+
+  const handleOpenMediaDir = async () => {
+    await openMediaDir();
+  };
+
+  const handleCleanMedia = async () => {
+    if (mediaBusy) return;
+    if (!mediaConfirm) {
+      setMediaConfirm(true);
+      if (mediaConfirmTimer.current) window.clearTimeout(mediaConfirmTimer.current);
+      mediaConfirmTimer.current = window.setTimeout(() => setMediaConfirm(false), 4000);
+      return;
+    }
+    if (mediaConfirmTimer.current) window.clearTimeout(mediaConfirmTimer.current);
+    setMediaConfirm(false);
+    setMediaBusy('clean');
+    setMediaMsg(null);
+    try {
+      const res = await triggerMediaGC(0);
+      if (!res) {
+        setMediaMsg({
+          text: activeLang === 'zh' ? '清理失败，请稍后重试。' : 'Cleanup failed. Please try again.',
+          isError: true,
+        });
+      } else if (res.deletedCount === 0) {
+        setMediaMsg({ text: t('mediaCleanEmpty') });
+      } else {
+        setMediaMsg({
+          text:
+            activeLang === 'zh'
+              ? `已清理 ${res.deletedCount} 个文件，释放 ${res.freedMB} MB`
+              : `Removed ${res.deletedCount} file${res.deletedCount === 1 ? '' : 's'}, freed ${res.freedMB} MB`,
+        });
+      }
+      await refreshMediaStats();
+    } finally {
+      setMediaBusy(null);
+    }
+  };
 
   // 仅在弹窗打开的一瞬间（从 false 变为 true）从外部同步最新设置
   useEffect(() => {
@@ -2666,6 +2730,74 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 {cardResetButton(handleTranslatorCardReset)}
               </div>
             )}
+          </div>
+
+          {/* 图片与媒体文件：设置页最底部的清理入口（只清理没有被任何对话引用的图片） */}
+          <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <div className="flex items-center gap-2 pt-0.5">
+                <HardDrive className="w-4 h-4 text-zinc-500 dark:text-[#8c929f] flex-shrink-0" />
+                <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
+                  {t('mediaStorageTitle')}
+                </span>
+              </div>
+              <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
+                <span className="text-xs font-mono font-medium text-zinc-700 dark:text-[#e2e5eb]">
+                  {mediaStats ? `${mediaStats.totalMB} MB` : '—'}
+                </span>
+                {mediaStats && (
+                  <span className="text-[10px] text-zinc-400 dark:text-[#8c929f]">
+                    {activeLang === 'zh'
+                      ? `${mediaStats.fileCount} 个文件 · 可清理 ${mediaStats.orphanCount} 个（${mediaStats.orphanMB} MB）`
+                      : `${mediaStats.fileCount} file${mediaStats.fileCount === 1 ? '' : 's'} · ${mediaStats.orphanCount} unused (${mediaStats.orphanMB} MB)`}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="text-[10px] text-zinc-500 dark:text-[#8c929f] leading-snug mb-2.5">
+              {t('mediaStorageDesc')}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleOpenMediaDir}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-zinc-700 dark:text-[#cfd3dc] bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 border border-black/10 dark:border-white/10 transition-colors"
+              >
+                <FolderOpen className="w-3.5 h-3.5" />
+                <span>{t('mediaOpenDir')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleCleanMedia}
+                disabled={!mediaStats || mediaStats.orphanCount === 0 || mediaBusy !== null}
+                title={mediaStats && mediaStats.orphanCount === 0 ? t('mediaCleanEmpty') : undefined}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                  mediaConfirm
+                    ? 'bg-red-500 hover:bg-red-600 text-white'
+                    : 'bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-zinc-700 dark:text-[#cfd3dc] border border-black/10 dark:border-white/10'
+                } disabled:opacity-40 disabled:cursor-not-allowed`}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>
+                  {mediaBusy
+                    ? t('mediaCleaning')
+                    : mediaConfirm
+                    ? t('mediaCleanConfirm')
+                    : t('mediaCleanUnused')}
+                </span>
+              </button>
+              {mediaMsg && (
+                <span
+                  className={`text-[10px] leading-tight ${
+                    mediaMsg.isError ? 'text-red-500' : 'text-emerald-600 dark:text-emerald-400'
+                  }`}
+                >
+                  {mediaMsg.text}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 

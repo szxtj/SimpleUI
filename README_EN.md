@@ -20,11 +20,11 @@ SimpleUI is deeply tuned for [TurboFieldfare](https://github.com/drumih/turbo-fi
 ## Screenshots
 
 <p align="center">
-  <img src="docs/assets/main-en.png" alt="SimpleUI main window in English" width="960" />
+  <img src="docs/assets/main-en.png" alt="SimpleUI main window" width="960" />
 </p>
 
 <p align="center">
-  <sub>English UI · <a href="docs/assets/main-cn.png">中文界面</a></sub>
+  <sub>Main window · <a href="docs/assets/main-en.png">View full size</a></sub>
 </p>
 
 ---

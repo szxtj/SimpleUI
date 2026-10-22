@@ -83,30 +83,63 @@ export async function deleteUnreferencedMedia(
   }
 }
 
+/** 媒体目录的磁盘占用（orphan* = 未被任何会话引用、可以清理的部分） */
+export interface MediaStorageStats {
+  mediaDir: string;
+  fileCount: number;
+  totalBytes: number;
+  totalMB: string;
+  orphanCount: number;
+  orphanBytes: number;
+  orphanMB: string;
+}
+
+export async function getMediaStats(): Promise<MediaStorageStats | null> {
+  try {
+    const res = await fetch('/api/media/stats', { cache: 'no-store' });
+    if (res.ok) return (await res.json()) as MediaStorageStats;
+  } catch (err) {
+    console.warn('[mediaCleanup] Failed to read media stats:', err);
+  }
+  return null;
+}
+
+/** 在访达里打开媒体目录 */
+export async function openMediaDir(): Promise<boolean> {
+  try {
+    const res = await fetch('/api/media/open-dir', { method: 'POST' });
+    if (res.ok) return true;
+  } catch (err) {
+    console.warn('[mediaCleanup] Failed to open media folder:', err);
+  }
+  return false;
+}
+
 /**
- * Triggers background garbage collection of orphaned files on disk.
- * Server-side MediaService automatically protects all files referenced by active sessions.
+ * 清理磁盘上不再被任何会话引用的图片。
+ *
+ * 只会由用户在设置里手动点「清理未使用图片」触发 —— **没有**任何自动调用方：
+ * 不随启动、不随定时器、不随删除草稿运行。服务端还会再用权威会话列表做一次保护，
+ * 因此被引用的图片不可能被这条路径删掉。
  */
 export async function triggerMediaGC(
-  extraProtectedUrls: string[] = [],
-  gracePeriodSeconds: number = 300
-): Promise<void> {
+  gracePeriodSeconds: number = 0
+): Promise<{ deletedCount: number; freedMB: string } | null> {
   try {
     const res = await fetch('/api/media/gc', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        activeFilenames: extraProtectedUrls,
-        gracePeriodSeconds,
-      }),
+      body: JSON.stringify({ gracePeriodSeconds }),
     });
     if (res.ok) {
       const data = await res.json();
-      if (data && data.deletedCount > 0) {
-        console.log(`[mediaCleanup] GC cleaned up ${data.deletedCount} orphaned files (${data.freedMB} MB freed)`);
-      }
+      return {
+        deletedCount: Number(data?.deletedCount) || 0,
+        freedMB: String(data?.freedMB ?? '0'),
+      };
     }
   } catch (err) {
-    console.warn('[mediaCleanup] Media GC request failed:', err);
+    console.warn('[mediaCleanup] Media cleanup request failed:', err);
   }
+  return null;
 }

@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
+import { spawn } from 'child_process';
 
 const HOME = os.homedir();
 const USER_CONFIG_DIR = path.join(HOME, 'Library', 'Application Support', 'SimpleUI');
@@ -285,7 +286,21 @@ class MediaService {
       return;
     }
 
-    // 5. Serve media asset: GET or HEAD /api/media/:filename
+    // 5. Open the media folder in Finder: POST /api/media/open-dir
+    if (pathname === '/api/media/open-dir' && req.method === 'POST') {
+      try {
+        fs.mkdirSync(this.mediaDir, { recursive: true });
+        spawn('open', [this.mediaDir], { detached: true, stdio: 'ignore' }).unref();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, path: this.mediaDir }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+      return;
+    }
+
+    // 6. Serve media asset: GET or HEAD /api/media/:filename
     if (pathname.startsWith('/api/media/') && (req.method === 'GET' || req.method === 'HEAD')) {
       const filename = pathname.replace('/api/media/', '').split('/')[0];
       this.handleServeFile(filename, req, res);
@@ -474,6 +489,10 @@ class MediaService {
     try {
       let fileCount = 0;
       let totalBytes = 0;
+      // 供设置页「清理未使用图片」用：未被任何会话引用的文件 = 可清理
+      const referenced = this.getReferencedFilenames();
+      let orphanCount = 0;
+      let orphanBytes = 0;
       if (fs.existsSync(this.mediaDir)) {
         const files = fs.readdirSync(this.mediaDir);
         for (const file of files) {
@@ -482,6 +501,10 @@ class MediaService {
             const stat = fs.statSync(path.join(this.mediaDir, file));
             fileCount++;
             totalBytes += stat.size;
+            if (!referenced.has(file)) {
+              orphanCount++;
+              orphanBytes += stat.size;
+            }
           } catch {
             // ignore
           }
@@ -493,6 +516,9 @@ class MediaService {
         fileCount,
         totalBytes,
         totalMB: (totalBytes / (1024 * 1024)).toFixed(2),
+        orphanCount,
+        orphanBytes,
+        orphanMB: (orphanBytes / (1024 * 1024)).toFixed(2),
       }));
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
