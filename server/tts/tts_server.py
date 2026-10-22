@@ -2,18 +2,22 @@
 """SimpleUI 文字转语音常驻进程。
 
 只做一件事：把 mlx-audio 的 Qwen3-TTS 包成一个本地 HTTP 接口，供 tts_service.js 调用。
-模型在启动时加载一次，之后常驻；生成是串行的（单 GPU 队列）。
+模型的生命周期由 Node 侧控制（每次生成前拉起、生成结束即卸载）。
 
 接口：
-  GET  /health  -> {"ready": true, "sample_rate": 24000, "voices": [...]}
-  POST /speak   -> {"text", "voice", "language", "speed"} 返回 WAV 字节流
+  GET  /health  -> {"ready": true, "sample_rate": 24000, "voices": [...], "languages": [...]}
+  POST /speak   -> {"text", "voice", "language", "temperature", "top_p", "top_k",
+                    "repetition_penalty", "max_tokens"} 返回 WAV 字节流
+
+分段不在这里做：Node 侧按段落切好，一段一次请求，逐段回传进度、逐段拼 PCM。
+这里只保证「一次请求 == 一段文本 == 一条 WAV」，避开 mlx-audio 内部按 \n 再切段、
+文件模式下只留最后一段的老坑。
 """
 
 import argparse
-import glob
+import io
 import json
-import os
-import sys
+import re
 import threading
 import time
 import wave
@@ -23,10 +27,14 @@ _model = None
 _model_lock = threading.Lock()
 _sample_rate = 24000
 _voices = []
+_languages = []
+
+# 单段字数上限：正常由前端按句切到 ≤120 字，这里只挡异常输入。
+MAX_SEGMENT_CHARS = 600
 
 
 def load(model_dir):
-    global _model, _sample_rate, _voices
+    global _model, _sample_rate, _voices, _languages
     from mlx_audio.tts.utils import load_model
 
     t0 = time.time()
@@ -36,48 +44,73 @@ def load(model_dir):
         _voices = list(getattr(_model, "supported_speakers", []) or [])
     except Exception:
         _voices = []
-    print(f"[tts] model loaded in {time.time() - t0:.1f}s, sample_rate={_sample_rate}, voices={len(_voices)}",
-          flush=True)
-
-
-def synthesize(text, voice, language, speed):
-    """返回 WAV 字节流。"""
-    from mlx_audio.tts.generate import generate_audio
-
-    tmp_prefix = f"/tmp/simpleui_tts_{os.getpid()}"
-    # 短文本会让模型拖长音、甚至跑飞（实测「你好」在 aiden 上生成 12 秒）。
-    # 用与字数成比例的硬上限兜底：正常语速约 3–4 帧/字（12.5 帧/秒）。
-    chars = len(text.strip())
-    max_tokens = max(60, min(1200, int(chars * 5) + 40))
-    with _model_lock:
-        generate_audio(
-            text,
-            model=_model,
-            voice=voice or "serena",
-            lang_code=language or "auto",
-            speed=speed or 1.0,
-            max_tokens=max_tokens,
-            output_path="/tmp",
-            file_prefix=os.path.basename(tmp_prefix),
-            audio_format="wav",
-            save=True,
-            verbose=False,
-        )
-    path = None
-    candidates = sorted(glob.glob(tmp_prefix + "*.wav"), key=os.path.getmtime)
-    if candidates:
-        path = candidates[-1]
     try:
-        if not path:
-            raise RuntimeError("合成未产生音频文件")
-        with open(path, "rb") as f:
-            return f.read()
-    finally:
-        for p in candidates:
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
+        _languages = list(getattr(_model, "supported_languages", []) or [])
+    except Exception:
+        _languages = []
+    print(
+        f"[tts] model loaded in {time.time() - t0:.1f}s, sample_rate={_sample_rate}, "
+        f"voices={len(_voices)}, languages={len(_languages)}",
+        flush=True,
+    )
+
+
+def _per_segment_max_tokens(chars, cap):
+    """单段 max_tokens：以面板上限为天花板，按字数收敛。
+
+    12.5 帧/秒、正常语速约 4 帧/字，短句给足余量避免截尾，长句不把上限顶满。
+    """
+    cap = int(cap or 1024)
+    want = int(chars * 4) + 96
+    return max(256, min(cap, want))
+
+
+def synthesize(text, voice, language, opts):
+    """返回 (wav_bytes, duration_sec)。"""
+    # 防御：\n 会让 mlx-audio 内部再切段并逐段 yield，这里只取最后一段。
+    flat = re.sub(r"\s+", " ", text).strip()[:MAX_SEGMENT_CHARS]
+    if not flat:
+        raise ValueError("empty text")
+
+    max_tokens = _per_segment_max_tokens(len(flat), opts.get("max_tokens"))
+
+    import numpy as np
+
+    t0 = time.time()
+    result = None
+    with _model_lock:
+        for result in _model.generate(
+            text=flat,
+            voice=(voice or "serena"),
+            lang_code=(language or "auto"),
+            temperature=float(opts.get("temperature") or 0.85),
+            top_p=float(opts.get("top_p") or 0.95),
+            top_k=int(opts.get("top_k") or 50),
+            repetition_penalty=float(opts.get("repetition_penalty") or 1.05),
+            max_tokens=max_tokens,
+            verbose=False,
+        ):
+            pass
+    if result is None:
+        raise RuntimeError("模型没有产出音频")
+
+    pcm = np.asarray(result.audio, dtype=np.float32).reshape(-1)
+    pcm = np.clip(pcm, -1.0, 1.0)
+    pcm16 = (pcm * 32767.0).astype("<i2")
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(_sample_rate)
+        w.writeframes(pcm16.tobytes())
+    duration = len(pcm16) / float(_sample_rate)
+    print(
+        f"[tts] segment: {len(flat)} chars -> {duration:.2f}s audio "
+        f"in {time.time() - t0:.2f}s (max_tokens={max_tokens})",
+        flush=True,
+    )
+    return buf.getvalue(), duration
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -96,8 +129,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            self._json(200, {"ready": _model is not None, "sample_rate": _sample_rate,
-                             "voices": _voices})
+            self._json(
+                200,
+                {
+                    "ready": _model is not None,
+                    "sample_rate": _sample_rate,
+                    "voices": _voices,
+                    "languages": _languages,
+                },
+            )
         else:
             self._json(404, {"error": "not found"})
 
@@ -116,11 +156,11 @@ class Handler(BaseHTTPRequestHandler):
         if not text:
             self._json(400, {"error": "empty text"})
             return
-        print(f"[tts] request: {len(text)} chars, voice={payload.get('voice')}", flush=True)
 
         try:
-            wav = synthesize(text, payload.get("voice"), payload.get("language"),
-                             payload.get("speed"))
+            wav, duration = synthesize(
+                text, payload.get("voice"), payload.get("language"), payload
+            )
         except Exception as e:
             self._json(500, {"error": f"{type(e).__name__}: {e}"})
             return
@@ -128,6 +168,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "audio/wav")
         self.send_header("Content-Length", str(len(wav)))
+        self.send_header("X-Tts-Duration", f"{duration:.3f}")
+        self.send_header("X-Tts-Sample-Rate", str(_sample_rate))
         self.end_headers()
         self.wfile.write(wav)
 

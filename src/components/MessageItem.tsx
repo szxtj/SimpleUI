@@ -7,8 +7,7 @@ import { StageLadder } from './StageLadder';
 import { Check, Copy, AlertCircle, BookOpen, ExternalLink, RotateCcw, Trash2, FileText } from 'lucide-react';
 import { RawMarkdownModal } from './RawMarkdownModal';
 import { ImagePreviewModal } from './ImagePreviewModal';
-import { SpeakButton } from './SpeakButton';
-import { markdownToSpeechText } from '../utils/speechText';
+import { MessageSpeechBar, MessageSpeechTrigger } from './MessageSpeech';
 
 interface MessageItemProps {
   message: ChatMessage;
@@ -216,9 +215,13 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
                   </button>
                 )}
 
-                {/* 朗读本条回答（在重试左边） */}
+                {/* 朗读本条回答（在重试左边）——语音合成的唯一入口 */}
                 {message.content && (
-                  <SpeakButton text={markdownToSpeechText(message.content)} title={t('speakMessage')} />
+                  <MessageSpeechTrigger
+                    messageId={message.id}
+                    content={message.content}
+                    title={t('speakMessage')}
+                  />
                 )}
 
                 {/* 重试 */}
@@ -257,6 +260,9 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
               )}
             </div>
           )}
+
+          {/* 朗读进度 / 播放条：进度态与播放态同高（44px），状态切换不会让对话区跳动 */}
+          {message.content && <MessageSpeechBar messageId={message.id} content={message.content} />}
 
           {/* 原始 Markdown 弹窗 */}
           <RawMarkdownModal

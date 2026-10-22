@@ -1,4 +1,4 @@
-import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, SubtitleServiceStatus, SubtitleDownloadState, TtsServiceStatus, TtsDownloadState, OcrServiceStatus, OcrDownloadState, OcrConfig, OcrRecognizeResult } from '../types/chat';
+import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, SubtitleServiceStatus, SubtitleDownloadState, TtsServiceStatus, TtsServiceConfig, TtsDownloadState, OcrServiceStatus, OcrDownloadState, OcrConfig, OcrRecognizeResult } from '../types/chat';
 import { estimateHistoryTokens, setTokenCalibration, CalibrationProvider } from '../utils/token';
 
 /** 服务端 usage 的实际形状（TTF 会给出 cached / reasoning 明细） */
@@ -1029,10 +1029,11 @@ export class SubtitleServiceAPI {
 }
 
 /**
- * 文字转语音服务（Qwen3-TTS 0.6B CustomVoice · MLX 4bit）。
+ * 文字转语音服务（Qwen3-TTS 1.7B CustomVoice · MLX 6bit）。
  *
- * 与字幕服务同构：纯按需生命周期（首次朗读自动加载，闲置自动卸载，无启停开关），
- * 服务管理面板负责展示运行环境、模型完备状态、双源自动测速下载进度与打开模型目录。
+ * 每次生成现场加载模型、结束即卸载；服务管理面板负责展示运行环境、模型完备状态、
+ * 双源自动测速下载进度、打开模型目录，以及采样参数（temperature / top_p / top_k /
+ * repetition_penalty / max_tokens）。
  */
 export class TtsServiceAPI {
   static async getStatus(): Promise<TtsServiceStatus | null> {
@@ -1075,9 +1076,7 @@ export class TtsServiceAPI {
     return { ok: false };
   }
 
-  static async updateConfig(
-    partial: { voice?: string; speed?: number; language?: string; idleUnloadMin?: number }
-  ): Promise<{ ok: boolean }> {
+  static async updateConfig(partial: Partial<TtsServiceConfig>): Promise<{ ok: boolean }> {
     try {
       const res = await fetch('/api/tts/config', {
         method: 'POST',

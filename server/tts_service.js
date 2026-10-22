@@ -1,31 +1,33 @@
-// TTS（文字转语音）服务托管模块 —— Qwen3-TTS 0.6B CustomVoice (MLX 4bit) via mlx-audio
+// TTS（文字转语音）服务托管模块 —— Qwen3-TTS 1.7B CustomVoice (MLX 6bit) via mlx-audio
 //
 // 职责：把「朗读回答」所用的语音合成作为与基础模型、知识库、ASR、字幕并列的受管服务：
-//   - 按需启动：第一次朗读时拉起 Python 常驻进程（模型加载约 12–15s），闲置超时自动卸载；
+//   - **每次生成现场加载**：收到合成请求才拉起 Python 进程，整篇合成结束立即卸载（无闲置策略）；
 //   - SimpleUI 退出时一并终止（与其它受管服务行为对齐）；
-//   - 配置持久化在 tts_config.json（音色 / 语速 / 语言 / 闲置卸载），
+//   - 配置持久化在 tts_config.json（音色 / 语言 / 采样参数），
 //     模型固定放在 ~/Library/Application Support/SimpleUI/models/tts/。
 //
-// 与「实时字幕服务」（server/subtitle_service.js）同构 —— 两者都是纯按需生命周期，
-// 服务面板里不再留常驻启停开关：
-//   - 没有 enabled 总开关：朗读入口常驻；模型只在首次朗读时加载，闲置自动卸载；
-//   - 模型下载采用与字幕一致的「双源自动测速 + 断点续传 + 可取消 + 实时进度」；
-//   - 服务面板展示内置运行环境、模型完备状态与下载进度，并提供「打开模型目录」。
+// 与「实时字幕服务」（server/subtitle_service.js）同构：模型下载采用「双源自动测速 + 断点续传 +
+// 可取消 + 实时进度」，服务面板展示内置运行环境、模型完备状态与下载进度。
+//
+// 「整篇朗读」= 前端按段落切好的 segments 逐段送来，Node 逐段调用 Python、逐段回传进度，
+// 全部完成后把 PCM 拼成一条 WAV 落盘到 tts_output/，前端拿到稳定的 /api/tts/audio/... URL 播放。
 //
 // 模型与运行时：
-//   - 模型：mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit（约 1.6GB，talker 4bit、codec bf16）
+//   - 模型：mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit（约 2.7GB，talker 6bit、codec bf16）
 //   - 运行时：mlx-audio（Python）。qwen3_tts 族在 audio.cpp 里只有 1.7B CustomVoice 的打包格式，
 //     与 cstr / mlx-community 的产物不兼容，因此这里走 Python 侧的自有 HTTP 包装
 //     （server/tts/tts_server.py），对 Node 暴露极简接口。
-//   - 采样参数保持默认：实测下调 temperature/top_k 会让生成失控；语气只能用 instruct 调，
-//     而本功能不需要情绪修饰，故不下发 instruct。
 //
 // 接口（Node 侧）：
 //   GET  /api/tts/status
 //   POST /api/tts/{start,stop}
 //   GET  /api/tts/config | POST /api/tts/config
 //   GET  /api/tts/voices
-//   POST /api/tts/speak   {text, voice?, speed?} -> audio/wav
+//   POST /api/tts/speak      {text, voice?, ...} -> audio/wav（单段，调试用）
+//   POST /api/tts/article    {messageId, text, segments[]} -> application/x-ndjson 进度流
+//   GET  /api/tts/audio/list -> 已落盘音频索引
+//   GET  /api/tts/audio/file/<name> -> audio/wav（支持 Range）
+//   POST /api/tts/audio/delete {messageId}
 //   GET  /api/tts/download/status | POST /api/tts/download | POST /api/tts/download/cancel
 //   POST /api/tts/open-dir
 
@@ -45,6 +47,8 @@ const HOME = os.homedir();
 const USER_DIR = path.join(HOME, 'Library', 'Application Support', 'SimpleUI');
 const CONFIG_FILE = path.join(USER_DIR, 'tts_config.json');
 const MODEL_DIR = path.join(USER_DIR, 'models', 'tts');
+const OUTPUT_DIR = path.join(USER_DIR, 'tts_output');
+const OUTPUT_INDEX = path.join(OUTPUT_DIR, 'index.json');
 const LOG_FILE = process.env.SIMPLEUI_TTS_LOG || path.join(HOME, 'Library', 'Logs', 'simpleui-tts.log');
 const PID_FILE = '/tmp/simpleui_tts.pid';
 const SCRIPT = path.join(__dirname, 'tts', 'tts_server.py');
@@ -52,29 +56,48 @@ const SCRIPT = path.join(__dirname, 'tts', 'tts_server.py');
 const PORT = 1255;
 const VOICES = ['serena', 'vivian', 'aiden', 'ryan', 'sohee', 'ono_anna', 'uncle_fu', 'dylan', 'eric'];
 
+// 段间静音（毫秒）：分段合成拼成整篇时，段落之间留一点呼吸，避免句子粘在一起。
+const SEGMENT_GAP_MS = 150;
+// 单次「整篇朗读」的输入上限，避免一次点朗读把几万字塞给模型。
+const MAX_ARTICLE_CHARS = 12000;
+const MAX_SEGMENTS = 400;
+
 const DEFAULT_CONFIG = {
   voice: 'serena',
-  speed: 1.0,
   language: 'auto',
-  idleUnloadMin: 30,
+  temperature: 0.85,
+  top_p: 0.95,
+  top_k: 50,
+  repetitionPenalty: 1.05,
+  maxTokens: 1024,
+};
+
+// 采样参数的合法区间（面板输入与 API 共用，越界即夹取）
+const PARAM_RANGES = {
+  temperature: [0.1, 2],
+  top_p: [0.05, 1],
+  top_k: [1, 200],
+  repetitionPenalty: [1, 1.5],
+  maxTokens: [128, 4096],
 };
 
 // ---- 模型清单（与字幕服务对齐：每个文件带 minBytes，按磁盘实际大小校验完整性）----
 
 const MODEL_KEY = 'tts';
-const MODEL_NAME = 'Qwen3-TTS 0.6B CustomVoice (MLX 4bit)';
-const MODEL_SHORT_NAME = 'Qwen3-TTS 0.6B';
-const MODEL_SIZE_DESC = '1.6 GB';
+const MODEL_NAME = 'Qwen3-TTS 1.7B CustomVoice (MLX 6bit)';
+const MODEL_SHORT_NAME = 'Qwen3-TTS 1.7B';
+const MODEL_SIZE_DESC = '2.5 GB';
 
-// 模型来源：mlx-community 的 4bit 转换。根目录是 talker，speech_tokenizer/ 是独立 codec，
-// 两者缺一不可（缺 codec 会报 Speech tokenizer not loaded）。
-const MODEL_REPO = 'mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit';
+// 模型来源：mlx-community 的 1.7B 6bit 转换。根目录是 talker，speech_tokenizer/ 是独立 codec，
+// 两者缺一不可（缺 codec 会报 Speech tokenizer not loaded）。codec 与 0.6B 版本字节完全一致，
+// 换模型时会被完整性校验直接复用，只需重下 model.safetensors。
+const MODEL_REPO = 'mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit';
 const MODEL_FILES = [
-  { path: 'model.safetensors', expectedBytes: 1006772520, minBytes: 990000000, required: true },
+  { path: 'model.safetensors', expectedBytes: 2009267875, minBytes: 1990000000, required: true },
   { path: 'speech_tokenizer/model.safetensors', expectedBytes: 682293092, minBytes: 670000000, required: true },
   { path: 'vocab.json', expectedBytes: 2776833, minBytes: 2700000, required: true },
   { path: 'merges.txt', expectedBytes: 1671839, minBytes: 1600000, required: true },
-  { path: 'model.safetensors.index.json', expectedBytes: 71447, minBytes: 70000, required: false },
+  { path: 'model.safetensors.index.json', expectedBytes: 71786, minBytes: 70000, required: false },
   { path: 'tokenizer_config.json', expectedBytes: 7344, minBytes: 7000, required: true },
   { path: 'config.json', expectedBytes: 6058, minBytes: 5000, required: true },
   { path: 'generation_config.json', expectedBytes: 245, minBytes: 200, required: false },
@@ -131,16 +154,187 @@ function clearPid() {
   } catch {}
 }
 
+// ---- WAV / 音频落盘工具 ----
+
+/** 解析 16bit 单声道 WAV（tts_server.py 的输出格式），返回 PCM 与时长。 */
+function parseWav(buf) {
+  if (!buf || buf.length < 44) return null;
+  if (buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') return null;
+  let off = 12;
+  let fmt = null;
+  let data = null;
+  while (off + 8 <= buf.length) {
+    const id = buf.toString('ascii', off, off + 4);
+    const size = buf.readUInt32LE(off + 4);
+    const body = off + 8;
+    if (id === 'fmt ') {
+      fmt = {
+        channels: buf.readUInt16LE(body + 2),
+        sampleRate: buf.readUInt32LE(body + 4),
+        bits: buf.readUInt16LE(body + 14),
+      };
+    } else if (id === 'data') {
+      data = buf.subarray(body, Math.min(body + size, buf.length));
+    }
+    off = body + size + (size % 2);
+  }
+  if (!fmt || !data || fmt.channels !== 1 || fmt.bits !== 16) return null;
+  const frames = Math.floor(data.length / 2);
+  return {
+    pcm: data.subarray(0, frames * 2),
+    sampleRate: fmt.sampleRate,
+    duration: frames / fmt.sampleRate,
+  };
+}
+
+/** 把 PCM(s16le/单声道) 包成标准 44 字节头的 WAV。 */
+function buildWav(pcm, sampleRate) {
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0, 'ascii');
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8, 'ascii');
+  header.write('fmt ', 12, 'ascii');
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(1, 22); // mono
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36, 'ascii');
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+/** FNV-1a 32bit（与前端 src/utils/speechText.ts 里的实现必须逐字节一致）。 */
+function fnv1a32(str) {
+  const bytes = Buffer.from(String(str), 'utf8');
+  let h = 0x811c9dc5;
+  for (let i = 0; i < bytes.length; i++) {
+    h ^= bytes[i];
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h >>> 0;
+}
+
+function safeId(id) {
+  return String(id).replace(/[^\w.-]+/g, '_').slice(0, 64) || 'msg';
+}
+
+function fileForAudio(id, hash) {
+  return `${safeId(id)}-${hash.toString(16).padStart(8, '0')}.wav`;
+}
+
+function readAudioIndex() {
+  try {
+    if (!fs.existsSync(OUTPUT_INDEX)) return {};
+    const raw = JSON.parse(fs.readFileSync(OUTPUT_INDEX, 'utf-8'));
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeAudioIndex(map) {
+  try {
+    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+    fs.writeFileSync(OUTPUT_INDEX, JSON.stringify(map, null, 2));
+  } catch (e) {
+    console.warn('[TTS] 写入音频索引失败:', e.message);
+  }
+}
+
+/** 落盘一条整篇音频，并把它写进索引（同一 messageId 覆盖旧的）。 */
+function saveAudioFile(messageId, text, wav, durationSec, chars) {
+  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  const hash = fnv1a32(text);
+  const file = fileForAudio(messageId, hash);
+  const abs = path.join(OUTPUT_DIR, file);
+
+  const index = readAudioIndex();
+  // 同一 messageId 的旧文件（内容已变）删掉，避免 tts_output 越攒越多
+  const prev = index[messageId];
+  if (prev?.file && prev.file !== file) {
+    try {
+      fs.rmSync(path.join(OUTPUT_DIR, prev.file), { force: true });
+    } catch {}
+  }
+
+  fs.writeFileSync(abs, wav);
+  index[messageId] = {
+    id: messageId,
+    h: hash,
+    file,
+    dur: Number(durationSec.toFixed(3)),
+    chars,
+    bytes: wav.length,
+    createdAt: Date.now(),
+  };
+  writeAudioIndex(index);
+  console.log(`[TTS] 音频已落盘 ${file}（${durationSec.toFixed(1)}s, ${(wav.length / 1024).toFixed(0)}KB）`);
+
+  return {
+    messageId,
+    hash,
+    file,
+    url: `/api/tts/audio/file/${encodeURIComponent(file)}`,
+    durationSec: Number(durationSec.toFixed(3)),
+    bytes: wav.length,
+  };
+}
+
+/** 索引里只返回磁盘上确实存在的条目（用户手删文件后不会出现"假播放条"）。 */
+function listAudio() {
+  const index = readAudioIndex();
+  const items = [];
+  let dirty = false;
+  for (const [id, entry] of Object.entries(index)) {
+    if (!entry?.file) {
+      delete index[id];
+      dirty = true;
+      continue;
+    }
+    if (!fs.existsSync(path.join(OUTPUT_DIR, entry.file))) {
+      delete index[id];
+      dirty = true;
+      continue;
+    }
+    items.push({
+      id,
+      h: entry.h,
+      dur: entry.dur,
+      url: `/api/tts/audio/file/${encodeURIComponent(entry.file)}`,
+      createdAt: entry.createdAt,
+    });
+  }
+  if (dirty) writeAudioIndex(index);
+  return items;
+}
+
+function deleteAudio(messageId) {
+  const index = readAudioIndex();
+  const entry = index[messageId];
+  if (!entry) return { ok: true, removed: false };
+  try {
+    fs.rmSync(path.join(OUTPUT_DIR, entry.file), { force: true });
+  } catch {}
+  delete index[messageId];
+  writeAudioIndex(index);
+  return { ok: true, removed: true };
+}
+
 class TtsService {
   constructor() {
     this.proc = null;
     this.starting = null;
     this.config = { ...DEFAULT_CONFIG };
-    this.lastUsedAt = 0;
-    this.idleTimer = null;
     this.watchdog = null;
     this.loadError = null;
     this.downloadAbortController = null;
+    /** 当前整篇朗读任务：{ id, cancelled } —— 同一时刻只允许一个（单 GPU 串行） */
+    this.articleJob = null;
+    /** 正在进行的单段 HTTP 请求（用户取消时直接 destroy，缩短等待） */
+    this.pyReq = null;
     this.download = {
       active: false,
       phase: 'idle',
@@ -161,13 +355,33 @@ class TtsService {
 
   // ----------------------------- 配置 -----------------------------
 
+  /** 把任意来源（旧配置文件 / 面板表单 / API）的参数夹到合法区间。 */
+  normalizeConfig(input = {}) {
+    const out = {};
+    if (typeof input.voice === 'string' && VOICES.includes(input.voice)) out.voice = input.voice;
+    if (typeof input.language === 'string' && input.language) out.language = input.language;
+    for (const [key, [min, max]] of Object.entries(PARAM_RANGES)) {
+      const raw = input[key];
+      if (raw === undefined || raw === null || raw === '') continue;
+      const num = Number(raw);
+      if (!Number.isFinite(num)) continue;
+      const clamped = Math.min(max, Math.max(min, num));
+      out[key] = key === 'top_k' || key === 'maxTokens' ? Math.round(clamped) : clamped;
+    }
+    return out;
+  }
+
   loadConfig() {
     try {
       if (fs.existsSync(CONFIG_FILE)) {
         const parsed = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-        // 旧版本可能有 enabled 字段：不再作为服务开关，加载时直接丢弃。
+        // 旧字段：enabled（服务总开关）、idleUnloadMin（闲置卸载）、speed（上游 no-op）都不再使用。
         delete parsed.enabled;
-        this.config = { ...DEFAULT_CONFIG, ...parsed };
+        delete parsed.idleUnloadMin;
+        delete parsed.speed;
+        this.config = { ...DEFAULT_CONFIG, ...this.normalizeConfig(parsed) };
+        // 顺手把清理后的配置写回，避免旧键长期滞留
+        this.saveConfig();
       }
     } catch (e) {
       console.warn('[TTS] 读取配置失败，使用默认值:', e.message);
@@ -661,7 +875,7 @@ class TtsService {
     }
   }
 
-  async start() {
+  async start(signal) {
     if (this.isRunning()) return { ok: true, alreadyRunning: true };
     if (this.starting) return this.starting;
 
@@ -718,10 +932,20 @@ class TtsService {
         }
       });
 
-      // 轮询 /health，直到 ready（模型加载 12–15s，留足余量）
+      // 轮询 /health，直到 ready（模型加载 15–20s，留足余量）
       const deadline = Date.now() + 180000;
       const poll = () => {
         if (settled) return;
+        // 加载期间用户取消：直接把进程杀掉，不必等模型加载完
+        if (signal?.aborted) {
+          try {
+            child.kill('SIGKILL');
+          } catch {}
+          this.proc = null;
+          clearPid();
+          finish({ ok: false, error: 'CANCELLED' });
+          return;
+        }
         if (Date.now() > deadline) {
           finish({ ok: false, error: 'TIMEOUT', log: LOG_FILE });
           return;
@@ -747,31 +971,7 @@ class TtsService {
     });
 
     const result = await this.starting;
-    if (result.ok) this.touch();
     return result;
-  }
-
-  /**
-   * 每次成功合成后重置闲置计时；到点仍无请求就卸载模型（懒加载的配套回收）。
-   * idleUnloadMin = 0 表示不自动卸载。
-   */
-  touch() {
-    this.lastUsedAt = Date.now();
-    if (this.idleTimer) clearTimeout(this.idleTimer);
-    const minutes = Number(this.config.idleUnloadMin) || 0;
-    if (minutes <= 0) return;
-    this.idleTimer = setTimeout(() => {
-      this.idleTimer = null;
-      if (!this.isRunning()) return;
-      const idleMs = Date.now() - this.lastUsedAt;
-      if (idleMs < minutes * 60_000) {
-        this.touch();
-        return;
-      }
-      console.log(`[TTS] 闲置 ${minutes} 分钟，卸载模型并停止服务`);
-      this.stop();
-    }, minutes * 60_000);
-    this.idleTimer.unref?.();
   }
 
   stop() {
@@ -781,6 +981,8 @@ class TtsService {
         process.kill(pid, 'SIGTERM');
       } catch {}
       setTimeout(() => {
+        // 已被下一次生成的新进程顶替就不要误杀（PID 可能复用）
+        if (this.proc?.pid === pid) return;
         if (!isPidAlive(pid)) return;
         try {
           process.kill(pid, 'SIGKILL');
@@ -789,10 +991,6 @@ class TtsService {
     }
     this.proc = null;
     clearPid();
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer);
-      this.idleTimer = null;
-    }
     return { ok: true };
   }
 
@@ -805,10 +1003,6 @@ class TtsService {
       } catch {}
     }
     this.proc = null;
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer);
-      this.idleTimer = null;
-    }
   }
 
   // 最后一道：进程已退出时兜底 SIGKILL 并清 PID 文件
@@ -821,31 +1015,35 @@ class TtsService {
     }
     this.proc = null;
     clearPid();
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer);
-      this.idleTimer = null;
-    }
   }
 
   // ----------------------------- 合成 -----------------------------
 
-  async speak(text, { voice, speed } = {}) {
+  /** 单段合成（调用方负责保证 Python 已就绪）：返回 { ok, wav, duration } */
+  speakSegment(text, overrides = {}) {
     const trimmed = String(text || '').trim();
-    if (!trimmed) return { ok: false, error: 'EMPTY_TEXT' };
-
-    if (!this.isRunning()) {
-      const started = await this.start();
-      if (!started.ok) return started;
-    }
-
+    if (!trimmed) return Promise.resolve({ ok: false, error: 'EMPTY_TEXT' });
+    const cfg = { ...this.config, ...this.normalizeConfig(overrides) };
     const payload = JSON.stringify({
       text: trimmed.slice(0, 4000),
-      voice: voice || this.config.voice || DEFAULT_CONFIG.voice,
-      language: this.config.language || 'auto',
-      speed: Number(speed ?? this.config.speed) || 1.0,
+      voice: cfg.voice || DEFAULT_CONFIG.voice,
+      language: cfg.language || 'auto',
+      temperature: cfg.temperature,
+      top_p: cfg.top_p,
+      top_k: cfg.top_k,
+      repetition_penalty: cfg.repetitionPenalty,
+      max_tokens: cfg.maxTokens,
     });
 
-    const result = await new Promise((resolve) => {
+    return new Promise((resolve) => {
+      let settled = false;
+      const settle = (value) => {
+        if (settled) return;
+        settled = true;
+        if (this.pyReq === req) this.pyReq = null;
+        resolve(value);
+      };
+
       const req = http.request(
         {
           host: '127.0.0.1',
@@ -860,22 +1058,124 @@ class TtsService {
           res.on('data', (c) => chunks.push(c));
           res.on('end', () => {
             const buf = Buffer.concat(chunks);
-            if (res.statusCode === 200) resolve({ ok: true, wav: buf });
-            else resolve({ ok: false, error: 'SPEAK_FAILED', status: res.statusCode, body: buf.toString('utf-8').slice(0, 400) });
+            if (res.statusCode === 200) {
+              settle({
+                ok: true,
+                wav: buf,
+                duration: Number(res.headers['x-tts-duration']) || 0,
+              });
+            } else {
+              settle({
+                ok: false,
+                error: 'SPEAK_FAILED',
+                status: res.statusCode,
+                body: buf.toString('utf-8').slice(0, 400),
+              });
+            }
           });
         }
       );
-      req.on('error', (e) => resolve({ ok: false, error: 'SPEAK_ERROR', message: e.message }));
+      this.pyReq = req;
+      req.on('error', (e) => settle({ ok: false, error: 'SPEAK_ERROR', message: e.message }));
       req.on('timeout', () => {
         req.destroy();
-        resolve({ ok: false, error: 'SPEAK_TIMEOUT' });
+        settle({ ok: false, error: 'SPEAK_TIMEOUT' });
       });
       req.write(payload);
       req.end();
     });
+  }
 
-    if (result.ok) this.touch();
-    return result;
+  /** 打断正在进行的单段请求（用户取消 / 切到另一条朗读时用）。 */
+  abortSegment() {
+    const req = this.pyReq;
+    if (!req) return;
+    this.pyReq = null;
+    try {
+      req.destroy(new Error('cancelled'));
+    } catch {}
+  }
+
+  /** 兼容旧接口：单段合成（自己保证服务就绪）。 */
+  async speak(text, overrides = {}) {
+    if (!this.isRunning()) {
+      const started = await this.start();
+      if (!started.ok) return started;
+    }
+    return this.speakSegment(text, overrides);
+  }
+
+  /**
+   * 整篇朗读：逐段合成 → 拼成一条 WAV → 落盘 → 更新索引。
+   *
+   * 分段由前端按段落/句读切好传进来（Node 不复刻切分规则，避免两套实现漂移）。
+   * 进度通过 onEvent 回传（NDJSON 流），每完成一段一次。结束后无论成败都卸载模型。
+   */
+  async synthesizeArticle({ messageId, text, segments, onEvent, signal }) {
+    const emit = (evt) => {
+      try {
+        onEvent?.(evt);
+      } catch {}
+    };
+
+    const id = String(messageId || '').trim();
+    if (!id) return { ok: false, error: 'MISSING_MESSAGE_ID' };
+
+    const segs = (Array.isArray(segments) ? segments : [])
+      .map((s) => String(s || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+    if (segs.length === 0) return { ok: false, error: 'EMPTY_TEXT' };
+    if (segs.length > MAX_SEGMENTS) return { ok: false, error: 'TOO_MANY_SEGMENTS' };
+
+    const totalChars = segs.reduce((a, s) => a + s.length, 0);
+    if (totalChars > MAX_ARTICLE_CHARS) {
+      return { ok: false, error: 'TEXT_TOO_LONG', totalChars, limit: MAX_ARTICLE_CHARS };
+    }
+
+    emit({ t: 'phase', phase: 'loading', total: segs.length, chars: totalChars });
+
+    const started = await this.start(signal);
+    if (!started.ok) return { ok: false, ...started };
+
+    emit({ t: 'phase', phase: 'generating', total: segs.length, chars: totalChars });
+
+    const pcmChunks = [];
+    let sampleRate = 24000;
+    let durationSec = 0;
+
+    try {
+      for (let i = 0; i < segs.length; i++) {
+        if (signal?.aborted) return { ok: false, error: 'CANCELLED' };
+        const r = await this.speakSegment(segs[i]);
+        if (!r.ok) return { ok: false, ...r };
+        const parsed = parseWav(r.wav);
+        if (!parsed) return { ok: false, error: 'BAD_AUDIO' };
+
+        sampleRate = parsed.sampleRate;
+        pcmChunks.push(parsed.pcm);
+        durationSec += parsed.duration;
+        if (i < segs.length - 1) {
+          const gapSamples = Math.round((sampleRate * SEGMENT_GAP_MS) / 1000);
+          pcmChunks.push(Buffer.alloc(gapSamples * 2));
+          durationSec += gapSamples / sampleRate;
+        }
+        emit({ t: 'progress', done: i + 1, total: segs.length });
+      }
+    } finally {
+      // 每次生成都现场加载、生成完即卸载（不再有闲置计时）。
+      // 取消时用 SIGKILL：模型正忙着推理，SIGTERM 要等这次 generate() 跑完才生效。
+      if (signal?.aborted) this.shutdownForce();
+      else this.stop();
+    }
+
+    if (signal?.aborted) return { ok: false, error: 'CANCELLED' };
+
+    const pcm = Buffer.concat(pcmChunks);
+    const wav = buildWav(pcm, sampleRate);
+    const entry = saveAudioFile(id, String(text || segs.join(' ')), wav, durationSec, totalChars);
+
+    emit({ t: 'done', ...entry });
+    return { ok: true, ...entry };
   }
 
   async getStatus() {
@@ -985,21 +1285,143 @@ class TtsService {
           sendJson(400, { ok: false, error: 'UNKNOWN_VOICE' });
           return;
         }
-        this.config = {
-          ...this.config,
-          ...(body.voice ? { voice: body.voice } : {}),
-          ...(body.speed !== undefined ? { speed: Math.min(2, Math.max(0.5, Number(body.speed) || 1)) } : {}),
-          ...(body.language ? { language: String(body.language) } : {}),
-          ...(body.idleUnloadMin !== undefined ? { idleUnloadMin: Math.max(0, Number(body.idleUnloadMin) || 0) } : {}),
-        };
+        this.config = { ...this.config, ...this.normalizeConfig(body) };
         this.saveConfig();
-        if (this.isRunning()) this.touch();
         sendJson(200, { ok: true, config: { ...this.config } });
         return;
       }
       if (pathname === '/voices' && req.method === 'GET') {
         const status = await this.getStatus();
         sendJson(200, { voices: status.voices });
+        return;
+      }
+      // 已落盘音频索引：前端启动时拉一次，给"生成过的回答"恢复播放条。
+      if (pathname === '/audio/list' && req.method === 'GET') {
+        sendJson(200, { items: listAudio() });
+        return;
+      }
+      if (pathname === '/audio/delete' && req.method === 'POST') {
+        const body = await readJson();
+        sendJson(200, deleteAudio(String(body.messageId || '')));
+        return;
+      }
+      // 音频文件：支持 Range，<audio> 拖动进度条才不会退回从头加载。
+      if (pathname.startsWith('/audio/file/') && req.method === 'GET') {
+        const name = decodeURIComponent(pathname.slice('/audio/file/'.length));
+        if (!/^[\w.-]+\.wav$/.test(name) || name.includes('..')) {
+          sendJson(400, { error: 'BAD_NAME' });
+          return;
+        }
+        const abs = path.join(OUTPUT_DIR, name);
+        let stat = null;
+        try {
+          stat = fs.statSync(abs);
+        } catch {}
+        if (!stat || !stat.isFile()) {
+          sendJson(404, { error: 'NOT_FOUND' });
+          return;
+        }
+        const total = stat.size;
+        const range = req.headers.range;
+        if (range) {
+          const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+          let start = m && m[1] ? parseInt(m[1], 10) : 0;
+          let end = m && m[2] ? parseInt(m[2], 10) : total - 1;
+          if (!Number.isFinite(start) || start < 0) start = 0;
+          if (!Number.isFinite(end) || end >= total) end = total - 1;
+          if (start > end) {
+            res.writeHead(416, { 'Content-Range': `bytes */${total}` });
+            res.end();
+            return;
+          }
+          res.writeHead(206, {
+            'Content-Type': 'audio/wav',
+            'Content-Length': end - start + 1,
+            'Content-Range': `bytes ${start}-${end}/${total}`,
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'no-store',
+          });
+          fs.createReadStream(abs, { start, end }).pipe(res);
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': 'audio/wav',
+          'Content-Length': total,
+          'Accept-Ranges': 'bytes',
+          'Cache-Control': 'no-store',
+        });
+        fs.createReadStream(abs).pipe(res);
+        return;
+      }
+      // 显式取消：不依赖连接断开事件（WKWebView 里可能延后），前端 abort 之前会先打这一枪
+      if (pathname === '/article/cancel' && req.method === 'POST') {
+        const body = await readJson().catch(() => ({}));
+        const target = String(body.messageId || '');
+        if (this.articleJob && (!target || this.articleJob.messageId === target)) {
+          this.articleJob.aborted = true;
+        }
+        this.abortSegment();
+        sendJson(200, { ok: true });
+        return;
+      }
+      // 整篇朗读：NDJSON 进度流（phase / progress / done / error）
+      if (pathname === '/article' && req.method === 'POST') {
+        const body = await readJson();
+
+        // 同一时刻只允许一个整篇任务。新任务进来时先让上一个收尾——它的 finally 会卸载
+        // Python 进程，如果直接并行，会把新任务正在使用的进程一起 SIGTERM 掉。
+        if (this.articleJob) {
+          this.articleJob.aborted = true;
+          this.abortSegment();
+          const deadline = Date.now() + 20000;
+          while (this.articleJob && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 120));
+          }
+          if (this.articleJob) {
+            sendJson(409, { ok: false, error: 'BUSY' });
+            return;
+          }
+        }
+
+        const job = { aborted: false, messageId: String(body.messageId || '') };
+        this.articleJob = job;
+
+        res.writeHead(200, {
+          'Content-Type': 'application/x-ndjson; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'X-Accel-Buffering': 'no',
+        });
+        const write = (obj) => {
+          if (res.writableEnded || res.destroyed) return;
+          try {
+            res.write(`${JSON.stringify(obj)}\n`);
+          } catch {}
+        };
+
+        // 前端取消（切走 / 再点一次 / 关窗）→ 打断当前段并卸载模型
+        req.on('close', () => {
+          if (!res.writableEnded) {
+            job.aborted = true;
+            this.abortSegment();
+          }
+        });
+        const controller = { get aborted() { return job.aborted; } };
+
+        try {
+          const result = await this.synthesizeArticle({
+            messageId: body.messageId,
+            text: body.text,
+            segments: body.segments,
+            onEvent: write,
+            signal: controller,
+          });
+          if (!result.ok) write({ t: 'error', ...result });
+        } catch (e) {
+          write({ t: 'error', error: 'ARTICLE_FAILED', message: e.message });
+        } finally {
+          this.articleJob = null;
+          if (!res.writableEnded) res.end();
+        }
         return;
       }
       if (pathname === '/download' && req.method === 'POST') {
@@ -1019,6 +1441,16 @@ class TtsService {
         sendJson(200, { ok: true, downloadState: state });
         return;
       }
+      if (pathname === '/open-output-dir' && req.method === 'POST') {
+        try {
+          fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+          spawn('open', [OUTPUT_DIR], { detached: true, stdio: 'ignore' }).unref();
+          sendJson(200, { ok: true, path: OUTPUT_DIR });
+        } catch (e) {
+          sendJson(500, { ok: false, error: e.message });
+        }
+        return;
+      }
       if (pathname === '/open-dir' && req.method === 'POST') {
         try {
           fs.mkdirSync(MODEL_DIR, { recursive: true });
@@ -1031,7 +1463,7 @@ class TtsService {
       }
       if (pathname === '/speak' && req.method === 'POST') {
         const body = await readJson();
-        const result = await this.speak(body.text, { voice: body.voice, speed: body.speed });
+        const result = await this.speak(body.text, body);
         if (!result.ok) {
           const code = result.error === 'MODEL_MISSING' ? 409 : 500;
           sendJson(code, result);
@@ -1053,12 +1485,17 @@ class TtsService {
 
   init() {
     this.loadConfig();
-    // 懒加载：启动时不拉起模型（首次朗读才加载，闲置 5 分钟自动卸载）。
+    // 启动时不拉起模型：每次「整篇朗读」现场加载、生成结束即卸载。
     // 上次运行残留的进程由 App 启动前的 cleanStaleProcessesBeforeLaunch（managedPidFiles）统一清理，
     // 这里只清掉已失效的 PID 文件，并清掉上次遗留在模型目录里的临时碎片。
     const pid = readPid();
     if (!isPidAlive(pid)) clearPid();
     this.cleanTempFiles({ removePartFiles: false });
+    // 音频输出目录：不存在就建；索引里指向已删文件的条目顺手清掉。
+    try {
+      fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+    } catch {}
+    listAudio();
   }
 }
 

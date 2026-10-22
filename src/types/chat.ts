@@ -423,6 +423,17 @@ export interface TtsDownloadState {
   updatedAt: number;
 }
 
+/** 文字转语音服务的可调参数（与 server/tts_service.js DEFAULT_CONFIG 对应） */
+export interface TtsServiceConfig {
+  voice: string;
+  language: string;
+  temperature: number;
+  top_p: number;
+  top_k: number;
+  repetitionPenalty: number;
+  maxTokens: number;
+}
+
 /** 文字转语音服务整体聚合状态 */
 export interface TtsServiceStatus {
   status: 'incomplete' | 'standby' | 'loading' | 'ready';
@@ -433,7 +444,7 @@ export interface TtsServiceStatus {
   model: TtsModelStatus;
   runtime: { ready: boolean; path: string; bundled: boolean };
   voices: string[];
-  config: { voice: string; speed: number; language?: string; idleUnloadMin?: number };
+  config: TtsServiceConfig;
   python: string;
   port: number;
   logFile?: string;

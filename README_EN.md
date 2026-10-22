@@ -56,7 +56,7 @@ Node.js proxy (127.0.0.1:31235)
         ├── DeepSeek official API (cloud)
         ├── Offline Wiki RAG (Kiwix :31236 + local ZIM)
         ├── Speech input (SenseVoice · audio.cpp :1236)
-        ├── Voice synthesis (Qwen3-TTS 0.6B · MLX :1251)
+        ├── Voice synthesis (Qwen3-TTS 1.7B · MLX :1255)
         ├── Visual OCR (PaddleOCR-VL 1.6 · MLX :1252)
         ├── Real-time bilingual subtitles
         │     ├── R2T2 Q8_0 streaming ASR (:1250 · Metal)
@@ -70,7 +70,7 @@ Node.js proxy (127.0.0.1:31235)
 | Node proxy `proxy.js` | `31235` | Static hosting, SSE passthrough, dynamic routing, managed-service APIs |
 | Kiwix offline encyclopedia | `31236` | Local ZIM articles, title suggestions, full-text search |
 | SenseVoice speech input | `1236` | Local Chinese/English dictation via long-press right ⌘ |
-| Qwen3-TTS voice synthesis | `1251` | On-device speech synthesis for reading aloud (on-demand, unloads on idle) |
+| Qwen3-TTS voice synthesis | `1255` | On-device speech synthesis for reading aloud (per-paragraph synthesis joined into one file; loads on every run) |
 | PaddleOCR-VL visual OCR | `1252` | `⌘⇧2` screen region capture to Markdown clipboard (on-demand, unloads on idle) |
 | R2T2 subtitle ASR | `1250` | Append-only streaming recognition with native punctuation |
 | Index-Translate subtitle translation | `1249` | Specialized neural machine translation |
@@ -174,11 +174,12 @@ How it works:
 
 - Select any text in a message; two rounded buttons appear next to the selection — **Translate** and **Read**. Translate opens the Quick Translate panel with the selected plain text filled in and starts translating immediately in Quick mode; Read uses the macOS system voice, and clicking again (or pressing `Esc`) stops it.
 - The selection toolbar is shared by the main window and the Spotlight panel, so both behave identically; the Translate button is hidden in plain-browser development where the native bridge is unavailable.
-- Every answer also has a read-aloud button in its footer, to the left of Retry, which reads the whole answer.
-- Model: Qwen3-TTS 0.6B CustomVoice (MLX 4bit, ~1.58 GB including the separate speech codec); default voice `serena`.
+- Every answer also has a read-aloud button in its footer, to the left of Retry. Clicking it splits the answer into paragraphs, feeds them to the model one by one, shows a per-segment progress bar under the message, and turns into a player when finished (play/pause, seek, mute, regenerate, delete audio).
+- Model: Qwen3-TTS 1.7B CustomVoice (MLX 6bit, ~2.5 GB including the separate speech codec); default voice `serena`.
 - Formula blocks are `select-none`, so they are skipped naturally; code blocks are read as plain text.
-- Loaded on demand: the first click waits for the model (roughly 3–12 s), and it **unloads and exits after the idle timeout** (default 30 minutes, customizable) to release VRAM; endpoint `POST /api/tts/speak`.
-- “Service Manager → Voice Synthesis”: purely on demand, showing the bundled Python runtime and model readiness, with voice selection, customizable idle unload timeout, dual-source speed-tested downloads, and default settings restoration.
+- The model is loaded on every run and unloaded as soon as synthesis finishes: **no resident process and no idle timer**. Loading takes ~15 s (faster when the weights are already in the page cache); the progress bar shows "Loading voice model".
+- The finished audio is joined into one WAV under `~/Library/Application Support/SimpleUI/tts_output/`, and the player bar is restored by content fingerprint after a restart; endpoint `POST /api/tts/article` (NDJSON progress stream).
+- “Service Manager → Voice Synthesis”: shows the bundled Python runtime and model readiness, with voice selection, sampling parameters (`temperature` 0.85 / `top_p` 0.95 / `top_k` 50 / `repetition_penalty` 1.05 / `max_tokens` 1024, all adjustable), dual-source speed-tested downloads, and default settings restoration.
 - Inference runs on the bundled mlx-audio (Python) runtime; the main chat path still needs no Python.
 
 ### Screen Capture OCR (Markdown Extraction)
@@ -269,7 +270,7 @@ Builds the Swift native shell, frontend assets, and bundled runtimes, then insta
 
 - Base models: prepare TTF / Mference repositories and weights yourself, connect another OpenAI-compatible service, or configure a DeepSeek API key in Settings.
 - Speech input model: SenseVoice Q8_0 is bundled (no in-app download; if missing, place it manually under `~/Library/Application Support/SimpleUI/models/`).
-- Voice synthesis model: Download Qwen3-TTS 0.6B (~1.58 GB) via one-click speed-tested download under Service Manager → Voice Synthesis.
+- Voice synthesis model: Download Qwen3-TTS 1.7B (~2.5 GB) via one-click speed-tested download under Service Manager → Voice Synthesis. The speech codec is byte-identical to the previous release, so integrity checks reuse it.
 - Visual OCR model: Download PaddleOCR-VL 1.6 (~1.09 GB) via one-click speed-tested download under Service Manager → Visual OCR.
 - Subtitle models: download in Service Manager → Live Subtitles; the set includes R2T2, SaT, Index-Translate, and the tokenizer.
 - Offline wiki: select a local ZIM file under Service Manager → Knowledge Base.

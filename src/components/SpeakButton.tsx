@@ -1,109 +1,80 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Volume2, Square, Loader2 } from 'lucide-react';
+import { useCallback } from 'react';
+import { Volume2, Square, Loader2, AlertCircle } from 'lucide-react';
 import { useI18n } from '../i18n';
-
-type Phase = 'idle' | 'loading' | 'playing';
-
-// 全局只允许一段朗读在播：新开一段前先停掉上一段。
-let currentStop: (() => void) | null = null;
+import type { SpeechState } from '../utils/speechStore';
+import { toggleAudio, useAudioPlayer } from '../utils/audioPlayer';
 
 interface SpeakButtonProps {
-  text: string;
+  state: SpeechState;
+  /** 开始整篇朗读：参数表示点击时用户是否贴在底部（决定进度条挂载后是否滚进视野） */
+  onStart: (pinAfterMount: boolean) => void;
+  onCancel: () => void;
   title?: string;
 }
 
-export function SpeakButton({ text, title }: SpeakButtonProps) {
+/**
+ * 消息底部的朗读按钮 —— 触发语音合成的**唯一**入口。
+ *
+ * 状态与按钮语义：
+ *   idle      → 点击开始（现场加载模型 + 逐段合成分段进度）
+ *   loading   → 加载模型中，点击取消
+ *   generating→ 合成中，点击取消
+ *   ready     → 点击播放 / 暂停已落盘的音频
+ *   error     → 点击重试
+ */
+export function SpeakButton({ state, onStart, onCancel, title }: SpeakButtonProps) {
   const { t } = useI18n();
-  const [phase, setPhase] = useState<Phase>('idle');
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const urlRef = useRef<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const generationRef = useRef(0);
+  const player = useAudioPlayer();
 
-  const stop = useCallback(() => {
-    generationRef.current += 1;
-    abortRef.current?.abort();
-    abortRef.current = null;
-    const audio = audioRef.current;
-    if (audio) {
-      audio.onended = null;
-      audio.onerror = null;
-      audio.pause();
-    }
-    audioRef.current = null;
-    if (urlRef.current) {
-      URL.revokeObjectURL(urlRef.current);
-      urlRef.current = null;
-    }
-    setPhase('idle');
-  }, []);
+  const isThisTrack = !!state.url && player.url === state.url;
+  const playing = isThisTrack && player.playing;
+  const busy = state.phase === 'loading' || state.phase === 'generating';
 
-  useEffect(
-    () => () => {
-      if (currentStop === stop) currentStop = null;
-      stop();
-    },
-    [stop]
-  );
-
-  const toggle = useCallback(async () => {
-    if (phase !== 'idle') {
-      stop();
-      return;
-    }
-    const payload = String(text || '').trim();
-    if (!payload) return;
-
-    currentStop?.();
-    currentStop = stop;
-    const generation = generationRef.current + 1;
-    generationRef.current = generation;
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setPhase('loading');
-
-    try {
-      const res = await fetch('/api/tts/speak', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: payload.slice(0, 4000) }),
-        signal: controller.signal,
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const blob = await res.blob();
-      // 下载期间用户已点停止 / 组件已卸载
-      if (generation !== generationRef.current) return;
-
-      const url = URL.createObjectURL(blob);
-      urlRef.current = url;
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audio.onended = stop;
-      audio.onerror = stop;
-      await audio.play();
-      if (generation !== generationRef.current) {
-        audio.pause();
+  const handleClick = useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>) => {
+      if (busy) {
+        onCancel();
         return;
       }
-      setPhase('playing');
-    } catch {
-      if (generation === generationRef.current) stop();
-    } finally {
-      if (abortRef.current === controller) abortRef.current = null;
-    }
-  }, [phase, text, stop]);
+      if (state.phase === 'ready' && state.url) {
+        toggleAudio(state.url, state.durationSec);
+        return;
+      }
+      // 贴底判定必须在插入进度条之前取，否则高度已经变了
+      const scroller = e.currentTarget.closest('.chat-scroller') as HTMLElement | null;
+      const atBottom = scroller
+        ? scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 48
+        : false;
+      onStart(atBottom);
+    },
+    [busy, onCancel, onStart, state.phase, state.url, state.durationSec]
+  );
+
+  const label = busy
+    ? t('ttsCancelGenerate')
+    : state.phase === 'error'
+    ? t('ttsErrorRetry')
+    : state.phase === 'ready'
+    ? playing
+      ? t('ttsPauseAudio')
+      : t('ttsPlayAudio')
+    : title || t('speakMessage');
 
   return (
     <button
       type="button"
-      onClick={toggle}
+      onClick={handleClick}
+      data-tts-trigger="true"
       className="p-1.5 rounded-lg hover:text-zinc-900 hover:bg-black/5 dark:hover:text-white dark:hover:bg-white/5 transition-colors cursor-pointer"
-      title={title || (phase === 'idle' ? t('selectionSpeak') : t('selectionSpeakStop'))}
-      aria-label={phase === 'idle' ? t('selectionSpeak') : t('selectionSpeakStop')}
+      title={label}
+      aria-label={label}
+      aria-pressed={playing}
     >
-      {phase === 'loading' ? (
+      {busy ? (
         <Loader2 className="w-3.5 h-3.5 animate-spin" />
-      ) : phase === 'playing' ? (
+      ) : state.phase === 'error' ? (
+        <AlertCircle className="w-3.5 h-3.5 text-red-500 dark:text-red-400" />
+      ) : playing ? (
         <Square className="w-3.5 h-3.5" />
       ) : (
         <Volume2 className="w-3.5 h-3.5" />

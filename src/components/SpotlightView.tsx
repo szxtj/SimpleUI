@@ -14,8 +14,7 @@ import {
   getActiveContextMessages,
 } from '../services/chatTurn';
 import { MarkdownRenderer } from './MarkdownRenderer';
-import { SpeakButton } from './SpeakButton';
-import { markdownToSpeechText } from '../utils/speechText';
+import { MessageSpeechBar, MessageSpeechTrigger } from './MessageSpeech';
 import { ThinkingAccordion } from './ThinkingAccordion';
 import { StageLadder } from './StageLadder';
 import { ImageAttachment } from './ImageAttachment';
@@ -1140,7 +1139,11 @@ export const SpotlightView: React.FC = () => {
                       )}
 
                       {msg.content && (
-                        <SpeakButton text={markdownToSpeechText(msg.content)} title={t('speakMessage')} />
+                        <MessageSpeechTrigger
+                          messageId={msg.id}
+                          content={msg.content}
+                          title={t('speakMessage')}
+                        />
                       )}
 
                       <button
@@ -1169,6 +1172,11 @@ export const SpotlightView: React.FC = () => {
                       </span>
                     )}
                   </div>
+                )}
+
+                {/* 朗读进度 / 播放条（与主窗口同一份状态） */}
+                {msg.content && (
+                  <MessageSpeechBar messageId={msg.id} content={msg.content} />
                 )}
               </div>
             );

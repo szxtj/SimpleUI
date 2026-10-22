@@ -64,11 +64,34 @@ const ASR_CARD_DEFAULTS: Partial<AsrServiceConfig> = {
   keepTags: false,
 };
 
-// 语音合成服务卡片默认值
+// 语音合成服务卡片默认值（与后端 tts_service.js DEFAULT_CONFIG 保持一致）
 const TTS_CARD_DEFAULTS = {
   voice: 'serena',
-  idleUnloadMin: 30,
+  temperature: 0.85,
+  top_p: 0.95,
+  top_k: 50,
+  repetitionPenalty: 1.05,
+  maxTokens: 1024,
 };
+
+type TtsFormShape = Partial<typeof TTS_CARD_DEFAULTS>;
+
+/** 可调采样参数（顺序即界面顺序） */
+type TtsParamKey = 'temperature' | 'top_p' | 'top_k' | 'repetitionPenalty' | 'maxTokens';
+
+const TTS_PARAM_FIELDS: Array<{
+  key: TtsParamKey;
+  labelKey: 'ttsTemperature' | 'ttsTopP' | 'ttsTopK' | 'ttsRepPenalty' | 'ttsMaxTokens';
+  min: number;
+  max: number;
+  step: number;
+}> = [
+  { key: 'temperature', labelKey: 'ttsTemperature', min: 0.1, max: 2, step: 0.05 },
+  { key: 'top_p', labelKey: 'ttsTopP', min: 0.05, max: 1, step: 0.05 },
+  { key: 'top_k', labelKey: 'ttsTopK', min: 1, max: 200, step: 1 },
+  { key: 'repetitionPenalty', labelKey: 'ttsRepPenalty', min: 1, max: 1.5, step: 0.01 },
+  { key: 'maxTokens', labelKey: 'ttsMaxTokens', min: 128, max: 4096, step: 64 },
+];
 
 // 视觉图文识别服务卡片默认值
 const OCR_CARD_DEFAULTS: {
@@ -340,10 +363,10 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     }
   };
 
-  // ---- 文字转语音服务（Qwen3-TTS 0.6B CustomVoice · MLX 4bit · 纯按需）----
+  // ---- 文字转语音服务（Qwen3-TTS 1.7B CustomVoice · MLX 6bit · 每次生成现场加载）----
   const [ttsStatus, setTtsStatus] = useState<TtsServiceStatus | null>(null);
   const [ttsBusy, setTtsBusy] = useState(false);
-  const [ttsForm, setTtsForm] = useState<{ voice?: string; idleUnloadMin?: number }>({});
+  const [ttsForm, setTtsForm] = useState<TtsFormShape>({});
   const [isApplyingTts, setIsApplyingTts] = useState(false);
   const [ttsMsg, setTtsMsg] = useState<{ text: string; isError: boolean } | null>(null);
 
@@ -564,7 +587,11 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
         if (s?.config) {
           setTtsForm({
             voice: s.config.voice || TTS_CARD_DEFAULTS.voice,
-            idleUnloadMin: s.config.idleUnloadMin ?? TTS_CARD_DEFAULTS.idleUnloadMin,
+            temperature: s.config.temperature ?? TTS_CARD_DEFAULTS.temperature,
+            top_p: s.config.top_p ?? TTS_CARD_DEFAULTS.top_p,
+            top_k: s.config.top_k ?? TTS_CARD_DEFAULTS.top_k,
+            repetitionPenalty: s.config.repetitionPenalty ?? TTS_CARD_DEFAULTS.repetitionPenalty,
+            maxTokens: s.config.maxTokens ?? TTS_CARD_DEFAULTS.maxTokens,
           });
         }
       });
@@ -2000,7 +2027,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
             {cardResetButton(handleAsrCardReset)}
           </div>
 
-          {/* 文字转语音服务卡片（Qwen3-TTS 0.6B CustomVoice · MLX 4bit · 纯按需） */}
+          {/* 文字转语音服务卡片（Qwen3-TTS 1.7B CustomVoice · MLX 6bit · 每次生成现场加载） */}
           <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
             {/* 头部：标题 + 引擎徽标 + 运行状态指示 */}
             <div className="flex items-start justify-between mb-2.5">
@@ -2255,7 +2282,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                 </div>
               )}
 
-            {/* 默认配置项：默认音色与内存闲置释放 */}
+            {/* 默认配置项：音色 + 采样参数（每次生成现场加载，不再有闲置卸载设置） */}
             <div className="mt-3 grid grid-cols-2 gap-2.5">
               <div className="flex flex-col gap-1">
                 <span className="text-[10px] text-zinc-500 dark:text-zinc-400 font-medium">{t('ttsVoiceLabel')}</span>
@@ -2272,12 +2299,43 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                   ))}
                 </select>
               </div>
-              <IdleTimeoutSelector
-                value={ttsForm.idleUnloadMin ?? ttsStatus?.config?.idleUnloadMin ?? 30}
-                onChange={(min) => setTtsForm((prev) => ({ ...prev, idleUnloadMin: min }))}
-                disabled={ttsBusy || isApplyingTts}
-                t={t}
-              />
+              <div className="flex flex-col gap-1 justify-end">
+                <span className="text-[10px] text-zinc-500 dark:text-zinc-400 font-medium">
+                  {t('ttsSamplingTitle')}
+                </span>
+                <span className="text-[10px] text-zinc-400 dark:text-zinc-500 leading-snug">
+                  {t('ttsSamplingHint')}
+                </span>
+              </div>
+            </div>
+
+            <div className="mt-2 grid grid-cols-3 gap-2">
+              {TTS_PARAM_FIELDS.map((field) => {
+                const current =
+                  ttsForm[field.key] ?? ttsStatus?.config?.[field.key] ?? TTS_CARD_DEFAULTS[field.key];
+                return (
+                  <label key={field.key} className="flex flex-col gap-1">
+                    <span className="text-[10px] text-zinc-500 dark:text-zinc-400 font-medium truncate" title={t(field.labelKey)}>
+                      {t(field.labelKey)}
+                    </span>
+                    <input
+                      type="number"
+                      min={field.min}
+                      max={field.max}
+                      step={field.step}
+                      value={current}
+                      disabled={ttsBusy || isApplyingTts}
+                      onChange={(e) => {
+                        const raw = Number(e.target.value);
+                        if (!Number.isFinite(raw)) return;
+                        const clamped = Math.min(field.max, Math.max(field.min, raw));
+                        setTtsForm((prev) => ({ ...prev, [field.key]: clamped }));
+                      }}
+                      className="w-full px-2 py-1.5 rounded-lg text-[11px] font-mono bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 text-zinc-700 dark:text-zinc-200 focus:border-sky-500 focus:outline-none"
+                    />
+                  </label>
+                );
+              })}
             </div>
 
             {/* 保存配置按钮与反馈 */}
