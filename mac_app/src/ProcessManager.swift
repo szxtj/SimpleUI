@@ -28,6 +28,7 @@ class ProcessManager {
         "/tmp/simpleui_subtitle_audiocpp.pid",
         "/tmp/simpleui_subtitle_trans.pid",
         "/tmp/simpleui_subtitle_ml.pid",
+        "/tmp/simpleui_translate_quick.pid",
         "/tmp/simpleui_tts.pid",
         "/tmp/simpleui_ocr.pid"
     ]
@@ -85,7 +86,8 @@ class ProcessManager {
         }
     }
 
-    /// 精确清理所有受管 PID 文件对应的残留进程及孤儿模型服务（含字幕 ASR 与 1249 翻译服务）
+    /// 精确清理所有受管 PID 文件对应的残留进程及孤儿模型服务
+    /// （含字幕 ASR、字幕翻译 1249 与快速翻译 1248）
     private func forceSweepResidualProcesses() {
         // 1. 按 PID 文件优雅 SIGTERM -> 强制 SIGKILL
         var killedPids: [pid_t] = []
@@ -111,6 +113,7 @@ class ProcessManager {
         let cleanupScript = """
         pkill -x "subtitle_stream_asr" 2>/dev/null || true
         pkill -f "llama-server.*--port 1249" 2>/dev/null || true
+        pkill -f "llama-server.*--port 1248" 2>/dev/null || true
         pkill -x "subtitle_ml_helper" 2>/dev/null || true
         pkill -x "audiocpp_server" 2>/dev/null || true
         pkill -f "tts_server.py" 2>/dev/null || true

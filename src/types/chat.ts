@@ -157,33 +157,67 @@ export interface DeepSeekProviderConfig {
   systemPrompt: string;         // System instructions
 }
 
-export type TranslatorServiceMode = 'local' | 'cloud';
+/**
+ * 快速翻译服务（服务控制面板独立卡片）。
+ *
+ * 两条模式完全解耦：
+ *   - quick：复用实时字幕服务的 Index-Translate-2B 小模型（同一份文件 / 运行时 / 下载器）；
+ *   - detail：DeepSeek 官方 API 或基础模型服务，只有一份独立的 DeepSeek 配置。
+ */
+export type TranslateDetailProvider = 'deepseek' | 'base';
 
-export interface TranslatorProfileRecord {
-  id: string;
-  name: string;
-  mode: TranslatorServiceMode;
-  apiEndpoint: string;
-  apiKey: string;
-  selectedModel: string;
-  temperature: number;
+export interface TranslateQuickStatus {
+  modelReady: boolean;
+  modelName: string;
+  sizeMb: string;
+  sizeDesc: string;
+  path: string;
+  runtimeReady: boolean;
+  runtimePath: string | null;
+  /** 进程已驻留（健康检查通过） */
+  serverReady: boolean;
+  /** 正在拉起进程（冷启动加载模型） */
+  starting: boolean;
+  port: number;
+  downloadState: SubtitleDownloadState;
 }
 
-export interface TranslatorConfig {
-  activeMode: TranslatorServiceMode;
-  localRecords: TranslatorProfileRecord[];
-  cloudRecords: TranslatorProfileRecord[];
-  activeLocalRecordId: string;
-  activeCloudRecordId: string;
+export interface TranslateBaseStatus {
+  engine: string;
+  status: string;
+  port: number;
+  running: boolean;
+  modelId: string;
 }
 
-export interface TranslatorSettingsConfig {
-  baseLang?: 'zh' | 'en'; // 快捷翻译基准语言视角 (默认 'zh')
-  apiProvider: 'ttf' | 'mference' | 'custom' | 'deepseek';
-  ttfConfig: TtfProviderConfig;
-  mferenceConfig: MferenceProviderConfig;
-  customConfig: CustomProviderConfig;
-  deepseekConfig: DeepSeekProviderConfig;
+export interface TranslateDeepSeekStatus {
+  configured: boolean;
+  apiKeyMasked: string;
+  baseUrl: string;
+  modelId: string;
+}
+
+export interface TranslateServiceStatus {
+  baseLang: 'zh' | 'en';
+  detailProvider: TranslateDetailProvider;
+  deepseek: TranslateDeepSeekStatus;
+  quick: TranslateQuickStatus;
+  base: TranslateBaseStatus | null;
+  baseService: TranslateBaseStatus | null;
+  storageDir: string;
+  idleUnloadMin: number;
+}
+
+/** 服务控制面板可写的字段（其余采样参数为内置锁定值，不对外暴露） */
+export interface TranslateServiceConfigPatch {
+  baseLang?: 'zh' | 'en';
+  detailProvider?: TranslateDetailProvider;
+  deepseek?: {
+    apiKey?: string;
+    baseUrl?: string;
+    modelId?: string;
+  };
+  quickIdleUnloadMin?: number;
 }
 
 export interface AppSettings {
@@ -221,8 +255,6 @@ export interface AppSettings {
   enableWikiSearch?: boolean;   // Offline Wiki RAG switch (📚)
   customWikiDir?: string;       // Custom ZIM storage directory
   spotlightResetMinutes?: number; // Spotlight idle auto-reset duration in minutes (0 = never, default 15)
-  translatorSettingsConfig?: TranslatorSettingsConfig; // 快捷翻译设置 (1:1 复刻模型设置 Provider 架构)
-  translatorConfig?: TranslatorConfig; // 兼容旧版快捷翻译设置
 }
 
 export interface ServerHealthInfo {
@@ -245,10 +277,15 @@ export interface WikiStatusInfo {
   mediaCount: number;
 }
 
-/** 语音识别服务（SenseVoice / audio.cpp）聚合状态：与后端 asr_service.js getStatus 对应 */
+/** 语音识别服务（Confucius4-R2T2 / audio.cpp）聚合状态：与后端 asr_service.js getStatus 对应 */
 export interface AsrServiceStatus {
-  enabled: boolean;
-  status: 'running' | 'loading' | 'stopped' | 'starting' | 'stopping' | 'restart';
+  enabled?: boolean;
+  status: 'running' | 'loading' | 'stopped' | 'starting' | 'stopping' | 'restart' | 'standby' | 'incomplete' | 'ready';
+  running?: boolean;
+  ready?: boolean;
+  modelsReady?: boolean;
+  runtimeReady?: boolean;
+  idleUnloadMin?: number;
   pid: number | null;
   port: number;
   backend: string;
@@ -260,23 +297,29 @@ export interface AsrServiceStatus {
     binaryPath: string | null;
     modelPath: string | null;
   };
+  model?: {
+    name: string;
+    shortName: string;
+    ready: boolean;
+    path: string;
+    sizeBytes: number;
+    expectedBytes: number;
+    sizeMb: string;
+    sizeDesc: string;
+  };
+  download?: SubtitleDownloadState;
   lastActionAt?: number;
   lastActionLog?: string;
 }
 
 /** 语音识别服务运行配置：与后端 asr_config.json 对应 */
 export interface AsrServiceConfig {
-  enabled: boolean;
+  enabled?: boolean;
   port: number;
   backend: 'cpu' | 'metal' | 'best';
   threads: number;
-  /** auto 由模型做语种判定，中英混说最稳 */
-  language: 'auto' | 'zh' | 'en' | 'yue' | 'ja' | 'ko';
-  /** 逆文本归一化：开 = 输出带标点与规范数字 */
-  enableItn: boolean;
-  audioChunkMode: 'none' | 'auto' | 'fixed';
-  audioChunkDurationSec: number;
-  keepTags: boolean;
+  language: string;
+  idleUnloadMin?: number;
   projectDir: string;
   binaryPath: string;
   modelPath: string;

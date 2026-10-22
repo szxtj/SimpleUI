@@ -32,7 +32,7 @@ SimpleUI 为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 深度�
 ## 核心亮点
 
 - **本地优先**：模型推理、知识库、语音识别、语音合成、OCR 识图、字幕和翻译都在本机完成；无需自行安装或配置 Python 环境、向量数据库或云端 API。
-- **模型集成服务**：统一托管基础模型、SenseVoice 语音输入、Qwen3-TTS 语音合成、PaddleOCR-VL 视觉文档识别、R2T2 流式字幕、Index-Translate 翻译与 CoreML 断句模型。
+- **模型集成服务**：统一托管基础模型、Confucius4-R2T2 语音输入、Qwen3-TTS 语音合成、PaddleOCR-VL 视觉文档识别、R2T2 流式字幕、Index-Translate 独立端侧快速翻译与 CoreML 断句模型；提供统一服务控制面板，支持全模型并发测速下载、模型断点续传、同款模型权重共享与进程按需启闭。
 - **视觉图文识别（OCR 提取 Markdown）**：快捷键 `⌘⇧2` 框选屏幕任意区域，由端侧多模态模型 PaddleOCR-VL 自动提取结构化 Markdown（段落、表格、LaTeX 公式、图表）存入剪贴板；纯按需运行，闲置超时自动释放显存。
 - **DeepSeek API 深度适配**：官方 Base URL / API Key / 模型 / 上下文 / 温度 / top_p / 推理强度 / 停止串 / 系统提示词独立配置，直接请求官方接口，并针对缓存命中做上下文修剪。
 - **离线维基 RAG**：Kiwix ZIM + 多通道检索 + 原文直注；不摘要、不改写、不机械截断，答案带可点击引用。
@@ -55,29 +55,30 @@ Node.js 代理（127.0.0.1:31235）
         ├── 基础模型服务（TTF :1235 / Mference :1241 / OpenAI 兼容）
         ├── DeepSeek 官方 API（云端）
         ├── 离线维基 RAG（Kiwix :31236 + 本地 ZIM）
-        ├── 语音输入（SenseVoice · audio.cpp :1236）
-        ├── 语音合成（Qwen3-TTS 1.7B · MLX :1255）
-        ├── 视觉文档识别（PaddleOCR-VL 1.6 · MLX :1252）
+        ├── 语音输入（Confucius4-R2T2 · audio.cpp :1236 · 按需）
+        ├── 语音合成（Qwen3-TTS 1.7B · MLX :1237 · 现场加载）
+        ├── 视觉文档识别（PaddleOCR-VL 1.6 · MLX :1238 · 按需）
         ├── 实时双语字幕
         │     ├── R2T2 Q8_0 流式识别（:1250 · Metal）
         │     ├── SaT-3L-sm CoreML 断句（ANE / CPU）
-        │     ├── Index-Translate-2B Q4_K_M（:1249 · Metal）
-        └── 快捷翻译（独立原生悬浮窗）
+        │     └── Index-Translate-2B Q4_K_M（:1249 · Metal）
+        └── 快捷翻译（独立原生悬浮窗 · :1248 端侧小模型 / 云端 DeepSeek）
 ```
 
 | 服务 | 默认端口 | 职责 |
 | :--- | :--- | :--- |
-| Node 代理 `proxy.js` | `31235` | 静态托管、SSE 透传、动态路由、受管服务 API |
+| Node 代理 `proxy.js` | `31235` | 静态托管、SSE 透传、动态路由、受管服务 API 与进程看门狗 |
 | Kiwix 离线百科 | `31236` | 本地 ZIM 条目、标题联想、全文检索 |
-| SenseVoice 语音输入 | `1236` | 长按右 ⌘ 的本地中英语音转文字 |
-| Qwen3-TTS 语音合成 | `1255` | 回复朗读时的端侧语音合成（逐段合成后拼接落盘，每次生成现场加载） |
-| PaddleOCR-VL 视觉识别 | `1252` | `⌘⇧2` 框选屏幕提取 Markdown 到剪贴板（纯按需，闲置超时自动卸载） |
-| R2T2 字幕识别 | `1250` | 追加式流式识别，原生标点 |
-| Index-Translate 字幕翻译 | `1249` | 专精神经机器翻译 |
+| Confucius4-R2T2 语音输入 | `1236` | 长按右 ⌘ 本地录音转写（audio.cpp · Metal，与字幕共用 R2T2 模型，按需加载） |
+| Qwen3-TTS 语音合成 | `1237` | 回复朗读时的端侧语音合成（逐段合成后拼接落盘，每次生成现场加载） |
+| PaddleOCR-VL 视觉识别 | `1238` | `⌘⇧2` 框选屏幕提取 Markdown 到剪贴板（纯按需，闲置超时自动卸载） |
+| R2T2 字幕识别 | `1250` | 追加式流式识别，原生标点（字幕流水线第 1 级） |
+| Index-Translate 字幕翻译 | `1249` | 专精神经机器翻译（字幕流水线第 3 级，与快速翻译 1248 并行独立运行） |
+| 快速翻译端侧引擎 | `1248` | `⌃Space` 快速划选翻译（llama-server 独立实例，4096 上下文，闲置超时自动卸载） |
 | 基础模型 | `1235` / `1241` | TTF / Mference / 兼容 OpenAI 的推理服务 |
-| DeepSeek API | 云端 | 官方 API：对话、推理与快捷翻译 |
+| DeepSeek API | 云端 | 官方 API：对话、推理与快捷翻译详解模式 |
 
-> 基础模型本体与权重不随本仓库分发，需要用户自行准备；语音输入模型随包内置，TTS、OCR 与字幕模型可在应用内「服务管理」按需自动测速下载。
+> 基础模型本体与权重不随本仓库分发，需要用户自行准备；语音输入、TTS、OCR、字幕与快速翻译模型均可在应用内「服务管理」面板一键并发自动测速下载与断点续传。同款权重文件（R2T2 / Index-Translate）系统自动复用，不重复下载。
 
 ---
 
@@ -128,10 +129,10 @@ SimpleUI 使用本地 Kiwix ZIM 构建端到端离线知识库。核心原则是
 
 ### 全局语音输入
 
-- 模型：SenseVoice-Small Q8_0（audio.cpp），随包内置运行时与模型。
-- 操作：长按右侧 `⌘` 说话，松开后转写并写入当前输入框；在其它 App 中通过剪贴板粘贴。
-- 支持中英语音、内置 Silero VAD，断网可用。
-- 首次使用需授予麦克风、辅助功能、输入监控权限。
+- 模型：Confucius4-R2T2 Q8_0（audio.cpp · Metal，约 2.31 GB），与实时双语字幕流水线共用同一份静态权重文件，无需重复下载或多占磁盘。
+- 操作：长按右侧 `⌘` 说话，松开后自动转写并在任意前台应用的光标处直接输入；在其它 App 中通过剪贴板无缝粘贴。
+- 架构：纯按需拉起（默认端口 `1236`），未激活时保持待命，闲置超时（默认 30 分钟）自动退出进程释放统一显存；完全离线可用。
+- 首次使用需授予麦克风、辅助功能、输入监控权限（可在「服务管理 → 语音输入服务」中直观查看授权状态并一键跳转系统设置）。
 
 ### 离线实时双语字幕
 
@@ -192,11 +193,14 @@ SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传
 ### 快捷翻译
 
 - 全局快捷键 `⌃ Control + Space`，原生非激活浮窗，不抢当前应用焦点。
-- 支持自动、中→英、英→中、详解四种模式，`Enter` 翻译、`⌘C` 复制、双向 TTS。
+- 快速与详解两种模式，`Enter` 翻译、`⌘C` 复制、双向 TTS。
+- **快速模式**：端侧 Index-Translate-2B 翻译小模型（默认端口 `1248`），与实时字幕服务的翻译引擎（端口 `1249`）**独立并行运行、互不干扰**；两者共用同一份静态 GGUF 模型文件（通过只读 mmap 共享显存页缓存，不重复占盘），各自拥有独立的上下文预算（快速翻译支持 4096 上下文与 1200 字符长段自动分块）与闲置自动卸载机制。
+- **详解模式**：DeepSeek 官方 API 或基础模型服务（当前激活引擎），采样参数沿用应用默认值，不提供配置项。
 - 详解模式的结果区默认不可朗读：先在结果中划选文字，朗读按钮才会启用，并且只朗读选中的内容；快速模式仍是一键朗读整段结果。按钮不可用时会显示中英文提示，鼠标保持普通箭头。单击结果框内会取消选中，关闭再打开也会清空选区。
 - 结果区支持基础 Markdown 排版：标题、列表、引用、代码块、分割线，以及粗体、斜体、行内代码、删除线和链接；表格和多级标题按普通文本显示。
 - 结果区使用原生可选文本视图，支持 `⌘C`、`⌘A` 和右键复制，并带有轻量圆角容器与强调色选中边框。
-- Provider 可选 TTF、Mference、OpenAI 兼容服务或 DeepSeek；独立提示词，默认关闭思考。
+- 配置全部收归「服务控制面板 → 快速翻译服务」：设置页只保留应用设置与模型设置，不再出现翻译模型、Provider 或采样参数。
+- DeepSeek 配置只有一份（API Key / Base URL / 模型），与「模型设置」里的 DeepSeek 完全独立、互不读写；原生浮窗统一经本机网关 `/api/translate/v1` 调用，由服务端按模式选择后端。
 - 服务端未连接时自动重连 3 次后给出中英文错误提示；不再使用 3 秒硬超时，详解等较长结果可以正常返回。
 
 ---
@@ -268,10 +272,11 @@ npm run dev
 ### 模型与知识库
 
 - 基础模型：自行准备 TTF / Mference 本体与权重；也可连接其它 OpenAI 兼容服务，或在设置中直接配置 DeepSeek API Key。
-- 语音输入模型：SenseVoice Q8_0 随包内置（不提供在线下载；若缺失，需手动放入 `~/Library/Application Support/SimpleUI/models/`）。
+- 语音输入模型：Confucius4-R2T2 Q8_0（约 2.31 GB），可在「服务管理 → 语音输入服务」或「实时字幕服务」中一键并发测速下载与断点续传；与字幕服务共用同一份静态权重文件，无需重复下载或多占磁盘。
 - 语音合成模型：在「服务管理 → 语音合成服务」一键测速下载 Qwen3-TTS 1.7B 模型（约 2.5 GB；语音 codec 与旧版字节相同，会被完整性校验直接复用）。
 - 视觉 OCR 模型：在「服务管理 → 视觉图文识别服务」一键测速下载 PaddleOCR-VL 1.6 模型（约 1.09 GB）。
 - 字幕模型：在「服务管理 → 实时字幕服务」下载，包含 R2T2、SaT、Index-Translate 与 tokenizer。
+- 快速翻译模型：在「服务管理 → 快速翻译服务」一键下载或直接复用实时字幕的 Index-Translate-2B Q4_K_M 权重（约 1.25 GB）。
 - 离线维基：在「服务管理 → 知识库」中指定本地 ZIM 文件。
 
 ---
@@ -280,18 +285,19 @@ npm run dev
 
 ```text
 SimpleUI/
-├── src/                  React 前端（聊天、Markdown/KaTeX、知识库、字幕、OCR、设置）
+├── src/                  React 前端（聊天、Markdown/KaTeX、知识库、字幕、OCR、统一服务管理面板）
 ├── server/               Node 代理与受管服务
-│   ├── proxy.js          HTTP/SSE 入口（:31235）
-│   ├── ocr_service.js    PaddleOCR-VL 托管服务
-│   ├── tts_service.js    Qwen3-TTS 托管服务
-│   ├── subtitle_service.js 实时字幕流水线服务
-│   ├── asr_service.js    SenseVoice 原生语音输入服务
-│   ├── wiki_service.js   Kiwix 离线维基服务
+│   ├── proxy.js          HTTP/SSE 入口与多层进程看门狗（:31235）
+│   ├── translate_service.js Index-Translate-2B 独立端侧快速翻译托管服务（:1248）
+│   ├── ocr_service.js    PaddleOCR-VL 托管服务（:1238）
+│   ├── tts_service.js    Qwen3-TTS 托管服务（:1237）
+│   ├── subtitle_service.js 实时字幕流水线服务（ASR :1250 / 翻译 :1249）
+│   ├── asr_service.js    Confucius4-R2T2 原生语音输入托管服务（:1236）
+│   ├── wiki_service.js   Kiwix 离线维基服务（:31236）
 │   ├── ocr/              Python MLX-VLM OCR 推理服务
 │   ├── tts/              Python MLX-Audio TTS 推理服务
 │   └── subtitles/        字幕 helper / 断句 / 翻译模块
-├── mac_app/              Swift 原生应用（主窗口、Spotlight、快捷翻译、字幕悬浮窗、框选截图、系统热键）
+├── mac_app/              Swift 原生应用（主窗口、Spotlight、快捷翻译、字幕悬浮窗、框选截图、语音胶囊、多层安全退出清理）
 ├── bin/                  Kiwix / audio.cpp / llama.cpp / 字幕 helper
 ├── scripts/              构建、同步与测试脚本
 └── build_mac_app.sh      macOS App 构建与安装

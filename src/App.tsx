@@ -15,7 +15,7 @@ import {
   DEFAULT_LOCAL_CONFIG,
   DEFAULT_DEEPSEEK_CONFIG,
   syncChannel,
-  computeTranslatorPayload,
+  buildTranslatorGatewayPayload,
 } from './services/storage';
 import { TurboFieldfareAPI, WikiAPI } from './services/api';
 import {
@@ -72,17 +72,17 @@ export const App: React.FC = () => {
     }
   }, [settings.language]);
 
-  // Sync translator settings with native Swift translator overlay
+  // 快捷翻译：原生悬浮窗固定走本机网关（服务端按 mode 决定用字幕翻译小模型还是 DeepSeek/基础模型）。
+  // 模型、密钥、采样参数全部由「服务控制面板 → 快速翻译服务」管理，前端不再下发任何模型配置。
   useEffect(() => {
     try {
-      if (settings.translatorSettingsConfig) {
-        const payload = computeTranslatorPayload(settings.translatorSettingsConfig);
-        (window as any).webkit?.messageHandlers?.setTranslatorConfig?.postMessage(payload);
-      }
+      (window as any).webkit?.messageHandlers?.setTranslatorConfig?.postMessage(
+        buildTranslatorGatewayPayload()
+      );
     } catch {
       // non-macOS or test environment without native bridge
     }
-  }, [settings.translatorSettingsConfig]);
+  }, []);
 
   useEffect(() => {
     const refreshSettings = () => {
@@ -236,7 +236,12 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   /** 服务管理界面（三项受管服务的启停与参数，与设置界面并列的独立入口） */
-  const [isServiceManagerOpen, setIsServiceManagerOpen] = useState(false);
+  const [isServiceManagerOpen, setIsServiceManagerOpen] = useState(() => typeof window !== 'undefined' && window.location.search.includes('panel=services'));
+  useEffect(() => {
+    if (typeof document !== 'undefined' && window.location.search.includes('only=translate')) {
+      document.body.classList.add('only-translate');
+    }
+  }, []);
   const [healthInfo, setHealthInfo] = useState<ServerHealthInfo>({
     status: 'connecting',
     vision: 'missing',
@@ -766,7 +771,7 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
           onSave={handleSaveSettings}
         />
 
-        {/* 服务管理界面（三项受管服务：基础模型 / 知识库 / 语音识别） */}
+        {/* 服务管理界面（基础模型 / 知识库 / 语音识别 / 语音合成 / 字幕 / 快速翻译 / 视觉识别） */}
         <ServiceManagerModal
           isOpen={isServiceManagerOpen}
           onClose={() => setIsServiceManagerOpen(false)}

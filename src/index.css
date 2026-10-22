@@ -375,3 +375,6 @@ body {
     linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.035) 75%),
     linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.035) 75%);
 }
+
+/* TEMP-SCREENSHOT */
+body.only-translate .space-y-4 > *:not([data-translate-card]) { display: none !important; }

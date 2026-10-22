@@ -3,15 +3,15 @@ import Cocoa
 // 菜单栏状态图标（单图标、无状态变化）
 //
 //  - 单击 / 右键行为一致：statusItem.menu 赋值后两种点击天然打开同一个菜单；
-//  - 菜单内容：六项服务状态（知识库 / 基础模型 / 语音识别 / 语音合成 / 实时字幕 /
-//    视觉图文识别，**始终显示**，顺序与服务管理面板的卡片顺序一致）、
+//  - 菜单内容：七项服务状态（知识库 / 基础模型 / 语音识别 / 语音合成 / 实时字幕 /
+//    快速翻译 / 视觉图文识别，**始终显示**，顺序与服务管理面板的卡片顺序一致）、
 //    打开主界面、打开小窗口、退出并停止所有服务；
-//  - 前三项可点击启停（与面板开关等价）；后三项是纯按需服务，没有常驻开关，
+//  - 前两项可点击启停（与面板开关等价）；后五项是纯按需服务，没有常驻开关，
 //    故一律渲染成**不可点击**的状态行（isEnabled = false，无 action）；
 //  - 状态文案与服务管理面板每张卡片右上角逐字一致（统一四态）：
 //    绿「就绪 : 端口」/ 红「离线」/ 黄「启动中」/ 天蓝「待命」
 //    （待命＝按需服务模型已就绪但未驻留内存，只有这类服务会出现）；
-//  - 状态来源与前端同源：proxy 的 /api/{wiki,model,asr,subtitles,tts,ocr}/status，
+//  - 状态来源与前端同源：proxy 的 /api/{wiki,model,asr,subtitles,translate,tts,ocr}/status，
 //    每 5s 轮询 + 菜单打开时立即刷新（异步回调直接改标题，菜单打开期间也会实时更新）；
 //  - 中英文适配跟随系统首选语言（zh* → 中文，其余 → 英文），与前端 language=system 的默认行为一致；
 //  - 「最靠左侧」：第三方状态项只能出现在系统项左侧的区域里，这里通过在状态栏
@@ -28,6 +28,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
     private var asrStatusItem: NSMenuItem!
     private var ttsStatusItem: NSMenuItem!
     private var subtitlesStatusItem: NSMenuItem!
+    private var translateStatusItem: NSMenuItem!
     private var ocrStatusItem: NSMenuItem!
     private var subtitleMenuItem: NSMenuItem!
     private var translatorMenuItem: NSMenuItem!
@@ -39,10 +40,8 @@ class StatusBarController: NSObject, NSMenuDelegate {
     /// 面板的模型开关不是看配置旗，而是看「当前引擎是否活着」（isCurrentEngineActive）：
     /// enabled=true 但进程掉了时面板显示为关，点一下是「启动」。菜单照抄这个口径。
     private var modelActive = false
-    private var asrEnabled = true
     private var kbBusy = false
     private var modelBusy = false
-    private var asrBusy = false
     /// 基础模型当前生效的引擎（/api/model/status 的 activeEngine）：
     /// 菜单里没有引擎选择器，启停就作用在「面板上当前选中的那一台」上，与面板开关等价
     private var modelEngine = "mference"
@@ -88,9 +87,10 @@ class StatusBarController: NSObject, NSMenuDelegate {
 
     private var lblKB: String { zh ? "知识库" : "Knowledge Base" }
     private var lblSvc: String { zh ? "基础模型" : "Base Model" }
-    private var lblAsr: String { zh ? "语音识别" : "Speech Recognition" }
+    private var lblAsr: String { zh ? "语音输入" : "Speech Input" }
     private var lblTts: String { zh ? "语音合成" : "Voice Synthesis" }
     private var lblSubtitlesSvc: String { zh ? "实时字幕" : "Live Subtitles" }
+    private var lblTranslateSvc: String { zh ? "快速翻译" : "Quick Translate" }
     private var lblOcr: String { zh ? "视觉图文识别" : "Visual OCR" }
     private var lblReady: String { zh ? "就绪" : "Ready" }
     private var lblOffline: String { zh ? "离线" : "Offline" }
@@ -105,13 +105,18 @@ class StatusBarController: NSObject, NSMenuDelegate {
 
     private var tipKB: String { zh ? "点击开启或关闭知识库服务" : "Click to toggle Knowledge Base service" }
     private var tipSvc: String { zh ? "点击开启或关闭基础模型服务" : "Click to toggle Base Model service" }
-    private var tipAsr: String { zh ? "点击开启或关闭语音识别服务" : "Click to toggle Speech Recognition service" }
-    // 后三项为按需服务，没有常驻开关，只做状态展示
+    // 以下五项为按需服务，没有常驻开关，只做状态展示
+    private var tipAsr: String {
+        zh ? "按需加载：长按语音输入快捷键时启动，闲置超时自动卸载" : "On demand: starts on Speech Input, unloads after idle timeout"
+    }
     private var tipTts: String {
         zh ? "按需加载：点击朗读按钮时启动，合成结束即卸载" : "On demand: starts on Read Aloud, unloads after synthesis"
     }
     private var tipSubtitlesSvc: String {
         zh ? "按需加载：打开字幕悬浮窗时启动" : "On demand: starts when the subtitle overlay opens"
+    }
+    private var tipTranslateSvc: String {
+        zh ? "按需加载：划选翻译时启动，闲置超时自动卸载" : "On demand: starts on selection translate, unloads after idle timeout"
     }
     private var tipOcr: String {
         zh ? "按需加载：截图识别时启动，闲置超时自动卸载" : "On demand: starts on capture, unloads after idle timeout"
@@ -173,19 +178,19 @@ class StatusBarController: NSObject, NSMenuDelegate {
         svcStatusItem.toolTip = tipSvc
         menu.addItem(svcStatusItem)
 
-        asrStatusItem = NSMenuItem(title: "", action: #selector(toggleASR), keyEquivalent: "")
-        asrStatusItem.target = self
-        asrStatusItem.isEnabled = true
-        asrStatusItem.toolTip = tipAsr
+        // 以下五项是纯按需服务（没有常驻开关）：只显示状态，不可点击。
+        // 顺序与服务管理面板的卡片顺序一致；autoenablesItems 已关，isEnabled = false 即可稳定置灰。
+        asrStatusItem = passiveStatusItem(toolTip: tipAsr)
         menu.addItem(asrStatusItem)
 
-        // 以下三项是纯按需服务（没有常驻开关）：只显示状态，不可点击。
-        // 顺序与服务管理面板的卡片顺序一致；autoenablesItems 已关，isEnabled = false 即可稳定置灰。
         ttsStatusItem = passiveStatusItem(toolTip: tipTts)
         menu.addItem(ttsStatusItem)
 
         subtitlesStatusItem = passiveStatusItem(toolTip: tipSubtitlesSvc)
         menu.addItem(subtitlesStatusItem)
+
+        translateStatusItem = passiveStatusItem(toolTip: tipTranslateSvc)
+        menu.addItem(translateStatusItem)
 
         ocrStatusItem = passiveStatusItem(toolTip: tipOcr)
         menu.addItem(ocrStatusItem)
@@ -254,6 +259,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
             self.asrStatusItem?.toolTip = self.tipAsr
             self.ttsStatusItem?.toolTip = self.tipTts
             self.subtitlesStatusItem?.toolTip = self.tipSubtitlesSvc
+            self.translateStatusItem?.toolTip = self.tipTranslateSvc
             self.ocrStatusItem?.toolTip = self.tipOcr
             self.openMainItem?.title = self.lblOpenMain
             self.openSpotlightItem?.title = "\(self.lblOpenSpotlight)  (⌥Space)"
@@ -334,37 +340,11 @@ class StatusBarController: NSObject, NSMenuDelegate {
         }
     }
 
-    // 语音识别：与面板 handleAsrToggle 完全一致 —— config { enabled } + start/stop
-    @objc private func toggleASR() {
-        guard !asrBusy else { return }
-        asrBusy = true
-        let next = !asrEnabled
-        asrEnabled = next
-
-        let tempView = ServiceView(
-            dot: Self.startingDotColor,
-            text: next ? lblStarting : lblStopping
-        )
-        asrStatusItem.attributedTitle = statusLine(label: lblAsr, view: tempView)
-
-        postJSON("/api/asr/config", body: ["enabled": next]) { [weak self] in
-            guard let self = self else { return }
-            let action = next ? "start" : "stop"
-            self.postJSON("/api/asr/\(action)") { [weak self] in
-                guard let self = self else { return }
-                self.asrBusy = false
-                self.refreshStatuses()
-                if next { self.confirmStart(.asr) }
-            }
-        }
-    }
-
     // ----------------------------- 启动失败回查 -----------------------------
 
     private enum ServiceKind {
         case kb
         case model
-        case asr
     }
 
     /// 点「开启」后 1.2s 回查一次：仍处于离线就把原因弹出来，
@@ -374,7 +354,6 @@ class StatusBarController: NSObject, NSMenuDelegate {
         switch kind {
         case .kb: path = "/api/wiki/status"
         case .model: path = "/api/model/status"
-        case .asr: path = "/api/asr/status"
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             guard let self = self else { return }
@@ -393,15 +372,14 @@ class StatusBarController: NSObject, NSMenuDelegate {
                             )
                         )
                     }
-                case .model, .asr:
+                case .model:
                     if self.state(forStatus: json?["status"] as? String) == .offline {
                         let reason = (json?["lastActionLog"] as? String) ?? self.msgNoReason
-                        let title = kind == .model ? self.lblModelStartFailed : self.lblAsrStartFailed
                         self.showAlert(
-                            title: title,
+                            title: self.lblModelStartFailed,
                             message: self.startFailureBody(
                                 reason: reason,
-                                hint: kind == .model ? self.hintModelLog : self.hintAsrLog,
+                                hint: self.hintModelLog,
                                 fromBackendLog: true
                             )
                         )
@@ -601,16 +579,16 @@ class StatusBarController: NSObject, NSMenuDelegate {
             }
         }
 
+        // 语音输入（status: incomplete | loading | standby | ready，纯按需待命，另有 running / model.ready）
         fetchJSON("/api/asr/status") { [weak self] json in
             guard let self = self else { return }
-            if let enabled = json?["enabled"] as? Bool {
-                self.asrEnabled = enabled
-            }
-            if !self.asrBusy {
-                let state = self.state(forStatus: json?["status"] as? String)
-                let port = self.portValue(json, "port").map { String($0) }
-                self.asrStatusItem.attributedTitle = self.statusLine(label: self.lblAsr, view: self.view(for: state, port: port))
-            }
+            let state = self.state(
+                forStatus: json?["status"] as? String,
+                running: json?["running"] as? Bool ?? false,
+                loaded: (json?["model"] as? [String: Any])?["ready"] as? Bool ?? (json?["modelsReady"] as? Bool ?? false)
+            )
+            let port = self.portValue(json, "port").map { String($0) }
+            self.asrStatusItem.attributedTitle = self.statusLine(label: self.lblAsr, view: self.view(for: state, port: port))
         }
 
         // 语音合成（status: incomplete | loading | standby | ready，另有 running / model.ready）
@@ -641,6 +619,19 @@ class StatusBarController: NSObject, NSMenuDelegate {
                 return asrPort.map { "\($0)/\(port)" } ?? String(port)
             }()
             self.subtitlesStatusItem.attributedTitle = self.statusLine(label: self.lblSubtitlesSvc, view: self.view(for: state, port: portText))
+        }
+
+        // 快速翻译（端侧翻译小模型：进程存活 = 就绪，模型齐备但未驻留 = 待命）
+        fetchJSON("/api/translate/status") { [weak self] json in
+            guard let self = self else { return }
+            let quick = json?["quick"] as? [String: Any]
+            let state = self.state(
+                running: quick?["serverReady"] as? Bool ?? false,
+                loading: quick?["starting"] as? Bool ?? false,
+                loaded: quick?["modelReady"] as? Bool ?? false
+            )
+            let port = self.portValue(quick, "port").map { String($0) }
+            self.translateStatusItem.attributedTitle = self.statusLine(label: self.lblTranslateSvc, view: self.view(for: state, port: port))
         }
 
         // 视觉图文识别（与 tts 同构：status + running + model.ready）

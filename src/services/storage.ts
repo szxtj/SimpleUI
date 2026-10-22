@@ -8,8 +8,6 @@ import {
   TtfProviderConfig,
   MferenceProviderConfig,
   CustomProviderConfig,
-  TranslatorConfig,
-  TranslatorSettingsConfig,
 } from '../types/chat';
 
 const SETTINGS_KEY = 'tff_chat_settings_v1';
@@ -107,143 +105,25 @@ export const DEFAULT_DEEPSEEK_CONFIG: DeepSeekProviderConfig = {
   systemPrompt: '', // 官方推荐零样本直接提问，默认空提示词
 };
 
-/** 快捷翻译默认配置 */
-export const DEFAULT_TRANSLATOR_CONFIG: TranslatorConfig = {
-  activeMode: 'local',
-  localRecords: [
-    {
-      id: 'local-simpleui',
-      name: 'SimpleUI (内置模型)',
-      mode: 'local',
-      apiEndpoint: 'http://127.0.0.1:1235/v1',
-      apiKey: '',
-      selectedModel: 'local-model',
-      temperature: 0.2,
-    },
-    {
-      id: 'local-lmstudio',
-      name: 'LM Studio',
-      mode: 'local',
-      apiEndpoint: 'http://localhost:1234/v1',
-      apiKey: '',
-      selectedModel: 'local-model',
-      temperature: 0.2,
-    },
-    {
-      id: 'local-ollama',
-      name: 'Ollama',
-      mode: 'local',
-      apiEndpoint: 'http://localhost:11434/v1',
-      apiKey: '',
-      selectedModel: 'qwen2.5:7b',
-      temperature: 0.2,
-    },
-  ],
-  cloudRecords: [
-    {
-      id: 'cloud-deepseek',
-      name: 'DeepSeek',
-      mode: 'cloud',
-      apiEndpoint: 'https://api.deepseek.com/v1',
-      apiKey: '',
-      selectedModel: 'deepseek-chat',
-      temperature: 0.2,
-    },
-    {
-      id: 'cloud-openai',
-      name: 'OpenAI',
-      mode: 'cloud',
-      apiEndpoint: 'https://api.openai.com/v1',
-      apiKey: '',
-      selectedModel: 'gpt-4o-mini',
-      temperature: 0.2,
-    },
-  ],
-  activeLocalRecordId: 'local-simpleui',
-  activeCloudRecordId: 'cloud-deepseek',
-};
+/**
+ * 快捷翻译 → 原生悬浮窗的唯一配置投影。
+ *
+ * 快捷翻译的模型选择、密钥、提示词、采样参数全部收归「服务控制面板 → 快速翻译服务」
+ * （服务端 translate_config.json），前端不再持有任何翻译模型配置。
+ * 这里只把原生侧固定指向本机网关：由网关按 mode 决定走字幕翻译小模型还是 DeepSeek / 基础模型。
+ */
+export const TRANSLATOR_GATEWAY_ENDPOINT = 'http://127.0.0.1:31235/api/translate/v1';
 
-/** 快捷翻译全新独立 Provider 配置（1:1 复刻模型设置 Provider 架构，内置锁定提示词，默认关闭思考） */
-export const DEFAULT_TRANSLATOR_SETTINGS_CONFIG: TranslatorSettingsConfig = {
-  baseLang: 'zh',
-  apiProvider: 'ttf',
-  ttfConfig: {
-    ...DEFAULT_TTF_CONFIG,
-    reasoningEffort: 'none',
-    stopStrings: [],
-    systemPrompt: '',
-  },
-  mferenceConfig: {
-    ...DEFAULT_MFERENCE_CONFIG,
-    reasoningEffort: 'none',
-    stopStrings: [],
-    systemPrompt: '',
-  },
-  customConfig: {
-    ...DEFAULT_CUSTOM_CONFIG,
-    systemPrompt: '',
-  },
-  deepseekConfig: {
-    ...DEFAULT_DEEPSEEK_CONFIG,
-    maxContext: 8192,
-    maxTokens: 4096,
-    reasoningEffort: 'none',
-    stopStrings: [],
-    systemPrompt: '',
-  },
-};
-
-/** 投影快捷翻译配置为原生层所期望的活跃参数及有效请求 Payload */
-export function computeTranslatorPayload(config: TranslatorSettingsConfig) {
-  const provider = config.apiProvider || 'ttf';
-  const baseLang = config.baseLang === 'en' ? 'en' : 'zh';
-  let activeEndpoint = '';
-  let activeModel = '';
-  let activeApiKey = '';
-  let activeTemperature = 1.0;
-  let activeReasoningEffort = 'none';
-
-  if (provider === 'mference') {
-    const cfg = config.mferenceConfig;
-    activeEndpoint = cfg.apiBaseUrl?.trim() || `http://127.0.0.1:${cfg.apiPort || 1241}/v1`;
-    activeModel = cfg.modelId || 'qwen3.6-35b-a3b';
-    activeApiKey = '';
-    activeTemperature = cfg.temperature ?? 1.0;
-    activeReasoningEffort = cfg.reasoningEffort || 'none';
-  } else if (provider === 'custom') {
-    const cfg = config.customConfig;
-    activeEndpoint = cfg.apiBaseUrl?.trim() || `http://127.0.0.1:${cfg.apiPort || 11434}/v1`;
-    activeModel = cfg.modelId || 'llama3';
-    activeApiKey = '';
-    activeTemperature = cfg.temperature ?? 0.7;
-    activeReasoningEffort = 'none';
-  } else if (provider === 'deepseek') {
-    const cfg = config.deepseekConfig;
-    const base = cfg.baseUrl?.trim() || 'https://api.deepseek.com';
-    activeEndpoint = base.endsWith('/v1') ? base : `${base}/v1`;
-    activeModel = cfg.modelId || 'deepseek-flash';
-    activeApiKey = cfg.apiKey || '';
-    activeTemperature = cfg.temperature ?? 1.0;
-    activeReasoningEffort = cfg.reasoningEffort || 'none';
-  } else {
-    // TTF
-    const cfg = config.ttfConfig;
-    activeEndpoint = cfg.apiBaseUrl?.trim() || `http://127.0.0.1:${cfg.apiPort || 1235}/v1`;
-    activeModel = cfg.modelId || 'gemma-4-26b-a4b-it';
-    activeApiKey = '';
-    activeTemperature = cfg.temperature ?? 1.0;
-    activeReasoningEffort = cfg.reasoningEffort || 'none';
-  }
-
+export function buildTranslatorGatewayPayload() {
   return {
-    ...config,
-    baseLang,
-    activeProvider: provider,
-    activeEndpoint,
-    activeModel,
-    activeApiKey,
-    activeTemperature,
-    activeReasoningEffort,
+    baseLang: 'zh',
+    activeProvider: 'gateway',
+    apiProvider: 'gateway',
+    activeEndpoint: TRANSLATOR_GATEWAY_ENDPOINT,
+    activeModel: 'simpleui-translate',
+    activeApiKey: '',
+    activeTemperature: 0.2,
+    activeReasoningEffort: 'none',
   };
 }
 
@@ -254,8 +134,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   customConfig: { ...DEFAULT_CUSTOM_CONFIG },
   localConfig: { ...DEFAULT_LOCAL_CONFIG },
   deepseekConfig: { ...DEFAULT_DEEPSEEK_CONFIG },
-  translatorSettingsConfig: { ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG },
-  translatorConfig: { ...DEFAULT_TRANSLATOR_CONFIG },
 
   // 活跃状态扁平字段（默认与 TTF 引擎一致）
   apiPort: DEFAULT_TTF_CONFIG.apiPort,
@@ -558,53 +436,6 @@ export function normalizeSettingsObject(parsed: any, fallbackApiKey: string = ''
     customWikiDir: parsed?.customWikiDir || '',
     spotlightResetMinutes:
       parsed?.spotlightResetMinutes !== undefined ? Number(parsed.spotlightResetMinutes) : 15,
-    translatorSettingsConfig: (() => {
-      const rawTr = parsed?.translatorSettingsConfig;
-      if (!rawTr) return { ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG };
-      let trProvider = rawTr.apiProvider || 'ttf';
-      if (!['ttf', 'mference', 'custom', 'deepseek'].includes(trProvider)) trProvider = 'ttf';
-      return {
-        baseLang: rawTr.baseLang === 'en' ? 'en' : 'zh',
-        apiProvider: trProvider,
-        ttfConfig: {
-          ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.ttfConfig,
-          ...(rawTr.ttfConfig || {}),
-          reasoningEffort: rawTr.ttfConfig?.reasoningEffort || 'none',
-          stopStrings: [],
-          systemPrompt: '',
-        },
-        mferenceConfig: {
-          ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.mferenceConfig,
-          ...(rawTr.mferenceConfig || {}),
-          reasoningEffort: rawTr.mferenceConfig?.reasoningEffort || 'none',
-          stopStrings: [],
-          systemPrompt: '',
-        },
-        customConfig: {
-          ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.customConfig,
-          ...(rawTr.customConfig || {}),
-          systemPrompt: '',
-        },
-        deepseekConfig: {
-          ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG.deepseekConfig,
-          ...(rawTr.deepseekConfig || {}),
-          maxContext:
-            rawTr.deepseekConfig?.maxContext &&
-            !(rawTr.deepseekConfig.maxContext === 131072 && (rawTr.deepseekConfig.maxTokens === 65536 || !rawTr.deepseekConfig.maxTokens))
-              ? rawTr.deepseekConfig.maxContext
-              : 8192,
-          maxTokens:
-            rawTr.deepseekConfig?.maxTokens &&
-            !(rawTr.deepseekConfig.maxContext === 131072 && rawTr.deepseekConfig.maxTokens === 65536)
-              ? Math.floor((rawTr.deepseekConfig.maxContext || 8192) / 2)
-              : 4096,
-          reasoningEffort: rawTr.deepseekConfig?.reasoningEffort || 'none',
-          stopStrings: [],
-          systemPrompt: '',
-        },
-      };
-    })(),
-    translatorConfig: parsed?.translatorConfig || { ...DEFAULT_TRANSLATOR_CONFIG },
   };
 }
 
@@ -795,12 +626,6 @@ export function saveSettings(settings: AppSettings): void {
       deepseekApiKey: effectiveApiKey,
       deepseekModelId: deepseekConfig.modelId,
       deepseekBaseUrl: deepseekConfig.baseUrl,
-      translatorSettingsConfig:
-        settings?.translatorSettingsConfig ||
-        existing.translatorSettingsConfig || { ...DEFAULT_TRANSLATOR_SETTINGS_CONFIG },
-      translatorConfig:
-        settings?.translatorConfig ||
-        existing.translatorConfig || { ...DEFAULT_TRANSLATOR_CONFIG },
     };
 
     const sanitized = normalizeSettingsObject(mergedRaw, effectiveApiKey);

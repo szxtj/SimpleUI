@@ -32,7 +32,7 @@ SimpleUI is deeply tuned for [TurboFieldfare](https://github.com/drumih/turbo-fi
 ## Highlights
 
 - **Local-first**: inference, knowledge retrieval, speech recognition, speech synthesis, OCR, subtitles, and translation all run on-device — no need to install or configure Python yourself, no vector database, and no cloud API.
-- **Model integration services**: unified management for base models, SenseVoice speech input, Qwen3-TTS speech synthesis, PaddleOCR-VL visual OCR, R2T2 streaming captions, Index-Translate, and CoreML segmentation models.
+- **Model integration services**: unified management for base models, Confucius4-R2T2 speech input, Qwen3-TTS speech synthesis, PaddleOCR-VL visual OCR, R2T2 streaming captions, Index-Translate standalone on-device translation, and CoreML segmentation models; features a unified Service Manager with concurrent speed-tested downloads, resumable transfers, shared model weights, and on-demand lifecycle control.
 - **Visual OCR (Screen Capture to Markdown)**: Global hotkey `⌘⇧2` captures any screen region and uses on-device PaddleOCR-VL to extract structured Markdown (paragraphs, headings, tables, LaTeX formulas) directly into the clipboard; runs strictly on demand and unloads on idle timeout to reclaim VRAM.
 - **DeepSeek API integration**: independent Base URL / API key / model / context / temperature / top_p / reasoning effort / stop strings / system prompt; requests go directly to the official endpoint, with cache-friendly context trimming.
 - **Offline Wiki RAG**: Kiwix ZIM + multi-channel retrieval + direct raw-text injection; no summarization, no rewriting, no mechanical truncation, with clickable citations.
@@ -55,29 +55,30 @@ Node.js proxy (127.0.0.1:31235)
         ├── Base model service (TTF :1235 / Mference :1241 / OpenAI-compatible)
         ├── DeepSeek official API (cloud)
         ├── Offline Wiki RAG (Kiwix :31236 + local ZIM)
-        ├── Speech input (SenseVoice · audio.cpp :1236)
-        ├── Voice synthesis (Qwen3-TTS 1.7B · MLX :1255)
-        ├── Visual OCR (PaddleOCR-VL 1.6 · MLX :1252)
+        ├── Speech input (Confucius4-R2T2 · audio.cpp :1236 · on-demand)
+        ├── Voice synthesis (Qwen3-TTS 1.7B · MLX :1237 · loads per run)
+        ├── Visual OCR (PaddleOCR-VL 1.6 · MLX :1238 · on-demand)
         ├── Real-time bilingual subtitles
         │     ├── R2T2 Q8_0 streaming ASR (:1250 · Metal)
         │     ├── SaT-3L-sm CoreML segmentation (ANE / CPU)
-        │     ├── Index-Translate-2B Q4_K_M (:1249 · Metal)
-        └── Quick Translate (separate native floating panel)
+        │     └── Index-Translate-2B Q4_K_M (:1249 · Metal)
+        └── Quick Translate (separate native floating panel · :1248 on-device model / cloud DeepSeek)
 ```
 
 | Service | Default port | Role |
 | :--- | :--- | :--- |
-| Node proxy `proxy.js` | `31235` | Static hosting, SSE passthrough, dynamic routing, managed-service APIs |
+| Node proxy `proxy.js` | `31235` | Static hosting, SSE passthrough, dynamic routing, managed-service APIs and process watchdog |
 | Kiwix offline encyclopedia | `31236` | Local ZIM articles, title suggestions, full-text search |
-| SenseVoice speech input | `1236` | Local Chinese/English dictation via long-press right ⌘ |
-| Qwen3-TTS voice synthesis | `1255` | On-device speech synthesis for reading aloud (per-paragraph synthesis joined into one file; loads on every run) |
-| PaddleOCR-VL visual OCR | `1252` | `⌘⇧2` screen region capture to Markdown clipboard (on-demand, unloads on idle) |
-| R2T2 subtitle ASR | `1250` | Append-only streaming recognition with native punctuation |
-| Index-Translate subtitle translation | `1249` | Specialized neural machine translation |
+| Confucius4-R2T2 speech input | `1236` | Local dictation via long-press right ⌘ (audio.cpp · Metal, shares R2T2 model with subtitles, on-demand) |
+| Qwen3-TTS voice synthesis | `1237` | On-device speech synthesis for reading aloud (per-paragraph synthesis joined into one file; loads on every run) |
+| PaddleOCR-VL visual OCR | `1238` | `⌘⇧2` screen region capture to Markdown clipboard (on-demand, unloads on idle) |
+| R2T2 subtitle ASR | `1250` | Append-only streaming recognition with native punctuation (subtitle pipeline stage 1) |
+| Index-Translate subtitle translation | `1249` | Specialized NMT (subtitle pipeline stage 3, runs parallel to Quick Translate 1248) |
+| Quick Translate on-device engine | `1248` | `⌃Space` fast selection translation (llama-server standalone instance, 4096 context, unloads on idle) |
 | Base models | `1235` / `1241` | TTF / Mference / other OpenAI-compatible services |
-| DeepSeek API | Cloud | Official API: chat, reasoning, and Quick Translate |
+| DeepSeek API | Cloud | Official API: chat, reasoning, and Quick Translate Detail mode |
 
-> Base-model repositories and weights are not distributed with this project; users provide them. The speech input model is bundled; TTS, OCR, and subtitle models can be downloaded in the app under Service Manager.
+> Base-model repositories and weights are not distributed with this project; users provide them. Speech input, TTS, OCR, subtitle, and Quick Translate models can all be downloaded with one-click concurrent speed testing and resumable transfers under the in-app Service Manager. Identical weight files (R2T2 / Index-Translate) are automatically shared without duplicate downloads or disk usage.
 
 ---
 
@@ -128,10 +129,10 @@ Query
 
 ### Global Voice Input
 
-- Model: SenseVoice-Small Q8_0 (audio.cpp), with bundled runtime and model.
-- Usage: hold the right `⌘` key, speak, release; the transcript is inserted into the focused input. In other apps it is pasted via the clipboard.
-- Supports Chinese/English speech and the built-in Silero VAD; fully offline.
-- First use requires Microphone, Accessibility, and Input Monitoring permissions.
+- Model: Confucius4-R2T2 Q8_0 (audio.cpp · Metal, ~2.31 GB), shares the exact same static GGUF weights with the live bilingual subtitle pipeline, requiring no duplicate downloads or extra disk space.
+- Usage: hold the right `⌘` key, speak, release; the transcript is inserted automatically at the current cursor position in any foreground application; in other apps it pastes seamlessly via the clipboard.
+- Architecture: strictly on-demand (default port `1236`), remains on standby when inactive, and automatically unloads the process after an idle timeout (default 30 minutes) to free unified memory/VRAM; fully offline.
+- First use requires Microphone, Accessibility, and Input Monitoring permissions (easily view permission status and jump directly to macOS System Settings via "Service Manager → Speech Input").
 
 ### Offline Real-time Bilingual Subtitles
 
@@ -192,12 +193,15 @@ How it works:
 
 ### Quick Translate
 
-- Global hotkey `⌃ Control + Space`; a native non-activating panel that does not steal focus.
-- Modes: Auto, ZH → EN, EN → ZH, Detail; `Enter` to translate, `⌘C` to copy, bidirectional TTS.
+- Global hotkey `⌃ Control + Space`; a native non-activating panel that does not steal focus from the current app.
+- Two modes: Quick and Detail; `Enter` to translate, `⌘C` to copy, bidirectional TTS.
+- **Quick Mode**: powered by on-device Index-Translate-2B (default port `1248`), running **independently in parallel with the live subtitle translation engine (port `1249`) without interference**; both share the same static GGUF model file on disk (shared via read-only `mmap` page cache without redundant disk usage), with dedicated context budgets (Quick Translate supports a 4096 context window and 1200-character automatic chunking) and idle auto-unload mechanisms.
+- **Detail Mode**: powered by DeepSeek official API or base model services (currently active engine), using default application sampling parameters without extra configuration clutter.
 - In Detail mode the result read-aloud button is disabled by default: select text in the result box to enable it, and only the selected text is read. Quick mode still reads the whole result in one click. When the button is unavailable, it shows a bilingual hint and keeps the standard arrow cursor. A single click inside the result box clears the selection, and reopening the panel also resets it.
 - The result box supports basic Markdown: headings, lists, blockquotes, code blocks, horizontal rules, bold, italic, inline code, strikethrough, and links. Tables and deep heading levels are shown as plain text.
 - The result box uses a native selectable text view with `⌘C`, `⌘A`, and context-menu copy, a subtle rounded container, and an accent selection border.
-- Providers: TTF, Mference, OpenAI-compatible services, or DeepSeek; dedicated prompt, thinking disabled by default.
+- Configuration is consolidated under "Service Manager → Quick Translate": Settings now strictly preserves application and model settings, removing translation model, provider, or sampling clutter.
+- Dedicated DeepSeek configuration (API Key / Base URL / Model) is completely isolated from main Model Settings; native floating panels call the local gateway `/api/translate/v1` where the backend selects the appropriate engine based on mode.
 - If the service is unreachable, it retries the connection three times before showing a bilingual error. The old 3-second hard timeout is gone, so longer Detail results can complete normally.
 
 ---
@@ -269,10 +273,11 @@ Builds the Swift native shell, frontend assets, and bundled runtimes, then insta
 ### Models and knowledge base
 
 - Base models: prepare TTF / Mference repositories and weights yourself, connect another OpenAI-compatible service, or configure a DeepSeek API key in Settings.
-- Speech input model: SenseVoice Q8_0 is bundled (no in-app download; if missing, place it manually under `~/Library/Application Support/SimpleUI/models/`).
+- Speech input model: Confucius4-R2T2 Q8_0 (~2.31 GB), can be downloaded with one-click speed testing and resumable transfer in "Service Manager → Speech Input" or "Live Subtitles"; shares the same static weights with the subtitle service without duplicate downloads or storage.
 - Voice synthesis model: Download Qwen3-TTS 1.7B (~2.5 GB) via one-click speed-tested download under Service Manager → Voice Synthesis. The speech codec is byte-identical to the previous release, so integrity checks reuse it.
 - Visual OCR model: Download PaddleOCR-VL 1.6 (~1.09 GB) via one-click speed-tested download under Service Manager → Visual OCR.
 - Subtitle models: download in Service Manager → Live Subtitles; the set includes R2T2, SaT, Index-Translate, and the tokenizer.
+- Quick Translate model: download in "Service Manager → Quick Translate" or directly reuse the Index-Translate-2B Q4_K_M weights (~1.25 GB) from Live Subtitles.
 - Offline wiki: select a local ZIM file under Service Manager → Knowledge Base.
 
 ---
@@ -281,18 +286,19 @@ Builds the Swift native shell, frontend assets, and bundled runtimes, then insta
 
 ```text
 SimpleUI/
-├── src/                  React frontend (chat, Markdown/KaTeX, wiki, subtitles, OCR, settings)
+├── src/                  React frontend (chat, Markdown/KaTeX, wiki, subtitles, OCR, unified Service Manager)
 ├── server/               Node proxy and managed services
-│   ├── proxy.js          HTTP/SSE entry (`:31235`)
-│   ├── ocr_service.js    PaddleOCR-VL management service
-│   ├── tts_service.js    Qwen3-TTS management service
-│   ├── subtitle_service.js Subtitle pipeline service
-│   ├── asr_service.js    SenseVoice native ASR service
-│   ├── wiki_service.js   Kiwix offline encyclopedia service
+│   ├── proxy.js          HTTP/SSE entry and multi-layer process watchdog (`:31235`)
+│   ├── translate_service.js Index-Translate-2B standalone on-device translation service (`:1248`)
+│   ├── ocr_service.js    PaddleOCR-VL management service (`:1238`)
+│   ├── tts_service.js    Qwen3-TTS management service (`:1237`)
+│   ├── subtitle_service.js Subtitle pipeline service (ASR `:1250` / NMT `:1249`)
+│   ├── asr_service.js    Confucius4-R2T2 native ASR service (`:1236`)
+│   ├── wiki_service.js   Kiwix offline encyclopedia service (`:31236`)
 │   ├── ocr/              Python MLX-VLM OCR engine
 │   ├── tts/              Python MLX-Audio TTS engine
 │   └── subtitles/        Subtitle helper / segmentation / translation modules
-├── mac_app/              Swift native app (main window, Spotlight, Quick Translate, subtitle overlay, screen capture, hotkeys)
+├── mac_app/              Swift native app (main window, Spotlight, Quick Translate, subtitle overlay, screen capture, voice capsule, multi-layer safe exit cleanup)
 ├── bin/                  Kiwix / audio.cpp / llama.cpp / subtitle helper
 ├── scripts/              Build, sync, and test scripts
 └── build_mac_app.sh      macOS app build & install

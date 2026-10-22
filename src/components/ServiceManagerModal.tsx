@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { AppSettings, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, VoicePermissionStatus, SubtitleServiceStatus, TtsServiceStatus, OcrServiceStatus, OcrConfig } from '../types/chat';
-import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ASRServiceAPI, SubtitleServiceAPI, TtsServiceAPI, OcrServiceAPI } from '../services/api';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { AppSettings, WikiStatusInfo, AsrServiceStatus, VoicePermissionStatus, SubtitleServiceStatus, TtsServiceStatus, OcrServiceStatus, OcrConfig, TranslateServiceStatus } from '../types/chat';
+import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ASRServiceAPI, SubtitleServiceAPI, TtsServiceAPI, OcrServiceAPI, TranslateServiceAPI } from '../services/api';
 import { resolveLanguage, formatArticleCount, translations, Language, TranslationKeys } from '../i18n';
 import {
   SERVICE_STATE_CARD_DOT_CLASS,
@@ -8,7 +8,7 @@ import {
   deriveServiceState,
   formatServiceStateText,
 } from '../utils/serviceState';
-import { X, RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen, FileText, Check, Loader2, Volume2, ScanText } from 'lucide-react';
+import { X, RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen, FileText, Check, Loader2, Volume2, ScanText, Download, Languages, Cpu, Eye, EyeOff, KeyRound } from 'lucide-react';
 
 interface ServiceManagerModalProps {
   isOpen: boolean;
@@ -52,18 +52,6 @@ const SVC_CARD_DEFAULTS_MFERENCE: Partial<ModelServiceConfig> = {
   idleAutoResetMinutes: 15,
 };
 
-// 语音识别服务卡片默认值（与后端 asr_service.js DEFAULT_ASR_CONFIG 保持一致）
-const ASR_CARD_DEFAULTS: Partial<AsrServiceConfig> = {
-  port: 1236,
-  backend: 'metal',
-  threads: 4,
-  language: 'auto',
-  enableItn: true,
-  audioChunkMode: 'none',
-  audioChunkDurationSec: 30,
-  keepTags: false,
-};
-
 // 语音合成服务卡片默认值（与后端 tts_service.js DEFAULT_CONFIG 保持一致）
 const TTS_CARD_DEFAULTS = {
   voice: 'serena',
@@ -93,6 +81,11 @@ const TTS_PARAM_FIELDS: Array<{
   { key: 'maxTokens', labelKey: 'ttsMaxTokens', min: 128, max: 4096, step: 64 },
 ];
 
+// 语音识别服务卡片默认值
+const ASR_CARD_DEFAULTS = {
+  idleUnloadMin: 30,
+};
+
 // 视觉图文识别服务卡片默认值
 const OCR_CARD_DEFAULTS: {
   task: OcrConfig['task'];
@@ -102,6 +95,12 @@ const OCR_CARD_DEFAULTS: {
   task: 'ocr',
   resolution: 'high',
   idleUnloadMin: 30,
+};
+
+// 快速翻译服务：详解模式的 DeepSeek 默认值（与服务端 DEFAULT_TRANSLATE_CONFIG 一致）
+const TRANSLATE_DEFAULTS = {
+  baseUrl: 'https://api.deepseek.com',
+  modelId: 'deepseek-flash',
 };
 
 /**
@@ -259,9 +258,12 @@ const IdleTimeoutSelector: React.FC<{
 };
 
 /**
- * 服务管理界面：三项受管服务（基础模型 / 知识库 / 语音识别）的全部启停与参数配置。
+ * 服务管理界面：全部受管服务（基础模型 / 知识库 / 语音识别 / 语音合成 / 实时字幕 /
+ * 快速翻译 / 视觉识别）的启停、模型下载与参数配置。
  *
  * 从 SettingsModal 里独立出来——设置界面只留「应用设置」与「模型设置」两张卡片。
+ * 快速翻译卡片是「快捷翻译」配置的唯一入口：快速模式复用实时字幕的翻译小模型
+ * （同一份文件 / 运行时 / 下载器），详解模式只暴露 DeepSeek API 与基础模型服务的切换。
  * 视觉与交互（弹窗外壳、卡片样式、按钮样式、Esc 关闭）与设置界面完全一致。
  */
 export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
@@ -309,11 +311,9 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
   const logsOpenRef = useRef(logsOpen);
   logsOpenRef.current = logsOpen;
 
-  // ---- 语音识别服务（SenseVoice / audio.cpp）----
+  // ---- 语音识别服务（Confucius4-R2T2 / audio.cpp）----
   const [asrStatus, setAsrStatus] = useState<AsrServiceStatus | null>(null);
-  const [asrForm, setAsrForm] = useState<Partial<AsrServiceConfig>>({});
   const [asrBusy, setAsrBusy] = useState<string | null>(null);
-  const [asrMsg, setAsrMsg] = useState<{ text: string; isError: boolean } | null>(null);
   const [asrLogsOpen, setAsrLogsOpen] = useState(false);
   const [asrLogLines, setAsrLogLines] = useState<string[] | null>(null);
   const asrLogsOpenRef = useRef(asrLogsOpen);
@@ -324,6 +324,60 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
   // ---- 实时字幕服务（Confucius4-R2T2 Metal + Index-Translate-2B）----
   const [subtitleStatus, setSubtitleStatus] = useState<SubtitleServiceStatus | null>(null);
   const [subtitleBusy, setSubtitleBusy] = useState(false);
+
+  // ---- 快速翻译服务（快速模式复用字幕翻译小模型 · 详解模式走 DeepSeek / 基础模型服务）----
+  const [translateStatus, setTranslateStatus] = useState<TranslateServiceStatus | null>(null);
+  const [translateBusy, setTranslateBusy] = useState(false);
+  const [translateForm, setTranslateForm] = useState<{
+    baseLang: 'zh' | 'en';
+    detailProvider: 'deepseek' | 'base';
+    apiKey: string;
+    baseUrl: string;
+    modelId: string;
+  }>({
+    baseLang: 'zh',
+    detailProvider: 'deepseek',
+    apiKey: '',
+    baseUrl: TRANSLATE_DEFAULTS.baseUrl,
+    modelId: TRANSLATE_DEFAULTS.modelId,
+  });
+  const [showTranslateKey, setShowTranslateKey] = useState(false);
+  const [isApplyingTranslate, setIsApplyingTranslate] = useState(false);
+  const [translateMsg, setTranslateMsg] = useState<{ text: string; isError: boolean } | null>(null);
+
+  // 各卡片操作反馈提示（保存配置/路径应用）的定时器：展示 3.5 秒后自动消失，弹窗开关时彻底清空
+  const msgTimersRef = useRef<{ [k: string]: ReturnType<typeof setTimeout> | null }>({});
+
+  const showFeedback = useCallback(
+    (
+      key: string,
+      setter: React.Dispatch<React.SetStateAction<{ text: string; isError: boolean } | null>>,
+      msg: { text: string; isError: boolean }
+    ) => {
+      setter(msg);
+      if (msgTimersRef.current[key]) {
+        clearTimeout(msgTimersRef.current[key]!);
+      }
+      msgTimersRef.current[key] = setTimeout(() => {
+        setter(null);
+        msgTimersRef.current[key] = null;
+      }, msg.isError ? 5000 : 3500);
+    },
+    []
+  );
+
+  const clearAllFeedback = useCallback(() => {
+    Object.values(msgTimersRef.current).forEach((timer) => {
+      if (timer) clearTimeout(timer);
+    });
+    msgTimersRef.current = {};
+    setPathMessage(null);
+    setSvcMsg(null);
+    setAsrMsg(null);
+    setTtsMsg(null);
+    setTranslateMsg(null);
+    setOcrMsg(null);
+  }, []);
 
   const refreshSvcStatus = async () => {
     const s = await ModelServiceAPI.getStatus();
@@ -361,6 +415,92 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     } finally {
       setSubtitleBusy(false);
     }
+  };
+
+  // ---- 快速翻译服务 ----
+  // 与字幕服务同一套「受管服务」形态：独立的进程与端口，只有模型文件与下载器是共用的。
+  const refreshTranslateStatus = async (syncForm = false) => {
+    const s = await TranslateServiceAPI.getStatus();
+    if (s) {
+      setTranslateStatus(s);
+      // 只在打开面板时把服务端配置回填到表单，轮询不覆盖用户正在编辑的内容
+      if (syncForm) {
+        setTranslateForm({
+          baseLang: s.baseLang,
+          detailProvider: s.detailProvider,
+          apiKey: '',
+          baseUrl: s.deepseek?.baseUrl || TRANSLATE_DEFAULTS.baseUrl,
+          modelId: s.deepseek?.modelId || TRANSLATE_DEFAULTS.modelId,
+        });
+      }
+    }
+    return s;
+  };
+
+  /** 保存配置：基准语言 + 详解后端 + DeepSeek 一起提交（与其他卡片的「应用」一致） */
+  const handleTranslateApply = async () => {
+    setIsApplyingTranslate(true);
+    setTranslateMsg(null);
+    try {
+      const patch: Parameters<typeof TranslateServiceAPI.updateConfig>[0] = {
+        baseLang: translateForm.baseLang,
+        detailProvider: translateForm.detailProvider,
+        deepseek: {
+          baseUrl: translateForm.baseUrl,
+          modelId: translateForm.modelId,
+        },
+      };
+      // API Key 不回传明文：留空表示「保持已有 Key 不变」，只有真输了新 Key 才下发
+      const typedKey = translateForm.apiKey.trim();
+      if (typedKey && patch.deepseek) patch.deepseek.apiKey = typedKey;
+      const res = await TranslateServiceAPI.updateConfig(patch);
+      if (res.ok) {
+        showFeedback('translate', setTranslateMsg, { text: t('translateConfigSaved'), isError: false });
+        setTranslateForm((prev) => ({ ...prev, apiKey: '' }));
+        await refreshTranslateStatus();
+      } else {
+        showFeedback('translate', setTranslateMsg, { text: t('translateActionFailed'), isError: true });
+      }
+    } catch {
+      showFeedback('translate', setTranslateMsg, { text: t('translateActionFailed'), isError: true });
+    } finally {
+      setIsApplyingTranslate(false);
+    }
+  };
+
+  const handleTranslateCardReset = () => {
+    setTranslateForm({
+      baseLang: 'zh',
+      detailProvider: 'deepseek',
+      apiKey: '',
+      baseUrl: TRANSLATE_DEFAULTS.baseUrl,
+      modelId: TRANSLATE_DEFAULTS.modelId,
+    });
+    setTranslateMsg(null);
+  };
+
+  const handleTranslateDownload = async () => {
+    setTranslateBusy(true);
+    try {
+      await TranslateServiceAPI.startDownload();
+      await Promise.all([refreshTranslateStatus(), refreshSubtitleStatus()]);
+    } finally {
+      setTranslateBusy(false);
+    }
+  };
+
+  const handleTranslateCancelDownload = async () => {
+    setTranslateBusy(true);
+    try {
+      await TranslateServiceAPI.cancelDownload();
+      await Promise.all([refreshTranslateStatus(), refreshSubtitleStatus()]);
+    } finally {
+      setTranslateBusy(false);
+    }
+  };
+
+  const handleTranslateOpenDir = async () => {
+    await TranslateServiceAPI.openModelsDir();
   };
 
   // ---- 文字转语音服务（Qwen3-TTS 1.7B CustomVoice · MLX 6bit · 每次生成现场加载）----
@@ -406,13 +546,13 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     try {
       const res = await TtsServiceAPI.updateConfig(ttsForm);
       if (res.ok) {
-        setTtsMsg({ text: t('ttsApplySaved'), isError: false });
+        showFeedback('tts', setTtsMsg, { text: t('ttsApplySaved'), isError: false });
         await refreshTtsStatus();
       } else {
-        setTtsMsg({ text: t('ttsActionFailed'), isError: true });
+        showFeedback('tts', setTtsMsg, { text: t('ttsActionFailed'), isError: true });
       }
     } catch {
-      setTtsMsg({ text: t('ttsActionFailed'), isError: true });
+      showFeedback('tts', setTtsMsg, { text: t('ttsActionFailed'), isError: true });
     } finally {
       setIsApplyingTts(false);
     }
@@ -469,13 +609,13 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     try {
       const res = await OcrServiceAPI.updateConfig(ocrForm);
       if (res.ok) {
-        setOcrMsg({ text: t('ocrApplySaved'), isError: false });
+        showFeedback('ocr', setOcrMsg, { text: t('ocrApplySaved'), isError: false });
         await refreshOcrStatus();
       } else {
-        setOcrMsg({ text: t('ocrActionFailed'), isError: true });
+        showFeedback('ocr', setOcrMsg, { text: t('ocrActionFailed'), isError: true });
       }
     } catch {
-      setOcrMsg({ text: t('ocrActionFailed'), isError: true });
+      showFeedback('ocr', setOcrMsg, { text: t('ocrActionFailed'), isError: true });
     } finally {
       setIsApplyingOcr(false);
     }
@@ -552,9 +692,8 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
   // 打开时拉取各服务的状态与配置，之后 3s 轮询 + SSE 实时监听字幕与下载进度（弹窗打开期间）
   useEffect(() => {
     let subtitleEs: EventSource | null = null;
+    clearAllFeedback();
     if (isOpen) {
-      setPathMessage(null);
-
       WikiAPI.getStatus().then((status) => {
         setWikiStatus(status);
         if (status?.zimPath) {
@@ -575,14 +714,16 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
         }
       });
 
-      refreshAsrStatus();
-      ASRServiceAPI.getConfig().then((cfg) => {
-        if (cfg) {
-          setAsrForm(cfg);
+      refreshAsrStatus().then((s) => {
+        if (s) {
+          setAsrForm({
+            idleUnloadMin: s.idleUnloadMin ?? ASR_CARD_DEFAULTS.idleUnloadMin,
+          });
         }
       });
 
       refreshSubtitleStatus();
+      refreshTranslateStatus(true);
       refreshTtsStatus().then((s) => {
         if (s?.config) {
           setTtsForm({
@@ -621,6 +762,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
         refreshSvcStatus();
         refreshAsrStatus();
         refreshSubtitleStatus();
+        refreshTranslateStatus();
         refreshTtsStatus();
         refreshOcrStatus();
         if (logsOpenRef.current) {
@@ -638,13 +780,13 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
       setLogsOpen(false);
       logsOpenRef.current = false;
       setLogLines(null);
-      setSvcMsg(null);
       setAsrLogsOpen(false);
       asrLogsOpenRef.current = false;
       setAsrLogLines(null);
-      setAsrMsg(null);
+      clearAllFeedback();
     }
     return () => {
+      clearAllFeedback();
       if (subtitleEs) {
         subtitleEs.close();
         subtitleEs = null;
@@ -737,9 +879,9 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
         : { engine: selectedEngine, projectDir: targetDir };
       const r = await ModelServiceAPI.updateConfig(partial, true);
       if (r.success) {
-        setSvcMsg({ text: t('modelServicePathApplied'), isError: false });
+        showFeedback('svc', setSvcMsg, { text: t('modelServicePathApplied'), isError: false });
       } else {
-        setSvcMsg({ text: t('modelServiceActionFailed'), isError: true });
+        showFeedback('svc', setSvcMsg, { text: t('modelServiceActionFailed'), isError: true });
       }
       await refreshSvcStatus();
     } finally {
@@ -768,12 +910,12 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
       const r = await ModelServiceAPI.updateConfig(payload, true);
       if (r.success) {
         onApiPortChange?.(targetPort);
-        setSvcMsg({
+        showFeedback('svc', setSvcMsg, {
           text: r.restarted ? t('modelServiceApplyDone') : t('modelServiceApplySaved'),
           isError: false,
         });
       } else {
-        setSvcMsg({ text: t('modelServiceActionFailed'), isError: true });
+        showFeedback('svc', setSvcMsg, { text: t('modelServiceActionFailed'), isError: true });
       }
       await refreshSvcStatus();
     } finally {
@@ -791,37 +933,52 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
   };
 
   // ---- 语音识别服务动作 ----
-  const handleAsrToggle = async (next: boolean) => {
-    setAsrBusy('toggle');
+  const [asrForm, setAsrForm] = useState<{ idleUnloadMin?: number }>({});
+  const [isApplyingAsr, setIsApplyingAsr] = useState(false);
+  const [asrMsg, setAsrMsg] = useState<{ text: string; isError: boolean } | null>(null);
+
+  const handleAsrApply = async () => {
+    setIsApplyingAsr(true);
+    setAsrMsg(null);
     try {
-      await ASRServiceAPI.updateConfig({ enabled: next });
-      await ASRServiceAPI.control(next ? 'start' : 'stop');
-      await refreshAsrStatus();
+      const res = await ASRServiceAPI.saveConfig({
+        idleUnloadMin: asrForm.idleUnloadMin ?? asrStatus?.idleUnloadMin ?? 30,
+      });
+      if (res.success) {
+        showFeedback('asr', setAsrMsg, { text: t('asrApplySaved'), isError: false });
+        await refreshAsrStatus();
+      } else {
+        showFeedback('asr', setAsrMsg, { text: res.error || t('asrActionFailed'), isError: true });
+      }
+    } catch {
+      showFeedback('asr', setAsrMsg, { text: t('asrActionFailed'), isError: true });
+    } finally {
+      setIsApplyingAsr(false);
+    }
+  };
+
+  const handleAsrDownload = async () => {
+    setAsrBusy('download');
+    try {
+      await ASRServiceAPI.startDownload();
+      await Promise.all([refreshAsrStatus(), refreshSubtitleStatus()]);
     } finally {
       setAsrBusy(null);
     }
   };
 
-  /** 路径 + 参数一并落盘；运行中则热重启（生成新的 audiocpp server.json） */
-  const handleAsrApply = async () => {
-    setAsrBusy('apply');
-    setAsrMsg(null);
+  const handleAsrCancelDownload = async () => {
+    setAsrBusy('cancel-download');
     try {
-      const r = await ASRServiceAPI.updateConfig(
-        {
-          ...asrForm,
-        },
-        true
-      );
-      if (r.success) {
-        setAsrMsg({ text: r.restarted ? t('asrApplyDone') : t('asrApplySaved'), isError: false });
-      } else {
-        setAsrMsg({ text: t('asrActionFailed'), isError: true });
-      }
-      await refreshAsrStatus();
+      await ASRServiceAPI.cancelDownload();
+      await Promise.all([refreshAsrStatus(), refreshSubtitleStatus()]);
     } finally {
       setAsrBusy(null);
     }
+  };
+
+  const handleAsrOpenDir = async () => {
+    await ASRServiceAPI.openModelsDir();
   };
 
   const toggleAsrLogs = async () => {
@@ -834,12 +991,18 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
   };
 
   // ---- 各卡片独立的「恢复默认」：仅把该卡片表单恢复为默认值，需点保存/应用才会落盘 ----
-  const cardResetButton = (onClick: () => void) => (
+  const cardResetButton = (onClick?: () => void, disabled?: boolean) => (
     <div className="mt-3 flex">
       <button
         type="button"
-        onClick={onClick}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-zinc-500 dark:text-[#8c929f] hover:text-zinc-900 dark:hover:text-white hover:bg-black/5 dark:hover:bg-[#2b2d35] transition-colors cursor-pointer"
+        disabled={disabled}
+        onClick={disabled ? undefined : onClick}
+        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors ${
+          disabled
+            ? 'text-zinc-400 dark:text-zinc-600 opacity-40 cursor-not-allowed select-none'
+            : 'text-zinc-500 dark:text-[#8c929f] hover:text-zinc-900 dark:hover:text-white hover:bg-black/5 dark:hover:bg-[#2b2d35] cursor-pointer'
+        }`}
+        title={disabled ? t('restoreDefaultsDisabledTip') : undefined}
       >
         <RotateCcw className="w-3.5 h-3.5" />
         <span>{t('restoreDefaults')}</span>
@@ -871,7 +1034,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
   };
 
   const handleAsrCardReset = () => {
-    setAsrForm((prev) => ({ ...prev, ...ASR_CARD_DEFAULTS }));
+    setAsrForm({ ...ASR_CARD_DEFAULTS });
     setAsrMsg(null);
   };
 
@@ -927,12 +1090,12 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
       const res = await WikiAPI.saveConfig({ zimPath: customZimPath.trim() }, { saveOnly: true });
       if (res.success !== false) {
         setWikiStatus(res);
-        setPathMessage({ text: t('modelServicePathApplied'), isError: false });
+        showFeedback('kb', setPathMessage, { text: t('modelServicePathApplied'), isError: false });
       } else {
-        setPathMessage({ text: t('kbPathFileNotFound'), isError: true });
+        showFeedback('kb', setPathMessage, { text: t('kbPathFileNotFound'), isError: true });
       }
     } catch {
-      setPathMessage({ text: t('kbPathFileNotFound'), isError: true });
+      showFeedback('kb', setPathMessage, { text: t('kbPathFileNotFound'), isError: true });
     } finally {
       setIsApplyingPath(false);
     }
@@ -950,15 +1113,15 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
       );
       if (res.success !== false) {
         setWikiStatus(res);
-        setPathMessage({
+        showFeedback('kb', setPathMessage, {
           text: res.restarted ? t('modelServiceApplyDone') : t('modelServiceApplySaved'),
           isError: false,
         });
       } else {
-        setPathMessage({ text: t('kbPathFileNotFound'), isError: true });
+        showFeedback('kb', setPathMessage, { text: t('kbPathFileNotFound'), isError: true });
       }
     } catch {
-      setPathMessage({ text: t('kbPathFileNotFound'), isError: true });
+      showFeedback('kb', setPathMessage, { text: t('kbPathFileNotFound'), isError: true });
     } finally {
       setIsApplyingPath(false);
     }
@@ -983,6 +1146,14 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     currentEngineStatus?.status === 'loading' ||
     currentEngineStatus?.status === 'starting' ||
     currentEngineStatus?.status === 'restart';
+
+  // 快速翻译服务：下载进度直接引用字幕服务的 downloadState，
+  // 但只有「正在下载翻译模型」才算本卡片的下载中，避免字幕 ASR / 断句模型的下载串台显示。
+  const translateDl = translateStatus?.quick?.downloadState;
+  const translateDlActive = Boolean(
+    translateDl?.active &&
+      (translateDl.targetModel === 'translate' || translateDl.currentModelKey === 'translate')
+  );
 
   if (!isOpen) return null;
 
@@ -1660,292 +1831,336 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
             {cardResetButton(handleSvcCardReset)}
           </div>
 
-          {/* 语音输入服务卡片（SenseVoice / audio.cpp） */}
+          {/* 语音输入服务卡片（Confucius4-R2T2 / audio.cpp） */}
           <div className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
-            {/* 头部：标题 + 引擎徽标 + 运行状态指示 */}
-            <div className="flex items-start justify-between mb-2.5">
-              <div className="flex items-center gap-2 pt-0.5">
-                <Mic className="w-4 h-4 text-violet-600 dark:text-violet-400 flex-shrink-0" />
-                <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
-                  {t('asrServiceTitle')}
-                </span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded-md font-mono bg-violet-500/10 text-violet-600 dark:text-violet-400 font-medium">
-                  {t('asrEngineTag')}
-                </span>
-              </div>
-              {(() => {
-                const cardState = deriveServiceState({ status: asrStatus?.status });
-                return (
-                  <div className="flex flex-col items-end gap-1">
-                    <div className="flex items-center gap-1.5 text-[11px]">
-                      <span
-                        className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                          SERVICE_STATE_CARD_DOT_CLASS[cardState]
-                        }`}
-                      />
-                      <span className={SERVICE_STATE_CARD_TEXT_CLASS[cardState]}>
-                        {formatServiceStateText(cardState, t, asrStatus?.port)}
+            {(() => {
+              const asrDownload = asrStatus?.download?.active
+                ? asrStatus.download
+                : subtitleStatus?.downloadState?.active
+                ? subtitleStatus.downloadState
+                : asrStatus?.download || subtitleStatus?.downloadState;
+
+              const isAsrDownloading = Boolean(
+                asrDownload?.active &&
+                (asrDownload.currentModelKey === 'asr' || asrDownload.targetModel === 'asr' || asrDownload.targetModel === 'all')
+              );
+
+              const isAsrModelReady = Boolean(
+                asrStatus?.model?.ready ?? asrStatus?.checks?.model ?? subtitleStatus?.modelsStatus?.asr?.ready
+              );
+
+              const cardState = deriveServiceState({
+                status: asrStatus?.status,
+                running: asrStatus?.running,
+                loaded: isAsrModelReady,
+              });
+
+              return (
+                <>
+                  {/* 头部：标题 + 引擎徽标 + 运行状态指示 */}
+                  <div className="flex items-start justify-between mb-2.5">
+                    <div className="flex items-center gap-2 pt-0.5">
+                      <Mic className="w-4 h-4 text-violet-600 dark:text-violet-400 flex-shrink-0" />
+                      <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
+                        {t('asrServiceTitle')}
+                      </span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md font-mono bg-violet-500/10 text-violet-600 dark:text-violet-400 font-medium">
+                        {t('asrEngineTag')}
                       </span>
                     </div>
-                    <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
-                      {cardState === 'online'
-                        ? t('asrDetailReady')
-                        : cardState === 'starting'
-                        ? t('asrDetailStarting')
-                        : t('serviceDisabled')}
-                    </span>
-                  </div>
-                );
-              })()}
-            </div>
-
-            {/* 功能定位与快捷键横幅 */}
-            <div className="flex items-center justify-between gap-2 mb-3 px-2.5 py-2 rounded-lg bg-violet-500/5 dark:bg-violet-500/10 border border-violet-500/20">
-              <div className="min-w-0">
-                <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
-                  {t('asrServiceLifecycleTitle')}
-                </div>
-                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 leading-snug">
-                  {t('asrServiceLifecycleHint')}
-                </div>
-              </div>
-              <kbd className="flex-shrink-0 px-2 py-1 rounded-md border border-black/10 dark:border-white/15 bg-white dark:bg-[#202127] text-[10px] font-mono text-zinc-700 dark:text-zinc-200 whitespace-nowrap shadow-sm">
-                {t('asrHotkeyTrigger')}
-              </kbd>
-            </div>
-
-            {/* 服务总开关 */}
-            <div className="flex items-center justify-between gap-3 pb-2.5 mb-2.5 border-b border-black/5 dark:border-white/5">
-              <button
-                type="button"
-                onClick={() => handleAsrToggle(!(asrStatus?.enabled ?? true))}
-                disabled={asrBusy !== null}
-                className="flex-1 min-w-0 text-left cursor-pointer disabled:cursor-not-allowed"
-              >
-                <div className="font-medium text-zinc-700 dark:text-zinc-200 text-xs">{t('asrServiceToggle')}</div>
-                <div className="text-[10px] text-zinc-500 dark:text-zinc-400">{t('asrServiceToggleDesc')}</div>
-              </button>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={asrStatus?.enabled ?? true}
-                disabled={asrBusy !== null}
-                onClick={() => handleAsrToggle(!(asrStatus?.enabled ?? true))}
-                className={`relative w-10 h-[22px] rounded-full transition-colors flex-shrink-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none ${
-                  asrStatus?.enabled ?? true ? 'bg-violet-600' : 'bg-zinc-300 dark:bg-zinc-600'
-                }`}
-              >
-                <span
-                  className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] rounded-full bg-white shadow transition-transform duration-200 ${
-                    asrStatus?.enabled ?? true ? 'translate-x-[18px]' : 'translate-x-0'
-                  }`}
-                />
-              </button>
-            </div>
-
-            {/* 内置运行环境与模型状态 */}
-            <div className="space-y-2 mb-3">
-              {/* 内置运行环境 */}
-              <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                      asrStatus?.checks?.binary ? 'bg-emerald-500' : 'bg-red-500'
-                    }`}
-                  />
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
-                      {t('runtimeLabel')}
-                    </div>
-                    <div className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate">
-                      {t('asrRuntimeDesc')}
+                    <div className="flex flex-col items-end gap-1">
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        <span
+                          className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                            SERVICE_STATE_CARD_DOT_CLASS[cardState]
+                          }`}
+                        />
+                        <span className={SERVICE_STATE_CARD_TEXT_CLASS[cardState]}>
+                          {formatServiceStateText(cardState, t, asrStatus?.port)}
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
+                        {asrDownload?.active
+                          ? `${t('asrDetailDownloading')} (${(asrDownload.progressPercent || 0).toFixed(1)}%)`
+                          : asrStatus?.status === 'loading'
+                          ? t('asrDetailLoading')
+                          : asrStatus?.running
+                          ? t('asrDetailActive')
+                          : isAsrModelReady
+                          ? t('asrDetailStandby')
+                          : t('asrDetailMissing')}
+                      </span>
                     </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  {asrStatus?.checks?.binary ? (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
-                      <Check className="w-3 h-3" />
-                      <span>{t('runtimeBundledReady')}</span>
-                    </span>
-                  ) : (
-                    <span className="text-[10px] text-red-500 font-medium">
-                      {t('runtimeMissing')}
-                    </span>
+
+                  {/* 功能定位与快捷键横幅 */}
+                  <div className="flex items-center justify-between gap-2 mb-3 px-2.5 py-2 rounded-lg bg-violet-500/5 dark:bg-violet-500/10 border border-violet-500/20">
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
+                        {t('asrServiceLifecycleTitle')}
+                      </div>
+                      <div className="text-[10px] text-zinc-500 dark:text-zinc-400 leading-snug">
+                        {t('asrServiceLifecycleHint')}
+                      </div>
+                    </div>
+                    <kbd className="flex-shrink-0 px-2 py-1 rounded-md border border-black/10 dark:border-white/15 bg-white dark:bg-[#202127] text-[10px] font-mono text-zinc-700 dark:text-zinc-200 whitespace-nowrap shadow-sm">
+                      {t('asrHotkeyTrigger')}
+                    </kbd>
+                  </div>
+
+                  {/* 内置运行环境与模型状态 */}
+                  <div className="space-y-2 mb-3">
+                    {/* 内置运行环境 */}
+                    <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                            asrStatus?.checks?.binary ? 'bg-emerald-500' : 'bg-red-500'
+                          }`}
+                        />
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
+                            {t('runtimeLabel')}
+                          </div>
+                          <div className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate">
+                            {t('asrRuntimeDesc')}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {asrStatus?.checks?.binary ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
+                            <Check className="w-3 h-3" />
+                            <span>{t('runtimeBundledReady')}</span>
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-red-500 font-medium">
+                            {t('runtimeMissing')}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* ASR 模型状态 */}
+                    <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                            isAsrModelReady
+                              ? 'bg-emerald-500'
+                              : isAsrDownloading
+                              ? 'bg-violet-500 animate-pulse'
+                              : 'bg-red-500'
+                          }`}
+                        />
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
+                            {t('asrModelLabel')}
+                          </div>
+                          <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
+                            {isAsrModelReady
+                              ? `${asrStatus?.model?.sizeDesc || '2.31 GB'} · ${t('runtimeBundledReady')}`
+                              : t('asrModelDesc')}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {isAsrModelReady ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
+                            <Check className="w-3 h-3" />
+                            <span>{t('asrModelReady')}</span>
+                          </span>
+                        ) : isAsrDownloading ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-violet-500/10 text-violet-600 dark:text-violet-400 text-[10px] font-medium">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            <span>{t('asrDownloading')}</span>
+                          </span>
+                        ) : (
+                          <>
+                            <span className="text-[10px] text-red-500 font-medium">
+                              {t('asrModelMissing')}
+                            </span>
+                            <button
+                              type="button"
+                              disabled={asrBusy !== null}
+                              onClick={handleAsrDownload}
+                              className="px-2 py-1 rounded-md text-[11px] font-medium transition-all active:scale-95 disabled:opacity-50 text-white bg-violet-600 hover:bg-violet-500 cursor-pointer"
+                            >
+                              {t('asrDownloadBtn')}
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 自动测速与实时下载进度面板 */}
+                  {isAsrDownloading && asrDownload && (
+                    <div className="mb-3 p-2.5 rounded-lg bg-violet-500/5 dark:bg-violet-500/10 border border-violet-500/20 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0 text-[11px] font-medium text-violet-700 dark:text-violet-300">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" />
+                          <span className="truncate">
+                            {asrDownload.phase === 'probing'
+                              ? t('asrProbingSource')
+                              : asrDownload.phase === 'cleaning'
+                              ? t('asrCleaningCache')
+                              : asrDownload.currentModelName || t('asrModelLabel')}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={asrBusy !== null}
+                          onClick={handleAsrCancelDownload}
+                          className="px-2 py-0.5 rounded-md border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 text-[10px] font-medium transition-colors flex-shrink-0 cursor-pointer"
+                        >
+                          {t('asrCancelDownloadBtn')}
+                        </button>
+                      </div>
+
+                      {asrDownload.selectedSource && (
+                        <div className="text-[10px] text-zinc-500 dark:text-zinc-400 flex items-center justify-between">
+                          <span>
+                            {t('asrSelectedSourceLabel')}:{' '}
+                            <strong className="font-medium text-zinc-700 dark:text-zinc-200">
+                              {formatSourceName(asrDownload.selectedSource, t)}
+                            </strong>{' '}
+                            ({asrDownload.selectedSource.latencyMs}ms)
+                          </span>
+                          <span className="font-mono text-violet-600 dark:text-violet-400 font-semibold">
+                            {(asrDownload.progressPercent || 0).toFixed(1)}%
+                          </span>
+                        </div>
+                      )}
+
+                      <div className="w-full h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-violet-500 to-emerald-500 transition-all duration-200"
+                          style={{
+                            width: `${Math.max(
+                              3,
+                              Math.min(100, asrDownload.progressPercent || 0)
+                            )}%`,
+                          }}
+                        />
+                      </div>
+
+                      {asrDownload.phase === 'downloading' && (
+                        <div className="flex items-center justify-between text-[10px] font-mono text-zinc-500 dark:text-zinc-400">
+                          <span>
+                            {(asrDownload.downloadedBytes / (1024 * 1024)).toFixed(1)} MB /{' '}
+                            {(asrDownload.totalBytes / (1024 * 1024)).toFixed(1)} MB
+                          </span>
+                          <span>
+                            {(asrDownload.speedBps / (1024 * 1024)).toFixed(2)} MB/s
+                            {asrDownload.etaSeconds !== null &&
+                            asrDownload.etaSeconds > 0
+                              ? ` · ETA ${Math.floor(asrDownload.etaSeconds / 60)}m${String(
+                                  asrDownload.etaSeconds % 60
+                                ).padStart(2, '0')}s`
+                              : ''}
+                          </span>
+                        </div>
+                      )}
+                    </div>
                   )}
-                </div>
-              </div>
 
-              {/* 模型状态 */}
-              <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                      asrStatus?.checks?.model ? 'bg-emerald-500' : 'bg-red-500'
-                    }`}
-                  />
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
-                      {t('asrModelLabel')}
-                    </div>
-                    <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
-                      {t('asrModelDesc')}
-                    </div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  {asrStatus?.checks?.model ? (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
-                      <Check className="w-3 h-3" />
-                      <span>{t('runtimeBundledReady')}</span>
-                    </span>
-                  ) : (
-                    <span className="text-[10px] text-red-500 font-medium">
-                      {t('asrModelMissing')}
-                    </span>
+                  {/* 下载结果提示 */}
+                  {!isAsrDownloading &&
+                    asrDownload?.phase === 'completed' && (
+                      <div className="mb-2.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                        {t('asrDownloadCompleted')}
+                      </div>
+                    )}
+                  {!isAsrDownloading &&
+                    asrDownload?.phase === 'cancelled' && (
+                      <div className="mb-2.5 text-[11px] text-amber-600 dark:text-amber-400">
+                        {t('asrDownloadCancelled')}
+                      </div>
+                    )}
+                  {!isAsrDownloading &&
+                    asrDownload?.phase === 'error' &&
+                    asrDownload?.error && (
+                      <div className="mb-2.5 text-[11px] text-red-500">
+                        {formatDownloadError(asrDownload.error, t)}
+                      </div>
+                    )}
+
+                  {/* 前置检查错误提示 */}
+                  {asrStatus && !asrStatus.checks.binary && (
+                    <div className="mb-2 text-[10px] text-red-500">{t('asrCheckBinary')}</div>
                   )}
-                </div>
-              </div>
-            </div>
+                  {asrStatus && !asrStatus.checks.model && !isAsrDownloading && (
+                    <div className="mb-2 text-[10px] text-red-500">{t('asrCheckModel')}</div>
+                  )}
 
-            {/* 前置检查错误提示 */}
-            {asrStatus && !asrStatus.checks.binary && (
-              <div className="mt-2 text-[10px] text-red-500">{t('asrCheckBinary')}</div>
-            )}
-            {asrStatus && !asrStatus.checks.model && (
-              <div className="mt-1 text-[10px] text-red-500">{t('asrCheckModel')}</div>
-            )}
-            {/* 服务已启用但未运行，且后端留下了失败原因（如 GGUF 读取失败）时直接摊开 */}
-            {asrStatus && asrStatus.enabled && asrStatus.status === 'stopped' && asrStatus.lastActionLog && (
-              <pre className="mt-1 max-h-24 overflow-y-auto bg-red-500/5 dark:bg-red-500/10 border border-red-500/20 rounded-lg p-2 text-[10px] leading-relaxed font-mono text-red-600 dark:text-red-400 whitespace-pre-wrap break-all">
-                {asrStatus.lastActionLog}
-              </pre>
-            )}
-            {asrMsg && (
-              <div
-                className={`mt-1 text-[11px] ${
-                  asrMsg.isError ? 'text-red-500' : 'text-emerald-600 dark:text-emerald-400 font-medium'
-                }`}
-              >
-                {asrMsg.text}
-              </div>
-            )}
+                  {/* 服务启动失败原因提示 */}
+                  {asrStatus && asrStatus.status === 'stopped' && asrStatus.lastActionLog && (
+                    <pre className="mb-2.5 max-h-24 overflow-y-auto bg-red-500/5 dark:bg-red-500/10 border border-red-500/20 rounded-lg p-2 text-[10px] leading-relaxed font-mono text-red-600 dark:text-red-400 whitespace-pre-wrap break-all">
+                      {asrStatus.lastActionLog}
+                    </pre>
+                  )}
 
-            {/* 识别参数 */}
-            <div className="mt-3">
-              <div className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-1.5">
-                {t('asrParamsTitle')}
-              </div>
-              <div className="grid grid-cols-2 gap-2.5">
-                <div>
-                  <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('asrPortLabel')}</label>
-                  <input
-                    type="number"
-                    min={1024}
-                    max={65535}
-                    value={asrForm.port ?? 1236}
-                    onChange={(e) => setAsrForm({ ...asrForm, port: Number(e.target.value) || 1236 })}
-                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] font-mono focus:border-violet-500 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('asrBackendLabel')}</label>
-                  <select
-                    value={asrForm.backend ?? 'metal'}
-                    onChange={(e) => setAsrForm({ ...asrForm, backend: e.target.value as AsrServiceConfig['backend'] })}
-                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-violet-500 focus:outline-none"
-                  >
-                    <option value="cpu">cpu</option>
-                    <option value="metal">metal</option>
-                    <option value="best">best</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('asrLanguageLabel')}</label>
-                  <select
-                    value={asrForm.language ?? 'auto'}
-                    onChange={(e) => setAsrForm({ ...asrForm, language: e.target.value as AsrServiceConfig['language'] })}
-                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-violet-500 focus:outline-none"
-                  >
-                    <option value="auto">{t('asrLanguageAuto')}</option>
-                    <option value="zh">{t('asrLanguageZh')}</option>
-                    <option value="en">{t('asrLanguageEn')}</option>
-                    <option value="yue">{t('asrLanguageYue')}</option>
-                    <option value="ja">{t('asrLanguageJa')}</option>
-                    <option value="ko">{t('asrLanguageKo')}</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('asrThreadsLabel')}</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={64}
-                    value={asrForm.threads ?? 4}
-                    onChange={(e) => setAsrForm({ ...asrForm, threads: Number(e.target.value) || 4 })}
-                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] font-mono focus:border-violet-500 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('asrChunkModeLabel')}</label>
-                  <select
-                    value={asrForm.audioChunkMode ?? 'none'}
-                    onChange={(e) =>
-                      setAsrForm({ ...asrForm, audioChunkMode: e.target.value as AsrServiceConfig['audioChunkMode'] })
-                    }
-                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-violet-500 focus:outline-none"
-                  >
-                    <option value="none">{t('asrChunkNone')}</option>
-                    <option value="auto">{t('asrChunkAuto')}</option>
-                    <option value="fixed">{t('asrChunkFixed')}</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('asrChunkDurationLabel')}</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={300}
-                    value={asrForm.audioChunkDurationSec ?? 30}
-                    onChange={(e) =>
-                      setAsrForm({ ...asrForm, audioChunkDurationSec: Number(e.target.value) || 30 })
-                    }
-                    className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] font-mono focus:border-violet-500 focus:outline-none"
-                  />
-                </div>
-              </div>
+                  {/* 默认配置项：内存闲置释放 */}
+                  <div className="mb-3">
+                    <IdleTimeoutSelector
+                      value={asrForm.idleUnloadMin ?? asrStatus?.idleUnloadMin ?? 30}
+                      onChange={(min) => setAsrForm((prev) => ({ ...prev, idleUnloadMin: min }))}
+                      disabled={asrBusy !== null || isApplyingAsr}
+                      t={t}
+                    />
+                  </div>
 
-              <label className="mt-2.5 flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={asrForm.enableItn ?? true}
-                  onChange={(e) => setAsrForm({ ...asrForm, enableItn: e.target.checked })}
-                  className="w-3.5 h-3.5 accent-violet-600 cursor-pointer"
-                />
-                <span className="text-[11px] text-zinc-600 dark:text-zinc-300">{t('asrItnLabel')}</span>
-              </label>
-              <label className="mt-1.5 flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={asrForm.keepTags ?? false}
-                  onChange={(e) => setAsrForm({ ...asrForm, keepTags: e.target.checked })}
-                  className="w-3.5 h-3.5 accent-violet-600 cursor-pointer"
-                />
-                <span className="text-[11px] text-zinc-600 dark:text-zinc-300">{t('asrKeepTagsLabel')}</span>
-              </label>
+                  {/* 保存配置按钮与反馈 */}
+                  <div className="mb-3 flex items-center justify-between">
+                    <button
+                      type="button"
+                      disabled={asrBusy !== null || isApplyingAsr}
+                      onClick={handleAsrApply}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-violet-600 hover:bg-violet-500 active:scale-[0.98] disabled:opacity-50 text-white font-medium shadow-sm transition-all cursor-pointer"
+                    >
+                      {isApplyingAsr && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                      <span>{isApplyingAsr ? t('asrApplying') : t('asrApplyBtn')}</span>
+                    </button>
+                    {asrMsg && (
+                      <span
+                        className={`text-xs ${
+                          asrMsg.isError ? 'text-red-500' : 'text-emerald-600 dark:text-emerald-400'
+                        }`}
+                      >
+                        {asrMsg.text}
+                      </span>
+                    )}
+                  </div>
 
-              <button
-                type="button"
-                onClick={handleAsrApply}
-                disabled={asrBusy !== null}
-                className="mt-2.5 w-full px-2 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 active:scale-[0.98] disabled:opacity-50 text-white text-xs font-medium transition-all"
-              >
-                {asrBusy === 'apply' ? t('asrApplying') : t('asrApplyRestart')}
-              </button>
-            </div>
+                  {/* 快捷动作按钮栏 */}
+                  <div className="mt-3 flex items-center gap-2 mb-3">
+                    {!isAsrModelReady && !isAsrDownloading && (
+                      <button
+                        type="button"
+                        disabled={asrBusy !== null}
+                        onClick={handleAsrDownload}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 active:scale-95 text-white text-xs font-medium transition-all shadow-sm cursor-pointer disabled:opacity-50"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>{t('asrDownloadBtn')}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleAsrOpenDir}
+                      className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-zinc-700 dark:text-zinc-200 border border-black/10 dark:border-white/10 text-xs font-medium transition-all active:scale-95 cursor-pointer"
+                    >
+                      <FolderOpen className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
+                      <span>{t('asrOpenModelsDirBtn')}</span>
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
 
             {/* 权限（麦克风 / 辅助功能 / 输入监控） */}
-            <div className="mt-3 pt-3 border-t border-black/5 dark:border-white/5">
+            <div className="pt-3 border-t border-black/5 dark:border-white/5">
               <div className="flex items-center gap-1.5 mb-1.5">
                 <ShieldCheck className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
                 <span className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400">{t('asrPermTitle')}</span>
@@ -2355,9 +2570,10 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                   type="button"
                   disabled={ttsBusy}
                   onClick={handleTtsDownload}
-                  className="flex-1 px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 active:scale-[0.98] disabled:opacity-50 text-white text-xs font-medium transition-all cursor-pointer"
+                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 active:scale-[0.98] disabled:opacity-50 text-white text-xs font-medium transition-all shadow-sm cursor-pointer"
                 >
-                  {t('ttsDownloadAllBtn')}
+                  <Download className="w-3.5 h-3.5" />
+                  <span>{t('ttsDownloadAllBtn')}</span>
                 </button>
               )}
               <button
@@ -2642,7 +2858,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
             {!subtitleStatus?.downloadState?.active &&
               subtitleStatus?.downloadState?.phase === 'completed' && (
                 <div className="mt-2.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
-                  {t('subtitleDownloadCompleted')}
+                  {t('translateDownloadCompleted')}
                 </div>
               )}
             {!subtitleStatus?.downloadState?.active &&
@@ -2666,9 +2882,10 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                   type="button"
                   disabled={subtitleBusy}
                   onClick={() => handleSubtitleDownload('all')}
-                  className="flex-1 px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-700 active:scale-[0.98] disabled:opacity-50 text-white text-xs font-medium transition-all cursor-pointer"
+                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 active:scale-[0.98] disabled:opacity-50 text-white text-xs font-medium transition-all shadow-sm cursor-pointer"
                 >
-                  {t('subtitleDownloadAllBtn')}
+                  <Download className="w-3.5 h-3.5" />
+                  <span>{t('subtitleDownloadAllBtn')}</span>
                 </button>
               )}
               <button
@@ -2680,6 +2897,470 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                 <span>{t('subtitleOpenModelsDirBtn')}</span>
               </button>
             </div>
+
+            {cardResetButton(undefined, true)}
+          </div>
+
+          {/* 快速翻译服务卡片（快速模式：端侧翻译小模型 · 详解模式：DeepSeek / 基础模型服务） */}
+          <div data-translate-card="1" className="p-3.5 rounded-xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c]">
+            {(() => {
+              const quick = translateStatus?.quick;
+              const isReady = Boolean(quick?.modelReady);
+              const isDownloading = translateDlActive;
+              // 与语音识别 / 语音合成一致：状态只由「进程存活 / 模型加载中 / 模型齐备」决定，
+              // 下载进度走右上角第二行，不把状态灯染成启动中。
+              const cardState = deriveServiceState({
+                running: quick?.serverReady,
+                loading: Boolean(quick?.starting),
+                loaded: isReady,
+              });
+
+              return (
+                <>
+                  {/* 头部：标题 + 引擎徽标 + 运行状态指示 */}
+                  <div className="flex items-start justify-between mb-2.5">
+                    <div className="flex items-center gap-2 pt-0.5">
+                      <Languages className="w-4 h-4 text-indigo-600 dark:text-indigo-400 flex-shrink-0" />
+                      <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
+                        {t('translateServiceTitle')}
+                      </span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md font-mono bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-medium">
+                        {t('translateEngineTag')}
+                      </span>
+                    </div>
+                    <div className="flex flex-col items-end gap-1">
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        <span
+                          className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                            SERVICE_STATE_CARD_DOT_CLASS[cardState]
+                          }`}
+                        />
+                        <span className={SERVICE_STATE_CARD_TEXT_CLASS[cardState]}>
+                          {formatServiceStateText(cardState, t, quick?.port)}
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
+                        {isDownloading
+                          ? `${t('translateDetailDownloading')} (${(translateDl?.progressPercent || 0).toFixed(1)}%)`
+                          : quick?.starting
+                          ? t('translateDetailLoading')
+                          : quick?.serverReady
+                          ? t('translateDetailActive')
+                          : isReady
+                          ? t('translateDetailStandby')
+                          : t('translateDetailMissing')}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* 功能定位与快捷键横幅 */}
+                  <div className="flex items-center justify-between gap-2 mb-3 px-2.5 py-2 rounded-lg bg-indigo-500/5 dark:bg-indigo-500/10 border border-indigo-500/20">
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
+                        {t('translateLifecycleTitle')}
+                      </div>
+                      <div className="text-[10px] text-zinc-500 dark:text-zinc-400 leading-snug">
+                        {t('translatorGlobalShortcutTip')}
+                      </div>
+                    </div>
+                    <kbd className="flex-shrink-0 px-2 py-1 rounded-md border border-black/10 dark:border-white/15 bg-white dark:bg-[#202127] text-[10px] font-mono text-zinc-700 dark:text-zinc-200 whitespace-nowrap shadow-sm">
+                      {t('translateHotkeyTrigger')}
+                    </kbd>
+                  </div>
+
+                  {/* 内置运行环境与模型状态 */}
+                  <div className="space-y-2 mb-3">
+                    {/* 内置运行环境 */}
+                    <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                            quick?.runtimeReady ? 'bg-emerald-500' : 'bg-red-500'
+                          }`}
+                        />
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
+                            {t('runtimeLabel')}
+                          </div>
+                          <div className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate">
+                            {t('translateRuntimeDesc')}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {quick?.runtimeReady ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
+                            <Check className="w-3 h-3" />
+                            <span>{t('runtimeBundledReady')}</span>
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-red-500 font-medium">
+                            {t('runtimeMissing')}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* 翻译模型状态 */}
+                    <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                            isReady
+                              ? 'bg-emerald-500'
+                              : isDownloading
+                              ? 'bg-indigo-500 animate-pulse'
+                              : 'bg-red-500'
+                          }`}
+                        />
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
+                            {t('translateQuickModelLabel')}
+                          </div>
+                          <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono truncate">
+                            {isReady
+                              ? `${quick?.sizeDesc || '1.25 GB'} · ${t('runtimeBundledReady')}`
+                              : t('translateModelDesc')}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {isReady ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
+                            <Check className="w-3 h-3" />
+                            <span>{t('subtitleModelReady')}</span>
+                          </span>
+                        ) : isDownloading ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 text-[10px] font-medium">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            <span>{t('translateDetailDownloading')}</span>
+                          </span>
+                        ) : (
+                          <>
+                            <span className="text-[10px] text-red-500 font-medium">
+                              {t('subtitleModelMissing')}
+                            </span>
+                            <button
+                              type="button"
+                              disabled={translateBusy}
+                              onClick={handleTranslateDownload}
+                              className="px-2 py-1 rounded-md text-[11px] font-medium transition-all active:scale-95 disabled:opacity-50 text-white bg-indigo-600 hover:bg-indigo-500 cursor-pointer"
+                            >
+                              {t('translateQuickDownloadBtn')}
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 自动测速与实时下载进度面板 */}
+                  {isDownloading && translateDl && (
+                    <div className="mb-3 p-2.5 rounded-lg bg-indigo-500/5 dark:bg-indigo-500/10 border border-indigo-500/20 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0 text-[11px] font-medium text-indigo-700 dark:text-indigo-300">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" />
+                          <span className="truncate">
+                            {translateDl.phase === 'probing'
+                              ? t('subtitleProbingSource')
+                              : translateDl.phase === 'cleaning'
+                              ? t('subtitleCleaningCache')
+                              : translateDl.currentModelName || t('translateQuickModelLabel')}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={translateBusy}
+                          onClick={handleTranslateCancelDownload}
+                          className="px-2 py-0.5 rounded-md border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 text-[10px] font-medium transition-colors flex-shrink-0 cursor-pointer"
+                        >
+                          {t('subtitleCancelDownloadBtn')}
+                        </button>
+                      </div>
+
+                      {translateDl.selectedSource && (
+                        <div className="text-[10px] text-zinc-500 dark:text-zinc-400 flex items-center justify-between">
+                          <span>
+                            {t('subtitleSelectedSourceLabel')}:{' '}
+                            <strong className="font-medium text-zinc-700 dark:text-zinc-200">
+                              {formatSourceName(translateDl.selectedSource, t)}
+                            </strong>{' '}
+                            ({translateDl.selectedSource.latencyMs}ms)
+                          </span>
+                          <span className="font-mono text-indigo-600 dark:text-indigo-400 font-semibold">
+                            {(translateDl.progressPercent || 0).toFixed(1)}%
+                          </span>
+                        </div>
+                      )}
+
+                      <div className="w-full h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-emerald-500 transition-all duration-200"
+                          style={{
+                            width: `${Math.max(3, Math.min(100, translateDl.progressPercent || 0))}%`,
+                          }}
+                        />
+                      </div>
+
+                      {translateDl.phase === 'downloading' && (
+                        <div className="flex items-center justify-between text-[10px] font-mono text-zinc-500 dark:text-zinc-400">
+                          <span>
+                            {(translateDl.downloadedBytes / (1024 * 1024)).toFixed(1)} MB /{' '}
+                            {(translateDl.totalBytes / (1024 * 1024)).toFixed(1)} MB
+                          </span>
+                          <span>
+                            {(translateDl.speedBps / (1024 * 1024)).toFixed(2)} MB/s
+                            {translateDl.etaSeconds !== null && translateDl.etaSeconds > 0
+                              ? ` · ETA ${Math.floor(translateDl.etaSeconds / 60)}m${String(
+                                  translateDl.etaSeconds % 60
+                                ).padStart(2, '0')}s`
+                              : ''}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* 下载结果提示 */}
+                  {!isDownloading && translateDl?.phase === 'completed' && (
+                    <div className="mb-2.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                      {t('translateDownloadCompleted')}
+                    </div>
+                  )}
+                  {!isDownloading && translateDl?.phase === 'cancelled' && (
+                    <div className="mb-2.5 text-[11px] text-amber-600 dark:text-amber-400">
+                      {t('subtitleDownloadCancelled')}
+                    </div>
+                  )}
+                  {!isDownloading && translateDl?.phase === 'error' && translateDl?.error && (
+                    <div className="mb-2.5 text-[11px] text-red-500">
+                      {formatDownloadError(translateDl.error, t)}
+                    </div>
+                  )}
+
+                  {/* 详解模式：后端选择与 DeepSeek 配置 */}
+                  <div className="mb-3">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-[10px] text-zinc-500 dark:text-zinc-400 font-medium">
+                        {t('translateDetailMode')}
+                      </label>
+                      <span className="text-[10px] text-zinc-400 dark:text-zinc-500">
+                        {t('translateDetailLockedHint')}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 mb-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setTranslateForm((prev) => ({ ...prev, detailProvider: 'deepseek' }))
+                        }
+                        className={`flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg border text-[11px] font-medium transition-all cursor-pointer ${
+                          translateForm.detailProvider !== 'base'
+                            ? 'bg-sky-500/10 border-sky-500/40 text-sky-700 dark:text-sky-300 font-semibold'
+                            : 'bg-[#f6f8fa] dark:bg-[#18191c] border-black/10 dark:border-[#343740] text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
+                        }`}
+                      >
+                        <KeyRound className="w-3 h-3" />
+                        <span>{t('translateDetailDeepseek')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTranslateForm((prev) => ({ ...prev, detailProvider: 'base' }))}
+                        className={`flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg border text-[11px] font-medium transition-all cursor-pointer ${
+                          translateForm.detailProvider === 'base'
+                            ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-700 dark:text-emerald-300 font-semibold'
+                            : 'bg-[#f6f8fa] dark:bg-[#18191c] border-black/10 dark:border-[#343740] text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
+                        }`}
+                      >
+                        <Cpu className="w-3 h-3" />
+                        <span>{t('translateDetailBaseService')}</span>
+                      </button>
+                    </div>
+
+                    {translateForm.detailProvider === 'base' ? (
+                      <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                              translateStatus?.base?.running ? 'bg-emerald-500' : 'bg-red-500'
+                            }`}
+                          />
+                          <div className="min-w-0">
+                            <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
+                              {translateStatus?.base?.engine === 'mference'
+                                ? 'Mference · Qwen 3.6 35B-A3B'
+                                : 'TurboFieldfare · Gemma 4 26B'}
+                            </div>
+                            <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
+                              {translateStatus?.base?.running
+                                ? t('translateBaseRunning')
+                                : t('translateBaseStopped')}
+                            </div>
+                          </div>
+                        </div>
+                        <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-snug max-w-[48%]">
+                          {t('translateBaseServiceHint')}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div>
+                          <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">
+                            {t('translateDeepseekKeyLabel')}
+                          </label>
+                          <div className="relative">
+                            <input
+                              type={showTranslateKey ? 'text' : 'password'}
+                              value={translateForm.apiKey}
+                              onChange={(e) =>
+                                setTranslateForm((prev) => ({ ...prev, apiKey: e.target.value }))
+                              }
+                              placeholder={
+                                translateStatus?.deepseek?.configured
+                                  ? translateStatus.deepseek.apiKeyMasked
+                                  : t('translateDeepseekKeyPlaceholder')
+                              }
+                              className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg pl-2.5 pr-8 py-1.5 text-[11px] text-[#1f2328] dark:text-[#e2e5eb] focus:border-indigo-500 focus:outline-none font-mono"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowTranslateKey((v) => !v)}
+                              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-pointer"
+                              title={showTranslateKey ? t('hidePassword') : t('showPassword')}
+                            >
+                              {showTranslateKey ? (
+                                <EyeOff className="w-3.5 h-3.5" />
+                              ) : (
+                                <Eye className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">
+                              {t('translateDeepseekBaseUrlLabel')}
+                            </label>
+                            <input
+                              type="text"
+                              value={translateForm.baseUrl}
+                              onChange={(e) =>
+                                setTranslateForm((prev) => ({ ...prev, baseUrl: e.target.value }))
+                              }
+                              placeholder={TRANSLATE_DEFAULTS.baseUrl}
+                              className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2.5 py-1.5 text-[11px] text-[#1f2328] dark:text-[#e2e5eb] focus:border-indigo-500 focus:outline-none font-mono"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">
+                              {t('translateDeepseekModelLabel')}
+                            </label>
+                            <input
+                              type="text"
+                              value={translateForm.modelId}
+                              onChange={(e) =>
+                                setTranslateForm((prev) => ({ ...prev, modelId: e.target.value }))
+                              }
+                              placeholder={TRANSLATE_DEFAULTS.modelId}
+                              className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2.5 py-1.5 text-[11px] text-[#1f2328] dark:text-[#e2e5eb] focus:border-indigo-500 focus:outline-none font-mono"
+                            />
+                          </div>
+                        </div>
+                        <p className="text-[10px] text-zinc-400 dark:text-zinc-500 leading-snug">
+                          {t('translateDeepseekIndependentHint')}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 基准语言 */}
+                  <div className="mb-3">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-[10px] text-zinc-500 dark:text-zinc-400 font-medium">
+                        {t('translatorBaseLang')}
+                      </label>
+                      <span className="text-[10px] text-zinc-400 dark:text-zinc-500">
+                        {t('translatorBaseLangDefaultBadge')}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setTranslateForm((prev) => ({ ...prev, baseLang: 'zh' }))}
+                        className={`py-1.5 px-2 rounded-lg border text-[11px] font-medium transition-all cursor-pointer ${
+                          translateForm.baseLang !== 'en'
+                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm font-semibold'
+                            : 'bg-[#f6f8fa] dark:bg-[#18191c] border-black/10 dark:border-[#343740] text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
+                        }`}
+                      >
+                        {t('translatorBaseLangZh')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTranslateForm((prev) => ({ ...prev, baseLang: 'en' }))}
+                        className={`py-1.5 px-2 rounded-lg border text-[11px] font-medium transition-all cursor-pointer ${
+                          translateForm.baseLang === 'en'
+                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm font-semibold'
+                            : 'bg-[#f6f8fa] dark:bg-[#18191c] border-black/10 dark:border-[#343740] text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
+                        }`}
+                      >
+                        {t('translatorBaseLangEn')}
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-zinc-500 dark:text-zinc-400 mt-1.5 leading-relaxed">
+                      {t('translatorBaseLangTip')}
+                    </p>
+                  </div>
+
+                  {/* 保存配置按钮与反馈 */}
+                  <div className="mb-3 flex items-center justify-between">
+                    <button
+                      type="button"
+                      disabled={translateBusy || isApplyingTranslate}
+                      onClick={handleTranslateApply}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] disabled:opacity-50 text-white font-medium shadow-sm transition-all cursor-pointer"
+                    >
+                      {isApplyingTranslate && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                      <span>{isApplyingTranslate ? t('translateApplying') : t('translateApplyBtn')}</span>
+                    </button>
+                    {translateMsg && (
+                      <span
+                        className={`text-xs ${
+                          translateMsg.isError ? 'text-red-500' : 'text-emerald-600 dark:text-emerald-400'
+                        }`}
+                      >
+                        {translateMsg.text}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* 快捷动作按钮栏 */}
+                  <div className="mt-3 flex items-center gap-2 mb-3">
+                    {!isReady && !isDownloading && (
+                      <button
+                        type="button"
+                        disabled={translateBusy}
+                        onClick={handleTranslateDownload}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-xs font-medium transition-all shadow-sm cursor-pointer disabled:opacity-50"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>{t('translateQuickDownloadBtn')}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleTranslateOpenDir}
+                      className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-zinc-700 dark:text-zinc-200 border border-black/10 dark:border-white/10 text-xs font-medium transition-all active:scale-95 cursor-pointer"
+                    >
+                      <FolderOpen className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
+                      <span>{t('translateOpenModelsDirBtn')}</span>
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
+
+            {cardResetButton(handleTranslateCardReset)}
           </div>
 
           {/* PaddleOCR 视觉文档识别服务卡片（纯按需 · 快捷键 ⌘⇧2） */}
@@ -2992,9 +3673,10 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                   type="button"
                   disabled={ocrBusy}
                   onClick={handleOcrDownload}
-                  className="flex-1 px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 active:scale-[0.98] disabled:opacity-50 text-white text-xs font-medium transition-all cursor-pointer"
+                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 active:scale-[0.98] disabled:opacity-50 text-white text-xs font-medium transition-all shadow-sm cursor-pointer"
                 >
-                  {t('ocrDownloadAllBtn')}
+                  <Download className="w-3.5 h-3.5" />
+                  <span>{t('ocrDownloadAllBtn')}</span>
                 </button>
               )}
               <button

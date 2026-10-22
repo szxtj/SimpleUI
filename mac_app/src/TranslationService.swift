@@ -137,6 +137,13 @@ public struct TranslationService: TranslationServiceProtocol {
             ]
         }
 
+        // 本机翻译网关（/api/translate/v1）需要知道当前模式：
+        // 快速模式走字幕服务的端侧小模型，详解模式走 DeepSeek 或基础模型服务。
+        // 网关会用自己的提示词与采样参数，这里只负责把模式带过去。
+        if endpointURL.path.contains("/api/translate") {
+            body["mode"] = mode.rawValue
+        }
+
         // 只保留一个足够宽松的兜底超时（避免请求永久挂起），不再用 3 秒硬截断。
         // 生成较长的详解结果时，服务端需要的时间会明显超过 3 秒。
         request.timeoutInterval = 120
@@ -157,6 +164,11 @@ public struct TranslationService: TranslationServiceProtocol {
                 }
 
                 guard (200..<300).contains(httpResponse.statusCode) else {
+                    // 本机网关会把「模型未下载 / 未配置 API Key / 基础模型未启动」等原因
+                    // 放进 OpenAI 错误结构里，直接透出给用户，比只报 HTTP 码有用得多。
+                    if let message = Self.extractErrorMessage(from: data) {
+                        throw TranslationServiceError.requestFailed(message)
+                    }
                     throw TranslationServiceError.serverError(httpResponse.statusCode)
                 }
 
@@ -327,8 +339,28 @@ public struct TranslationService: TranslationServiceProtocol {
         }
     }
 
-    public static func stripThinkingProcess(_ text: String) -> String {
-        var clean = text
+    /// 从错误响应体里提取可读原因（OpenAI 风格 `{"error":{"message":...}}`）
+    public static func extractErrorMessage(from data: Data) -> String? {
+        guard
+            let object = try? JSONSerialization.jsonObject(with: data),
+            let json = object as? [String: Any]
+        else { return nil }
+        if let error = json["error"] as? [String: Any],
+            let message = error["message"] as? String,
+            !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            return message
+        }
+        if let message = json["error"] as? String, !message.isEmpty {
+            return message
+        }
+        if let message = json["message"] as? String, !message.isEmpty {
+            return message
+        }
+        return nil
+    }
+
+    public static func stripThinkingProcess(_ text: String) -> String {        var clean = text
         let patterns = [
             "(?i)<think>[\\s\\S]*?</think>",
             "(?i)<thought>[\\s\\S]*?</thought>",

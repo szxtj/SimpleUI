@@ -17,12 +17,14 @@ function cleanTranslation(text) {
 
 
 export class TranslationEngine {
-  constructor({ port = 1249, timeoutMs = 15000 } = {}) {
+  constructor({ port = 1249, timeoutMs = 15000, maxTokens = 128 } = {}) {
     this.port = port;
     this.timeoutMs = timeoutMs;
+    // 字幕是逐句翻译，128 足够；快速翻译整段选区时按块长度放大这个上限。
+    this.maxTokens = maxTokens;
   }
 
-  translate(text, sourceLang, targetLang) {
+  translate(text, sourceLang, targetLang, options = {}) {
     const source = String(text || '').trim();
     if (!source) return Promise.reject(new SubtitleError('translation', 'EMPTY_SOURCE', '空句子'));
     if (targetLang === 'none') return Promise.resolve('');
@@ -41,7 +43,7 @@ export class TranslationEngine {
 
     const body = JSON.stringify({
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 128,
+      max_tokens: options.maxTokens || this.maxTokens,
       temperature: 0,
       chat_template_kwargs: { enable_thinking: false },
     });

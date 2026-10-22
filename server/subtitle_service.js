@@ -202,7 +202,7 @@ function isPidAlive(pid) {
  *   2. 开发态项目内置目录: bin/llama/{bin/llama-server, lib}
  *   3. 用户级标准内置目录: ~/Library/Application Support/SimpleUI/runtime/llama/{bin/llama-server, lib}
  */
-function resolveLlamaRuntime() {
+export function resolveLlamaRuntime() {
   const roots = [
     path.resolve(__dirname, '../llama'),
     '/Applications/SimpleUI.app/Contents/Resources/llama',
@@ -1561,6 +1561,19 @@ class SubtitleService {
     }
     this.segmenter = null;
     this.asrEngine.stopServer();
+    this.stopTransServer();
+    try {
+      if (fs.existsSync(ML_PID_FILE)) fs.unlinkSync(ML_PID_FILE);
+    } catch {}
+    this.cleanStaleProcesses();
+  }
+
+  /**
+   * 只停掉端口 1249 的翻译 llama-server。
+   * 快速翻译服务（translate_service.js）在空闲回收时复用它 ——
+   * 模型文件、运行时、启动参数与字幕服务完全一致，因此不需要第二套拉起逻辑。
+   */
+  stopTransServer() {
     if (this.transProc) {
       try {
         this.transProc.kill('SIGKILL');
@@ -1570,9 +1583,8 @@ class SubtitleService {
     this.transAlive = false;
     this.transStartingPromise = null;
     try {
-      if (fs.existsSync(ML_PID_FILE)) fs.unlinkSync(ML_PID_FILE);
+      if (fs.existsSync(TRANS_PID_FILE)) fs.unlinkSync(TRANS_PID_FILE);
     } catch {}
-    this.cleanStaleProcesses();
   }
 
   async shutdownSync() {

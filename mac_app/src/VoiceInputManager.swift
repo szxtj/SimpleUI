@@ -56,16 +56,20 @@ class VoiceInputManager {
     private var runLoopSource: CFRunLoopSource?
     private var globalMonitors: [Any] = []
 
-    // 长按状态机
+    // 长按与延时状态机
     private var rightCommandDown = false
     private var holdWorkItem: DispatchWorkItem?
+    private var trailingStopWorkItem: DispatchWorkItem?
     private var isCapturing = false
     private var recordingStartedAt: Date?
 
-    // 录音
+    // 录音（预分配 100 秒 @ 16kHz 单声道 Int16 = 1,600,000 采样点，~3.2 MB）
+    private static let maxSampleCapacity = 100 * 16000
+    private var pcmBuffer = [Int16](repeating: 0, count: maxSampleCapacity)
+    private var pcmSampleCount: Int = 0
     private let audioEngine = AVAudioEngine()
     private var converter: AVAudioConverter?
-    private var pcmSamples: [Int16] = []
+    private var convOutBuffer: AVAudioPCMBuffer?
     private var samplesLock = NSLock()
     private var lastLevelEmit = Date.distantPast
     private var isTapInstalled = false
@@ -124,8 +128,8 @@ class VoiceInputManager {
 
     func uninstall() {
         NotificationCenter.default.removeObserver(self)
-        holdWorkItem?.cancel()
-        holdWorkItem = nil
+        cancelHoldTrigger()
+        cancelTrailingStop()
         removeGlobalMonitors()
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
@@ -206,25 +210,44 @@ class VoiceInputManager {
             flags.contains(.maskControl) || flags.contains(.maskAlternate) || flags.contains(.maskShift)
 
         if commandDown && !hasOtherModifier {
+            // 如果处于松手后的 500ms 延时停止窗口内，用户重新按下，取消延时，无缝继续录音
+            if trailingStopWorkItem != nil {
+                cancelTrailingStop()
+                rightCommandDown = true
+                return
+            }
             guard !rightCommandDown else { return }
             rightCommandDown = true
             scheduleHoldTrigger()
         } else if commandDown && hasOtherModifier {
             // 按右 ⌘ 的同时还按了别的修饰键 → 组合键，取消
+            cancelTrailingStop()
             cancelHoldTrigger()
             rightCommandDown = true
+            if isCapturing {
+                finishCapture()
+            }
         } else {
             // 右 ⌘ 抬起
             rightCommandDown = false
             cancelHoldTrigger()
-            if isCapturing { finishCapture() }
+            if isCapturing {
+                scheduleTrailingStop()
+            }
         }
     }
 
-    /// 长按期间按下了普通按键 → 是组合键（如 ⌘C），取消触发
+    /// 长按期间按下了普通按键 → 是组合键（如 ⌘C），取消触发；若在延时停止期按键则立即完成
     private func handleForeignKeyDown() {
-        guard rightCommandDown, !isCapturing else { return }
-        cancelHoldTrigger()
+        if rightCommandDown && !isCapturing {
+            cancelHoldTrigger()
+        }
+        if trailingStopWorkItem != nil {
+            cancelTrailingStop()
+            if isCapturing {
+                finishCapture()
+            }
+        }
     }
 
     private func scheduleHoldTrigger() {
@@ -242,9 +265,38 @@ class VoiceInputManager {
         holdWorkItem = nil
     }
 
+    /// 松手后延时 500ms 停止录制，捕获话音尾音与最后一个字
+    private func scheduleTrailingStop() {
+        cancelTrailingStop()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.trailingStopWorkItem = nil
+            if self.isCapturing {
+                self.finishCapture()
+            }
+        }
+        trailingStopWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    private func cancelTrailingStop() {
+        trailingStopWorkItem?.cancel()
+        trailingStopWorkItem = nil
+    }
+
     // MARK: - 采集流程
 
+    /// 触发 ASR 模型与服务现场按需预热（fire-and-forget，不阻塞主线程）
+    private func warmupService() {
+        guard let url = URL(string: "\(ProcessManager.baseURLString)/api/asr/warmup") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 10
+        URLSession.shared.dataTask(with: req).resume()
+    }
+
     private func beginCapture() {
+        cancelTrailingStop()
         // 麦克风权限：未授权则发起申请并提示
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
@@ -265,6 +317,9 @@ class VoiceInputManager {
             return
         }
 
+        // 确认长按触发语音输入时，在后台立即触发 ASR 模型预热（边录音边加载模型，零额外转写延迟）
+        warmupService()
+
         guard startRecording() else {
             emit(.error, 0, "无法访问麦克风")
             return
@@ -275,6 +330,7 @@ class VoiceInputManager {
     }
 
     private func finishCapture() {
+        cancelTrailingStop()
         guard isCapturing else { return }
         isCapturing = false
         cancelHoldTrigger()
@@ -330,7 +386,7 @@ class VoiceInputManager {
         }
     }
 
-    // MARK: - 录音（AVAudioEngine → 16kHz 单声道 Int16）
+    // MARK: - 录音（AVAudioEngine → 16kHz 单声道 Int16，预分配 100 秒零内存重新分配）
 
     private func startRecording() -> Bool {
         if isCapturing || isTapInstalled {
@@ -353,8 +409,11 @@ class VoiceInputManager {
             return false
         }
         converter = conv
+        // 预分配转换后临时输出缓冲（8192 帧 = 0.512s @ 16kHz，足以容纳单次 tap 回调的所有转码产物）
+        convOutBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: 8192)
+
         samplesLock.lock()
-        pcmSamples.removeAll(keepingCapacity: true)
+        pcmSampleCount = 0
         samplesLock.unlock()
 
         do {
@@ -381,43 +440,55 @@ class VoiceInputManager {
     }
 
     private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer, hwFormat: AVAudioFormat, targetFormat: AVAudioFormat) {
-        // 关键防护 1：局部强引用 converter，防止主线程 stopEngine 析构引发 CoreAudio 实时线程野指针崩溃 (EXC_BAD_ACCESS)
-        guard let conv = self.converter else { return }
-        let ratio = targetFormat.sampleRate / hwFormat.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
-        guard let out = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
+        // 关键防护 1：局部强引用 converter 与 convOutBuffer，防止主线程 stopEngine 析构引发 CoreAudio 实时线程野指针崩溃
+        guard let conv = self.converter, let out = self.convOutBuffer else { return }
+        guard buffer.frameLength > 0 else { return }
 
-        var consumed = false
+        out.frameLength = 0
+        var inputConsumed = false
         var convErr: NSError?
-        conv.convert(to: out, error: &convErr) { _, status in
-            if consumed {
-                status.pointee = .noDataNow
+        let status = conv.convert(to: out, error: &convErr) { _, outStatus in
+            if inputConsumed {
+                outStatus.pointee = .noDataNow
                 return nil
             }
-            consumed = true
-            status.pointee = .haveData
+            inputConsumed = true
+            outStatus.pointee = .haveData
             return buffer
         }
-        guard convErr == nil, out.frameLength > 0, let ch = out.int16ChannelData else { return }
+
+        guard convErr == nil, status != .error, out.frameLength > 0, let ch = out.int16ChannelData else { return }
 
         let n = Int(out.frameLength)
         let ptr = ch[0]
         var sumSquares: Double = 0
+
+        // 零堆内存重新分配：直接复制进预分配的 100s 线性连续缓冲中，绝不阻塞 CoreAudio IO 实时线程
         samplesLock.lock()
-        pcmSamples.reserveCapacity(pcmSamples.count + n)
-        for i in 0..<n {
+        let available = VoiceInputManager.maxSampleCapacity - pcmSampleCount
+        let toCopy = min(n, available)
+        if toCopy > 0 {
+            pcmBuffer.withUnsafeMutableBufferPointer { destBuf in
+                if let base = destBuf.baseAddress {
+                    let dest = base.advanced(by: pcmSampleCount)
+                    memcpy(dest, ptr, toCopy * MemoryLayout<Int16>.size)
+                }
+            }
+            pcmSampleCount += toCopy
+        }
+        samplesLock.unlock()
+
+        for i in 0..<toCopy {
             let s = ptr[i]
-            pcmSamples.append(s)
             let f = Double(s) / 32768.0
             sumSquares += f * f
         }
-        samplesLock.unlock()
 
         // 音量（RMS → 0~1，做一次平方根压扩让视觉更灵敏），限频 ~20Hz 推送
         let now = Date()
         if now.timeIntervalSince(lastLevelEmit) > 0.05 {
             lastLevelEmit = now
-            let rms = sqrt(sumSquares / Double(max(1, n)))
+            let rms = sqrt(sumSquares / Double(max(1, toCopy)))
             let level = Float(min(1.0, rms * 4.0))
             emit(.recording, level, nil)
         }
@@ -426,8 +497,9 @@ class VoiceInputManager {
     private func stopRecording() -> Data? {
         stopEngineIfNeeded()
         samplesLock.lock()
-        let samples = pcmSamples
-        pcmSamples.removeAll(keepingCapacity: false)
+        let count = pcmSampleCount
+        let samples = count > 0 ? Array(pcmBuffer[0..<count]) : []
+        pcmSampleCount = 0
         samplesLock.unlock()
         guard !samples.isEmpty else { return nil }
         return VoiceInputManager.makeWAV(samples: samples, sampleRate: 16000)
@@ -442,11 +514,14 @@ class VoiceInputManager {
             audioEngine.stop()
         }
         audioEngine.reset()
-        // 延时清空 converter，确保 CoreAudio 实时渲染队列中最后一帧完全执行完毕再释放内存
+        // 延时清空 converter 和 convOutBuffer，确保 CoreAudio 实时渲染队列中最后一帧完全执行完毕再释放内存
         let oldConv = converter
+        let oldOut = convOutBuffer
         converter = nil
+        convOutBuffer = nil
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.1) {
             _ = oldConv
+            _ = oldOut
         }
     }
 

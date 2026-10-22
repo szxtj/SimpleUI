@@ -187,6 +187,7 @@ import { ttfService } from './ttf_service.js';
 import { asrService } from './asr_service.js';
 import { mediaService } from './media_service.js';
 import { subtitleService } from './subtitle_service.js';
+import { translateService } from './translate_service.js';
 import { ttsService } from './tts_service.js';
 import { ocrService } from './ocr_service.js';
 import { sessionService } from './session_service.js';
@@ -263,7 +264,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 语音识别服务 API（SenseVoice / audio.cpp 托管 + 转写）：
+  // 语音识别服务 API（Confucius4-R2T2 / audio.cpp 托管 + 转写）：
   // 与基础模型服务并列的第三个受管服务，随 App 自动拉起、退出一并终止。
   if (req.url.startsWith('/api/asr/')) {
     asrService.handleApi(req, res);
@@ -273,6 +274,13 @@ const server = http.createServer((req, res) => {
   // 实时双语字幕服务 API（R2T2 + SaT 断句 + Index-Translate-2B 端侧离线流）
   if (req.url.startsWith('/api/subtitles/')) {
     subtitleService.handleApi(req, res);
+    return;
+  }
+
+  // 快速翻译服务 API（快速模式复用字幕翻译小模型；详解模式走 DeepSeek / 基础模型服务）
+  // 同时承载原生快捷翻译窗口的 OpenAI 兼容网关 /api/translate/v1/chat/completions
+  if (req.url.startsWith('/api/translate/')) {
+    translateService.handleApi(req, res);
     return;
   }
 
@@ -339,6 +347,8 @@ server.listen(PORT, '127.0.0.1', () => {
   asrService.init();
   // 实时双语字幕服务初始化
   subtitleService.init();
+  // 快速翻译服务初始化（只装空闲回收定时器，不预加载任何模型）
+  translateService.init();
   // 文字转语音服务初始化（按需加载，不在启动时拉起模型）
   ttsService.init();
   // 视觉文档识别服务初始化（按需加载）
@@ -412,6 +422,14 @@ function cleanupAndExit(code = 0) {
       // ignore
     }
   }
+  // 快速翻译服务（自己的 1248 进程随退出一并终止，模型文件与字幕服务共用但进程独立）
+  if (translateService) {
+    try {
+      translateService.shutdownSync();
+    } catch (e) {
+      // ignore
+    }
+  }
   // 文字转语音服务（首次朗读时懒加载，退出时一并终止）
   if (ttsService) {
     try {
@@ -459,6 +477,14 @@ process.on('exit', () => {
   if (subtitleService) {
     try {
       subtitleService.shutdownForce();
+    } catch (e) {
+      // ignore
+    }
+  }
+  // 快速翻译（自己的 1248 llama-server）同样随代理退出一起终止
+  if (translateService) {
+    try {
+      translateService.shutdownForce();
     } catch (e) {
       // ignore
     }

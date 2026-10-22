@@ -245,40 +245,30 @@ PYEOF
 }
 ensure_llama_runtime
 
-# 语音识别运行时 + 模型（独立用于语音输入服务，保持原样不动）
-ensure_asr_assets() {
-  local MODEL_FILE="sensevoice-small-q8-audiocpp-v1.gguf"
-  local LOCAL_CACHE="$REAL_HOME/Library/Application Support/SimpleUI/models/$MODEL_FILE"
+# 语音识别与字幕服务共用的 audio.cpp 原生引擎运行时（不随包打包大模型，由面板按需下载）
+ensure_audiocpp_runtime() {
+  # 彻底清理旧架构遗留的 SenseVoice 模型残留
+  safe_remove "bin/audiocpp/models"
+  safe_remove "$RESOURCES_DIR/asr/models"
+
   if [ ! -x "bin/audiocpp/bin/audiocpp_server" ]; then
     echo "  · 未找到本地 audiocpp 运行时，自动准备..."
     ./scripts/sync_audiocpp.sh --build
   fi
-  if [ ! -f "bin/audiocpp/models/$MODEL_FILE" ]; then
-    mkdir -p "bin/audiocpp/models"
-    if [ -f "$LOCAL_CACHE" ]; then
-      echo "  · 复用本地已下载模型缓存 → bin/audiocpp/models/"
-      copy_item "$LOCAL_CACHE" "bin/audiocpp/models/$MODEL_FILE"
-    else
-      echo "  · 未找到本地模型，自动下载（约 254MB）..."
-      local URL="https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp/resolve/main/$MODEL_FILE"
-      local MIRROR="https://hf-mirror.com/FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp/resolve/main/$MODEL_FILE"
-      if ! curl -fL --retry 2 -o "bin/audiocpp/models/$MODEL_FILE.part" "$URL"; then
-        echo "    官方源失败，回退 hf-mirror.com"
-        curl -fL --retry 2 -o "bin/audiocpp/models/$MODEL_FILE.part" "$MIRROR"
-      fi
-      mv "bin/audiocpp/models/$MODEL_FILE.part" "bin/audiocpp/models/$MODEL_FILE"
+
+  if [ -x "bin/audiocpp/bin/audiocpp_server" ]; then
+    mkdir -p "$RESOURCES_DIR/asr/bin"
+    copy_item "bin/audiocpp/bin/audiocpp_server" "$RESOURCES_DIR/asr/bin/"
+    if [ -d "bin/audiocpp/assets" ]; then
+      copy_item "bin/audiocpp/assets" "$RESOURCES_DIR/asr/"
     fi
+    chmod +x "$RESOURCES_DIR/asr/bin/audiocpp_server" 2>/dev/null || true
+    echo "  -> 已打包自包含 audio.cpp 原生引擎运行时: $(du -sh "$RESOURCES_DIR/asr" | cut -f1)"
+  else
+    echo "  ⚠ bin/audiocpp 缺失：语音识别与字幕 ASR 将不可用"
   fi
 }
-ensure_asr_assets
-if [ -d "bin/audiocpp" ]; then
-    mkdir -p "$RESOURCES_DIR/asr"
-    copy_item "bin/audiocpp/." "$RESOURCES_DIR/asr/"
-    chmod +x "$RESOURCES_DIR/asr/bin/audiocpp_server" 2>/dev/null || true
-    echo "  -> 已打包语音识别运行时与模型: $(du -sh bin/audiocpp | cut -f1)"
-else
-    echo "  ⚠ bin/audiocpp 仍缺失：语音识别将不可用（请检查网络或 ~/audio.cpp 构建）"
-fi
+ensure_audiocpp_runtime
 
 # 随包分发自包含 Node 运行时（包含动态库递归打包与 @loader_path 重定位，缓存于 /tmp 不污染 Git 仓库）
 ensure_node_runtime() {
@@ -404,13 +394,24 @@ copy_item dist "$RESOURCES_DIR/dist"
 copy_item server "$RESOURCES_DIR/server"
 copy_item package.json "$RESOURCES_DIR/package.json"
 
-# 文字转语音运行时（可移植 Python + mlx），随包分发；缺失时服务面板会提示运行环境缺失
+# 文字转语音与 OCR 共享的 Python 原生深度学习运行时（Python 3.12 + mlx），随包固化分发
 if [ -d "bin/tts_runtime/python" ]; then
-    echo "  · 打包 TTS 运行时（Python + mlx）..."
+    echo "  · 打包 TTS + OCR 共享 Python 运行时（Python + mlx）..."
     copy_item "bin/tts_runtime/python" "$RESOURCES_DIR/server/tts/python"
+
+    # 执行深度无损瘦身（剥离 __pycache__、*.pyc、测试套件与帮助文档）
+    echo "  · 对内置 Python 运行时执行无损瘦身清理..."
+    find "$RESOURCES_DIR/server/tts/python" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+    find "$RESOURCES_DIR/server/tts/python" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete 2>/dev/null || true
+    if [ -d "$RESOURCES_DIR/server/tts/python/lib/python3.12/site-packages" ]; then
+      find "$RESOURCES_DIR/server/tts/python/lib/python3.12/site-packages" -type d \( -name "tests" -o -name "test" \) -exec rm -rf {} + 2>/dev/null || true
+    fi
+    rm -rf "$RESOURCES_DIR/server/tts/python/include" "$RESOURCES_DIR/server/tts/python/share/man" "$RESOURCES_DIR/server/tts/python/share/doc" 2>/dev/null || true
+
     echo "  · 共享 MLX Python 运行时至 OCR 服务..."
     mkdir -p "$RESOURCES_DIR/server/ocr"
     ln -sfn "../tts/python" "$RESOURCES_DIR/server/ocr/python"
+    echo "  -> 已打包自包含 Python 深度学习运行时: $(du -sh "$RESOURCES_DIR/server/tts/python" | cut -f1)"
 else
     echo "  ⚠ 未找到 bin/tts_runtime/python，TTS 将回落到系统 Python（仅开发机可用）"
 fi

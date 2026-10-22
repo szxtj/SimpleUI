@@ -1,29 +1,12 @@
-// ASR（语音识别）服务托管模块 —— SenseVoice-Small (GGUF) via audio.cpp
+// ASR（语音输入识别）服务托管模块 —— Confucius4-R2T2 (GGUF) via audio.cpp
 //
-// 职责：把「本地语音识别」作为与基础模型服务、知识库服务并列的第三个受管服务，
+// 职责：把「本地高精度语音识别」作为与基础模型服务、知识库服务并列的受管服务，
 // 内置到 SimpleUI 的 Node 服务层：
-//   - 随 SimpleUI 启动自动拉起 audiocpp_server（enabled 开关，默认开启）；
-//   - SimpleUI 退出时一并终止（与 kiwix / TTF 行为对齐）；
-//   - 配置持久化在 SimpleUI 自己的 asr_config.json，运行时据此生成 audiocpp 的
-//     server.json（含 sense_asr 的 default_request_options）。
-//
-// 模型与运行时（严格按官方说明）：
-//   - 模型：FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp 的 Q8_0 GGUF
-//           sensevoice-small-q8-audiocpp-v1.gguf（~254MB）
-//   - 运行时：audio.cpp 的 audiocpp_server（`--config server.json`）
-//   - 请求选项（sense_asr）：language(auto|zh|en|yue|ja|ko|...) / enable_itn /
-//     keep_tags / audio_chunk_mode(auto|fixed|none) / audio_chunk_duration_sec
-//     经 server.json 的 default_request_options 下发（服务端契约只对
-//     /v1/audio/transcriptions 暴露 model/file/language/prompt/busy_timeout_ms，
-//     ITN 与分块策略属模型请求选项，必须走 default_request_options）。
-//   - 转写端点：POST /v1/audio/transcriptions（OpenAI 兼容 multipart）。
-//
-// 中英语音场景：language=auto 由模型自行做语种判定（LID），中英混说最稳；
-// 纯中文/纯英文可显式指定以获得更稳定的语种标签；enable_itn=true 输出带标点。
-//
-// 退出兜底：与 ttf_service 同款 detached watchdog——Node 意外死亡（含 SIGKILL）时
-// 由 watchdog 按 PID 精确终止 audiocpp_server；正常退出走 proxy 的 cleanupAndExit 钩子。
-// watchdog 实现统一在 server/watchdog.js。
+//   - 纯按需待命模式（与 TTS、OCR、字幕服务保持完全统一的生命周期与四态逻辑）；
+//   - 启动时不常驻占用 1236 端口与 2.8GB GPU 显存，保持天蓝色「待命」状态；
+//   - 用户在全系统任意位置长按右侧 Command 键录音时，由 Node 侧透明现场拉起并转写；
+//   - 闲置超时（默认 10 分钟）自动安全卸载进程并释放显存，重回「待命」状态；
+//   - 与字幕服务完全共用底层的 audio.cpp 原生推理引擎与 Confucius4-R2T2 Q8_0 模型文件。
 
 import { spawn } from 'child_process';
 import fs from 'fs';
@@ -32,6 +15,7 @@ import path from 'path';
 import http from 'http';
 import { fileURLToPath } from 'url';
 import { startWatchdog } from './watchdog.js';
+import { SUBTITLE_MODELS_DIR, subtitleService } from './subtitle_service.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -43,52 +27,28 @@ const HOME = os.homedir();
 const userConfigDir = path.join(HOME, 'Library', 'Application Support', 'SimpleUI');
 const CONFIG_FILE = path.join(userConfigDir, 'asr_config.json');
 const MODELS_DIR = path.join(userConfigDir, 'models');
-// 运行时生成的 audiocpp 服务端配置（每次启动/改配置都重写，是派生文件不是用户配置）
 const SERVER_JSON_FILE = path.join(userConfigDir, 'asr_server.json');
 const LOG_FILE = process.env.SIMPLEUI_ASR_LOG || path.join(HOME, 'Library', 'Logs', 'simpleui-asr.log');
 const PID_FILE = '/tmp/simpleui_audiocpp.pid';
 
-// 官方推荐的独立 Q8 GGUF 包（见 HuggingFace 模型卡与 audio.cpp 文档）。
-// 模型随 App 打包分发（Contents/Resources/asr/models/），运行时按 findModel 的优先级探测，
-// 不再提供在线下载——相关下载逻辑与 downloadSource 配置已整体移除。
-const MODEL_FILENAME = 'sensevoice-small-q8-audiocpp-v1.gguf';
+// 统一复用字幕服务的 Confucius4-R2T2 Q8_0 模型（~2.48 GB，约 2.31 GiB）
+export const MODEL_FILENAME = 'r2t2-q8_0.gguf';
+export const EXPECTED_MODEL_BYTES = 2477512064;
+export const MIN_MODEL_BYTES = 2300 * 1024 * 1024;
 
-// audiocpp 服务端里该模型的 id（客户端在 /v1/audio/transcriptions 里引用）
-const SERVER_MODEL_ID = 'sense_asr';
-const BINARY_BASENAME = 'audiocpp_server';
+// audiocpp 服务端里该模型的 id
+export const SERVER_MODEL_ID = 'confucius_asr';
+export const BINARY_BASENAME = 'audiocpp_server';
 
 export const DEFAULT_ASR_CONFIG = {
-  // 随 SimpleUI 自动启动语音识别服务
-  enabled: true,
-  // audiocpp_server 监听端口（1236 —— 旧 LAYA 门禁退役后空出）
   port: 1236,
-  // 推理后端：Apple Silicon 默认走 Metal（原生 GPU 加速，比 CPU 更快更省电）；
-  // cpu 仅作兜底（Metal 不可用时回退）；best = 引擎自动选最优（本机即 Metal）
   backend: 'metal',
   threads: 4,
-  // ---- SenseVoice 请求选项（参考官方说明，默认面向中英场景）----
-  // auto 由模型做语种判定，中英混说最稳；也可显式 zh / en
-  language: 'auto',
-  // 逆文本归一化：开 = 输出带标点与规范数字
-  enableItn: true,
-  // 分块策略：none = 整段一次编码（短语音最准）；auto = 内置 silero VAD 切分长音频
-  audioChunkMode: 'none',
-  audioChunkDurationSec: 30,
-  // 是否在转写结果里保留 <|event|>/<|emotion|>/<|language|> 元标签（默认关）
-  keepTags: false,
-  // ---- 标准内置目录与模型位置 ----
+  language: 'Auto',
+  idleUnloadMin: 30, // 默认闲置 30 分钟自动退出进程返回待命（与 OCR 服务保持一致）
   projectDir: path.join(userConfigDir, 'runtime', 'asr'),
-  // 留空则自动探测（见 findBinary）
   binaryPath: '',
-  modelPath: path.join(MODELS_DIR, MODEL_FILENAME),
-};
-
-// 合法取值域（与 audio.cpp / sense_asr 支持的取值一致，用于校验前端提交）
-const ENUMS = {
-  backend: ['cpu', 'metal', 'best'],
-  // 仅列出模型的「原生语种标签」——其余标签会回退到 auto，故不暴露
-  language: ['auto', 'zh', 'en', 'yue', 'ja', 'ko'],
-  audioChunkMode: ['none', 'auto', 'fixed'],
+  modelPath: path.join(SUBTITLE_MODELS_DIR, MODEL_FILENAME),
 };
 
 // ----------------------------- 配置持久化 -----------------------------
@@ -98,11 +58,14 @@ function loadStoredConfig() {
     if (fs.existsSync(CONFIG_FILE)) {
       const data = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
       if (data && typeof data === 'object') {
+        if (data.modelPath && String(data.modelPath).toLowerCase().includes('sensevoice')) {
+          data.modelPath = path.join(SUBTITLE_MODELS_DIR, MODEL_FILENAME);
+        }
         return { ...DEFAULT_ASR_CONFIG, ...data };
       }
     }
   } catch (e) {
-    // 配置损坏时回退默认值，不阻断服务
+    // ignore
   }
   return { ...DEFAULT_ASR_CONFIG };
 }
@@ -124,21 +87,12 @@ function resolveDir(dir, fallback) {
   return expanded;
 }
 
-// sense_asr 内置 silero VAD 的默认**相对**路径。
-// 它同时是「运行时根目录」的判定依据：该目录下存在它，就说明这棵目录能当 audiocpp 的 cwd。
-const VAD_RELATIVE_PATH = 'assets/framework/models/silero_vad';
-
-/**
- * 标准内置资源根目录（随 App 分发或项目内置的 audiocpp 运行时）。
- * build_mac_app.sh 会把项目里的 bin/audiocpp 拷到 Contents/Resources/asr，
- * 因此打包态结构为 Resources/asr/{bin/audiocpp_server, assets/..., models/}，开发态为 bin/audiocpp/。
- */
 function bundledAsrRoot() {
   const candidates = [
-    path.resolve(__dirname, '../asr'), // 打包态：Resources/server → Resources/asr
+    path.resolve(__dirname, '../asr'),
     '/Applications/SimpleUI.app/Contents/Resources/asr',
-    path.resolve(__dirname, '../bin/audiocpp'), // 开发态内置目录
-    path.join(userConfigDir, 'runtime', 'asr'), // 用户级标准内置目录
+    path.resolve(__dirname, '../bin/audiocpp'),
+    path.join(userConfigDir, 'runtime', 'asr'),
   ];
   for (const p of candidates) {
     try {
@@ -153,29 +107,17 @@ function bundledAsrRoot() {
 function sanitizeConfig(partial) {
   const out = {};
   if (partial.enabled !== undefined) out.enabled = partial.enabled === true || partial.enabled === 'true';
-  if (partial.projectDir !== undefined) {
-    const dir = String(partial.projectDir || '').trim();
-    if (dir) out.projectDir = dir; // 存原始输入，使用时再解析
-  }
-  if (partial.binaryPath !== undefined) out.binaryPath = String(partial.binaryPath || '').trim();
-  if (partial.modelPath !== undefined) out.modelPath = String(partial.modelPath || '').trim();
   if (partial.port !== undefined) {
     const port = Number(partial.port);
     if (Number.isInteger(port) && port >= 1024 && port <= 65535) out.port = port;
   }
-  if (partial.threads !== undefined) {
-    const t = Number(partial.threads);
-    if (Number.isInteger(t) && t >= 1 && t <= 64) out.threads = t;
+  if (partial.backend !== undefined && ['cpu', 'metal', 'best'].includes(partial.backend)) {
+    out.backend = partial.backend;
   }
-  if (partial.audioChunkDurationSec !== undefined) {
-    const v = Number(partial.audioChunkDurationSec);
-    if (Number.isFinite(v) && v >= 1 && v <= 300) out.audioChunkDurationSec = v;
+  if (partial.idleUnloadMin !== undefined) {
+    const m = Number(partial.idleUnloadMin);
+    if (Number.isFinite(m) && m >= 0) out.idleUnloadMin = m;
   }
-  for (const key of ['backend', 'language', 'audioChunkMode']) {
-    if (partial[key] !== undefined && ENUMS[key].includes(partial[key])) out[key] = partial[key];
-  }
-  if (partial.enableItn !== undefined) out.enableItn = partial.enableItn === true || partial.enableItn === 'true';
-  if (partial.keepTags !== undefined) out.keepTags = partial.keepTags === true || partial.keepTags === 'true';
   return out;
 }
 
@@ -206,19 +148,18 @@ function isPidAlive(pid) {
 class AsrService {
   constructor() {
     this.config = loadStoredConfig();
-    this.pendingOp = null; // 'start' | 'stop' | 'restart'，供状态聚合区分过渡态
+    this.pendingOp = null; // 'start' | 'stop' | 'restart'
     this.lastActionLog = '';
     this.lastActionAt = 0;
     this.watchdog = null;
-    this.child = null; // 当前托管的 audiocpp_server 进程
+    this.child = null;
     this.logStream = null;
-    // 子进程最近输出（环形缓冲）：进程异常退出时把真实原因带进 lastActionLog，
-    // 让设置卡片能直接显示「GGUF 读取失败」这类信息，而不只是「服务未就绪」
     this.childLogTail = [];
+    this.idleTimer = null;
+    this.lastUsedAt = 0;
+    this.startingPromise = null;
   }
 
-  // audiocpp_server 可执行文件：优先用户指定，其次**随 App 分发的运行时**，
-  // 再退到本体构建产物与常见安装路径（release 用户因此无需自建 audio.cpp）
   findBinary() {
     const candidates = [];
     const custom = expandHome(String(this.config.binaryPath || '').trim());
@@ -227,8 +168,7 @@ class AsrService {
     if (bundled) candidates.push(path.join(bundled, 'bin', BINARY_BASENAME));
     const projectDir = resolveDir(this.config.projectDir, DEFAULT_ASR_CONFIG.projectDir);
     candidates.push(path.join(projectDir, 'build/bin', BINARY_BASENAME));
-    candidates.push(path.join(projectDir, 'build/sense/bin', BINARY_BASENAME));
-    candidates.push(path.join(projectDir, 'build/release/bin', BINARY_BASENAME));
+    candidates.push(path.join(projectDir, 'bin', BINARY_BASENAME));
     candidates.push('/opt/homebrew/bin/' + BINARY_BASENAME);
     candidates.push('/usr/local/bin/' + BINARY_BASENAME);
     for (const p of candidates) {
@@ -241,10 +181,6 @@ class AsrService {
     return null;
   }
 
-  /**
-   * 运行时根目录 —— audiocpp 进程的 cwd，也是它解析相对资源路径（内置 silero VAD）的基准。
-   * 优先随包目录，其次本体目录；以「该目录下确实存在 VAD」为准，避免选到没有资源的目录。
-   */
   resolveRuntimeRoot() {
     const candidates = [];
     const bundled = bundledAsrRoot();
@@ -252,35 +188,36 @@ class AsrService {
     candidates.push(resolveDir(this.config.projectDir, DEFAULT_ASR_CONFIG.projectDir));
     for (const dir of candidates) {
       try {
-        if (fs.existsSync(path.join(dir, VAD_RELATIVE_PATH))) return dir;
+        if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) return dir;
       } catch (e) {
         // ignore
       }
     }
-    // 都不含资源时退回本体目录（保持既有行为，错误交由服务自身报出）
     return resolveDir(this.config.projectDir, DEFAULT_ASR_CONFIG.projectDir);
   }
 
-  // SenseVoice GGUF：优先用户指定，其次随包 models/，再退到 App 的 models/ 与本体 models/
   findModel() {
     const explicit = expandHome(String(this.config.modelPath || '').trim());
-    if (explicit) {
+    if (explicit && !explicit.toLowerCase().includes('sensevoice')) {
       try {
-        if (fs.existsSync(explicit) && fs.statSync(explicit).isFile()) return explicit;
+        if (fs.existsSync(explicit) && fs.statSync(explicit).isFile() && fs.statSync(explicit).size >= MIN_MODEL_BYTES) {
+          return explicit;
+        }
       } catch (e) {
         // ignore
       }
     }
-    const projectDir = resolveDir(this.config.projectDir, DEFAULT_ASR_CONFIG.projectDir);
-    const searchDirs = [];
-    const bundled = bundledAsrRoot();
-    if (bundled) searchDirs.push(path.join(bundled, 'models'));
-    searchDirs.push(MODELS_DIR, path.join(projectDir, 'models'));
+    const searchDirs = [
+      SUBTITLE_MODELS_DIR,
+      MODELS_DIR,
+      path.join(userConfigDir, 'models'),
+    ];
     for (const dir of searchDirs) {
       try {
-        if (!fs.existsSync(dir)) continue;
-        const hit = findGgufRecursive(dir, 3);
-        if (hit) return hit;
+        const candidate = path.join(dir, MODEL_FILENAME);
+        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile() && fs.statSync(candidate).size >= MIN_MODEL_BYTES) {
+          return candidate;
+        }
       } catch (e) {
         // ignore
       }
@@ -288,33 +225,27 @@ class AsrService {
     return null;
   }
 
-  // 生成 audiocpp 的 server.json（派生文件）：把配置映射为模型请求选项
   buildServerJson() {
     const modelPath = this.findModel();
+    const rawLang = this.config.language || 'Auto';
+    const lang = String(rawLang).toLowerCase() === 'auto' ? 'Auto' : rawLang;
     const modelEntry = {
       id: SERVER_MODEL_ID,
-      family: 'sense_asr',
-      path: modelPath || this.config.modelPath,
+      family: 'confucius4_r2t2',
+      path: modelPath || path.join(SUBTITLE_MODELS_DIR, MODEL_FILENAME),
       task: 'asr',
-      // offline 已足够：一次性转写一段录音；live 端点不参与本链路
       mode: 'offline',
-      // 关键：服务端契约只对 /v1/audio/transcriptions 暴露 language，
-      // ITN / 分块策略必须经 default_request_options 下发
       default_request_options: {
-        language: this.config.language,
-        enable_itn: this.config.enableItn,
-        keep_tags: this.config.keepTags,
-        audio_chunk_mode: this.config.audioChunkMode,
-        audio_chunk_duration_sec: this.config.audioChunkDurationSec,
+        language: lang,
+        max_tokens: 512,
       },
     };
     const serverJson = {
       host: '127.0.0.1',
-      port: this.config.port,
-      backend: this.config.backend,
+      port: this.config.port || 1236,
+      backend: this.config.backend || 'metal',
       device: 0,
-      threads: this.config.threads,
-      // 单模型常驻即可，首次请求时加载（约 280MB，加载 <1s）
+      threads: this.config.threads || 4,
       lazy_load: true,
       max_loaded_models: 1,
       idle_unload_ms: 0,
@@ -328,9 +259,9 @@ class AsrService {
   }
 
   checkHealth() {
-    const port = this.config.port;
+    const port = this.config.port || 1236;
     return new Promise((resolve) => {
-      const req = http.get(`http://127.0.0.1:${port}/health`, { timeout: 1500 }, (res) => {
+      const req = http.get(`http://127.0.0.1:${port}/health`, { timeout: 1000 }, (res) => {
         res.resume();
         resolve(res.statusCode === 200);
       });
@@ -342,49 +273,100 @@ class AsrService {
     });
   }
 
+  // 刷新闲置计时器，超时自动释放进程回到待命状态
+  touch() {
+    this.lastUsedAt = Date.now();
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    const minutes = Number(this.config.idleUnloadMin ?? 30);
+    if (minutes <= 0) return;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      const pid = readPid();
+      if (!isPidAlive(pid)) return;
+      const idleMs = Date.now() - (this.lastUsedAt || 0);
+      if (idleMs < minutes * 60_000) {
+        this.touch();
+        return;
+      }
+      console.log(`[AsrService] 语音输入服务闲置超过 ${minutes} 分钟，自动退出进程返回待命状态 (standby)`);
+      this.stopService();
+    }, minutes * 60_000);
+    this.idleTimer.unref?.();
+  }
+
+  // 统一的四态返回：模型就绪但进程未开启时返回 'standby'（待命）
   async getStatus() {
     const pid = readPid();
     const alive = isPidAlive(pid);
     const healthy = alive ? await this.checkHealth() : false;
 
-    let status;
-    if (this.pendingOp) {
-      status = this.pendingOp;
-    } else if (alive && healthy) {
-      status = 'running';
-    } else if (alive) {
-      status = 'loading';
-    } else {
-      status = 'stopped';
-    }
-
     const binaryPath = this.findBinary();
     const modelPath = this.findModel();
+    const modelReady = Boolean(
+      modelPath &&
+      fs.existsSync(modelPath) &&
+      fs.statSync(modelPath).size >= MIN_MODEL_BYTES
+    );
+    let modelStat = null;
+    if (modelPath && fs.existsSync(modelPath)) {
+      try {
+        modelStat = fs.statSync(modelPath);
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    let status = 'incomplete';
+    if (!modelReady || !binaryPath) {
+      status = 'incomplete';
+    } else if (this.pendingOp === 'start' || this.pendingOp === 'restart' || this.startingPromise) {
+      status = 'loading';
+    } else if (this.pendingOp === 'stop') {
+      status = 'stopping';
+    } else if (alive && healthy) {
+      status = 'ready';
+    } else if (alive && !healthy) {
+      status = 'loading';
+    } else {
+      status = 'standby';
+    }
 
     return {
-      enabled: this.config.enabled,
       status,
+      running: alive && healthy,
+      ready: alive && healthy,
+      modelsReady: modelReady,
+      runtimeReady: Boolean(binaryPath),
       pid: alive ? pid : null,
-      port: this.config.port,
-      backend: this.config.backend,
-      language: this.config.language,
+      port: this.config.port || 1236,
+      backend: this.config.backend || 'metal',
+      language: this.config.language || 'Auto',
+      idleUnloadMin: this.config.idleUnloadMin ?? 30,
       projectDir: resolveDir(this.config.projectDir, DEFAULT_ASR_CONFIG.projectDir),
-      // audiocpp 实际使用的运行时根目录（打包态为 App 内 Resources/asr）
       runtimeRoot: this.resolveRuntimeRoot(),
       bundled: !!bundledAsrRoot(),
       checks: {
-        binary: !!binaryPath,
-        model: !!modelPath,
+        binary: Boolean(binaryPath),
+        model: modelReady,
         binaryPath,
-        modelPath,
+        modelPath: modelPath || path.join(SUBTITLE_MODELS_DIR, MODEL_FILENAME),
       },
+      model: {
+        name: 'Confucius4-R2T2 Q8_0 GGUF (有道真流式与离线 ASR)',
+        shortName: 'Confucius4-R2T2 Q8_0',
+        ready: modelReady,
+        path: modelPath || path.join(SUBTITLE_MODELS_DIR, MODEL_FILENAME),
+        sizeBytes: modelStat?.size || 0,
+        expectedBytes: EXPECTED_MODEL_BYTES,
+        sizeMb: modelStat ? (modelStat.size / (1024 * 1024)).toFixed(1) : '0',
+        sizeDesc: '2.31 GB',
+      },
+      download: subtitleService.downloadState,
       lastActionAt: this.lastActionAt || undefined,
       lastActionLog: this.lastActionLog || undefined,
     };
   }
 
-  // 兜底守护：监视本 Node 进程，Node 死亡（含 SIGKILL）后按 PID 精确终止 audiocpp_server。
-  // 实现见 server/watchdog.js（统一形态：不做 pkill -f 全局匹配，避免误杀无关进程）。
   ensureWatchdog() {
     if (this.watchdog) return;
     try {
@@ -393,7 +375,7 @@ class AsrService {
         binaryBasename: BINARY_BASENAME,
       });
     } catch (e) {
-      // watchdog 失败不阻断启动（正常退出仍由 proxy 退出钩子兜底）
+      // ignore
     }
   }
 
@@ -401,7 +383,6 @@ class AsrService {
     if (this.logStream) return this.logStream;
     try {
       if (!fs.existsSync(path.dirname(LOG_FILE))) fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
-      // 每次启动截断重写，tail 窗口即覆盖本次生命周期
       this.logStream = fs.createWriteStream(LOG_FILE, { flags: 'w' });
     } catch (e) {
       this.logStream = null;
@@ -410,18 +391,15 @@ class AsrService {
   }
 
   async startService() {
-    if (!this.config.enabled) {
-      return { accepted: false, reason: 'disabled' };
-    }
     const binary = this.findBinary();
     if (!binary) {
-      this.lastActionLog = `${BINARY_BASENAME} 未找到（请在设置中填写 audio.cpp 构建产物路径）`;
+      this.lastActionLog = `${BINARY_BASENAME} 未找到（请检查本地 audiocpp 构建产物）`;
       this.lastActionAt = Date.now();
       return { accepted: false, reason: 'binary_not_found' };
     }
     const model = this.findModel();
     if (!model) {
-      this.lastActionLog = `SenseVoice GGUF 模型未找到（请手动放置到 ${MODELS_DIR}）`;
+      this.lastActionLog = `Confucius4-R2T2 模型未就绪（请在服务管理面板中点击下载）`;
       this.lastActionAt = Date.now();
       return { accepted: false, reason: 'model_not_found' };
     }
@@ -446,12 +424,10 @@ class AsrService {
     const log = this.openLogStream();
 
     try {
+      if (!fs.existsSync(userConfigDir)) fs.mkdirSync(userConfigDir, { recursive: true });
       const child = spawn(binary, ['--config', serverJsonFile], {
         stdio: ['ignore', 'pipe', 'pipe'],
-        // 必须以「运行时根目录」为工作目录：sense_asr 内置 silero VAD 的默认路径是**相对路径**
-        // （assets/framework/models/silero_vad）。打包态取随包目录，开发态取本体目录；
-        // 否则 audio_chunk_mode=auto/fixed 会直接报 "Silero VAD model path does not exist"。
-        cwd: this.resolveRuntimeRoot(),
+        cwd: userConfigDir,
         env: { ...process.env },
       });
       this.child = child;
@@ -487,12 +463,12 @@ class AsrService {
           this.lastActionAt = Date.now();
         }
       });
-      this.lastActionLog = `已拉起 audiocpp_server (pid=${child.pid}) · ${this.config.backend} · ${this.config.language}`;
+      this.lastActionLog = `已拉起 audiocpp_server (pid=${child.pid}) · ${this.config.backend} · Confucius4-R2T2`;
 
-      // 等待健康探测通过（首次加载模型通常 <2s），最多 ~12s
+      // 等待健康探测通过
       let healthy = false;
       for (let i = 0; i < 24; i++) {
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 250));
         if (await this.checkHealth()) {
           healthy = true;
           break;
@@ -500,7 +476,10 @@ class AsrService {
         if (!isPidAlive(readPid())) break;
       }
       this.pendingOp = null;
-      if (healthy) return { accepted: true };
+      if (healthy) {
+        this.touch();
+        return { accepted: true };
+      }
       if (exitedBadly || !isPidAlive(readPid())) {
         return { accepted: false, reason: 'exited', error: this.lastActionLog };
       }
@@ -512,15 +491,54 @@ class AsrService {
     }
   }
 
+  // 按需唤醒入口：有录音请求来时若尚未拉起则现场拉起并重置闲置计时
+  async ensureRunning() {
+    const binary = this.findBinary();
+    if (!binary) {
+      return { ok: false, error: 'BINARY_MISSING' };
+    }
+    const model = this.findModel();
+    if (!model) {
+      return { ok: false, error: 'MODEL_MISSING' };
+    }
+    const pid = readPid();
+    const alive = isPidAlive(pid);
+    if (alive) {
+      const healthy = await this.checkHealth();
+      if (healthy) {
+        this.touch();
+        return { ok: true, existing: true };
+      }
+    }
+    if (this.startingPromise) {
+      return await this.startingPromise;
+    }
+    this.startingPromise = this.startService();
+    try {
+      const res = await this.startingPromise;
+      if (res && res.accepted) {
+        this.touch();
+        return { ok: true, existing: false };
+      }
+      return { ok: false, error: res?.reason || 'SPAWN_FAILED', detail: this.lastActionLog };
+    } finally {
+      this.startingPromise = null;
+    }
+  }
+
   async stopService() {
     this.pendingOp = 'stop';
     this.lastActionAt = Date.now();
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
     try {
       const pid = readPid();
       if (isPidAlive(pid)) {
         try { process.kill(pid, 'SIGTERM'); } catch (e) { /* ignore */ }
         for (let i = 0; i < 20 && isPidAlive(pid); i++) {
-          await new Promise((r) => setTimeout(r, 250));
+          await new Promise((r) => setTimeout(r, 200));
         }
         if (isPidAlive(pid)) {
           try { process.kill(pid, 'SIGKILL'); } catch (e) { /* ignore */ }
@@ -567,26 +585,20 @@ class AsrService {
     return { ...this.config };
   }
 
-  // 随 SimpleUI 启动自动拉起（enabled 开关控制；失败不阻断主服务）
+  // 统一按需待命：启动时不拉起模型与进程，由录音请求现场唤醒
   init() {
-    if (!this.config.enabled) {
-      console.log('[AsrService] auto-start disabled (enabled=false)');
-      return;
+    const pid = readPid();
+    if (!isPidAlive(pid)) {
+      try { fs.unlinkSync(PID_FILE); } catch {}
+    } else {
+      try { process.kill(pid, 'SIGTERM'); } catch {}
+      try { fs.unlinkSync(PID_FILE); } catch {}
     }
-    this.startService()
-      .then((r) => {
-        if (r && r.alreadyRunning) {
-          console.log('[AsrService] service already running, reused');
-        } else if (r && r.accepted) {
-          console.log('[AsrService] service auto-start issued');
-        } else {
-          console.log(`[AsrService] auto-start skipped: ${r && r.reason}`);
-        }
-      })
-      .catch((e) => console.error('[AsrService] auto-start failed:', e.message));
+    console.log('[AsrService] 语音输入识别服务已注册（按需待命模式：首句录音现场拉起，闲置超时自动卸载）');
   }
 
   shutdownSync() {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
     const pid = readPid();
     if (isPidAlive(pid)) {
       try { process.kill(pid, 'SIGTERM'); } catch (e) { /* ignore */ }
@@ -594,6 +606,7 @@ class AsrService {
   }
 
   shutdownForce() {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
     const pid = readPid();
     if (isPidAlive(pid)) {
       try { process.kill(pid, 'SIGKILL'); } catch (e) { /* ignore */ }
@@ -625,18 +638,11 @@ class AsrService {
 
   // ----------------------------- 转写 -----------------------------
 
-  /**
-   * 把原始音频字节转写为文本。
-   * 由 Node 侧构造 audiocpp 需要的 multipart 请求（客户端只需 POST 裸音频），
-   * 这样 Swift 端与浏览器端都能用同一入口，不必各自拼 multipart。
-   *
-   * @param {Buffer} audio   音频字节（WAV；audio.cpp 内部转 16kHz 单声道）
-   * @param {string} [language] 单次覆盖语言（缺省用配置）
-   */
   transcribe(audio, language) {
-    const port = this.config.port;
+    const port = this.config.port || 1236;
     const boundary = '----SimpleUIAsrBoundary' + Date.now().toString(36);
-    const lang = ENUMS.language.includes(language) ? language : this.config.language;
+    const rawLang = language || this.config.language || 'Auto';
+    const lang = String(rawLang).toLowerCase() === 'auto' ? 'Auto' : rawLang;
 
     const CRLF = '\r\n';
     const parts = [];
@@ -687,26 +693,22 @@ class AsrService {
             try {
               const j = JSON.parse(data);
               const raw = String(j.text ?? j.transcript ?? '').trim();
-              const cleaned = this.config.keepTags ? raw : stripMetaTags(raw);
-              const text = stripLonePunctuation(cleaned);
+              const text = stripLonePunctuation(raw);
               resolve({
                 ok: true,
                 text,
                 language: j.language || lang,
                 raw,
-                // 上游确实给了内容，只是整串都是标点 → 客户端可据此「静默收场」而不是报错
-                droppedPunctuation: text === '' && cleaned !== '',
+                droppedPunctuation: text === '' && raw !== '',
               });
             } catch (e) {
-              // 非 JSON：有些实现直接回纯文本
-              const cleaned = stripMetaTags(data.trim());
-              const text = stripLonePunctuation(cleaned);
+              const text = stripLonePunctuation(data.trim());
               resolve({
                 ok: true,
                 text,
                 language: lang,
                 raw: data.trim(),
-                droppedPunctuation: text === '' && cleaned !== '',
+                droppedPunctuation: text === '' && data.trim() !== '',
               });
             }
           });
@@ -764,6 +766,13 @@ class AsrService {
         return;
       }
 
+      // 按需唤醒与预热接口：录音启动时后台静默触发，提前加载模型权重与 Metal 图
+      if (pathname === '/warmup' && req.method === 'POST') {
+        const r = await this.ensureRunning();
+        sendJson(r.ok ? 200 : 503, r);
+        return;
+      }
+
       if (pathname === '/start' && req.method === 'POST') {
         const r = await this.startService();
         sendJson(200, { ...r, status: (await this.getStatus()).status });
@@ -802,27 +811,47 @@ class AsrService {
         return;
       }
 
-      // 语音转写：接受裸音频字节（Content-Type 任意），language 可经查询串覆盖
+      // 模型下载控制（与字幕服务复用同一套底层下载器）
+      if (pathname === '/models/download' && req.method === 'POST') {
+        subtitleService.startDownload('asr').catch((err) => {
+          console.error('[AsrService] start download error:', err.message);
+        });
+        sendJson(200, { ok: true, downloadState: subtitleService.downloadState });
+        return;
+      }
+
+      if (pathname === '/models/cancel-download' && req.method === 'POST') {
+        const state = subtitleService.cancelDownload();
+        sendJson(200, { ok: true, downloadState: state });
+        return;
+      }
+
+      if (pathname === '/open-dir' && req.method === 'POST') {
+        try {
+          fs.mkdirSync(SUBTITLE_MODELS_DIR, { recursive: true });
+          spawn('open', [SUBTITLE_MODELS_DIR], { detached: true, stdio: 'ignore' }).unref();
+          sendJson(200, { ok: true, path: SUBTITLE_MODELS_DIR });
+        } catch (e) {
+          sendJson(500, { ok: false, error: e.message });
+        }
+        return;
+      }
+
+      // 语音转写：现场按需拉起进程（若在待命中），转写完成后刷新闲置计时
       if (pathname === '/transcribe' && req.method === 'POST') {
         const audio = await readRawBody();
         if (!audio || audio.length < 256) {
           sendJson(400, { ok: false, error: 'empty_audio' });
           return;
         }
-        const alive = isPidAlive(readPid());
-        const healthy = alive ? await this.checkHealth() : false;
-        if (!healthy) {
-          // 服务未就绪：尽力拉起一次再试（用户可能刚打开 App）
-          if (this.config.enabled) {
-            await this.startService();
-          }
-          if (!(await this.checkHealth())) {
-            sendJson(503, { ok: false, error: 'service_not_ready' });
-            return;
-          }
+        const startRes = await this.ensureRunning();
+        if (!startRes.ok) {
+          sendJson(503, { ok: false, error: 'service_not_ready', detail: startRes.detail || startRes.error });
+          return;
         }
         const lang = urlObj.searchParams.get('language') || undefined;
         const result = await this.transcribe(audio, lang);
+        this.touch();
         sendJson(result.ok ? 200 : 502, result);
         return;
       }
@@ -840,46 +869,6 @@ class AsrService {
 
 // ----------------------------- 工具函数 -----------------------------
 
-// 在目录下递归搜 SenseVoice *.gguf（严格排除实时字幕专属隔离目录 subtitles_pipeline）
-function findGgufRecursive(dir, depth) {
-  if (depth < 0) return null;
-  let entries;
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch (e) {
-    return null;
-  }
-  // 优先匹配 sensevoice 命名的模型，再兜底同目录非字幕 GGUF
-  for (const e of entries) {
-    if (e.isFile() && e.name.toLowerCase().includes('sensevoice') && e.name.toLowerCase().endsWith('.gguf')) {
-      return path.join(dir, e.name);
-    }
-  }
-  for (const e of entries) {
-    if (e.isFile() && e.name.toLowerCase().endsWith('.gguf')) {
-      return path.join(dir, e.name);
-    }
-  }
-  for (const e of entries) {
-    if (e.isDirectory() && e.name !== 'subtitles_pipeline') {
-      const hit = findGgufRecursive(path.join(dir, e.name), depth - 1);
-      if (hit) return hit;
-    }
-  }
-  return null;
-}
-
-// 去掉 SenseVoice 的 <|event|>/<|emotion|>/<|language|> 元标签
-function stripMetaTags(text) {
-  if (!text) return '';
-  return text.replace(/<\|[^|]*\|>/g, '').trim();
-}
-
-/// 纯标点「幻觉」：完全静音时模型偶尔会吐一个句号/逗号（中英文都有）。
-/// 这种结果不携带任何信息，落进输入框只会污染用户文本 —— 统一视作空串。
-///
-/// 判据是**整串只由标点与空白组成**（中文全角、英文半角、省略号、重复标点都算），
-/// 只要出现一个字母/数字/汉字就原样保留，句中、句尾的标点一律不碰。
 const PUNCTUATION_ONLY_RE =
   /^[\s,，.．。、!！?？;；:：…‥·•—–\-_~～'"“”‘’`()（）\[\]【】{}｛｝<>＜＞《》〈〉«»\/\\|｜+＋*＊=＝#＃@＆&^%％$＄￥€£]+$/u;
 

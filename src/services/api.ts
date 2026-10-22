@@ -1,4 +1,4 @@
-import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, SubtitleServiceStatus, SubtitleDownloadState, TtsServiceStatus, TtsServiceConfig, TtsDownloadState, OcrServiceStatus, OcrDownloadState, OcrConfig, OcrRecognizeResult } from '../types/chat';
+import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, SubtitleServiceStatus, SubtitleDownloadState, TtsServiceStatus, TtsServiceConfig, TtsDownloadState, OcrServiceStatus, OcrDownloadState, OcrConfig, OcrRecognizeResult, TranslateServiceStatus, TranslateServiceConfigPatch } from '../types/chat';
 import { estimateHistoryTokens, setTokenCalibration, CalibrationProvider } from '../utils/token';
 
 /** 服务端 usage 的实际形状（TTF 会给出 cached / reasoning 明细） */
@@ -903,7 +903,7 @@ export class ModelServiceAPI {
 }
 
 /**
- * 语音识别服务（SenseVoice / audio.cpp）。
+ * 语音识别服务（Confucius4-R2T2 / audio.cpp）。
  *
  * 与基础模型服务同构：SimpleUI 是 audiocpp_server 的唯一管理方，
  * 随 App 自动拉起、退出一并终止；配置持久化于 asr_config.json。
@@ -927,6 +927,12 @@ export class ASRServiceAPI {
       console.error('ASRService getConfig failed:', e);
     }
     return null;
+  }
+
+  static async saveConfig(
+    partial: Partial<AsrServiceConfig>
+  ): Promise<{ success: boolean; restarted?: boolean; error?: string; config?: AsrServiceConfig }> {
+    return this.updateConfig(partial, false);
   }
 
   /** 应用部分配置；restartIfRunning=true 时若服务在运行则自动热重启 */
@@ -967,6 +973,123 @@ export class ASRServiceAPI {
       console.error('ASRService getLogs failed:', e);
     }
     return null;
+  }
+
+  static async startDownload(): Promise<{ ok: boolean; downloadState?: SubtitleDownloadState }> {
+    try {
+      const res = await fetch('/api/asr/models/download', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('ASRService startDownload failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async cancelDownload(): Promise<{ ok: boolean; downloadState?: SubtitleDownloadState }> {
+    try {
+      const res = await fetch('/api/asr/models/cancel-download', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('ASRService cancelDownload failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async openModelsDir(): Promise<{ ok: boolean; path?: string }> {
+    try {
+      const res = await fetch('/api/asr/open-dir', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('ASRService openModelsDir failed:', e);
+    }
+    return { ok: false };
+  }
+}
+
+/**
+ * 快速翻译服务（快速模式复用字幕翻译小模型 · 详解模式走 DeepSeek / 基础模型服务）。
+ *
+ * 模型下载与进度全部转发给实时字幕服务，二者共用同一份模型文件、运行时与下载器，
+ * 因此这里不复制任何下载逻辑，只做状态读取与配置写入。
+ */
+export class TranslateServiceAPI {
+  static async getStatus(): Promise<TranslateServiceStatus | null> {
+    try {
+      const res = await fetch('/api/translate/status', { cache: 'no-store' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('TranslateService getStatus failed:', e);
+    }
+    return null;
+  }
+
+  static async updateConfig(
+    patch: TranslateServiceConfigPatch
+  ): Promise<{ ok: boolean; config?: TranslateServiceStatus }> {
+    try {
+      const res = await fetch('/api/translate/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('TranslateService updateConfig failed:', e);
+    }
+    return { ok: false };
+  }
+
+  /** 下载翻译小模型：与字幕服务共用同一套双源测速下载器 */
+  static async startDownload(): Promise<{ ok: boolean; downloadState?: SubtitleDownloadState }> {
+    try {
+      const res = await fetch('/api/translate/download', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('TranslateService startDownload failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async cancelDownload(): Promise<{ ok: boolean; downloadState?: SubtitleDownloadState }> {
+    try {
+      const res = await fetch('/api/translate/download/cancel', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('TranslateService cancelDownload failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async openModelsDir(): Promise<{ ok: boolean; path?: string }> {
+    try {
+      const res = await fetch('/api/translate/open-dir', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('TranslateService openModelsDir failed:', e);
+    }
+    return { ok: false };
+  }
+
+  /** 预热快速模式小模型（与字幕服务共用 1249） */
+  static async warmup(): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const res = await fetch('/api/translate/warmup', { method: 'POST' });
+      return await res.json();
+    } catch (e) {
+      console.error('TranslateService warmup failed:', e);
+    }
+    return { ok: false };
+  }
+
+  /** 卸载快速模式小模型（字幕服务运行中时会被拒绝，避免打断字幕） */
+  static async unload(): Promise<{ ok: boolean; reason?: string }> {
+    try {
+      const res = await fetch('/api/translate/unload', { method: 'POST' });
+      return await res.json();
+    } catch (e) {
+      console.error('TranslateService unload failed:', e);
+    }
+    return { ok: false };
   }
 }
 
