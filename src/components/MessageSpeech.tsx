@@ -47,6 +47,7 @@ export function MessageSpeechBar({ messageId, content }: SpeechPartProps) {
   return (
     <SpeechBar
       state={speech.state}
+      messageId={messageId}
       onRegenerate={() => speech.start(false)}
       onDelete={speech.remove}
       onCancel={speech.cancel}

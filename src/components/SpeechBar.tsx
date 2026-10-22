@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Loader2,
   Play,
@@ -12,7 +12,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { useI18n } from '../i18n';
-import type { SpeechState } from '../utils/speechStore';
+import { consumePinAfterMount, type SpeechState } from '../utils/speechStore';
 import {
   formatClock,
   seekAudio,
@@ -23,6 +23,7 @@ import {
 
 interface SpeechBarProps {
   state: SpeechState;
+  messageId: string;
   onRegenerate: () => void;
   onDelete: () => void;
   onCancel: () => void;
@@ -35,7 +36,7 @@ interface SpeechBarProps {
  * **高度恒定 44px**：进度态与播放态同高，状态切换不会让对话区跳动一下。
  * 只挂在消息流的正常文档流里，不脱离文档流、不遮挡正文。
  */
-export function SpeechBar({ state, onRegenerate, onDelete, onCancel }: SpeechBarProps) {
+export function SpeechBar({ state, messageId, onRegenerate, onDelete, onCancel }: SpeechBarProps) {
   const { t } = useI18n();
   const player = useAudioPlayer();
   const barRef = useRef<HTMLDivElement | null>(null);
@@ -47,16 +48,33 @@ export function SpeechBar({ state, onRegenerate, onDelete, onCancel }: SpeechBar
   const ready = state.phase === 'ready' && !!state.url;
   const isThisTrack = !!state.url && player.url === state.url;
 
-  // 点击时用户贴在底部 → 进度条插进来后把它滚进视野（否则条子出现在屏幕外，等于没反应）
-  const pinAfterMount = state.pinAfterMount;
+  // 点击时用户贴在底部 → 进度条插进来后把它滚进视野（否则条子出现在屏幕外，等于没反应）。
+  // 每个作业只做一次：切走会话再切回来、或因窗口化重新挂载时，不该再拽一次视野。
   useLayoutEffect(() => {
-    if (!pinAfterMount) return;
+    if (!state.pinAfterMount) return;
     if (state.phase !== 'loading' && state.phase !== 'generating') return;
+    if (!consumePinAfterMount(messageId)) return;
     const el = barRef.current;
     if (!el) return;
     el.scrollIntoView({ block: 'nearest' });
-    // 只在挂载时判定一次：之后用户自己滚走不该被拽回来
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 「更多」菜单：状态一变（重新生成 → 进度态 → 再回到播放态）就收起，别一直挂着
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [state.phase, state.url]);
+
+  // 点栏外收起菜单（点栏内不关，方便连续操作）
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const el = barRef.current;
+      if (el && e.target instanceof Node && el.contains(e.target)) return;
+      setMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => document.removeEventListener('pointerdown', onPointerDown, true);
+  }, [menuOpen]);
 
   const duration = isThisTrack && player.duration > 0 ? player.duration : state.durationSec;
   const time = isThisTrack ? player.time : 0;

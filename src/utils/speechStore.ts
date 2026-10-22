@@ -123,6 +123,18 @@ export function invalidateAudioIndex() {
 
 let activeJob: { id: string; ac: AbortController } | null = null;
 
+/**
+ * 「点击瞬间贴底 → 挂载后滚进视野」只允许每个作业发生一次。
+ * 否则切走会话再切回来、或条子因窗口化重新挂载时，会把视野又拽一次。
+ */
+const pinConsumed = new Set<string>();
+
+export function consumePinAfterMount(messageId: string): boolean {
+  if (pinConsumed.has(messageId)) return false;
+  pinConsumed.add(messageId);
+  return true;
+}
+
 /** 显式通知后端取消：只靠 abort 断开连接时，服务端可能还在忙着当前这一段。 */
 function requestCancel(messageId: string) {
   try {
@@ -208,6 +220,7 @@ async function startSpeech(id: string, segments: string[], pinAfterMount: boolea
 
   const ac = new AbortController();
   activeJob = { id, ac };
+  pinConsumed.delete(id);
 
   setState(id, {
     phase: 'loading',
