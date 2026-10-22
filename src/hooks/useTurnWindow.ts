@@ -58,15 +58,8 @@ interface CenterState {
 interface AnchorSnapshot {
   key: string;
   index: number;
-  /** 阅读线处命中的最深元素；换宽度/折叠等场景用它保持屏幕位置 */
-  el: HTMLElement | null;
-  elTop: number;
-  /** 兜底：整轮的 top */
+  /** 整轮的 top */
   turnTop: number;
-  /** 阅读线在轮内的偏移（宽度变化时按比例恢复） */
-  turnOffset: number;
-  turnHeight: number;
-  width: number;
   scrollTop: number;
 }
 
@@ -105,7 +98,13 @@ function hasSelectionInside(el: HTMLElement): boolean {
  * 4. 任何窗口增删、高度变化、宽度变化后，都在 paint 前把“阅读线处的元素”
  *    恢复到原屏幕位置。流式生成本身不跟随滚动（产品决策）。
  */
-export function useTurnWindow({ messages, sessionId, containerRef, contentRef }: Params) {
+export function useTurnWindow({
+  messages,
+  sessionId,
+  containerRef,
+  contentRef,
+  isLayoutTransition = false,
+}: Params) {
   const turns = useMemo(() => buildTurns(messages), [messages]);
   const turnsRef = useRef(turns);
   turnsRef.current = turns;
@@ -214,8 +213,11 @@ export function useTurnWindow({ messages, sessionId, containerRef, contentRef }:
   }, []);
 
   const anchorRef = useRef<AnchorSnapshot | null>(null);
+  const layoutTransitionRef = useRef(false);
+  const prevTransitionRef = useRef(false);
+  const lockedTargetRef = useRef<'BOTTOM' | number | null>(null);
 
-  /** 记录“阅读线处是什么”。滚动时同步调用，保证高度变化前拿到最新位置。 */
+  /** 记录“阅读线处是哪一轮”。滚动时同步调用，保证上方高度变化前拿到最新位置。 */
   const captureAnchor = useCallback((): AnchorSnapshot | null => {
     const el = containerRef.current;
     if (!el) return null;
@@ -238,82 +240,35 @@ export function useTurnWindow({ messages, sessionId, containerRef, contentRef }:
     if (!key) return null;
     const index = Number(turnEl.dataset.turnIndex ?? 0);
 
-    let hit: HTMLElement | null = null;
-    try {
-      const x = sr.left + Math.min(Math.max(sr.width * 0.32, 16), 260);
-      const y = Math.min(Math.max(lineY, sr.top + 1), sr.bottom - 1);
-      const candidate = document.elementFromPoint(x, y) as HTMLElement | null;
-      if (
-        candidate &&
-        el.contains(candidate) &&
-        !candidate.closest('[data-chat-inner-scroll]') &&
-        candidate.closest('[data-turn-index]') === turnEl
-      ) {
-        hit = candidate;
-      }
-    } catch {
-      hit = null;
-    }
-
     const snapshot: AnchorSnapshot = {
       key,
       index,
-      el: hit,
-      elTop: hit ? hit.getBoundingClientRect().top : tr.top,
       turnTop: tr.top,
-      turnOffset: lineY - tr.top,
-      turnHeight: tr.height,
-      width: contentWidth(),
       scrollTop: el.scrollTop,
     };
     anchorRef.current = snapshot;
     updateCenter(key, index);
     return snapshot;
-  }, [containerRef, contentWidth, updateCenter]);
+  }, [containerRef, updateCenter]);
 
   /**
-   * 恢复到锚点位置。
-   *
-   * 高度变化：`delta = 当前 top - 记录 top + 用户自上次记录后滚动的距离`。
-   * 这样既补偿了上方 DOM 增高，又不会把用户刚滚的那一下“吃掉”。
-   *
-   * 宽度变化：按轮内比例恢复——换宽度后文本会重排，绝对像素偏移没有意义。
+   * 恢复到锚点位置（上方轮次增删/动态渲染导致高度变化时，保持当前阅读轮次稳定）。
+   * 宽度变化与侧边栏开合统一由宏观刻度对齐接管，这里不再做脆弱的 DOM 探测与百分比计算。
    */
   const restoreAnchor = useCallback(() => {
     const el = containerRef.current;
     const a = anchorRef.current;
     if (!el || !a) return;
 
-    const sr = el.getBoundingClientRect();
     const scrollTop = el.scrollTop;
-    const currentWidth = contentWidth();
-
-    if (a.width > 0 && Math.abs(currentWidth - a.width) > 1) {
-      const node = findTurnEl(el, a.key);
-      if (node) {
-        const tr = node.getBoundingClientRect();
-        const ratio = a.turnHeight > 0 ? a.turnOffset / a.turnHeight : 0;
-        const desired = sr.top + READING_LINE;
-        const delta = tr.top + ratio * tr.height - desired;
-        if (Math.abs(delta) > 0.5) el.scrollTop = scrollTop + delta;
-      }
-      captureAnchor();
-      return;
-    }
-
-    const ds = scrollTop - a.scrollTop;
-    let node: HTMLElement | null = a.el;
-    let oldTop = a.elTop;
-    if (!node || !node.isConnected || !el.contains(node)) {
-      node = findTurnEl(el, a.key);
-      oldTop = a.turnTop;
-    }
+    const node = findTurnEl(el, a.key);
     if (!node) return;
 
-    const delta = node.getBoundingClientRect().top - oldTop + ds;
+    const ds = scrollTop - a.scrollTop;
+    const delta = node.getBoundingClientRect().top - a.turnTop + ds;
     if (Math.abs(delta) > 0.5) el.scrollTop = scrollTop + delta;
     captureAnchor();
-  }, [containerRef, contentWidth, captureAnchor]);
+  }, [containerRef, captureAnchor]);
 
   const pinBottomRef = useRef(false);
   const pinUntilRef = useRef(0);
@@ -357,6 +312,9 @@ export function useTurnWindow({ messages, sessionId, containerRef, contentRef }:
         });
         pendingMeasuresRef.current.clear();
         if (!changed) return;
+
+        // 侧栏开合/面板拉伸过渡中：静默记录高度，绝不扰动滚动位置
+        if (layoutTransitionRef.current) return;
 
         if (pinBottomRef.current) pinToBottom();
         else restoreAnchor();
@@ -524,11 +482,46 @@ export function useTurnWindow({ messages, sessionId, containerRef, contentRef }:
     [containerRef, commitWin, updateCenter, scheduleTrim]
   );
 
+  /**
+   * 宏观刻度恢复逻辑（侧边栏开合、拖拽调整右栏宽度等）：
+   * 1. 动画/调整开始瞬间，记下当前处在的宏观刻度（或贴底态）；
+   * 2. 动画/调整进行中彻底静默，不做微观像素或百分比补丁，不打断 CSS 过渡；
+   * 3. 动画结束、遮罩淡出前：在定型的容器宽度下，底层直接模拟点击该刻度（jumpTo）或贴底。
+   */
+  const elForTick = containerRef.current;
+  const isCurrentlyAtBottom = elForTick
+    ? elForTick.scrollTop + elForTick.clientHeight >= elForTick.scrollHeight - 32
+    : false;
+  const currentTick = pinBottomRef.current || isCurrentlyAtBottom ? 'BOTTOM' : effectiveCenterIndex;
+
+  useLayoutEffect(() => {
+    const isStarting = isLayoutTransition && !prevTransitionRef.current;
+    const isEnding = !isLayoutTransition && prevTransitionRef.current;
+    prevTransitionRef.current = !!isLayoutTransition;
+    layoutTransitionRef.current = !!isLayoutTransition;
+
+    if (isStarting) {
+      lockedTargetRef.current = currentTick;
+      return;
+    }
+
+    if (isEnding) {
+      const target = lockedTargetRef.current;
+      lockedTargetRef.current = null;
+      if (target === 'BOTTOM') {
+        centerOnLatest();
+      } else if (typeof target === 'number' && target >= 0) {
+        jumpTo(target);
+      }
+    }
+  }, [isLayoutTransition, currentTick, centerOnLatest, jumpTo]);
+
   /** 窗口/高度/全量切换后统一在这里恢复锚点。 */
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el || !hasTurns) return;
     if (winRef.current.sessionId !== sessionKey) return;
+    if (layoutTransitionRef.current) return;
 
     if (pinBottomRef.current) {
       pinToBottom();
@@ -626,6 +619,7 @@ export function useTurnWindow({ messages, sessionId, containerRef, contentRef }:
       raf = window.requestAnimationFrame(() => {
         raf = 0;
         if (!aliveRef.current) return;
+        if (layoutTransitionRef.current) return;
         if (!pinBottomRef.current) captureAnchor();
         if (allMountedRef.current) return;
         const cur = winRef.current;
@@ -676,7 +670,7 @@ export function useTurnWindow({ messages, sessionId, containerRef, contentRef }:
     };
   }, [containerRef, sessionKey, captureAnchor, scheduleTrim, commitWin]);
 
-  /** 容器尺寸 / 内容宽度变化：换宽度后按比例恢复锚点。 */
+  /** 容器尺寸 / 内容宽度变化跟踪 */
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -690,8 +684,9 @@ export function useTurnWindow({ messages, sessionId, containerRef, contentRef }:
       const w = content.clientWidth || 0;
       if (w > 0 && Math.abs(w - widthRef.current) > 1) {
         widthRef.current = w;
-        restoreAnchor();
-        scheduleBump();
+        if (!layoutTransitionRef.current) {
+          scheduleBump();
+        }
       }
     };
 
@@ -704,7 +699,7 @@ export function useTurnWindow({ messages, sessionId, containerRef, contentRef }:
       ro.disconnect();
       window.removeEventListener('resize', read);
     };
-  }, [containerRef, contentRef, restoreAnchor, scheduleBump]);
+  }, [containerRef, contentRef, scheduleBump]);
 
   /** 初始与切会话后安排一次收拢（把预载区收回到可见 ± PAD）。 */
   useEffect(() => {
@@ -752,4 +747,6 @@ interface Params {
   sessionId?: string | null;
   containerRef: RefObject<HTMLDivElement | null>;
   contentRef?: RefObject<HTMLDivElement | null>;
+  /** 侧栏开合、拖拽调整右栏宽度等宏观布局变动 */
+  isLayoutTransition?: boolean;
 }

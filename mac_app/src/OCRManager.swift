@@ -265,8 +265,7 @@ public class OCRManager: NSObject {
                         pb.clearContents()
                         pb.setString(text, forType: .string)
 
-                        // 提示并播放系统完成轻音效
-                        NSSound(named: "Glass")?.play()
+                        // 只更新 HUD，不播放提示音
                         self.showHUD(state: .success(chars: text.count, durationMs: payload.durationMs))
 
                     case .failure(let err):

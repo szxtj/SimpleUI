@@ -65,12 +65,6 @@ export function useChatFontSize({
     });
   }, [minSize, step, storageKey]);
 
-  const resetZoom = useCallback(() => {
-    setFontSize(defaultSize);
-    try {
-      localStorage.setItem(storageKey, String(defaultSize));
-    } catch {}
-  }, [defaultSize, storageKey]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -89,17 +83,11 @@ export function useChatFontSize({
         e.stopPropagation();
         zoomOut();
       }
-      // ⌘ 0 复位
-      else if (e.key === '0') {
-        e.preventDefault();
-        e.stopPropagation();
-        resetZoom();
-      }
     };
 
     window.addEventListener('keydown', handleKeyDown, { capture: true });
     return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
-  }, [zoomIn, zoomOut, resetZoom]);
+  }, [zoomIn, zoomOut]);
 
-  return { fontSize, setFontSize: updateFontSize, zoomIn, zoomOut, resetZoom };
+  return { fontSize, setFontSize: updateFontSize, zoomIn, zoomOut };
 }

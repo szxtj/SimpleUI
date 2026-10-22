@@ -105,8 +105,40 @@ export const ChatView: React.FC<ChatViewProps> = ({
   isMference = false,
 }) => {
   const { t } = useI18n();
-  const masked = resizing || layoutMask;
-  // 拖拽松手：先保持 100ms 再淡 280ms（内容在遮罩下完成一次重排）
+
+  /** 窗口/应用整机尺寸拉伸调整：同样接入遮罩 + 宏观刻度复位契约 */
+  const [windowResizing, setWindowResizing] = useState(false);
+  const windowResizeTimerRef = useRef<number | null>(null);
+  const prevWindowSizeRef = useRef({
+    w: typeof window !== 'undefined' ? window.innerWidth : 0,
+    h: typeof window !== 'undefined' ? window.innerHeight : 0,
+  });
+
+  useEffect(() => {
+    const handleResize = () => {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      const dw = Math.abs(w - prevWindowSizeRef.current.w);
+      const dh = Math.abs(h - prevWindowSizeRef.current.h);
+      if (dw < 2 && dh < 2) return;
+      prevWindowSizeRef.current = { w, h };
+
+      setWindowResizing(true);
+      if (windowResizeTimerRef.current) window.clearTimeout(windowResizeTimerRef.current);
+      windowResizeTimerRef.current = window.setTimeout(() => {
+        setWindowResizing(false);
+      }, 150);
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      if (windowResizeTimerRef.current) window.clearTimeout(windowResizeTimerRef.current);
+    };
+  }, []);
+
+  const masked = resizing || layoutMask || windowResizing;
+  // 拖拽松手 / 窗口缩放：先保持 100ms 再淡 280ms（内容在遮罩下完成一次重排与刻度复位）
   // 开合侧栏：滑入/滑出本身 200ms，结束后再多盖 140ms 才开始淡出，避免"闪现"
   const mask = useFadeOverlay(
     masked,
@@ -122,12 +154,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const prevSessionIdRef = useRef<string | null | undefined>(undefined);
   const prevLastUserMsgIdRef = useRef<string | undefined>(undefined);
   const [showModelMenu, setShowModelMenu] = useState(false);
-  /**
-   * 拖拽右栏 / 开合侧栏期间冻结内容宽度：
-   * 遮罩盖着的时候不做逐帧重排，松手后一次性重排并恢复锚点。
-   */
-  const [frozenWidth, setFrozenWidth] = useState<number | null>(null);
-  const frozenWidthRef = useRef<number | null>(null);
 
   // 对话内容字号独立调节（大窗口快捷键 ⌘+ / ⌘-，不影响侧边栏/输入框）
   const { fontSize: chatFontSize } = useChatFontSize({
@@ -139,7 +165,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   /**
    * 对话窗口化：可见区 ± 2 轮 + 上下各约 1.2 屏预载；短会话全量挂载。
-   * 未挂载部分用 spacer 占位，任何窗口变化都在 paint 前恢复锚点。
+   * 未挂载部分用 spacer 占位，侧栏开合/面板调整统一通过宏观刻度恢复。
    * 详见 useTurnWindow。
    */
   const {
@@ -154,13 +180,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
     bottomSpacer,
     onMeasure,
     visitedKeys,
-    captureAnchor,
-    restoreAnchor,
   } = useTurnWindow({
     messages,
     sessionId,
     containerRef: scrollContainerRef,
     contentRef,
+    isLayoutTransition: masked,
   });
 
   /**
@@ -189,40 +214,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
     if (isNewUserTurnSent) centerOnLatest();
   }, [sessionId, messages, centerOnLatest]);
-
-  /**
-   * 拖拽右栏 / 开合侧栏：冻结内容宽度（遮罩下面不逐帧重排），
-   * 结束后解除冻结并恢复锚点。
-   */
-  useLayoutEffect(() => {
-    const shouldFreeze = resizing || layoutMask;
-    if (shouldFreeze) {
-      if (frozenWidthRef.current == null) {
-        const w = contentRef.current?.offsetWidth ?? 0;
-        if (w > 0) {
-          frozenWidthRef.current = w;
-          setFrozenWidth(w);
-        }
-        captureAnchor();
-      }
-      return;
-    }
-    if (frozenWidthRef.current != null) {
-      frozenWidthRef.current = null;
-      setFrozenWidth(null);
-    }
-  }, [resizing, layoutMask, captureAnchor]);
-
-  /** 解除冻结后的第一次布局完成：强制读一次布局，再把阅读线恢复到原位置。 */
-  const prevFrozenWidthRef = useRef<number | null>(null);
-  useLayoutEffect(() => {
-    if (prevFrozenWidthRef.current != null && frozenWidth == null) {
-      const el = scrollContainerRef.current;
-      if (el) void el.offsetHeight;
-      restoreAnchor();
-    }
-    prevFrozenWidthRef.current = frozenWidth;
-  }, [frozenWidth, restoreAnchor]);
 
   const quickPrompts = [
     {
@@ -498,11 +489,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
               ref={contentRef}
               data-chat-content="true"
               className="max-w-4xl mx-auto text-sm pb-2 pr-[24px]"
-              style={
-                frozenWidth != null
-                  ? { width: `${frozenWidth}px`, maxWidth: 'none', flex: 'none' }
-                  : undefined
-              }
             >
               {topSpacer > 0 && (
                 <div aria-hidden="true" style={{ height: topSpacer }} />

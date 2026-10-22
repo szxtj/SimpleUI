@@ -315,40 +315,35 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
 
   const interactive = isOpen && active;
 
-  // 快捷键支持（嵌入模式下只有当前可见的图片页可以抢键盘）
+  /**
+   * 键盘支持：只保留 Esc（关闭弹窗）。切图只走左右箭头按钮 ——
+   * ←/→ 会与文本编辑的方向键冲突，用户明确要求删掉。
+   *
+   * 两点约束：
+   *  1. 不再抢 +/-、0、r 做缩放/复位 —— 图片页在侧栏里是常驻的，全局捕获会让用户在输入框里
+   *     打不出 "r"（「开了图片 r 打不出来」就是这么来的）；
+   *  2. 事件源在可编辑元素里时一律放行，不拦截方向键，避免影响正常输入。
+   */
   useEffect(() => {
     if (!interactive) return;
+    const isEditable = (target: EventTarget | null) => {
+      const el = target as HTMLElement | null;
+      if (!el || !el.tagName) return false;
+      const tag = el.tagName.toLowerCase();
+      return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable === true;
+    };
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (isEditable(e.target)) return;
       if (e.key === 'Escape') {
         if (embedded) return; // 页面形态由标签 ✕ / 返回键关闭，Esc 不关标签
         e.stopPropagation();
         e.preventDefault();
         onClose();
-      } else if (e.key === 'ArrowLeft') {
-        e.stopPropagation();
-        e.preventDefault();
-        handlePrev();
-      } else if (e.key === 'ArrowRight') {
-        e.stopPropagation();
-        e.preventDefault();
-        handleNext();
-      } else if (e.key === '+' || e.key === '=') {
-        e.stopPropagation();
-        e.preventDefault();
-        handleZoomIn();
-      } else if (e.key === '-' || e.key === '_') {
-        e.stopPropagation();
-        e.preventDefault();
-        handleZoomOut();
-      } else if (e.key === '0' || e.key === 'r') {
-        e.stopPropagation();
-        e.preventDefault();
-        resetTransform();
       }
     };
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [interactive, embedded, onClose, handlePrev, handleNext, handleZoomIn, handleZoomOut, resetTransform]);
+  }, [interactive, embedded, onClose]);
 
   // 滚轮与触控板双指缩放：以鼠标焦点为中心（Focal-point Zoom），杜绝画面漂移
   const handleWheel = (e: React.WheelEvent) => {
@@ -406,28 +401,8 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
       const clampedY = clamp(nextPanY, bounds.minY, bounds.maxY);
 
       applyTransform(clampedX, clampedY, currentZoom, false);
-    } else {
-      // 普通鼠标滚轮：轻微平滑变焦（以鼠标光标为焦点）
-      const step = -Math.sign(e.deltaY) * 0.15;
-      const nextZoom = clamp(currentZoom + step, 0.25, 8);
-
-      const zoomRatio = nextZoom / currentZoom;
-      const targetPanX = cursorRelX - (cursorRelX - currentPan.x) * zoomRatio;
-      const targetPanY = cursorRelY - (cursorRelY - currentPan.y) * zoomRatio;
-
-      const bounds = getPanBounds(
-        nextZoom,
-        containerSize.width,
-        containerSize.height,
-        naturalSize.width,
-        naturalSize.height,
-        fitScale
-      );
-      const clampedX = clamp(targetPanX, bounds.minX, bounds.maxX);
-      const clampedY = clamp(targetPanY, bounds.minY, bounds.maxY);
-
-      applyTransform(clampedX, clampedY, nextZoom, false);
     }
+    // 普通滚轮不做缩放：缩放只走工具条按钮与触控板捏合（ctrlKey 分支）
 
     // 防抖同步 React 状态，保持顶栏缩放文字精确更新
     if (wheelEndTimeoutRef.current) {
@@ -535,49 +510,6 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
     applyTransform(clampedX, clampedY, transformRef.current.zoom, needsSnap);
 
     setPan({ x: clampedX, y: clampedY });
-  };
-
-  // 双击交互：在 1x 适合视口与 2.5x（或原图 1:1 像素级清晰度）之间平滑切换
-  const handleDoubleClick = (e: React.MouseEvent) => {
-    if (!containerRef.current || !naturalSize || !containerSize.width) return;
-
-    const currentZoom = transformRef.current.zoom;
-    if (currentZoom > 1.05) {
-      resetTransform();
-    } else {
-      const containerRect = containerRef.current.getBoundingClientRect();
-      const cursorRelX = e.clientX - (containerRect.left + containerRect.width / 2);
-      const cursorRelY = e.clientY - (containerRect.top + containerRect.height / 2);
-
-      const fitScale = getFitScale(
-        naturalSize.width,
-        naturalSize.height,
-        containerSize.width,
-        containerSize.height
-      );
-
-      // 若原图被大幅缩小展示，双击还原至接近 1:1 真实像素显示，最高 4x
-      const targetZoom = fitScale < 0.5 ? Math.min(4, Math.max(2, 1 / fitScale)) : 2.5;
-
-      const zoomRatio = targetZoom / currentZoom;
-      const targetPanX = cursorRelX - cursorRelX * zoomRatio;
-      const targetPanY = cursorRelY - cursorRelY * zoomRatio;
-
-      const bounds = getPanBounds(
-        targetZoom,
-        containerSize.width,
-        containerSize.height,
-        naturalSize.width,
-        naturalSize.height,
-        fitScale
-      );
-      const clampedX = clamp(targetPanX, bounds.minX, bounds.maxX);
-      const clampedY = clamp(targetPanY, bounds.minY, bounds.maxY);
-
-      applyTransform(clampedX, clampedY, targetZoom, true);
-      setZoom(targetZoom);
-      setPan({ x: clampedX, y: clampedY });
-    }
   };
 
   if (!isOpen || images.length === 0) return null;
@@ -836,10 +768,9 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
             onPointerCancel={handlePointerUp}
-            onDoubleClick={handleDoubleClick}
-            className={`relative flex-1 min-h-0 preview-canvas-bg overflow-hidden flex items-center justify-center select-none ${embedded ? '' : 'rounded-xl border border-black/5 dark:border-white/5'} ${
-              zoom > 1.05 ? (isDragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-zoom-in'
-            }`}
+            className={`relative flex-1 min-h-0 preview-canvas-bg overflow-hidden flex items-center justify-center select-none ${
+              embedded ? '' : 'rounded-xl border border-black/5 dark:border-white/5'
+            } ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
             style={{ touchAction: 'none' }}
           >
             {/* The Image Element：以原图物理像素布局，硬件加速无损清晰放大 */}
@@ -910,12 +841,9 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
 
         {/* Subtle Footer Hint */}
         {(!inSpotlight || embedded) && (
-          <div className={`flex items-center justify-between text-[11px] text-zinc-400 dark:text-zinc-500 select-none ${
+          <div className={`flex items-center justify-end text-[11px] text-zinc-400 dark:text-zinc-500 select-none ${
             embedded ? 'px-3 py-1.5 border-t border-black/5 dark:border-white/5' : 'px-4 pb-3'
           }`}>
-            <span className="truncate mr-2">
-              {embedded ? t('imagePreviewPageHint') : t('imagePreviewHint')}
-            </span>
             <span className="font-mono flex-shrink-0">{Math.round(zoom * 100)}%</span>
           </div>
         )}
