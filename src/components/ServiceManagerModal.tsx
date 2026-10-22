@@ -3,10 +3,10 @@ import { AppSettings, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, VoiceP
 import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ASRServiceAPI, SubtitleServiceAPI, TtsServiceAPI, OcrServiceAPI } from '../services/api';
 import { resolveLanguage, formatArticleCount, translations, Language, TranslationKeys } from '../i18n';
 import {
-  ServiceState,
   SERVICE_STATE_CARD_DOT_CLASS,
   SERVICE_STATE_CARD_TEXT_CLASS,
-  toServiceState,
+  deriveServiceState,
+  formatServiceStateText,
 } from '../utils/serviceState';
 import { X, RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen, FileText, Check, Loader2, Volume2, ScanText } from 'lucide-react';
 
@@ -287,7 +287,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
   const [wikiStatus, setWikiStatus] = useState<WikiStatusInfo | null>(null);
   const [isTogglingService, setIsTogglingService] = useState(false);
   const [customZimPath, setCustomZimPath] = useState('');
-  const [kbPort, setKbPort] = useState('31236');
+  const [kbPort, setKbPort] = useState(String(KB_DEFAULT_PORT));
   const [isApplyingPath, setIsApplyingPath] = useState(false);
   const [pathMessage, setPathMessage] = useState<{ text: string; isError: boolean } | null>(null);
 
@@ -562,7 +562,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
         } else if (settings.customWikiDir) {
           setCustomZimPath(settings.customWikiDir);
         }
-        setKbPort(String(status?.port ?? 31236));
+        setKbPort(String(status?.port ?? KB_DEFAULT_PORT));
       });
 
       refreshSvcStatus();
@@ -945,7 +945,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     setPathMessage(null);
     try {
       const res = await WikiAPI.saveConfig(
-        { zimPath: customZimPath.trim(), port: Number(kbPort) || 31236 },
+        { zimPath: customZimPath.trim(), port: Number(kbPort) || KB_DEFAULT_PORT },
         { restartIfRunning: true }
       );
       if (res.success !== false) {
@@ -1023,35 +1023,34 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                   {t('wikiKnowledgeBase')}
                 </span>
               </div>
-              {wikiStatus && (
-                <div className="flex flex-col items-end gap-1">
-                  <div className="flex items-center gap-1.5 text-[11px]">
-                    <span
-                      className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                        SERVICE_STATE_CARD_DOT_CLASS[toServiceState(wikiStatus.status)]
-                      }`}
-                    />
-                    <span className={SERVICE_STATE_CARD_TEXT_CLASS[toServiceState(wikiStatus.status)]}>
-                      {toServiceState(wikiStatus.status) === 'online'
-                        ? `${t('statusReady')} : ${wikiStatus.port ?? 31236}`
-                        : toServiceState(wikiStatus.status) === 'starting'
-                        ? t('statusStarting')
-                        : t('statusOffline')}
+              {wikiStatus && (() => {
+                const cardState = deriveServiceState({ status: wikiStatus.status });
+                return (
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <span
+                        className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                          SERVICE_STATE_CARD_DOT_CLASS[cardState]
+                        }`}
+                      />
+                      <span className={SERVICE_STATE_CARD_TEXT_CLASS[cardState]}>
+                        {formatServiceStateText(cardState, t, wikiStatus.port)}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
+                      {cardState === 'online'
+                        ? wikiStatus.articleCount > 0
+                          ? `${t('wikiDetailIndexed')} ${formatArticleCount(wikiStatus.articleCount, activeLang)}`
+                          : t('wikiDetailConnected')
+                        : cardState === 'starting'
+                        ? t('wikiDetailStarting')
+                        : wikiStatus.enabled
+                        ? t('wikiDetailNoZim')
+                        : t('serviceDisabled')}
                     </span>
                   </div>
-                  <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
-                    {toServiceState(wikiStatus.status) === 'online'
-                      ? wikiStatus.articleCount > 0
-                        ? `${t('wikiDetailIndexed')} ${formatArticleCount(wikiStatus.articleCount, activeLang)}`
-                        : t('wikiDetailConnected')
-                      : toServiceState(wikiStatus.status) === 'starting'
-                      ? t('wikiDetailStarting')
-                      : wikiStatus.enabled
-                      ? t('wikiDetailNoZim')
-                      : t('serviceDisabled')}
-                  </span>
-                </div>
-              )}
+                );
+              })()}
             </div>
 
             {/* Knowledge Base 服务开关（开关在上，路径在下；状态行保持在最顶上）
@@ -1181,29 +1180,30 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                   {t('modelServiceTitle')}
                 </span>
               </div>
-              <div className="flex flex-col items-end gap-1">
-                <div className="flex items-center gap-1.5 text-[11px]">
-                  <span
-                    className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                      SERVICE_STATE_CARD_DOT_CLASS[toServiceState(svcStatus?.status)]
-                    }`}
-                  />
-                  <span className={SERVICE_STATE_CARD_TEXT_CLASS[toServiceState(svcStatus?.status)]}>
-                    {toServiceState(svcStatus?.status) === 'online'
-                      ? `${t('statusReady')} : ${svcStatus?.port ?? (selectedEngine === 'mference' ? 1241 : 1235)}`
-                      : toServiceState(svcStatus?.status) === 'starting'
-                      ? t('statusStarting')
-                      : t('statusOffline')}
-                  </span>
-                </div>
-                <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
-                  {toServiceState(svcStatus?.status) === 'online'
-                    ? `${t('modelDetailCurrentEngine')}: ${selectedEngine === 'mference' ? 'Mference' : 'TurboFieldfare'}`
-                    : toServiceState(svcStatus?.status) === 'starting'
-                    ? t('modelDetailLoading')
-                    : t('modelDetailStopped')}
-                </span>
-              </div>
+              {(() => {
+                const cardState = deriveServiceState({ status: svcStatus?.status });
+                return (
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <span
+                        className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                          SERVICE_STATE_CARD_DOT_CLASS[cardState]
+                        }`}
+                      />
+                      <span className={SERVICE_STATE_CARD_TEXT_CLASS[cardState]}>
+                        {formatServiceStateText(cardState, t, svcStatus?.port)}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
+                      {cardState === 'online'
+                        ? `${t('modelDetailCurrentEngine')}: ${selectedEngine === 'mference' ? 'Mference' : 'TurboFieldfare'}`
+                        : cardState === 'starting'
+                        ? t('modelDetailLoading')
+                        : t('modelDetailStopped')}
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
 
             {/* Base Model 引擎切换选择器 (Segmented Control)：每个选项直观显示各自的状态灯与独立端口 */}
@@ -1224,13 +1224,13 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                   <div className="flex items-center gap-1.5 min-w-0">
                     <span
                       className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                        SERVICE_STATE_CARD_DOT_CLASS[toServiceState(svcStatus?.ttf?.status)]
+                        SERVICE_STATE_CARD_DOT_CLASS[deriveServiceState({ status: svcStatus?.ttf?.status })]
                       }`}
                     />
                     <span className="whitespace-nowrap">{t('modelEngineTTF')}</span>
                   </div>
                   <span className="text-[10px] font-mono opacity-60 flex-shrink-0 ml-1">
-                    :{svcStatus?.ttf?.port ?? 1235}
+                    {svcStatus?.ttf?.port ? `:${svcStatus.ttf.port}` : ''}
                   </span>
                 </button>
                 <button
@@ -1245,13 +1245,13 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                   <div className="flex items-center gap-1.5 min-w-0">
                     <span
                       className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                        SERVICE_STATE_CARD_DOT_CLASS[toServiceState(svcStatus?.mference?.status)]
+                        SERVICE_STATE_CARD_DOT_CLASS[deriveServiceState({ status: svcStatus?.mference?.status })]
                       }`}
                     />
                     <span className="whitespace-nowrap">{t('modelEngineMference')}</span>
                   </div>
                   <span className="text-[10px] font-mono opacity-60 flex-shrink-0 ml-1">
-                    :{svcStatus?.mference?.port ?? 1241}
+                    {svcStatus?.mference?.port ? `:${svcStatus.mference.port}` : ''}
                   </span>
                 </button>
               </div>
@@ -1673,31 +1673,30 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                   {t('asrEngineTag')}
                 </span>
               </div>
-              <div className="flex flex-col items-end gap-1">
-                <div className="flex items-center gap-1.5 text-[11px]">
-                  <span
-                    className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                      SERVICE_STATE_CARD_DOT_CLASS[toServiceState(asrStatus?.status)]
-                    }`}
-                  />
-                  <span className={SERVICE_STATE_CARD_TEXT_CLASS[toServiceState(asrStatus?.status)]}>
-                    {toServiceState(asrStatus?.status) === 'online'
-                      ? asrStatus?.port
-                        ? `${t('statusReady')} : ${String(asrStatus.port).replace(/^:/, '')}`
-                        : t('statusReady')
-                      : toServiceState(asrStatus?.status) === 'starting'
-                      ? t('statusStarting')
-                      : t('statusOffline')}
-                  </span>
-                </div>
-                <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
-                  {toServiceState(asrStatus?.status) === 'online'
-                    ? t('asrDetailReady')
-                    : toServiceState(asrStatus?.status) === 'starting'
-                    ? t('asrDetailStarting')
-                    : t('serviceDisabled')}
-                </span>
-              </div>
+              {(() => {
+                const cardState = deriveServiceState({ status: asrStatus?.status });
+                return (
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <span
+                        className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                          SERVICE_STATE_CARD_DOT_CLASS[cardState]
+                        }`}
+                      />
+                      <span className={SERVICE_STATE_CARD_TEXT_CLASS[cardState]}>
+                        {formatServiceStateText(cardState, t, asrStatus?.port)}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
+                      {cardState === 'online'
+                        ? t('asrDetailReady')
+                        : cardState === 'starting'
+                        ? t('asrDetailStarting')
+                        : t('serviceDisabled')}
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
 
             {/* 功能定位与快捷键横幅 */}
@@ -2041,14 +2040,11 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                 </span>
               </div>
               {ttsStatus && (() => {
-                const ttsCardState: ServiceState =
-                  ttsStatus.status === 'loading'
-                    ? 'starting'
-                    : ttsStatus.running
-                    ? 'online'
-                    : ttsStatus.model?.ready
-                    ? 'standby'
-                    : 'offline';
+                const ttsCardState = deriveServiceState({
+                  status: ttsStatus.status,
+                  running: ttsStatus.running,
+                  loaded: ttsStatus.model?.ready,
+                });
                 return (
                   <div className="flex flex-col items-end gap-1">
                     <div className="flex items-center gap-1.5 text-[11px]">
@@ -2058,15 +2054,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                         }`}
                       />
                       <span className={SERVICE_STATE_CARD_TEXT_CLASS[ttsCardState]}>
-                        {ttsCardState === 'starting'
-                          ? t('statusStarting')
-                          : ttsCardState === 'online'
-                          ? ttsStatus.port
-                            ? `${t('statusReady')} : ${ttsStatus.port}`
-                            : t('statusReady')
-                          : ttsCardState === 'standby'
-                          ? t('statusStandby')
-                          : t('statusOffline')}
+                        {formatServiceStateText(ttsCardState, t, ttsStatus.port)}
                       </span>
                     </div>
                     <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
@@ -2399,14 +2387,17 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                 </span>
               </div>
               {subtitleStatus && (() => {
-                const subtitleCardState: ServiceState =
-                  subtitleStatus.loading
-                    ? 'starting'
-                    : subtitleStatus.running
-                    ? 'online'
-                    : subtitleStatus.paused || subtitleStatus.allReady
-                    ? 'standby'
-                    : 'offline';
+                const subtitleCardState = deriveServiceState({
+                  running: subtitleStatus.running,
+                  loading: subtitleStatus.loading,
+                  loaded: subtitleStatus.allReady,
+                  paused: subtitleStatus.paused,
+                });
+                // 双端口：ASR（切句/识别）与翻译各一个；缺哪个就只写另一个，不补默认值
+                const subtitlePort =
+                  subtitleStatus.asrPort && subtitleStatus.port
+                    ? `${subtitleStatus.asrPort}/${subtitleStatus.port}`
+                    : subtitleStatus.port ?? subtitleStatus.asrPort;
                 return (
                   <div className="flex flex-col items-end gap-1">
                     <div className="flex items-center gap-1.5 text-[11px]">
@@ -2416,13 +2407,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                         }`}
                       />
                       <span className={SERVICE_STATE_CARD_TEXT_CLASS[subtitleCardState]}>
-                        {subtitleCardState === 'starting'
-                          ? t('statusStarting')
-                          : subtitleCardState === 'online'
-                          ? `${t('statusReady')} : ${subtitleStatus.asrPort ?? 1250}/${subtitleStatus.port ?? 1249}`
-                          : subtitleCardState === 'standby'
-                          ? t('statusStandby')
-                          : t('statusOffline')}
+                        {formatServiceStateText(subtitleCardState, t, subtitlePort)}
                       </span>
                     </div>
                     <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
@@ -2711,14 +2696,11 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                 </span>
               </div>
               {ocrStatus && (() => {
-                const ocrCardState: ServiceState =
-                  ocrStatus.status === 'loading'
-                    ? 'starting'
-                    : ocrStatus.running
-                    ? 'online'
-                    : ocrStatus.model?.ready
-                    ? 'standby'
-                    : 'offline';
+                const ocrCardState = deriveServiceState({
+                  status: ocrStatus.status,
+                  running: ocrStatus.running,
+                  loaded: ocrStatus.model?.ready,
+                });
                 return (
                   <div className="flex flex-col items-end gap-1">
                     <div className="flex items-center gap-1.5 text-[11px]">
@@ -2728,15 +2710,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                         }`}
                       />
                       <span className={SERVICE_STATE_CARD_TEXT_CLASS[ocrCardState]}>
-                        {ocrCardState === 'starting'
-                          ? t('statusStarting')
-                          : ocrCardState === 'online'
-                          ? ocrStatus.port
-                            ? `${t('statusReady')} : ${ocrStatus.port}`
-                            : t('statusReady')
-                          : ocrCardState === 'standby'
-                          ? t('statusStandby')
-                          : t('statusOffline')}
+                        {formatServiceStateText(ocrCardState, t, ocrStatus.port)}
                       </span>
                     </div>
                     <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">

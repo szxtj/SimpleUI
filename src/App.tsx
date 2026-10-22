@@ -7,7 +7,6 @@ import {
   AppSettings,
   ServerHealthInfo,
   WikiStatusInfo,
-  AsrServiceStatus,
 } from './types/chat';
 import {
   loadSettings,
@@ -18,8 +17,7 @@ import {
   syncChannel,
   computeTranslatorPayload,
 } from './services/storage';
-import { TurboFieldfareAPI, WikiAPI, ASRServiceAPI, ModelServiceAPI } from './services/api';
-import type { ModelServiceStatus } from './services/api';
+import { TurboFieldfareAPI, WikiAPI } from './services/api';
 import {
   buildSessionSettings,
   getActiveContextMessages,
@@ -364,10 +362,6 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
    * 不可用时页面照常能打开，只是显示统一「未连接」提示且不发任何请求。
    */
   const kbReady = wikiStatus.enabled && wikiStatus.connected && settings.apiProvider !== 'deepseek';
-  /** 语音识别服务状态（左下角服务行） */
-  const [asrStatus, setAsrStatus] = useState<AsrServiceStatus | null>(null);
-  /** 基础模型服务状态（左下角服务行；带 status 字段，可区分启动中） */
-  const [modelStatus, setModelStatus] = useState<ModelServiceStatus | null>(null);
   /** 启动冷态遮罩展示状态（直到所需服务完全启动，再等半秒淡出） */
   const [showStartupOverlay, setShowStartupOverlay] = useState(true);
   const handleStartupFinished = useCallback(() => {
@@ -478,34 +472,6 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     const interval = showStartupOverlay ? 500 : 6000;
     const wikiTimer = setInterval(checkWiki, interval);
     return () => clearInterval(wikiTimer);
-  }, [showStartupOverlay]);
-
-  // Poll 语音识别服务状态（左下角服务行）
-  useEffect(() => {
-    const checkAsr = async () => {
-      const status = await ASRServiceAPI.getStatus();
-      setAsrStatus((prev) =>
-        JSON.stringify(prev) === JSON.stringify(status) ? prev : status
-      );
-    };
-    checkAsr();
-    const interval = showStartupOverlay ? 500 : 6000;
-    const asrTimer = setInterval(checkAsr, interval);
-    return () => clearInterval(asrTimer);
-  }, [showStartupOverlay]);
-
-  // Poll 基础模型服务状态（左下角服务行）
-  useEffect(() => {
-    const checkModel = async () => {
-      const status = await ModelServiceAPI.getStatus();
-      setModelStatus((prev) =>
-        JSON.stringify(prev) === JSON.stringify(status) ? prev : status
-      );
-    };
-    checkModel();
-    const interval = showStartupOverlay ? 500 : 6000;
-    const modelTimer = setInterval(checkModel, interval);
-    return () => clearInterval(modelTimer);
   }, [showStartupOverlay]);
 
   // Notify native macOS wrapper to disable TitleBarDragView when a modal is open
@@ -700,9 +666,6 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
           onRenameSession={handleRenameSession}
           onOpenSettings={() => setIsSettingsOpen(true)}
           onOpenServiceManager={() => setIsServiceManagerOpen(true)}
-          modelStatus={modelStatus}
-          wikiStatus={wikiStatus}
-          asrStatus={asrStatus}
           isOpen={isSidebarOpen}
           onToggleOpen={toggleLeftSidebar}
         />

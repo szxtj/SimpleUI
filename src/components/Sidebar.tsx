@@ -1,14 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChatSession, WikiStatusInfo, AsrServiceStatus } from '../types/chat';
-import { ModelServiceStatus } from '../services/api';
-import { useI18n, formatArticleCount } from '../i18n';
+import { ChatSession } from '../types/chat';
+import { useI18n } from '../i18n';
 import { useImeInput } from '../hooks/useImeInput';
-import {
-  SERVICE_STATE_DOT_CLASS,
-  SERVICE_STATE_LABEL_KEY,
-  toServiceState,
-} from '../utils/serviceState';
 import {
   Plus,
   Trash2,
@@ -36,44 +30,9 @@ interface SidebarProps {
   onRenameSession: (id: string, newTitle: string) => void;
   onOpenSettings: () => void;
   onOpenServiceManager: () => void;
-  modelStatus?: ModelServiceStatus | null;
-  wikiStatus?: WikiStatusInfo;
-  asrStatus?: AsrServiceStatus | null;
   isOpen: boolean;
   onToggleOpen: () => void;
 }
-
-/**
- * 左下角服务状态行。
- *
- * 三项服务（知识库 / 基础模型 / 语音识别）共用本组件，**始终显示**，
- * 状态统一收敛为三态（见 utils/serviceState.ts），与状态栏图标菜单逐字一致：
- *   绿灯「就绪」 / 红灯「离线」 / 黄灯「启动中」
- * 额外信息（如知识库条目数）只放进 hover 提示，不污染状态文案。
- */
-const ServiceRow: React.FC<{ label: string; status?: string | null; hint?: string }> = ({
-  label,
-  status,
-  hint,
-}) => {
-  const { t } = useI18n();
-  const state = toServiceState(status);
-  const text = t(SERVICE_STATE_LABEL_KEY[state]);
-  return (
-    <div
-      className="flex items-center gap-2 min-w-0 cursor-default"
-      title={`${label}: ${text}${hint ? ` · ${hint}` : ''}`}
-    >
-      <span
-        className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${SERVICE_STATE_DOT_CLASS[state]}`}
-      />
-      <div className="flex items-center gap-1.5 min-w-0 text-[11px] leading-none truncate">
-        <span className="font-semibold text-[#1f2328] dark:text-[#f1f3f7]">{label}</span>
-        <span className="text-[10px] text-zinc-500 dark:text-zinc-400">{text}</span>
-      </div>
-    </div>
-  );
-};
 
 export const Sidebar: React.FC<SidebarProps> = ({
   sessions,
@@ -86,13 +45,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onRenameSession,
   onOpenSettings,
   onOpenServiceManager,
-  modelStatus,
-  wikiStatus,
-  asrStatus,
   isOpen,
   onToggleOpen,
 }) => {
-  const { t, lang } = useI18n();
+  const { t } = useI18n();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -226,11 +182,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
       </div>
 
-      {/* Brand Title (Matching Qianwen: Bold, large, clean) */}
+      {/* Brand Title (Matching Qianwen: Bold, large, clean)
+          标题行右侧放两个入口：服务管理在左、设置在右（各占一格按钮宽，整体靠右）。
+          hover 描述直接用各自弹窗的标题 key，改标题会自动跟随。 */}
       <div className="px-4 pt-1 pb-3 flex items-center justify-between">
         <h1 className="text-xl font-bold tracking-tight text-[#1f2328] dark:text-[#f1f3f7]">
           SimpleUI
         </h1>
+        <div className="flex items-center gap-0.5">
+          <button
+            onClick={onOpenServiceManager}
+            className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
+            title={t('serviceManagerTitle')}
+          >
+            <Server className="w-4 h-4" />
+          </button>
+          <button
+            onClick={onOpenSettings}
+            className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
+            title={t('settingsTitle')}
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* New Chat Button (Qianwen Style: Large rounded card button) */}
@@ -405,43 +379,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         )}
       </div>
 
-      {/* Footer: 服务状态 & 设置 */}
-      <div className="p-2.5 border-t border-black/5 dark:border-white/5 bg-[#eaecef] dark:bg-[#17181c] flex items-center justify-between gap-1.5">
-        {/* 三项服务始终显示（不再随总开关隐藏），状态与状态栏菜单同源同文案 */}
-        <div className="flex flex-col gap-1.5 px-1 min-w-0 flex-1">
-          <ServiceRow
-            label={t('kbService')}
-            status={wikiStatus?.status}
-            hint={
-              wikiStatus?.connected && wikiStatus.articleCount > 0
-                ? formatArticleCount(wikiStatus.articleCount, lang)
-                : undefined
-            }
-          />
-          <ServiceRow label={t('modelService')} status={modelStatus?.status} />
-          <ServiceRow label={t('asrService')} status={asrStatus?.status} />
-        </div>
-
-        {/* 右侧按钮列：服务管理在设置上方，与左侧三行服务状态上下并列。
-            悬停描述直接用各自弹窗的标题 key —— 两个按钮口径一致，且以后改标题会自动跟随，
-            不会再出现「tooltip 与实际标题对不上」的情况。 */}
-        <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
-          <button
-            onClick={onOpenServiceManager}
-            className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
-            title={t('serviceManagerTitle')}
-          >
-            <Server className="w-4 h-4" />
-          </button>
-          <button
-            onClick={onOpenSettings}
-            className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
-            title={t('settingsTitle')}
-          >
-            <Settings className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
       </div>
 
       {contextMenu &&
