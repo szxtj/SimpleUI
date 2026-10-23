@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
-import { SettingsModal } from './components/SettingsModal';
-import { ServiceManagerModal } from './components/ServiceManagerModal';
+import { UnifiedSettingsModal } from './components/settings/UnifiedSettingsModal';
+import { SettingsTabId } from './components/settings/types';
 import {
   AppSettings,
   ServerHealthInfo,
@@ -234,9 +234,19 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
   const [input, setInput] = useState('');
   const [images, setImages] = useState<string[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  /** 服务管理界面（三项受管服务的启停与参数，与设置界面并列的独立入口） */
-  const [isServiceManagerOpen, setIsServiceManagerOpen] = useState(() => typeof window !== 'undefined' && window.location.search.includes('panel=services'));
+  const [isSettingsOpen, setIsSettingsOpen] = useState(() =>
+    typeof window !== 'undefined' &&
+    (window.location.search.includes('panel=settings') ||
+      window.location.search.includes('panel=services') ||
+      window.location.search.includes('only=translate'))
+  );
+  const [settingsTab, setSettingsTab] = useState<SettingsTabId>(() => {
+    if (typeof window !== 'undefined') {
+      if (window.location.search.includes('only=translate')) return 'svc-translate';
+      if (window.location.search.includes('panel=services')) return 'svc-model';
+    }
+    return 'general';
+  });
   useEffect(() => {
     if (typeof document !== 'undefined' && window.location.search.includes('only=translate')) {
       document.body.classList.add('only-translate');
@@ -482,8 +492,8 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
   // Notify native macOS wrapper to disable TitleBarDragView when a modal is open
   useEffect(() => {
     // @ts-expect-error WebKit bridge
-    window.webkit?.messageHandlers?.setModalOpen?.postMessage?.(isSettingsOpen || isServiceManagerOpen);
-  }, [isSettingsOpen, isServiceManagerOpen]);
+    window.webkit?.messageHandlers?.setModalOpen?.postMessage?.(isSettingsOpen);
+  }, [isSettingsOpen]);
 
   // Notify native macOS wrapper about sidebar open state for titlebar drag hit-testing
   useEffect(() => {
@@ -669,8 +679,10 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
           onNewSession={handleNewSession}
           onDeleteSession={handleDeleteSession}
           onRenameSession={handleRenameSession}
-          onOpenSettings={() => setIsSettingsOpen(true)}
-          onOpenServiceManager={() => setIsServiceManagerOpen(true)}
+          onOpenSettings={() => {
+            setSettingsTab('general');
+            setIsSettingsOpen(true);
+          }}
           isOpen={isSidebarOpen}
           onToggleOpen={toggleLeftSidebar}
         />
@@ -763,20 +775,14 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
           reservedLeft={leftWidth}
         />
 
-        {/* Settings Modal */}
-        <SettingsModal
+        {/* 统一现代化设置中心（App设置 + 服务设置） */}
+        <UnifiedSettingsModal
           isOpen={isSettingsOpen}
           onClose={() => setIsSettingsOpen(false)}
           settings={settings}
           onSave={handleSaveSettings}
-        />
-
-        {/* 服务管理界面（基础模型 / 知识库 / 语音识别 / 语音合成 / 字幕 / 快速翻译 / 视觉识别） */}
-        <ServiceManagerModal
-          isOpen={isServiceManagerOpen}
-          onClose={() => setIsServiceManagerOpen(false)}
-          settings={settings}
           onApiPortChange={handleServiceApiPortChange}
+          initialTab={settingsTab}
         />
 
         {/* 应用启动遮罩（主界面进程端口初始化完成后，多等 0.5s 平滑淡出） */}

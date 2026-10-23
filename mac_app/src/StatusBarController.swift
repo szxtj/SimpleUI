@@ -166,17 +166,17 @@ class StatusBarController: NSObject, NSMenuDelegate {
         menu.delegate = self
         menu.autoenablesItems = false
 
-        kbStatusItem = NSMenuItem(title: "", action: #selector(toggleKB), keyEquivalent: "")
-        kbStatusItem.target = self
-        kbStatusItem.isEnabled = true
-        kbStatusItem.toolTip = tipKB
-        menu.addItem(kbStatusItem)
-
         svcStatusItem = NSMenuItem(title: "", action: #selector(toggleModel), keyEquivalent: "")
         svcStatusItem.target = self
         svcStatusItem.isEnabled = true
         svcStatusItem.toolTip = tipSvc
         menu.addItem(svcStatusItem)
+
+        kbStatusItem = NSMenuItem(title: "", action: #selector(toggleKB), keyEquivalent: "")
+        kbStatusItem.target = self
+        kbStatusItem.isEnabled = true
+        kbStatusItem.toolTip = tipKB
+        menu.addItem(kbStatusItem)
 
         // 以下五项是纯按需服务（没有常驻开关）：只显示状态，不可点击。
         // 顺序与服务管理面板的卡片顺序一致；autoenablesItems 已关，isEnabled = false 即可稳定置灰。

@@ -7,7 +7,6 @@ import {
   Plus,
   Trash2,
   Settings,
-  Server,
   Edit2,
   Check,
   X,
@@ -29,7 +28,7 @@ interface SidebarProps {
   onDeleteSession: (id: string) => void;
   onRenameSession: (id: string, newTitle: string) => void;
   onOpenSettings: () => void;
-  onOpenServiceManager: () => void;
+  onOpenServiceManager?: () => void;
   isOpen: boolean;
   onToggleOpen: () => void;
 }
@@ -44,7 +43,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDeleteSession,
   onRenameSession,
   onOpenSettings,
-  onOpenServiceManager,
   isOpen,
   onToggleOpen,
 }) => {
@@ -183,28 +181,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* Brand Title (Matching Qianwen: Bold, large, clean)
-          标题行右侧放两个入口：服务管理在左、设置在右（各占一格按钮宽，整体靠右）。
-          hover 描述直接用各自弹窗的标题 key，改标题会自动跟随。 */}
+          标题行右侧放设置入口（合并原服务管理与设置面板）。 */}
       <div className="px-4 pt-1 pb-3 flex items-center justify-between">
         <h1 className="text-xl font-bold tracking-tight text-[#1f2328] dark:text-[#f1f3f7]">
           SimpleUI
         </h1>
-        <div className="flex items-center gap-0.5">
-          <button
-            onClick={onOpenServiceManager}
-            className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
-            title={t('serviceManagerTitle')}
-          >
-            <Server className="w-4 h-4" />
-          </button>
-          <button
-            onClick={onOpenSettings}
-            className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
-            title={t('settingsTitle')}
-          >
-            <Settings className="w-4 h-4" />
-          </button>
-        </div>
+        <button
+          onClick={onOpenSettings}
+          className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
+          title={t('settingsTitle')}
+        >
+          <Settings className="w-4 h-4" />
+        </button>
       </div>
 
       {/* New Chat Button (Qianwen Style: Large rounded card button) */}
