@@ -333,7 +333,14 @@ const server = http.createServer((req, res) => {
 // 说明：LAYA 意图门禁已移除（实测误判率约 1/3，会把知识类提问拦在链路外），
 // 1236 端口的 LAYA 服务不再被自动拉起；server/laya_mlx_server.py 保留在原处以备后用。
 
-server.listen(PORT, '127.0.0.1', () => {
+let listenRetries = 0;
+const MAX_LISTEN_RETRIES = 3;
+
+function startServer() {
+  server.listen(PORT, '127.0.0.1');
+}
+
+server.on('listening', () => {
   // 只有真正抢到端口的实例才有资格管理/清理受管服务。
   // 否则重复拉起的代理在 EADDRINUSE 退出时，会顺着退出钩子把**正在运行的**
   // 那个实例的服务（共用同一批 PID 文件）一起杀掉。
@@ -367,14 +374,36 @@ server.listen(PORT, '127.0.0.1', () => {
   }
 });
 
-// 端口被占用说明已有实例在跑：干净退出，且**不触碰**受管服务（ownsServices 仍为 false）
+// 端口被占用说明已有实例在跑或前次实例正在释放：
+// 先给予极短重试（消除杀残留进程与新拉起之间的瞬态 socket TIME_WAIT 竞争），
+// 若反复尝试仍被占用，说明存在另一个活跃运行的 SimpleUI，干净退出且**不触碰**受管服务（ownsServices 仍为 false）
 server.on('error', (err) => {
   if (err && err.code === 'EADDRINUSE') {
+    if (listenRetries < MAX_LISTEN_RETRIES) {
+      listenRetries++;
+      console.warn(`[Proxy] 端口 ${PORT} 暂被占用（可能前次进程正在释放），等待 350ms 进行第 ${listenRetries} 次重试...`);
+      setTimeout(() => {
+        try {
+          server.close();
+        } catch {}
+        startServer();
+      }, 350);
+      return;
+    }
     console.error(`[Proxy] 端口 ${PORT} 已被占用，另一个 SimpleUI 代理正在运行；本进程直接退出。`);
   } else {
     console.error('[Proxy] server error:', err && err.message);
   }
   process.exit(1);
+});
+
+startServer();
+
+process.on('uncaughtException', (err) => {
+  console.error('[Proxy] ⚠ Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Proxy] ⚠ Unhandled Rejection:', reason);
 });
 
 let exiting = false;

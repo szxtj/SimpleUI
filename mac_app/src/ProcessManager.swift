@@ -61,11 +61,15 @@ class ProcessManager {
                 self.requestRemoteQuit()
                 self.waitUntilProxyGoneForRelaunch(deadline: Date().addingTimeInterval(3.0)) {
                     self.forceSweepResidualProcesses()
-                    completion()
+                    self.waitUntilPortFree(port: self.port, timeout: 2.0) {
+                        completion()
+                    }
                 }
             } else {
                 self.forceSweepResidualProcesses()
-                completion()
+                self.waitUntilPortFree(port: self.port, timeout: 2.0) {
+                    completion()
+                }
             }
         }
     }
@@ -122,6 +126,7 @@ class ProcessManager {
         pkill -x "MferenceServer" 2>/dev/null || true
         pkill -x "kiwix-serve" 2>/dev/null || true
         pkill -f "server/proxy.js" 2>/dev/null || true
+        lsof -ti:\(port) | xargs kill -9 2>/dev/null || true
         """
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -130,6 +135,44 @@ class ProcessManager {
         task.standardError = FileHandle.nullDevice
         try? task.run()
         task.waitUntilExit()
+    }
+
+    /// 检测指定端口当前是否已被系统其它进程绑定占用
+    private func isPortInUse(_ port: Int) -> Bool {
+        var addr = sockaddr_in()
+        addr.sin_len = __uint8_t(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(port).bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+
+        let sock = socket(AF_INET, SOCK_STREAM, 0)
+        if sock < 0 { return false }
+        defer { close(sock) }
+
+        var yes: Int32 = 1
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+
+        let bindRes = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        return bindRes < 0
+    }
+
+    /// 持续轮询直至指定端口被 OS TCP 栈彻底释放（或超时），杜绝 EADDRINUSE 偶发性启动竞争
+    private func waitUntilPortFree(port: Int, timeout: TimeInterval, completion: @escaping () -> Void) {
+        let deadline = Date().addingTimeInterval(timeout)
+        func check() {
+            if !self.isPortInUse(port) || Date() >= deadline {
+                completion()
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    check()
+                }
+            }
+        }
+        check()
     }
 
     // MARK: - 代理身份探测

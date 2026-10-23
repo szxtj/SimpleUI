@@ -43,6 +43,27 @@ const QUICK_PID_FILE = '/tmp/simpleui_translate_quick.pid';
 const QUICK_LOG_FILE = path.join(HOME, 'Library', 'Logs', 'simpleui-translate.log');
 const QUICK_MODEL_FILE = 'index_translate_2b_q4_k_m.gguf';
 
+function readQuickPid() {
+  try {
+    if (!fs.existsSync(QUICK_PID_FILE)) return null;
+    const raw = fs.readFileSync(QUICK_PID_FILE, 'utf-8').trim();
+    const pid = parseInt(raw, 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function isPidAlive(pid) {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // 单次请求的文本上限（按字符切块，保证不撑爆 4096 上下文）
 const QUICK_CHUNK_CHARS = 1200;
 

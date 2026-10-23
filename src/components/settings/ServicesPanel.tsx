@@ -1150,47 +1150,49 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
   useEffect(() => {
     if (!onStatusChange) return;
     const modelState = deriveServiceState({ status: svcStatus?.status });
-    const kbState = wikiStatus ? deriveServiceState({ status: wikiStatus.status }) : undefined;
+    const kbState = wikiStatus ? deriveServiceState({ status: wikiStatus.status }) : 'offline';
     const asrState = asrStatus
       ? deriveServiceState({
           status: asrStatus.status,
           running: asrStatus.running,
           loaded: Boolean(asrStatus.model?.ready ?? asrStatus.checks?.model),
         })
-      : undefined;
+      : 'offline';
     const ttsState = ttsStatus
       ? deriveServiceState({
           status: ttsStatus.status,
           running: ttsStatus.running,
           loaded: Boolean(ttsStatus.model?.ready),
         })
-      : undefined;
+      : 'offline';
     const subState = subtitleStatus
       ? deriveServiceState({
           running: subtitleStatus.running,
           loading: Boolean(subtitleStatus.downloadState?.active || subtitleStatus.loading),
           loaded: Boolean(
-            subtitleStatus.modelsStatus?.asr?.ready &&
-            subtitleStatus.modelsStatus?.segment?.ready &&
-            subtitleStatus.modelsStatus?.translate?.ready
+            subtitleStatus.allReady ?? (
+              subtitleStatus.modelsStatus?.asr?.ready &&
+              subtitleStatus.modelsStatus?.segment?.ready &&
+              subtitleStatus.modelsStatus?.translate?.ready
+            )
           ),
           paused: subtitleStatus.paused,
         })
-      : undefined;
+      : 'offline';
     const transState = translateStatus
       ? deriveServiceState({
           running: translateStatus.quick?.serverReady,
           loading: Boolean(translateStatus.quick?.starting),
           loaded: Boolean(translateStatus.quick?.modelReady),
         })
-      : undefined;
+      : 'offline';
     const ocrState = ocrStatus
       ? deriveServiceState({
           status: ocrStatus.status,
           running: ocrStatus.running,
           loaded: Boolean(ocrStatus.model?.ready),
         })
-      : undefined;
+      : 'offline';
 
     onStatusChange({
       model: modelState,
@@ -1726,8 +1728,8 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                   {t('wikiKnowledgeBase')}
                 </span>
               </div>
-              {wikiStatus && (() => {
-                const cardState = deriveServiceState({ status: wikiStatus.status });
+              {(() => {
+                const cardState = wikiStatus ? deriveServiceState({ status: wikiStatus.status }) : 'offline';
                 return (
                   <div className="flex flex-col items-end gap-1">
                     <div className="flex items-center gap-1.5 text-[11px]">
@@ -1737,17 +1739,17 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                         }`}
                       />
                       <span className={SERVICE_STATE_CARD_TEXT_CLASS[cardState]}>
-                        {formatServiceStateText(cardState, t, wikiStatus.port)}
+                        {formatServiceStateText(cardState, t, wikiStatus?.port)}
                       </span>
                     </div>
                     <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
                       {cardState === 'online'
-                        ? wikiStatus.articleCount > 0
-                          ? `${t('wikiDetailIndexed')} ${formatArticleCount(wikiStatus.articleCount, activeLang)}`
+                        ? (wikiStatus?.articleCount || 0) > 0
+                          ? `${t('wikiDetailIndexed')} ${formatArticleCount(wikiStatus!.articleCount, activeLang)}`
                           : t('wikiDetailConnected')
                         : cardState === 'starting'
                         ? t('wikiDetailStarting')
-                        : wikiStatus.enabled
+                        : wikiStatus?.enabled
                         ? t('wikiDetailNoZim')
                         : t('serviceDisabled')}
                     </span>
@@ -1888,14 +1890,16 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
               );
 
               const isAsrModelReady = Boolean(
-                asrStatus?.model?.ready ?? asrStatus?.checks?.model ?? subtitleStatus?.modelsStatus?.asr?.ready
+                asrStatus?.model?.ready ?? asrStatus?.checks?.model
               );
 
-              const cardState = deriveServiceState({
-                status: asrStatus?.status,
-                running: asrStatus?.running,
-                loaded: isAsrModelReady,
-              });
+              const cardState = asrStatus
+                ? deriveServiceState({
+                    status: asrStatus.status,
+                    running: asrStatus.running,
+                    loaded: isAsrModelReady,
+                  })
+                : 'offline';
 
               return (
                 <>
@@ -2296,12 +2300,14 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                   {t('ttsEngineTag')}
                 </span>
               </div>
-              {ttsStatus && (() => {
-                const ttsCardState = deriveServiceState({
-                  status: ttsStatus.status,
-                  running: ttsStatus.running,
-                  loaded: ttsStatus.model?.ready,
-                });
+              {(() => {
+                const ttsCardState = ttsStatus
+                  ? deriveServiceState({
+                      status: ttsStatus.status,
+                      running: ttsStatus.running,
+                      loaded: ttsStatus.model?.ready,
+                    })
+                  : 'offline';
                 return (
                   <div className="flex flex-col items-end gap-1">
                     <div className="flex items-center gap-1.5 text-[11px]">
@@ -2311,17 +2317,17 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                         }`}
                       />
                       <span className={SERVICE_STATE_CARD_TEXT_CLASS[ttsCardState]}>
-                        {formatServiceStateText(ttsCardState, t, ttsStatus.port)}
+                        {formatServiceStateText(ttsCardState, t, ttsStatus?.port)}
                       </span>
                     </div>
                     <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
-                      {ttsStatus.download?.active
+                      {ttsStatus?.download?.active
                         ? `${t('ttsDetailDownloading')} (${ttsStatus.download.progressPercent.toFixed(1)}%)`
-                        : ttsStatus.status === 'loading'
+                        : ttsStatus?.status === 'loading'
                         ? t('ttsDetailLoading')
-                        : ttsStatus.running
+                        : ttsStatus?.running
                         ? t('ttsDetailActive')
-                        : ttsStatus.model?.ready
+                        : ttsStatus?.model?.ready
                         ? t('ttsDetailStandby')
                         : t('ttsDetailMissing')}
                     </span>
@@ -2644,18 +2650,20 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                   {t('subtitleEngineTag')}
                 </span>
               </div>
-              {subtitleStatus && (() => {
-                const subtitleCardState = deriveServiceState({
-                  running: subtitleStatus.running,
-                  loading: subtitleStatus.loading,
-                  loaded: subtitleStatus.allReady,
-                  paused: subtitleStatus.paused,
-                });
+              {(() => {
+                const subtitleCardState = subtitleStatus
+                  ? deriveServiceState({
+                      running: subtitleStatus.running,
+                      loading: subtitleStatus.loading,
+                      loaded: subtitleStatus.allReady,
+                      paused: subtitleStatus.paused,
+                    })
+                  : 'offline';
                 // 双端口：ASR（切句/识别）与翻译各一个；缺哪个就只写另一个，不补默认值
                 const subtitlePort =
-                  subtitleStatus.asrPort && subtitleStatus.port
+                  subtitleStatus?.asrPort && subtitleStatus?.port
                     ? `${subtitleStatus.asrPort}/${subtitleStatus.port}`
-                    : subtitleStatus.port ?? subtitleStatus.asrPort;
+                    : subtitleStatus?.port ?? subtitleStatus?.asrPort;
                 return (
                   <div className="flex flex-col items-end gap-1">
                     <div className="flex items-center gap-1.5 text-[11px]">
@@ -2669,15 +2677,15 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                       </span>
                     </div>
                     <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
-                      {subtitleStatus.downloadState?.active
+                      {subtitleStatus?.downloadState?.active
                         ? `${t('subtitleDetailDownloading')} (${subtitleStatus.downloadState.progressPercent.toFixed(1)}%)`
-                        : subtitleStatus.loading
+                        : subtitleStatus?.loading
                         ? `${t('subtitleDetailLoading')} (${Math.min(3, (subtitleStatus.loadingStage || 0) + 1)}/3)`
-                        : subtitleStatus.running
+                        : subtitleStatus?.running
                         ? t('subtitleDetailActive')
-                        : subtitleStatus.paused
+                        : subtitleStatus?.paused
                         ? t('subtitleDetailPaused')
-                        : subtitleStatus.allReady
+                        : subtitleStatus?.allReady
                         ? t('subtitleDetailStandby')
                         : t('subtitleDetailMissing')}
                     </span>
@@ -2951,11 +2959,13 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
               const isDownloading = translateDlActive;
               // 与语音识别 / 语音合成一致：状态只由「进程存活 / 模型加载中 / 模型齐备」决定，
               // 下载进度走右上角第二行，不把状态灯染成启动中。
-              const cardState = deriveServiceState({
-                running: quick?.serverReady,
-                loading: Boolean(quick?.starting),
-                loaded: isReady,
-              });
+              const cardState = translateStatus
+                ? deriveServiceState({
+                    running: quick?.serverReady,
+                    loading: Boolean(quick?.starting),
+                    loaded: isReady,
+                  })
+                : 'offline';
 
               return (
                 <>
@@ -3429,12 +3439,14 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                   {t('ocrEngineTag')}
                 </span>
               </div>
-              {ocrStatus && (() => {
-                const ocrCardState = deriveServiceState({
-                  status: ocrStatus.status,
-                  running: ocrStatus.running,
-                  loaded: ocrStatus.model?.ready,
-                });
+              {(() => {
+                const ocrCardState = ocrStatus
+                  ? deriveServiceState({
+                      status: ocrStatus.status,
+                      running: ocrStatus.running,
+                      loaded: ocrStatus.model?.ready,
+                    })
+                  : 'offline';
                 return (
                   <div className="flex flex-col items-end gap-1">
                     <div className="flex items-center gap-1.5 text-[11px]">
@@ -3444,17 +3456,17 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                         }`}
                       />
                       <span className={SERVICE_STATE_CARD_TEXT_CLASS[ocrCardState]}>
-                        {formatServiceStateText(ocrCardState, t, ocrStatus.port)}
+                        {formatServiceStateText(ocrCardState, t, ocrStatus?.port)}
                       </span>
                     </div>
                     <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
-                      {ocrStatus.download?.active
+                      {ocrStatus?.download?.active
                         ? `${t('ocrDetailDownloading')} (${ocrStatus.download.progressPercent.toFixed(1)}%)`
-                        : ocrStatus.status === 'loading'
+                        : ocrStatus?.status === 'loading'
                         ? t('ocrDetailLoading')
-                        : ocrStatus.running
+                        : ocrStatus?.running
                         ? t('ocrDetailActive')
-                        : ocrStatus.model?.ready
+                        : ocrStatus?.model?.ready
                         ? t('ocrDetailStandby')
                         : t('ocrDetailMissing')}
                     </span>

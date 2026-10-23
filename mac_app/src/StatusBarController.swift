@@ -237,10 +237,11 @@ class StatusBarController: NSObject, NSMenuDelegate {
         pinLeftmost()
     }
 
-    /// 纯状态行：无 action、无 target，isEnabled=false —— 点击不会有任何动作（菜单只会收起）
+    /// 状态展示行：保留 target/action 并开启 isEnabled，避免 AppKit 将 disabled 菜单项与圆点强制半透明置灰（保持鲜艳的原生点色）
     private func passiveStatusItem(toolTip: String?) -> NSMenuItem {
-        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        item.isEnabled = false
+        let item = NSMenuItem(title: "", action: #selector(openMainWindow), keyEquivalent: "")
+        item.target = self
+        item.isEnabled = true
         item.toolTip = toolTip
         return item
     }

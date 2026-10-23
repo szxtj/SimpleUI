@@ -94,60 +94,60 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
         OcrServiceAPI.getStatus().catch(() => null),
       ]);
 
-      if (kb) setKbDot(deriveServiceState({ status: kb.status }));
-      if (model) setModelDot(deriveServiceState({ status: model.status }));
-      if (asr) {
-        setAsrDot(
-          deriveServiceState({
-            status: asr.status,
-            running: asr.running,
-            loaded: Boolean(asr.model?.ready ?? asr.checks?.model),
-          })
-        );
-      }
-      if (tts) {
-        setTtsDot(
-          deriveServiceState({
-            status: tts.status,
-            running: tts.running,
-            loaded: Boolean(tts.model?.ready),
-          })
-        );
-      }
-      if (sub) {
-        const isAllReady = Boolean(
-          sub.modelsStatus?.asr?.ready &&
-            sub.modelsStatus?.segment?.ready &&
-            sub.modelsStatus?.translate?.ready
-        );
-        setSubtitlesDot(
-          deriveServiceState({
-            running: sub.running,
-            loading: Boolean(sub.downloadState?.active || sub.loading),
-            loaded: isAllReady,
-            paused: sub.paused,
-          })
-        );
-      }
-      if (trans) {
-        const quick = trans.quick;
-        setTranslateDot(
-          deriveServiceState({
-            running: quick?.serverReady,
-            loading: Boolean(quick?.starting),
-            loaded: Boolean(quick?.modelReady),
-          })
-        );
-      }
-      if (ocr) {
-        setOcrDot(
-          deriveServiceState({
-            status: ocr.status,
-            running: ocr.running,
-            loaded: Boolean(ocr.model?.ready),
-          })
-        );
-      }
+      setKbDot(kb ? deriveServiceState({ status: kb.status }) : 'offline');
+      setModelDot(model ? deriveServiceState({ status: model.status }) : 'offline');
+      setAsrDot(
+        asr
+          ? deriveServiceState({
+              status: asr.status,
+              running: asr.running,
+              loaded: Boolean(asr.model?.ready ?? asr.checks?.model),
+            })
+          : 'offline'
+      );
+      setTtsDot(
+        tts
+          ? deriveServiceState({
+              status: tts.status,
+              running: tts.running,
+              loaded: Boolean(tts.model?.ready),
+            })
+          : 'offline'
+      );
+      setSubtitlesDot(
+        sub
+          ? deriveServiceState({
+              running: sub.running,
+              loading: Boolean(sub.downloadState?.active || sub.loading),
+              loaded: Boolean(
+                sub.allReady ?? (
+                  sub.modelsStatus?.asr?.ready &&
+                  sub.modelsStatus?.segment?.ready &&
+                  sub.modelsStatus?.translate?.ready
+                )
+              ),
+              paused: sub.paused,
+            })
+          : 'offline'
+      );
+      setTranslateDot(
+        trans
+          ? deriveServiceState({
+              running: trans.quick?.serverReady,
+              loading: Boolean(trans.quick?.starting),
+              loaded: Boolean(trans.quick?.modelReady),
+            })
+          : 'offline'
+      );
+      setOcrDot(
+        ocr
+          ? deriveServiceState({
+              status: ocr.status,
+              running: ocr.running,
+              loaded: Boolean(ocr.model?.ready),
+            })
+          : 'offline'
+      );
     } catch {}
   }, []);
 
