@@ -334,12 +334,14 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
     apiKey: string;
     baseUrl: string;
     modelId: string;
+    idleUnloadMin: number;
   }>({
     baseLang: 'zh',
     detailProvider: 'deepseek',
     apiKey: '',
     baseUrl: TRANSLATE_DEFAULTS.baseUrl,
     modelId: TRANSLATE_DEFAULTS.modelId,
+    idleUnloadMin: 30,
   });
   const [showTranslateKey, setShowTranslateKey] = useState(false);
   const [isApplyingTranslate, setIsApplyingTranslate] = useState(false);
@@ -431,6 +433,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
           apiKey: '',
           baseUrl: s.deepseek?.baseUrl || TRANSLATE_DEFAULTS.baseUrl,
           modelId: s.deepseek?.modelId || TRANSLATE_DEFAULTS.modelId,
+          idleUnloadMin: s.idleUnloadMin ?? 30,
         });
       }
     }
@@ -445,6 +448,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
       const patch: Parameters<typeof TranslateServiceAPI.updateConfig>[0] = {
         baseLang: translateForm.baseLang,
         detailProvider: translateForm.detailProvider,
+        quickIdleUnloadMin: translateForm.idleUnloadMin,
         deepseek: {
           baseUrl: translateForm.baseUrl,
           modelId: translateForm.modelId,
@@ -475,6 +479,7 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
       apiKey: '',
       baseUrl: TRANSLATE_DEFAULTS.baseUrl,
       modelId: TRANSLATE_DEFAULTS.modelId,
+      idleUnloadMin: 30,
     });
     setTranslateMsg(null);
   };
@@ -3310,6 +3315,17 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                     <p className="text-[10px] text-zinc-500 dark:text-zinc-400 mt-1.5 leading-relaxed">
                       {t('translatorBaseLangTip')}
                     </p>
+                  </div>
+
+                  {/* 闲置自动卸载时间选择器（默认 30 分钟） */}
+                  <div className="pt-2 border-t border-black/5 dark:border-white/5">
+                    <IdleTimeoutSelector
+                      value={translateForm.idleUnloadMin}
+                      onChange={(min) =>
+                        setTranslateForm((prev) => ({ ...prev, idleUnloadMin: min }))
+                      }
+                      t={t}
+                    />
                   </div>
 
                   {/* 保存配置按钮与反馈 */}

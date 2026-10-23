@@ -99,7 +99,7 @@ export const DEFAULT_TRANSLATE_CONFIG = {
     modelId: 'deepseek-flash',
   },
   // 快速模式空闲多久卸载自己的 1248 进程（分钟，0 = 不自动卸载）
-  quickIdleUnloadMin: 15,
+  quickIdleUnloadMin: 30,
 };
 
 export class TranslateError extends Error {
@@ -724,7 +724,7 @@ class TranslateService {
 
   /** 空闲回收：只回收自己拉起的 1248，不碰字幕服务的 1249 */
   reapIdle() {
-    const idleMin = Number(this.config.quickIdleUnloadMin ?? 15);
+    const idleMin = Number(this.config.quickIdleUnloadMin ?? 30);
     if (!idleMin || idleMin <= 0) return;
     if (this.inFlight > 0) return;
     if (!this.lastUsedAt) return;

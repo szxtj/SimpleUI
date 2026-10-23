@@ -20,6 +20,7 @@ import {
   Check,
   AppWindow,
   SlidersHorizontal,
+  ChevronDown,
   Eye,
   EyeOff,
   Sparkles,
@@ -82,6 +83,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
   );
 
   const [showApiKey, setShowApiKey] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const activeLang: Language = useMemo(() => {
     return resolveLanguage(language);
@@ -616,59 +618,249 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                     </select>
                   </div>
                 </div>
+
+                <div>
+                  <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                    {t('systemPromptLabel')}
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={deepseekConfig.systemPrompt ?? ''}
+                    onChange={(e) => setDeepseekConfig({ ...deepseekConfig, systemPrompt: e.target.value })}
+                    placeholder={t('systemPromptPlaceholderDeepSeek')}
+                    className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none resize-none leading-relaxed"
+                  />
+                  <span className="text-[10px] text-zinc-500 dark:text-[#6f7582] mt-1 block">
+                    {t('deepseekSystemPromptTip')}
+                  </span>
+                </div>
+
+                {/* DeepSeek 高级采样参数折叠区 */}
+                <div className="pt-2 border-t border-black/5 dark:border-white/5">
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvanced(!showAdvanced)}
+                    className="flex items-center justify-between w-full py-2 px-3 rounded-xl bg-black/[0.02] hover:bg-black/[0.05] dark:bg-white/[0.02] dark:hover:bg-white/[0.05] text-xs text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200 transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2 font-medium">
+                      <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-500" />
+                      <span>{activeLang === 'zh' ? '高级采样与推理参数' : 'Advanced Sampling & Reasoning Parameters'}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 font-normal">
+                        {activeLang === 'zh' ? '已配置官方推荐默认值' : 'Using recommended defaults'}
+                      </span>
+                    </div>
+                    <ChevronDown className={`w-4 h-4 text-zinc-400 transition-transform duration-200 ${showAdvanced ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {showAdvanced && (
+                    <div className="mt-3 space-y-3 pt-1">
+                      {/* DeepSeek 采样参数: Temperature & Top-P */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            <span>{t('temperatureLabel')}</span>
+                            <span className="font-mono text-blue-500 dark:text-blue-400">{deepseekConfig.temperature ?? 1.0}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0"
+                            max="2"
+                            step="0.05"
+                            value={deepseekConfig.temperature ?? 1.0}
+                            onChange={(e) => setDeepseekConfig({ ...deepseekConfig, temperature: Number(e.target.value) })}
+                            className="w-full accent-blue-500"
+                          />
+                          <div className="flex flex-wrap gap-1 mt-1 mb-1">
+                            <button
+                              type="button"
+                              onClick={() => setDeepseekConfig({ ...deepseekConfig, temperature: 1.0 })}
+                              className={`px-1.5 py-0.5 rounded text-[10px] border transition-colors ${
+                                deepseekConfig.temperature === 1.0
+                                  ? 'bg-blue-500/10 border-blue-500/40 text-blue-600 dark:text-blue-400 font-medium'
+                                  : 'bg-black/5 dark:bg-white/5 border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200'
+                              }`}
+                            >
+                              {t('presetGeneral')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeepseekConfig({ ...deepseekConfig, temperature: 0.0 })}
+                              className={`px-1.5 py-0.5 rounded text-[10px] border transition-colors ${
+                                deepseekConfig.temperature === 0.0
+                                  ? 'bg-blue-500/10 border-blue-500/40 text-blue-600 dark:text-blue-400 font-medium'
+                                  : 'bg-black/5 dark:bg-white/5 border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200'
+                              }`}
+                            >
+                              {t('presetCoding')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeepseekConfig({ ...deepseekConfig, temperature: 0.6 })}
+                              className={`px-1.5 py-0.5 rounded text-[10px] border transition-colors ${
+                                deepseekConfig.temperature === 0.6
+                                  ? 'bg-blue-500/10 border-blue-500/40 text-blue-600 dark:text-blue-400 font-medium'
+                                  : 'bg-black/5 dark:bg-white/5 border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200'
+                              }`}
+                            >
+                              {t('presetThinking')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeepseekConfig({ ...deepseekConfig, temperature: 1.5 })}
+                              className={`px-1.5 py-0.5 rounded text-[10px] border transition-colors ${
+                                deepseekConfig.temperature === 1.5
+                                  ? 'bg-blue-500/10 border-blue-500/40 text-blue-600 dark:text-blue-400 font-medium'
+                                  : 'bg-black/5 dark:bg-white/5 border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200'
+                              }`}
+                            >
+                              {t('presetCreative')}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            <span>{t('topPLabel')}</span>
+                            <span className="font-mono text-blue-500 dark:text-blue-400">{deepseekConfig.topP ?? 1.0}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0.05"
+                            max="1.0"
+                            step="0.05"
+                            value={deepseekConfig.topP ?? 1.0}
+                            onChange={(e) => setDeepseekConfig({ ...deepseekConfig, topP: Number(e.target.value) })}
+                            className="w-full accent-blue-500"
+                          />
+                          <div className="flex flex-wrap gap-1 mt-1 mb-1">
+                            <button
+                              type="button"
+                              onClick={() => setDeepseekConfig({ ...deepseekConfig, topP: 1.0 })}
+                              className={`px-1.5 py-0.5 rounded text-[10px] border transition-colors ${
+                                deepseekConfig.topP === 1.0
+                                  ? 'bg-blue-500/10 border-blue-500/40 text-blue-600 dark:text-blue-400 font-medium'
+                                  : 'bg-black/5 dark:bg-white/5 border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200'
+                              }`}
+                            >
+                              {t('presetGeneral')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeepseekConfig({ ...deepseekConfig, topP: 0.95 })}
+                              className={`px-1.5 py-0.5 rounded text-[10px] border transition-colors ${
+                                deepseekConfig.topP === 0.95
+                                  ? 'bg-blue-500/10 border-blue-500/40 text-blue-600 dark:text-blue-400 font-medium'
+                                  : 'bg-black/5 dark:bg-white/5 border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200'
+                              }`}
+                            >
+                              0.95
+                            </button>
+                          </div>
+                          <span className="text-[10px] text-zinc-500 dark:text-[#6f7582] leading-tight block">
+                            {t('deepseekTopPTip')}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* DeepSeek Max Tokens & Seed */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="font-medium text-zinc-600 dark:text-[#9aa0ac]">
+                              {t('maxTokensLabel')}
+                            </label>
+                            <span className="text-[10px] text-blue-600 dark:text-blue-400 font-medium bg-blue-500/10 px-1.5 py-0.5 rounded">
+                              {t('linkedHalf')}
+                            </span>
+                          </div>
+                          <input
+                            type="text"
+                            readOnly
+                            value={`${Math.floor((deepseekConfig.maxContext || 131072) / 2)} tokens (${Math.round(Math.floor((deepseekConfig.maxContext || 131072) / 2) / 1024)}K)`}
+                            className="w-full bg-zinc-100 dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-zinc-600 dark:text-[#abb0bc] cursor-not-allowed font-mono select-none"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            {t('seedLabel')}
+                          </label>
+                          <input
+                            type="number"
+                            value={deepseekConfig.seed ?? ''}
+                            onChange={(e) =>
+                              setDeepseekConfig({
+                                ...deepseekConfig,
+                                seed: e.target.value ? Number(e.target.value) : undefined,
+                              })
+                            }
+                            placeholder={t('seedPlaceholder')}
+                            className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none font-mono"
+                          />
+                        </div>
+                      </div>
+
+                      {/* DeepSeek Stop Sequences */}
+                      <div>
+                        <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                          {t('stopLabel')}
+                        </label>
+                        <input
+                          type="text"
+                          value={deepseekStopInput}
+                          onChange={(e) => setDeepseekStopInput(e.target.value)}
+                          placeholder={t('stopPlaceholder')}
+                          className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-blue-500 focus:outline-none font-mono"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
             {/* Custom Provider Settings */}
             {apiProvider === 'custom' && (
               <div className="space-y-3 pt-2 border-t border-black/5 dark:border-white/5">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
-                      {t('servicePortLabel')}
-                    </label>
-                    <input
-                      type="number"
-                      value={customConfig.apiPort ?? 1234}
-                      onChange={(e) => setCustomConfig({ ...customConfig, apiPort: Number(e.target.value) || 1234 })}
-                      placeholder="1234"
-                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
-                      {t('customBaseUrlLabel')}
-                    </label>
-                    <input
-                      type="text"
-                      value={customConfig.apiBaseUrl ?? ''}
-                      onChange={(e) => setCustomConfig({ ...customConfig, apiBaseUrl: e.target.value })}
-                      placeholder="http://127.0.0.1:1234"
-                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none font-mono"
-                    />
-                  </div>
+                <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-800 dark:text-emerald-300 text-[11px] flex items-center gap-2">
+                  <Terminal className="w-4 h-4 flex-shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  <span>{t('customNotice')}</span>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
-                      {t('modelLabel')}
+                      {t('servicePortLabel')}
                     </label>
-                    <input
-                      type="text"
-                      value={customConfig.modelId ?? 'local-model'}
-                      onChange={(e) => setCustomConfig({ ...customConfig, modelId: e.target.value })}
-                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none font-mono"
-                    />
+                    <select
+                      value={[11434, 8000, 8080, 1234, 5000].includes(customConfig.apiPort) ? customConfig.apiPort : 'custom'}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val !== 'custom') {
+                          setCustomConfig({ ...customConfig, apiPort: Number(val) });
+                        }
+                      }}
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none cursor-pointer"
+                    >
+                      <option value={11434}>{t('portOptionOllama')}</option>
+                      <option value={8000}>{t('portOptionVLLM')}</option>
+                      <option value={8080}>{t('portOptionLlamaCpp')}</option>
+                      <option value={1234}>{t('portOptionLMStudio')}</option>
+                      <option value={5000}>{t('portOptionTextGen')}</option>
+                      <option value="custom">{t('portOptionCustom')}</option>
+                    </select>
                   </div>
                   <div>
                     <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
-                      {t('maxContextLabel')}
+                      {t('portValueLabel')}
                     </label>
                     <input
                       type="number"
-                      value={customConfig.maxContext ?? 4096}
-                      onChange={(e) => setCustomConfig({ ...customConfig, maxContext: Number(e.target.value) || 4096 })}
+                      min="1"
+                      max="65535"
+                      value={customConfig.apiPort ?? 11434}
+                      onChange={(e) => setCustomConfig({ ...customConfig, apiPort: Number(e.target.value) || 11434 })}
+                      placeholder="11434"
                       className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none font-mono"
                     />
                   </div>
@@ -676,68 +868,28 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
 
                 <div>
                   <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
-                    {t('systemPromptLabel')}
+                    {t('customBaseUrlLabel')}
                   </label>
-                  <textarea
-                    rows={3}
-                    value={customConfig.systemPrompt ?? ''}
-                    onChange={(e) => setCustomConfig({ ...customConfig, systemPrompt: e.target.value })}
-                    placeholder={t('systemPromptPlaceholderLocal')}
-                    className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none resize-none leading-relaxed"
+                  <input
+                    type="text"
+                    value={customConfig.apiBaseUrl ?? ''}
+                    onChange={(e) => setCustomConfig({ ...customConfig, apiBaseUrl: e.target.value })}
+                    placeholder={t('customBaseUrlPlaceholder')}
+                    className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none font-mono"
                   />
                 </div>
-              </div>
-            )}
-
-            {/* TTF / Mference Settings */}
-            {(apiProvider === 'ttf' || apiProvider === 'mference' || apiProvider === 'local') && (
-              <div className="space-y-3 pt-2 border-t border-black/5 dark:border-white/5">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
-                      {t('servicePortLabel')}
-                    </label>
-                    <input
-                      type="number"
-                      value={apiProvider === 'mference' ? (mferenceConfig.apiPort ?? 1241) : (ttfConfig.apiPort ?? 1235)}
-                      onChange={(e) => {
-                        const val = Number(e.target.value);
-                        if (apiProvider === 'mference') setMferenceConfig({ ...mferenceConfig, apiPort: val || 1241 });
-                        else setTtfConfig({ ...ttfConfig, apiPort: val || 1235 });
-                      }}
-                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
-                      {t('customBaseUrlLabel')}
-                    </label>
-                    <input
-                      type="text"
-                      value={apiProvider === 'mference' ? (mferenceConfig.apiBaseUrl ?? '') : (ttfConfig.apiBaseUrl ?? '')}
-                      onChange={(e) => {
-                        if (apiProvider === 'mference') setMferenceConfig({ ...mferenceConfig, apiBaseUrl: e.target.value });
-                        else setTtfConfig({ ...ttfConfig, apiBaseUrl: e.target.value });
-                      }}
-                      placeholder={apiProvider === 'mference' ? 'http://127.0.0.1:1241' : 'http://127.0.0.1:1235'}
-                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
-                    />
-                  </div>
-                </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
-                      {t('modelLabel')}
+                      {t('customModelLabel')}
                     </label>
                     <input
                       type="text"
-                      value={apiProvider === 'mference' ? (mferenceConfig.modelId ?? 'qwen3-35b-a3b-instruct') : (ttfConfig.modelId ?? 'gemma-4-26b-a4b-it')}
-                      onChange={(e) => {
-                        if (apiProvider === 'mference') setMferenceConfig({ ...mferenceConfig, modelId: e.target.value });
-                        else setTtfConfig({ ...ttfConfig, modelId: e.target.value });
-                      }}
-                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                      value={customConfig.modelId ?? 'llama3'}
+                      onChange={(e) => setCustomConfig({ ...customConfig, modelId: e.target.value })}
+                      placeholder={t('customModelPlaceholder')}
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none font-mono"
                     />
                   </div>
                   <div>
@@ -745,16 +897,20 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                       {t('maxContextLabel')}
                     </label>
                     <select
-                      value={apiProvider === 'mference' ? (mferenceConfig.maxContext ?? 16384) : (ttfConfig.maxContext ?? 16384)}
+                      value={customConfig.maxContext ?? 8192}
                       onChange={(e) => {
                         const val = Number(e.target.value);
-                        if (apiProvider === 'mference') setMferenceConfig({ ...mferenceConfig, maxContext: val, maxTokens: Math.floor(val / 2) });
-                        else setTtfConfig({ ...ttfConfig, maxContext: val, maxTokens: Math.floor(val / 2) });
+                        setCustomConfig({
+                          ...customConfig,
+                          maxContext: val,
+                          maxTokens: Math.min(customConfig.maxTokens || 4096, Math.floor(val / 2)),
+                        });
                       }}
-                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none cursor-pointer"
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none cursor-pointer"
                     >
+                      <option value={4096}>4,096 (4K)</option>
                       <option value={8192}>8,192 (8K)</option>
-                      <option value={16384}>16,384 (16K - 默认)</option>
+                      <option value={16384}>16,384 (16K)</option>
                       <option value={32768}>32,768 (32K)</option>
                       <option value={65536}>65,536 (64K)</option>
                       <option value={131072}>131,072 (128K)</option>
@@ -767,15 +923,585 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                     {t('systemPromptLabel')}
                   </label>
                   <textarea
-                    rows={3}
-                    value={apiProvider === 'mference' ? (mferenceConfig.systemPrompt ?? '') : (ttfConfig.systemPrompt ?? '')}
-                    onChange={(e) => {
-                      if (apiProvider === 'mference') setMferenceConfig({ ...mferenceConfig, systemPrompt: e.target.value });
-                      else setTtfConfig({ ...ttfConfig, systemPrompt: e.target.value });
-                    }}
+                    rows={2}
+                    value={customConfig.systemPrompt ?? ''}
+                    onChange={(e) => setCustomConfig({ ...customConfig, systemPrompt: e.target.value })}
+                    placeholder={t('systemPromptPlaceholderLocal')}
+                    className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none resize-none leading-relaxed"
+                  />
+                </div>
+
+                {/* Custom 高级采样参数折叠区 */}
+                <div className="pt-2 border-t border-black/5 dark:border-white/5">
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvanced(!showAdvanced)}
+                    className="flex items-center justify-between w-full py-2 px-3 rounded-xl bg-black/[0.02] hover:bg-black/[0.05] dark:bg-white/[0.02] dark:hover:bg-white/[0.05] text-xs text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200 transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2 font-medium">
+                      <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-500" />
+                      <span>{activeLang === 'zh' ? '高级采样参数' : 'Advanced Sampling Parameters'}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-normal">
+                        {activeLang === 'zh' ? '默认已配置推荐值' : 'Using recommended defaults'}
+                      </span>
+                    </div>
+                    <ChevronDown className={`w-4 h-4 text-zinc-400 transition-transform duration-200 ${showAdvanced ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {showAdvanced && (
+                    <div className="mt-3 space-y-3 pt-1">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            {t('maxTokensLabel')}
+                          </label>
+                          <input
+                            type="number"
+                            min="256"
+                            max={customConfig.maxContext ?? 8192}
+                            step="256"
+                            value={customConfig.maxTokens ?? 4096}
+                            onChange={(e) => setCustomConfig({ ...customConfig, maxTokens: Number(e.target.value) || 4096 })}
+                            className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-emerald-500 focus:outline-none font-mono"
+                          />
+                        </div>
+                        <div>
+                          <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            <span>{t('temperatureLabel')}</span>
+                            <span className="font-mono text-emerald-500 dark:text-emerald-400">{customConfig.temperature ?? 0.7}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0"
+                            max="2"
+                            step="0.05"
+                            value={customConfig.temperature ?? 0.7}
+                            onChange={(e) => setCustomConfig({ ...customConfig, temperature: Number(e.target.value) })}
+                            className="w-full accent-emerald-500"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* TTF (Gemma 4) Settings */}
+            {(apiProvider === 'ttf' || apiProvider === 'local') && (
+              <div className="space-y-3 pt-2 border-t border-black/5 dark:border-white/5">
+                <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-[11px] flex items-center gap-2">
+                  <SlidersHorizontal className="w-4 h-4 flex-shrink-0 text-amber-600 dark:text-amber-400" />
+                  <span>{t('ttfServiceAutoStartDesc')}</span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('servicePortLabel')}
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="65535"
+                      value={ttfConfig.apiPort ?? 1235}
+                      onChange={(e) => setTtfConfig({ ...ttfConfig, apiPort: Number(e.target.value) || 1235 })}
+                      placeholder="1235"
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('customBaseUrlLabel')}
+                    </label>
+                    <input
+                      type="text"
+                      value={ttfConfig.apiBaseUrl ?? ''}
+                      onChange={(e) => setTtfConfig({ ...ttfConfig, apiBaseUrl: e.target.value })}
+                      placeholder="http://127.0.0.1:1235"
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('modelLabel')}
+                    </label>
+                    <input
+                      type="text"
+                      value={ttfConfig.modelId ?? 'gemma-4-26b-a4b-it'}
+                      onChange={(e) => setTtfConfig({ ...ttfConfig, modelId: e.target.value })}
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('maxContextLabel')}
+                    </label>
+                    <select
+                      value={ttfConfig.maxContext ?? 16384}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setTtfConfig({ ...ttfConfig, maxContext: val, maxTokens: Math.floor(val / 2) });
+                      }}
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none cursor-pointer"
+                    >
+                      <option value={8192}>8,192 (8K)</option>
+                      <option value={16384}>16,384 (16K - 默认)</option>
+                      <option value={32768}>32,768 (32K)</option>
+                      <option value={65536}>65,536 (64K)</option>
+                      <option value={131072}>131,072 (128K)</option>
+                      <option value={262144}>262,144 (256K)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                    {t('systemPromptLabel')}
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={ttfConfig.systemPrompt ?? ''}
+                    onChange={(e) => setTtfConfig({ ...ttfConfig, systemPrompt: e.target.value })}
                     placeholder={t('systemPromptPlaceholderLocal')}
                     className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none resize-none leading-relaxed"
                   />
+                </div>
+
+                {/* TTF 高级采样参数折叠区 */}
+                <div className="pt-2 border-t border-black/5 dark:border-white/5">
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvanced(!showAdvanced)}
+                    className="flex items-center justify-between w-full py-2 px-3 rounded-xl bg-black/[0.02] hover:bg-black/[0.05] dark:bg-white/[0.02] dark:hover:bg-white/[0.05] text-xs text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200 transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2 font-medium">
+                      <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-500" />
+                      <span>{activeLang === 'zh' ? '高级采样与推理参数' : 'Advanced Sampling & Reasoning Parameters'}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 font-normal">
+                        {activeLang === 'zh' ? '已配置官方推荐默认值' : 'Using recommended defaults'}
+                      </span>
+                    </div>
+                    <ChevronDown className={`w-4 h-4 text-zinc-400 transition-transform duration-200 ${showAdvanced ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {showAdvanced && (
+                    <div className="mt-3 space-y-3 pt-1">
+                      {/* Reasoning Fixed Notice */}
+                      <div className="p-2.5 rounded-xl bg-black/[0.03] dark:bg-white/[0.03] border border-black/5 dark:border-white/5 text-zinc-500 dark:text-[#8c929f] text-[11px] leading-relaxed">
+                        {t('ttfReasoningFixedNotice')}
+                      </div>
+
+                      {/* Temperature & Top-P */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            <span>{t('temperatureLabel')}</span>
+                            <span className="font-mono text-amber-500 dark:text-amber-400">{ttfConfig.temperature ?? 1.0}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0"
+                            max="2"
+                            step="0.05"
+                            value={ttfConfig.temperature ?? 1.0}
+                            onChange={(e) => setTtfConfig({ ...ttfConfig, temperature: Number(e.target.value) })}
+                            className="w-full accent-amber-500"
+                          />
+                          <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('temperatureTip')}</span>
+                        </div>
+                        <div>
+                          <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            <span>{t('topPLabel')}</span>
+                            <span className="font-mono text-amber-500 dark:text-amber-400">{ttfConfig.topP ?? 0.95}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0.01"
+                            max="1.0"
+                            step="0.01"
+                            value={ttfConfig.topP ?? 0.95}
+                            onChange={(e) => setTtfConfig({ ...ttfConfig, topP: Number(e.target.value) })}
+                            className="w-full accent-amber-500"
+                          />
+                          <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('topPTip')}</span>
+                        </div>
+                      </div>
+
+                      {/* Top-K & Repetition Penalty */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            <span>{t('topKLabel')}</span>
+                            <span className="font-mono text-amber-500 dark:text-amber-400">{ttfConfig.topK ?? 64}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="1"
+                            max="256"
+                            step="1"
+                            value={ttfConfig.topK ?? 64}
+                            onChange={(e) => setTtfConfig({ ...ttfConfig, topK: Number(e.target.value) })}
+                            className="w-full accent-amber-500"
+                          />
+                          <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('topKTip')}</span>
+                        </div>
+                        <div>
+                          <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            <span>{t('repetitionPenaltyLabel')}</span>
+                            <span className="font-mono text-amber-500 dark:text-amber-400">{ttfConfig.repetitionPenalty ?? 1.0}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0.5"
+                            max="2.0"
+                            step="0.05"
+                            value={ttfConfig.repetitionPenalty ?? 1.0}
+                            onChange={(e) => setTtfConfig({ ...ttfConfig, repetitionPenalty: Number(e.target.value) })}
+                            className="w-full accent-amber-500"
+                          />
+                          <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('repetitionPenaltyTip')}</span>
+                        </div>
+                      </div>
+
+                      {/* Max Tokens & Seed */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="font-medium text-zinc-600 dark:text-[#9aa0ac]">
+                              {t('maxTokensLabel')}
+                            </label>
+                            <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium bg-amber-500/10 px-1.5 py-0.5 rounded">
+                              {t('linkedHalf')}
+                            </span>
+                          </div>
+                          <input
+                            type="text"
+                            readOnly
+                            value={`${ttfConfig.maxTokens || Math.floor((ttfConfig.maxContext || 16384) / 2)} tokens (${Math.round((ttfConfig.maxTokens || Math.floor((ttfConfig.maxContext || 16384) / 2)) / 1024)}K)`}
+                            className="w-full bg-zinc-100 dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-zinc-600 dark:text-[#abb0bc] cursor-not-allowed font-mono select-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            {t('seedLabel')}
+                          </label>
+                          <input
+                            type="number"
+                            value={ttfConfig.seed ?? ''}
+                            onChange={(e) =>
+                              setTtfConfig({
+                                ...ttfConfig,
+                                seed: e.target.value ? Number(e.target.value) : undefined,
+                              })
+                            }
+                            placeholder={t('seedPlaceholder')}
+                            className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Stop Sequences */}
+                      <div>
+                        <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                          {t('stopLabel')}
+                        </label>
+                        <input
+                          type="text"
+                          value={ttfStopInput}
+                          onChange={(e) => setTtfStopInput(e.target.value)}
+                          placeholder={t('stopPlaceholder')}
+                          className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Mference (Qwen 3.6) Settings */}
+            {apiProvider === 'mference' && (
+              <div className="space-y-3 pt-2 border-t border-black/5 dark:border-white/5">
+                <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-[11px] flex items-center gap-2">
+                  <SlidersHorizontal className="w-4 h-4 flex-shrink-0 text-amber-600 dark:text-amber-400" />
+                  <span>{t('mferenceServiceAutoStartDesc')}</span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('servicePortLabel')}
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="65535"
+                      value={mferenceConfig.apiPort ?? 1241}
+                      onChange={(e) => setMferenceConfig({ ...mferenceConfig, apiPort: Number(e.target.value) || 1241 })}
+                      placeholder="1241"
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('customBaseUrlLabel')}
+                    </label>
+                    <input
+                      type="text"
+                      value={mferenceConfig.apiBaseUrl ?? ''}
+                      onChange={(e) => setMferenceConfig({ ...mferenceConfig, apiBaseUrl: e.target.value })}
+                      placeholder="http://127.0.0.1:1241"
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('modelLabel')}
+                    </label>
+                    <input
+                      type="text"
+                      value={mferenceConfig.modelId ?? 'qwen3.6-35b-a3b'}
+                      onChange={(e) => setMferenceConfig({ ...mferenceConfig, modelId: e.target.value })}
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('maxContextLabel')}
+                    </label>
+                    <select
+                      value={mferenceConfig.maxContext ?? 16384}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setMferenceConfig({ ...mferenceConfig, maxContext: val, maxTokens: Math.floor(val / 2) });
+                      }}
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none cursor-pointer"
+                    >
+                      <option value={8192}>8,192 (8K)</option>
+                      <option value={16384}>16,384 (16K - 默认)</option>
+                      <option value={32768}>32,768 (32K)</option>
+                      <option value={65536}>65,536 (64K)</option>
+                      <option value={128000}>128,000 (128K)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('reasoningEffortLabel')}
+                    </label>
+                    <select
+                      value={mferenceConfig.reasoningEffort ?? 'low'}
+                      onChange={(e) => setMferenceConfig({ ...mferenceConfig, reasoningEffort: e.target.value as any })}
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none cursor-pointer"
+                    >
+                      <option value="low">{t('reasoningEffortLow')}</option>
+                      <option value="medium">{t('reasoningEffortMed')}</option>
+                      <option value="high">{t('reasoningEffortHigh')}</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('systemPromptLabel')}
+                    </label>
+                    <input
+                      type="text"
+                      value={mferenceConfig.systemPrompt ?? ''}
+                      onChange={(e) => setMferenceConfig({ ...mferenceConfig, systemPrompt: e.target.value })}
+                      placeholder={t('systemPromptPlaceholderMference')}
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                </div>
+
+                {/* Mference 高级采样参数折叠区 */}
+                <div className="pt-2 border-t border-black/5 dark:border-white/5">
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvanced(!showAdvanced)}
+                    className="flex items-center justify-between w-full py-2 px-3 rounded-xl bg-black/[0.02] hover:bg-black/[0.05] dark:bg-white/[0.02] dark:hover:bg-white/[0.05] text-xs text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200 transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2 font-medium">
+                      <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-500" />
+                      <span>{activeLang === 'zh' ? '高级采样与推理参数' : 'Advanced Sampling & Reasoning Parameters'}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 font-normal">
+                        {activeLang === 'zh' ? '已配置官方推荐默认值' : 'Using recommended defaults'}
+                      </span>
+                    </div>
+                    <ChevronDown className={`w-4 h-4 text-zinc-400 transition-transform duration-200 ${showAdvanced ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {showAdvanced && (
+                    <div className="mt-3 space-y-3 pt-1">
+                      {/* Temperature & Top-P */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            <span>{t('temperatureLabel')}</span>
+                            <span className="font-mono text-amber-500 dark:text-amber-400">{mferenceConfig.temperature ?? 1.0}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0"
+                            max="2"
+                            step="0.05"
+                            value={mferenceConfig.temperature ?? 1.0}
+                            onChange={(e) => setMferenceConfig({ ...mferenceConfig, temperature: Number(e.target.value) })}
+                            className="w-full accent-amber-500"
+                          />
+                          <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('temperatureTip')}</span>
+                        </div>
+                        <div>
+                          <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            <span>{t('topPLabel')}</span>
+                            <span className="font-mono text-amber-500 dark:text-amber-400">{mferenceConfig.topP ?? 0.95}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0.01"
+                            max="1.0"
+                            step="0.01"
+                            value={mferenceConfig.topP ?? 0.95}
+                            onChange={(e) => setMferenceConfig({ ...mferenceConfig, topP: Number(e.target.value) })}
+                            className="w-full accent-amber-500"
+                          />
+                          <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('topPTip')}</span>
+                        </div>
+                      </div>
+
+                      {/* Top-K & Min-P */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            <span>{t('topKLabel')}</span>
+                            <span className="font-mono text-amber-500 dark:text-amber-400">{mferenceConfig.topK ?? 20}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="1"
+                            max="256"
+                            step="1"
+                            value={mferenceConfig.topK ?? 20}
+                            onChange={(e) => setMferenceConfig({ ...mferenceConfig, topK: Number(e.target.value) })}
+                            className="w-full accent-amber-500"
+                          />
+                          <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('topKTip')}</span>
+                        </div>
+                        <div>
+                          <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            <span>{t('minPLabel')}</span>
+                            <span className="font-mono text-amber-500 dark:text-amber-400">{mferenceConfig.minP ?? 0.0}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0.0"
+                            max="1.0"
+                            step="0.01"
+                            value={mferenceConfig.minP ?? 0.0}
+                            onChange={(e) => setMferenceConfig({ ...mferenceConfig, minP: Number(e.target.value) })}
+                            className="w-full accent-amber-500"
+                          />
+                          <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('minPTip')}</span>
+                        </div>
+                      </div>
+
+                      {/* Presence Penalty & Repetition Penalty */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            <span>{t('presencePenaltyLabel')}</span>
+                            <span className="font-mono text-amber-500 dark:text-amber-400">{mferenceConfig.presencePenalty ?? 1.5}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="-2.0"
+                            max="2.0"
+                            step="0.05"
+                            value={mferenceConfig.presencePenalty ?? 1.5}
+                            onChange={(e) => setMferenceConfig({ ...mferenceConfig, presencePenalty: Number(e.target.value) })}
+                            className="w-full accent-amber-500"
+                          />
+                          <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('presencePenaltyTip')}</span>
+                        </div>
+                        <div>
+                          <div className="flex justify-between font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            <span>{t('repetitionPenaltyLabel')}</span>
+                            <span className="font-mono text-amber-500 dark:text-amber-400">{mferenceConfig.repetitionPenalty ?? 1.0}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0.5"
+                            max="2.0"
+                            step="0.05"
+                            value={mferenceConfig.repetitionPenalty ?? 1.0}
+                            onChange={(e) => setMferenceConfig({ ...mferenceConfig, repetitionPenalty: Number(e.target.value) })}
+                            className="w-full accent-amber-500"
+                          />
+                          <span className="text-[10px] text-zinc-500 dark:text-[#6f7582]">{t('repetitionPenaltyTip')}</span>
+                        </div>
+                      </div>
+
+                      {/* Max Tokens & Seed */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="font-medium text-zinc-600 dark:text-[#9aa0ac]">
+                              {t('maxTokensLabel')}
+                            </label>
+                            <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium bg-amber-500/10 px-1.5 py-0.5 rounded">
+                              {t('linkedHalf')}
+                            </span>
+                          </div>
+                          <input
+                            type="text"
+                            readOnly
+                            value={`${mferenceConfig.maxTokens || Math.floor((mferenceConfig.maxContext || 16384) / 2)} tokens (${Math.round((mferenceConfig.maxTokens || Math.floor((mferenceConfig.maxContext || 16384) / 2)) / 1024)}K)`}
+                            className="w-full bg-zinc-100 dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-zinc-600 dark:text-[#abb0bc] cursor-not-allowed font-mono select-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                            {t('seedLabel')}
+                          </label>
+                          <input
+                            type="number"
+                            value={mferenceConfig.seed ?? ''}
+                            onChange={(e) =>
+                              setMferenceConfig({
+                                ...mferenceConfig,
+                                seed: e.target.value ? Number(e.target.value) : undefined,
+                              })
+                            }
+                            placeholder={t('seedPlaceholder')}
+                            className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Stop Sequences */}
+                      <div>
+                        <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                          {t('stopLabel')}
+                        </label>
+                        <input
+                          type="text"
+                          value={mferenceStopInput}
+                          onChange={(e) => setMferenceStopInput(e.target.value)}
+                          placeholder={t('stopPlaceholder')}
+                          className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
