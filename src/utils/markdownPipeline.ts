@@ -33,8 +33,8 @@ const LATEX_ENV_NAMES = [
 ].join('|');
 
 const STANDALONE_LATEX_ENV_REGEX = new RegExp(
-  `(?:^|\\n)([ \\t]*)(\\\\begin\\{(${LATEX_ENV_NAMES})\\}[\\s\\S]*?\\\\end\\{\\3\\})[ \\t]*(?=\\n|$)`,
-  'g'
+  `(^[ \\t]*(?:>[ \\t]*)*[ \\t]*)(\\\\begin\\{(${LATEX_ENV_NAMES})\\}[\\s\\S]*?\\\\end\\{\\3\\})[ \\t]*(?=\\n|$)`,
+  'gm'
 );
 
 /**
@@ -170,31 +170,137 @@ function indentBlockContent(content: string, indent: string): string {
 }
 
 /**
- * 把块级公式规整为独立围栏：列表项内的公式保留在列表项内部，
- * 其余情况仍提升到顶格。
+ * 判断块级公式前是否已有空行或空引用行（如 ">"、"> >"），避免在引用块内重复注入空引用行导致块结构碎裂。
  */
-function formatBlockMath(content: string, textBefore: string, indent: string): string {
+function isPrecededByBlankOrQuoteLine(textBefore: string): boolean {
+  const lines = textBefore.split('\n');
+  if (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+    lines.pop();
+  }
+  if (lines.length === 0) return true;
+  const lastLine = lines[lines.length - 1].trim();
+  return lastLine === '' || /^>+$/.test(lastLine.replace(/[ \t]/g, ''));
+}
+
+/**
+ * 解析行首前缀，分离 Markdown 引用符（如 "> "、"> > "）与后续缩进空格。
+ */
+function parseLinePrefix(prefix: string): { quotePrefix: string; indent: string } {
+  if (!prefix) return { quotePrefix: '', indent: '' };
+  const quoteMatch = prefix.match(/^([ \t]*(?:>[ \t]?)+)/);
+  const quotePrefix = quoteMatch ? quoteMatch[1] : '';
+  const indent = prefix.slice(quotePrefix.length);
+  return { quotePrefix, indent };
+}
+
+/**
+ * 清除多行公式每行行首的 Markdown 引用符（如 "> "），防止 KaTeX 将 ">" 当成数学符号（大于号）渲染进公式。
+ * 精确匹配对应层级的引用前缀，避免公式内部换行书写的数学比较符（如 "> 0"、"> b"）被误删。
+ */
+function cleanQuotePrefixFromLines(content: string, quotePrefix: string): string {
+  if (!quotePrefix) return content;
+  const trimmedPrefix = quotePrefix.trimEnd();
+  return content
+    .split('\n')
+    .map((line) => {
+      if (line.startsWith(quotePrefix)) {
+        return line.slice(quotePrefix.length);
+      }
+      if (line.trim() === trimmedPrefix) {
+        return '';
+      }
+      return line;
+    })
+    .join('\n');
+}
+
+/**
+ * 为引用块内的多行公式每行统一添加引用前缀（空行按 Markdown 规范保留引用竖线）。
+ */
+function prefixQuoteLines(content: string, prefix: string): string {
+  const trimmed = content.trim();
+  if (!prefix) return trimmed;
+  return trimmed
+    .split('\n')
+    .map((line) => (!line.trim() ? prefix.trimEnd() : prefix + line))
+    .join('\n');
+}
+
+/**
+ * 把块级公式规整为独立围栏：
+ * 1. 引用块（Blockquote）内的公式保留在引用块内部，剔除内部行首的 ">" 避免公式两侧残留大于号，并保持引用竖线连贯；
+ * 2. 列表项内的公式保留在列表项内部，维持缩进列；
+ * 3. 其余情况提升到顶格独立围栏。
+ */
+function formatBlockMath(
+  content: string,
+  textBefore: string,
+  rawPrefix: string,
+  matchLength = 0,
+  whole = ''
+): string {
+  const lastNl = textBefore.lastIndexOf('\n');
+  const currentLine = textBefore.slice(lastNl + 1);
+  const effectivePrefix =
+    rawPrefix || (currentLine.match(/^([ \t]*(?:>[ \t]?)+)/)?.[1] ?? '');
+
+  const { quotePrefix, indent } = parseLinePrefix(effectivePrefix);
+  const cleanedMath = cleanQuotePrefixFromLines(content, quotePrefix);
+
+  if (quotePrefix) {
+    const quoteLine = quotePrefix.trimEnd();
+    const linePrefix = quotePrefix + (indent || '');
+    const body = prefixQuoteLines(cleanedMath, linePrefix);
+
+    const needLeadingNewline = textBefore.length > 0 && !textBefore.endsWith('\n');
+    const preNl = needLeadingNewline ? '\n' : '';
+
+    const needLeadingBlank = !isPrecededByBlankOrQuoteLine(textBefore);
+    const lead = needLeadingBlank ? `${quoteLine}\n` : '';
+
+    let trail = '';
+    if (matchLength > 0 && whole) {
+      const charAfter = whole[textBefore.length + matchLength];
+      if (charAfter !== undefined && charAfter !== '\n' && charAfter !== '\r') {
+        trail = `\n${linePrefix}`;
+      }
+    }
+
+    return `${preNl}${lead}${linePrefix}$$\n${body}\n${linePrefix}$$${trail}`;
+  }
+
   const listContentIndent = enclosingListContentIndent(textBefore, indent);
   const keep = listContentIndent === null ? '' : ' '.repeat(listContentIndent);
-  return `\n\n${keep}$$\n${indentBlockContent(content, keep)}\n${keep}$$\n\n`;
+  return `\n\n${keep}$$\n${indentBlockContent(cleanedMath, keep)}\n${keep}$$\n\n`;
 }
 
 /**
  * 标准化 LaTeX 公式定界符与环境：
- * 1. 块级公式 \[ ... \] 转换为独立的 \n\n$$\n...$$\n\n
- * 2. 裸写 LaTeX 常见矩阵/方程环境自动补全 $$ 围栏
- * 3. 紧贴的多行 $$...$$ 规整为换行围栏
- * 4. 行内公式 \( ... \) 转换为 $...$
+ * 1. 多行原生 $$ ... $$ 围栏换行规整（支持引用块与列表项保留前缀）
+ * 2. 块级公式 \[ ... \] 转换为标准的 $$ ... $$（支持引用块与列表项保留前缀）
+ * 3. 行内公式 \( ... \) 转换为 $...$
+ * 4. 保护已有合法定界符包裹的公式块（$$ ... $$ 与 $ ... $）
+ * 5. 裸写 LaTeX 常见矩阵/方程环境自动补全 $$ 围栏
+ * 6. 还原保护的已有公式块
  */
 export function normalizeMathDelimiters(text: string): string {
-  // 1. 块级公式 \[ ... \] 转换为标准的 \n\n$$\n...$$\n\n（列表项内保留缩进）
+  // 1. 多行原生 $$ ... $$ 围栏换行规整（支持引用块与列表项保留前缀）
   let normalized = text.replace(
-    /(^[ \t]*)?\\\[([\s\S]*?)\\\]/gm,
-    (_match, indent: string | undefined, math: string, offset: number, whole: string) =>
-      formatBlockMath(math, whole.slice(0, offset), indent ?? '')
+    /(^[ \t]*(?:>[ \t]*)*[ \t]*)?\$\$([\s\S]*?)\$\$/gm,
+    (match, prefix: string | undefined, math: string, offset: number, whole: string) => {
+      if (!math.includes('\n')) return match;
+      return formatBlockMath(math, whole.slice(0, offset), prefix ?? '', match.length, whole);
+    }
   );
 
-  // 2. 行内公式 \( ... \) 转换为 $...$
+  // 2. 块级公式 \[ ... \] 转换为标准的 $$ ... $$（支持引用块与列表项保留前缀）
+  normalized = normalized.replace(
+    /(^[ \t]*(?:>[ \t]*)*[ \t]*)?\\\[([\s\S]*?)\\\]/gm,
+    (match, prefix: string | undefined, math: string, offset: number, whole: string) =>
+      formatBlockMath(math, whole.slice(0, offset), prefix ?? '', match.length, whole)
+  );
+
+  // 3. 行内公式 \( ... \) 转换为 $...$
   normalized = normalized.replace(
     /\\\(([\s\S]*?)\\\)/g,
     (_, math) => {
@@ -203,7 +309,7 @@ export function normalizeMathDelimiters(text: string): string {
     }
   );
 
-  // 3. 保护已有合法定界符包裹的公式块（$$ ... $$ 与 $ ... $）
+  // 4. 保护已有合法定界符包裹的公式块（$$ ... $$ 与 $ ... $）
   // 核心防御：避免已有公式内部跨行书写的 \begin{cases}、\begin{aligned}、\begin{matrix} 等被错误当成“裸写环境”再次包裹 $$ 而撕裂公式
   const protectedMathBlocks: string[] = [];
   normalized = normalized.replace(
@@ -214,26 +320,17 @@ export function normalizeMathDelimiters(text: string): string {
     }
   );
 
-  // 4. 裸写 LaTeX 环境（未被任何 $$ 或 $ 包裹的孤立顶级环境，自动补全 $$ 围栏）
+  // 5. 裸写 LaTeX 环境（未被任何 $$ 或 $ 包裹的孤立顶级环境，自动补全 $$ 围栏）
   normalized = normalized.replace(
     STANDALONE_LATEX_ENV_REGEX,
-    (_match, indent: string | undefined, env: string, _envName: string, offset: number, whole: string) =>
-      formatBlockMath(env, whole.slice(0, offset), indent ?? '')
+    (match, prefix: string | undefined, env: string, _envName: string, offset: number, whole: string) =>
+      formatBlockMath(env, whole.slice(0, offset), prefix ?? '', match.length, whole)
   );
 
-  // 5. 还原保护的已有公式块
+  // 6. 还原保护的已有公式块
   normalized = normalized.replace(
     /__STANDALONE_PROTECTED_MATH_(\d+)__/g,
     (_, idx) => protectedMathBlocks[parseInt(idx, 10)] ?? ''
-  );
-
-  // 6. 多行原生 $$ ... $$ 围栏换行规整（列表项内保留缩进）
-  normalized = normalized.replace(
-    /(^[ \t]*)?\$\$([\s\S]*?)\$\$/gm,
-    (match, indent: string | undefined, math: string, offset: number, whole: string) => {
-      if (!math.includes('\n')) return match;
-      return formatBlockMath(math, whole.slice(0, offset), indent ?? '');
-    }
   );
 
   return normalized;

@@ -198,4 +198,70 @@ test("TC-14: bare LaTeX env inside a list item keeps indentation", () => {
   assert(out.includes("    说明文字。"));
 });
 
+// TC-15: Block math inside blockquote does not leak `>` into KaTeX and preserves quote
+test("TC-15: Block math inside blockquote preserves blockquote and strips leading `>` from math", () => {
+  const input = `按照极限的定义，就是要证明：
+
+> 任给 \\(\\varepsilon>0\\)，只要 \\(x\\) 足够大，就有
+> \\[
+> \\left|\\frac{1}{x}\\int_0^x g(t)\\,dt\\right|<\\varepsilon.
+> \\]
+
+所以接下来所有操作，都是为了说明：`;
+  const out = preprocessMarkdown(input);
+  assert(out.includes("> $$"));
+  assert(out.includes("> \\left|\\frac{1}{x}\\int_0^x g(t)\\,dt\\right|<\\varepsilon."));
+  assert(!out.includes("<\\varepsilon. >"));
+});
+
+// TC-16: Block math in middle of multi-paragraph blockquote maintains continuous blockquote
+test("TC-16: Block math inside blockquote maintains blockquote continuation without stray `>`", () => {
+  const input = `> 解释：  
+> 先提醒一个基本事实：  
+> \\[
+> \\left|\\int a(t)\\,dt\\right|\\le \\int |a(t)|\\,dt.
+> \\]
+> 也就是说，先积分再取绝对值，不会超过先取绝对值再积分。  
+> 所以我们在 (3) 里把绝对值放进了积分里面。`;
+  const out = preprocessMarkdown(input);
+  assert(out.includes("> $$"));
+  assert(out.includes("> \\left|\\int a(t)\\,dt\\right|\\le \\int |a(t)|\\,dt."));
+  assert(!out.includes("dt. >"));
+});
+
+// TC-17: Math inside blockquote containing mathematical inequality `> 0` on new line must preserve `>`
+test("TC-17: Math inside blockquote with mathematical inequality preserves `>` operator", () => {
+  const input = `> \\[
+> \\begin{aligned}
+> a \\\\
+> > 0
+> \\end{aligned}
+> \\]`;
+  const out = preprocessMarkdown(input);
+  assert(out.includes("> > 0"), "Must preserve math greater-than operator `> 0`");
+});
+
+// TC-18: Standalone LaTeX environment inside blockquote does not swallow newline
+test("TC-18: Standalone LaTeX environment inside blockquote preserves preceding line text", () => {
+  const input = `> 前置文本
+> \\begin{matrix}
+> 1
+> \\end{matrix}
+> 后续文本`;
+  const out = preprocessMarkdown(input);
+  assert(out.includes("> 前置文本\n"), "Must not swallow newline after preceding text");
+  assert(out.includes("> $$\n> \\begin{matrix}"));
+  assert(out.includes("> \\end{matrix}\n> $$"));
+  assert(out.includes("> 后续文本"));
+});
+
+// TC-19: Mid-line \[ ... \] inside blockquote with trailing text keeps quote and separates text
+test("TC-19: Mid-line \\[ ... \\] inside blockquote with trailing text stays valid", () => {
+  const input = `> 结论：\\[ x = 1 \\] 显然成立`;
+  const out = preprocessMarkdown(input);
+  assert(out.includes("> 结论：\n>"));
+  assert(out.includes("> $$\n> x = 1\n> $$"));
+  assert(out.includes("\n>  显然成立"));
+});
+
 console.log(`\n🎉 All ${passed} unit tests passed successfully!`);
