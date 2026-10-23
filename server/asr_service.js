@@ -159,6 +159,7 @@ class AsrService {
     this.lastUsedAt = 0;
     this.inFlight = 0;
     this.startingPromise = null;
+    this.liveSessions = new Map();
   }
 
   findBinary() {
@@ -235,7 +236,14 @@ class AsrService {
       family: 'confucius4_r2t2',
       path: modelPath || path.join(SUBTITLE_MODELS_DIR, MODEL_FILENAME),
       task: 'asr',
-      mode: 'offline',
+      mode: 'streaming',
+      session_options: {
+        'confucius4_r2t2.chunk_size_ms': '960',
+        'confucius4_r2t2.unfixed_chunk_num': '1',
+        'confucius4_r2t2.unfixed_token_num': '2',
+        'confucius4_r2t2.rollback_punctuation': 'false',
+        'confucius4_r2t2.max_tokens': '16',
+      },
       default_request_options: {
         language: lang,
         max_tokens: 512,
@@ -251,7 +259,9 @@ class AsrService {
       max_loaded_models: 1,
       idle_unload_ms: 0,
       min_free_memory_mb: 0,
+      busy_timeout_ms: 0,
       ui: false,
+      live_ingest: { total_timeout_ms: 1800000, max_chunk_bytes: 8388608 },
       models: [modelEntry],
     };
     if (!fs.existsSync(userConfigDir)) fs.mkdirSync(userConfigDir, { recursive: true });
@@ -470,9 +480,9 @@ class AsrService {
       });
       this.lastActionLog = `已拉起 audiocpp_server (pid=${child.pid}) · ${this.config.backend} · Confucius4-R2T2`;
 
-      // 等待健康探测通过
+      // 等待健康探测通过（冷启动加载 2.48GB 模型权重与 Metal 图最长约需 8~10 秒）
       let healthy = false;
-      for (let i = 0; i < 24; i++) {
+      for (let i = 0; i < 48; i++) {
         await new Promise((r) => setTimeout(r, 250));
         if (await this.checkHealth()) {
           healthy = true;
@@ -538,6 +548,10 @@ class AsrService {
       clearTimeout(this.idleTimer);
       this.idleTimer = null;
     }
+    for (const session of this.liveSessions.values()) {
+      try { session.abort(); } catch {}
+    }
+    this.liveSessions.clear();
     try {
       const pid = readPid();
       if (isPidAlive(pid)) {
@@ -643,91 +657,312 @@ class AsrService {
     }
   }
 
-  // ----------------------------- 转写 -----------------------------
+  // ----------------------------- 转写与流式引擎 -----------------------------
 
-  transcribe(audio, language) {
+  createLiveSession({ language, onDelta, onDone, onError }) {
     const port = this.config.port || 1236;
-    const boundary = '----SimpleUIAsrBoundary' + Date.now().toString(36);
     const rawLang = language || this.config.language || 'Auto';
     const lang = String(rawLang).toLowerCase() === 'auto' ? 'Auto' : rawLang;
 
-    const CRLF = '\r\n';
-    const parts = [];
-    const field = (name, value) =>
-      Buffer.from(
-        `--${boundary}${CRLF}Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}${value}${CRLF}`,
-        'utf-8'
-      );
+    const session = {
+      state: 'open', // 'open' | 'rotating' | 'finishing' | 'done' | 'error'
+      abandoned: false,
+      committedText: '',
+      subStreamText: '',
+      subStreamBytes: 0,
+      activeReq: null,
+      rotateTimer: null,
+      pendingChunks: [],
+      finished: false,
+      sseClients: new Set(),
+      onDelta,
+      onDone,
+      onError,
+    };
 
-    parts.push(field('model', SERVER_MODEL_ID));
-    parts.push(field('language', lang));
-    parts.push(
-      Buffer.concat([
-        Buffer.from(
-          `--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="audio.wav"${CRLF}` +
-            `Content-Type: audio/wav${CRLF}${CRLF}`,
-          'utf-8'
-        ),
-        audio,
-        Buffer.from(CRLF, 'utf-8'),
-      ])
-    );
-    parts.push(Buffer.from(`--${boundary}--${CRLF}`, 'utf-8'));
-    const body = Buffer.concat(parts);
+    // 辅助属性：session.text 返回当前完整累积文本 (committedText + subStreamText)
+    Object.defineProperty(session, 'text', {
+      get() {
+        return session.committedText + session.subStreamText;
+      },
+      set(val) {
+        session.committedText = String(val || '');
+        session.subStreamText = '';
+      },
+      configurable: true,
+      enumerable: true,
+    });
 
-    return new Promise((resolve) => {
+    session.broadcast = (msg) => {
+      const payload = `data: ${JSON.stringify(msg)}\n\n`;
+      for (const client of session.sseClients) {
+        try {
+          client.write(payload);
+        } catch {
+          session.sseClients.delete(client);
+        }
+      }
+    };
+
+    const handleSubStreamDone = (finalText) => {
+      if (session.rotateTimer) {
+        clearTimeout(session.rotateTimer);
+        session.rotateTimer = null;
+      }
+      const extra = extractFinalExtra(session.subStreamText, finalText);
+      session.committedText += (session.subStreamText + extra);
+      session.subStreamText = '';
+      session.subStreamBytes = 0;
+      session.activeReq = null;
+
+      if (session.state === 'finishing') {
+        if (session.pendingChunks.length > 0) {
+          openSubStream();
+          while (session.pendingChunks.length > 0) {
+            const c = session.pendingChunks.shift();
+            try {
+              session.activeReq.write(c);
+              session.subStreamBytes += c.length;
+            } catch {}
+          }
+          try {
+            session.activeReq.write(Buffer.alloc(Math.floor(16000 * 0.36) * 2));
+            session.activeReq.end();
+          } catch {}
+        } else {
+          session.state = 'done';
+          const fullText = session.text;
+          session.onDone?.(fullText, null);
+          session.broadcast({ type: 'done', text: fullText });
+        }
+      } else if (session.state === 'rotating') {
+        session.state = 'open';
+        openSubStream();
+        while (session.pendingChunks.length > 0) {
+          const c = session.pendingChunks.shift();
+          try {
+            session.activeReq.write(c);
+            session.subStreamBytes += c.length;
+          } catch {}
+        }
+      }
+    };
+
+    const openSubStream = () => {
+      if (session.abandoned || session.state === 'done' || session.state === 'error') return;
+      session.subStreamText = '';
+      session.subStreamBytes = 0;
+      let subStreamDone = false;
+
       const req = http.request(
         {
           hostname: '127.0.0.1',
           port,
-          path: '/v1/audio/transcriptions',
+          path: `/v1/audio/transcriptions/live?model=${SERVER_MODEL_ID}&sample_rate=16000&channels=1&sample_format=s16le&language=${lang}`,
           method: 'POST',
           headers: {
-            'Content-Type': `multipart/form-data; boundary=${boundary}`,
-            'Content-Length': body.length,
+            'Transfer-Encoding': 'chunked',
+            'Content-Type': 'application/octet-stream',
           },
-          timeout: 60000,
         },
         (res) => {
-          let data = '';
-          res.setEncoding('utf-8');
-          res.on('data', (c) => (data += c));
-          res.on('end', () => {
-            if (res.statusCode !== 200) {
-              resolve({ ok: false, error: `upstream_${res.statusCode}`, detail: data.slice(0, 500) });
-              return;
+          if (res.statusCode !== 200) {
+            res.resume();
+            if (!session.abandoned && session.state !== 'done') {
+              session.state = 'error';
+              const err = new Error(`upstream_${res.statusCode}`);
+              session.onError?.(err);
+              session.broadcast({ type: 'error', error: err.message });
             }
-            try {
-              const j = JSON.parse(data);
-              const raw = String(j.text ?? j.transcript ?? '').trim();
-              const text = stripLonePunctuation(raw);
-              resolve({
-                ok: true,
-                text,
-                language: j.language || lang,
-                raw,
-                droppedPunctuation: text === '' && raw !== '',
-              });
-            } catch (e) {
-              const text = stripLonePunctuation(data.trim());
-              resolve({
-                ok: true,
-                text,
-                language: lang,
-                raw: data.trim(),
-                droppedPunctuation: text === '' && data.trim() !== '',
-              });
+            return;
+          }
+          let buf = '';
+          res.on('data', (chunk) => {
+            if (session.abandoned) return;
+            buf += chunk.toString('utf-8');
+            let idx;
+            while ((idx = buf.indexOf('\n\n')) !== -1) {
+              const rawEvent = buf.slice(0, idx);
+              buf = buf.slice(idx + 2);
+              for (const line of rawEvent.split('\n')) {
+                if (!line.startsWith('data: ')) continue;
+                const payload = line.slice(6).trim();
+                if (payload === '[DONE]') continue;
+                try {
+                  const ev = JSON.parse(payload);
+                  if (ev.type === 'transcript.text.delta' && typeof ev.delta === 'string') {
+                    session.subStreamText += ev.delta;
+                    const fullText = session.text;
+                    session.onDelta?.(ev.delta, fullText);
+                    session.broadcast({ type: 'delta', delta: ev.delta, text: fullText });
+                  } else if (ev.type === 'transcript.text.done') {
+                    if (!subStreamDone) {
+                      subStreamDone = true;
+                      handleSubStreamDone(typeof ev.text === 'string' ? ev.text : session.subStreamText);
+                    }
+                  }
+                } catch {}
+              }
+            }
+          });
+          res.on('error', (err) => {
+            if (!session.abandoned && session.state !== 'done') {
+              session.state = 'error';
+              session.onError?.(err);
+              session.broadcast({ type: 'error', error: err.message });
+            }
+          });
+          res.on('end', () => {
+            if (session.abandoned) return;
+            if (!subStreamDone && (session.state === 'rotating' || session.state === 'finishing')) {
+              subStreamDone = true;
+              handleSubStreamDone(session.subStreamText);
             }
           });
         }
       );
-      req.on('error', (e) => resolve({ ok: false, error: 'upstream_unavailable', detail: e.message }));
-      req.on('timeout', () => {
-        req.destroy();
-        resolve({ ok: false, error: 'upstream_timeout' });
+
+      session.activeReq = req;
+
+      req.on('error', (err) => {
+        if (!session.abandoned && session.state !== 'done') {
+          session.state = 'error';
+          session.onError?.(err);
+          session.broadcast({ type: 'error', error: err.message });
+        }
       });
-      req.write(body);
-      req.end();
+    };
+
+    const rotateSubStream = () => {
+      if (session.state !== 'open' || !session.activeReq) return;
+      session.state = 'rotating';
+      const req = session.activeReq;
+      try {
+        req.write(Buffer.alloc(Math.floor(16000 * 0.36) * 2));
+        req.end();
+      } catch {}
+
+      session.rotateTimer = setTimeout(() => {
+        if (session.state === 'rotating') {
+          console.warn('[AsrService] ⚠️ sub-stream rotation timeout, forcing next session');
+          try { req.destroy(); } catch {}
+          handleSubStreamDone(session.subStreamText);
+        }
+      }, 4000);
+      session.rotateTimer.unref?.();
+    };
+
+    session.write = (pcm) => {
+      if (session.abandoned || session.state === 'done' || session.state === 'error') return false;
+      if (session.state === 'rotating' || session.state === 'finishing') {
+        session.pendingChunks.push(pcm);
+        return true;
+      }
+
+      if (!session.activeReq) {
+        openSubStream();
+      }
+
+      try {
+        session.activeReq.write(pcm);
+        session.subStreamBytes += pcm.length;
+
+        // 核心防积压机制：
+        // 1. 单条 live 流控制在 <= 9.6s（307,200 字节 = 10 个 960ms 分块）
+        // 2. 若流持续 >= 5.0s（160,000 字节）且当前分块为停顿静音帧，顺势在停顿处轮转
+        const isSilent = isChunkSilent(pcm);
+        if (session.subStreamBytes >= 307200 || (session.subStreamBytes >= 160000 && isSilent)) {
+          rotateSubStream();
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    session.finish = () => {
+      if (session.finished || session.state === 'done') return;
+      session.finished = true;
+      if (session.state === 'rotating') {
+        session.state = 'finishing';
+        return;
+      }
+      session.state = 'finishing';
+      if (session.activeReq) {
+        try {
+          session.activeReq.write(Buffer.alloc(Math.floor(16000 * 0.36) * 2));
+          session.activeReq.end();
+        } catch {}
+      } else {
+        session.state = 'done';
+        const fullText = session.text;
+        session.onDone?.(fullText, null);
+        session.broadcast({ type: 'done', text: fullText });
+      }
+    };
+
+    session.abort = () => {
+      if (session.state === 'done') return;
+      session.abandoned = true;
+      session.state = 'error';
+      if (session.rotateTimer) {
+        clearTimeout(session.rotateTimer);
+        session.rotateTimer = null;
+      }
+      session.pendingChunks = [];
+      try {
+        session.activeReq?.destroy();
+      } catch {}
+    };
+
+    return session;
+  }
+
+  transcribe(audio, language) {
+    const rawLang = language || this.config.language || 'Auto';
+    const lang = String(rawLang).toLowerCase() === 'auto' ? 'Auto' : rawLang;
+    const pcm = extractPcm(audio);
+
+    return new Promise((resolve) => {
+      let resolved = false;
+      const doneCallback = (rawText) => {
+        if (resolved) return;
+        resolved = true;
+        const text = stripLonePunctuation(String(rawText || '').trim());
+        resolve({
+          ok: true,
+          text,
+          language: lang,
+          raw: String(rawText || '').trim(),
+          droppedPunctuation: text === '' && String(rawText || '').trim() !== '',
+        });
+      };
+
+      const errorCallback = (err) => {
+        if (resolved) return;
+        resolved = true;
+        resolve({ ok: false, error: err.message || 'transcribe_failed' });
+      };
+
+      const session = this.createLiveSession({
+        language: lang,
+        onDone: (finalText) => doneCallback(finalText),
+        onError: (err) => errorCallback(err),
+      });
+
+      // 以 960ms 分块 (30720 字节) 喂入流式引擎，支持长音频自动轮转，彻底杜绝 GPU 队列积压与注意力跳字
+      const CHUNK_SIZE = 30720;
+      for (let offset = 0; offset < pcm.length; offset += CHUNK_SIZE) {
+        session.write(pcm.slice(offset, offset + CHUNK_SIZE));
+      }
+      session.finish();
+
+      setTimeout(() => {
+        if (!resolved) {
+          session.abort();
+          errorCallback(new Error('upstream_timeout'));
+        }
+      }, 60000).unref?.();
     });
   }
 
@@ -844,6 +1079,159 @@ class AsrService {
         return;
       }
 
+      // 流式会话管理接口
+      if (pathname === '/live/start' && req.method === 'POST') {
+        const startRes = await this.ensureRunning();
+        if (!startRes.ok) {
+          sendJson(503, { ok: false, error: 'service_not_ready', detail: startRes.detail || startRes.error });
+          return;
+        }
+        const lang = urlObj.searchParams.get('language') || this.config.language || 'Auto';
+        const sid = 'live_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+        this.inFlight++;
+        const session = this.createLiveSession({
+          language: lang,
+          onDone: () => {
+            this.touch();
+          },
+        });
+        session.createdAt = Date.now();
+        this.liveSessions.set(sid, session);
+        this.touch();
+        sendJson(200, { ok: true, sessionId: sid });
+        return;
+      }
+
+      if (pathname === '/live/events' && req.method === 'GET') {
+        const sid = urlObj.searchParams.get('sessionId');
+        const session = this.liveSessions.get(sid);
+        if (!session) {
+          sendJson(404, { ok: false, error: 'session_not_found' });
+          return;
+        }
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'Access-Control-Allow-Origin': '*',
+        });
+        if (session.text) {
+          res.write(`data: ${JSON.stringify({ type: 'delta', delta: '', text: session.text })}\n\n`);
+        }
+        if (session.state === 'done') {
+          res.write(`data: ${JSON.stringify({ type: 'done', text: session.text })}\n\n`);
+          res.end();
+          return;
+        }
+        session.sseClients.add(res);
+        req.on('close', () => {
+          session.sseClients.delete(res);
+        });
+        return;
+      }
+
+      if (pathname === '/live/chunk' && req.method === 'POST') {
+        const sid = urlObj.searchParams.get('sessionId');
+        const session = this.liveSessions.get(sid);
+        if (!session) {
+          sendJson(404, { ok: false, error: 'session_not_found' });
+          return;
+        }
+        const chunk = await readRawBody();
+        session.write(chunk);
+        this.touch();
+        sendJson(200, { ok: true, received: chunk.length });
+        return;
+      }
+
+      if (pathname === '/live/finish' && req.method === 'POST') {
+        const sid = urlObj.searchParams.get('sessionId');
+        const session = this.liveSessions.get(sid);
+        if (!session) {
+          sendJson(404, { ok: false, error: 'session_not_found' });
+          return;
+        }
+        this.touch();
+
+        if (session.state === 'done') {
+          this.inFlight = Math.max(0, this.inFlight - 1);
+          this.liveSessions.delete(sid);
+          const raw = (session.text || '').trim();
+          const text = stripLonePunctuation(raw);
+          sendJson(200, {
+            ok: true,
+            text,
+            raw,
+            droppedPunctuation: text === '' && raw !== '',
+          });
+          return;
+        }
+
+        let finished = false;
+        const timer = setTimeout(() => {
+          if (!finished) {
+            finished = true;
+            this.inFlight = Math.max(0, this.inFlight - 1);
+            this.liveSessions.delete(sid);
+            const raw = (session.text || '').trim();
+            const text = stripLonePunctuation(raw);
+            sendJson(200, {
+              ok: true,
+              text,
+              raw,
+              droppedPunctuation: text === '' && raw !== '',
+            });
+          }
+        }, 60000);
+        timer.unref?.();
+
+        const origDone = session.onDone;
+        session.onDone = (finalText, timing) => {
+          origDone?.(finalText, timing);
+          if (!finished) {
+            finished = true;
+            clearTimeout(timer);
+            this.inFlight = Math.max(0, this.inFlight - 1);
+            this.liveSessions.delete(sid);
+            const raw = (typeof finalText === 'string' ? finalText : session.text).trim();
+            const text = stripLonePunctuation(raw);
+            sendJson(200, {
+              ok: true,
+              text,
+              raw,
+              droppedPunctuation: text === '' && raw !== '',
+            });
+          }
+        };
+
+        const origError = session.onError;
+        session.onError = (err) => {
+          origError?.(err);
+          if (!finished) {
+            finished = true;
+            clearTimeout(timer);
+            this.inFlight = Math.max(0, this.inFlight - 1);
+            this.liveSessions.delete(sid);
+            sendJson(502, { ok: false, error: err.message || 'live_error' });
+          }
+        };
+
+        session.finish();
+        return;
+      }
+
+      if (pathname === '/live/abort' && req.method === 'POST') {
+        const sid = urlObj.searchParams.get('sessionId');
+        const session = this.liveSessions.get(sid);
+        if (session) {
+          session.abort();
+          this.liveSessions.delete(sid);
+          this.inFlight = Math.max(0, this.inFlight - 1);
+        }
+        sendJson(200, { ok: true });
+        return;
+      }
+
       // 语音转写：现场按需拉起进程（若在待命中），转写完成后刷新闲置计时
       if (pathname === '/transcribe' && req.method === 'POST') {
         const audio = await readRawBody();
@@ -881,12 +1269,57 @@ class AsrService {
 
 // ----------------------------- 工具函数 -----------------------------
 
+function extractFinalExtra(streamText, finalText) {
+  const final = String(finalText || '');
+  if (!final) return '';
+  if (final.startsWith(streamText)) {
+    return final.slice(streamText.length);
+  }
+  let common = 0;
+  const maxLen = Math.min(streamText.length, final.length);
+  while (common < maxLen && streamText[common] === final[common]) {
+    common += 1;
+  }
+  if (common >= streamText.length - 3) {
+    return final.slice(streamText.length);
+  }
+  return '';
+}
+
+function isChunkSilent(pcmBuffer, threshold = 180) {
+  const sampleCount = pcmBuffer.length >> 1;
+  if (sampleCount === 0) return true;
+  const step = sampleCount > 512 ? 4 : 1;
+  for (let i = 0; i < sampleCount; i += step) {
+    const val = pcmBuffer.readInt16LE(i << 1);
+    if (val >= threshold || val <= -threshold) return false;
+  }
+  return true;
+}
+
 const PUNCTUATION_ONLY_RE =
   /^[\s,，.．。、!！?？;；:：…‥·•—–\-_~～'"“”‘’`()（）\[\]【】{}｛｝<>＜＞《》〈〉«»\/\\|｜+＋*＊=＝#＃@＆&^%％$＄￥€£]+$/u;
 
 function stripLonePunctuation(text) {
   if (!text) return '';
   return PUNCTUATION_ONLY_RE.test(text) ? '' : text;
+}
+
+function extractPcm(buffer) {
+  if (!buffer || buffer.length < 44) return buffer;
+  if (buffer.slice(0, 4).toString('ascii') === 'RIFF' && buffer.slice(8, 12).toString('ascii') === 'WAVE') {
+    let offset = 12;
+    while (offset + 8 <= buffer.length) {
+      const chunkId = buffer.slice(offset, offset + 4).toString('ascii');
+      const chunkSize = buffer.readUInt32LE(offset + 4);
+      if (chunkId === 'data') {
+        return buffer.slice(offset + 8, offset + 8 + chunkSize);
+      }
+      offset += 8 + chunkSize;
+    }
+    return buffer.slice(44);
+  }
+  return buffer;
 }
 
 export const asrService = new AsrService();

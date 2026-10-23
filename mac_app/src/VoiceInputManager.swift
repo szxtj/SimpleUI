@@ -74,6 +74,12 @@ class VoiceInputManager {
     private var lastLevelEmit = Date.distantPast
     private var isTapInstalled = false
 
+    // 流式 ASR 会话与实时状态
+    private var activeLiveSession: LiveAsrSession?
+    private var currentLiveText: String = ""
+    private var currentLevel: Float = 0
+    private var lastStreamedSampleIndex: Int = 0
+
     /// 落点规则（用户 2026-09-29 定，两条，不再探测焦点是否为输入框）：
     ///   焦点在本 App  → 前端桥直接插入光标处，**不动剪贴板**；
     ///   焦点在其它 App → 剪贴板 + 合成 ⌘V 粘贴。
@@ -131,6 +137,8 @@ class VoiceInputManager {
         cancelHoldTrigger()
         cancelTrailingStop()
         removeGlobalMonitors()
+        activeLiveSession?.abort()
+        activeLiveSession = nil
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
         }
@@ -320,7 +328,21 @@ class VoiceInputManager {
         // 确认长按触发语音输入时，在后台立即触发 ASR 模型预热（边录音边加载模型，零额外转写延迟）
         warmupService()
 
+        // 开启流式 ASR 会话（实时推词 + 零注意力窗口截断）
+        currentLiveText = ""
+        currentLevel = 0
+        lastStreamedSampleIndex = 0
+        let live = LiveAsrSession(baseURL: ProcessManager.baseURLString)
+        live.onTextDelta = { [weak self] text in
+            guard let self = self, self.isCapturing else { return }
+            self.currentLiveText = text
+            self.emit(.recording, self.currentLevel, text)
+        }
+        activeLiveSession = live
+
         guard startRecording() else {
+            live.abort()
+            activeLiveSession = nil
             emit(.error, 0, "无法访问麦克风")
             return
         }
@@ -337,42 +359,90 @@ class VoiceInputManager {
 
         let duration = recordingStartedAt.map { Date().timeIntervalSince($0) } ?? 0
         recordingStartedAt = nil
+
+        // 停止录音前，将剩余未送入流式分块的尾部音频取出推送
+        var tailChunk: Data?
+        samplesLock.lock()
+        let totalCount = pcmSampleCount
+        if totalCount > lastStreamedSampleIndex {
+            let remCount = totalCount - lastStreamedSampleIndex
+            pcmBuffer.withUnsafeBufferPointer { buf in
+                if let base = buf.baseAddress {
+                    tailChunk = Data(bytes: base.advanced(by: lastStreamedSampleIndex), count: remCount * MemoryLayout<Int16>.size)
+                }
+            }
+            lastStreamedSampleIndex = totalCount
+        }
+        samplesLock.unlock()
+
+        if let tail = tailChunk {
+            activeLiveSession?.sendChunk(tail)
+        }
+
         let wav = stopRecording()
 
         guard duration >= minRecordingDuration, let data = wav, data.count > 1024 else {
             // 误触 / 太短：静默收场
+            activeLiveSession?.abort()
+            activeLiveSession = nil
             emit(.idle, 0, nil)
             return
         }
 
-        emit(.transcribing, 0, nil)
-        transcribe(wav: data) { [weak self] result in
+        emit(.transcribing, 0, currentLiveText.isEmpty ? nil : currentLiveText)
+
+        let liveSession = activeLiveSession
+        activeLiveSession = nil
+
+        // 优先使用流式识别收尾（极速响应且长音频无漏字）；若流式异常则回退到整段转写
+        if let live = liveSession {
+            live.finish { [weak self] result in
+                guard let self = self else { return }
+                switch result {
+                case .success(let (text, dropped)):
+                    self.handleTranscriptionSuccess(text: text, droppedPunctuation: dropped)
+                case .failure(let err):
+                    NSLog("[VoiceInput] ⚠ 流式会话完成失败，回退到离线转写: \(err.localizedDescription)")
+                    self.fallbackTranscribe(wav: data)
+                }
+            }
+        } else {
+            fallbackTranscribe(wav: data)
+        }
+    }
+
+    private func handleTranscriptionSuccess(text: String, droppedPunctuation: Bool) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            if droppedPunctuation {
+                // 模型对静音吐了个孤立标点（「。」「，」）→ 按用户要求直接当空，什么都不做
+                emit(.idle, 0, nil)
+            } else {
+                emit(.error, 0, "未识别到语音")
+            }
+            return
+        }
+        if VoiceInputManager.isSelfAppFocused() {
+            // 本 App 自身的输入框在 WKWebView 内，AX 判定为 AXWebArea 会被误判非文本，
+            // 因此走前端桥把文本直接插入光标处。按用户要求：**不写剪贴板**（不污染用户的剪贴板）。
+            NotificationCenter.default.post(name: VoiceInputManager.insertTextNotification, object: trimmed)
+            emit(.done, 0, trimmed, "insert")
+        } else {
+            // 其它 App：剪贴板 + 合成 ⌘V 粘贴（与系统听写、Superwhisper 等商业 App 同做法）。
+            // 不做任何焦点判定 —— 判定在 Electron / Web 类 App 里必然失败，加了就等于不可用。
+            // ⌘V 落在非文本处通常无副作用，且剪贴板留着文本可随时手动粘贴。
+            pasteToFocusedApp(trimmed)
+            emit(.done, 0, trimmed, "paste")
+        }
+    }
+
+    private func fallbackTranscribe(wav: Data) {
+        transcribe(wav: wav) { [weak self] result in
             guard let self = self else { return }
             DispatchQueue.main.async {
                 switch result {
                 case .success(let transcript):
-                    let trimmed = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !trimmed.isEmpty else {
-                        if transcript.droppedPunctuation {
-                            // 模型对静音吐了个孤立标点（「。」「，」）→ 按用户要求直接当空，什么都不做
-                            self.emit(.idle, 0, nil)
-                        } else {
-                            self.emit(.error, 0, "未识别到语音")
-                        }
-                        return
-                    }
-                    if VoiceInputManager.isSelfAppFocused() {
-                        // 本 App 自身的输入框在 WKWebView 内，AX 判定为 AXWebArea 会被误判非文本，
-                        // 因此走前端桥把文本直接插入光标处。按用户要求：**不写剪贴板**（不污染用户的剪贴板）。
-                        NotificationCenter.default.post(name: VoiceInputManager.insertTextNotification, object: trimmed)
-                        self.emit(.done, 0, trimmed, "insert")
-                    } else {
-                        // 其它 App：剪贴板 + 合成 ⌘V 粘贴（与系统听写、Superwhisper 等商业 App 同做法）。
-                        // 不做任何焦点判定 —— 判定在 Electron / Web 类 App 里必然失败，加了就等于不可用。
-                        // ⌘V 落在非文本处通常无副作用，且剪贴板留着文本可随时手动粘贴。
-                        self.pasteToFocusedApp(trimmed)
-                        self.emit(.done, 0, trimmed, "paste")
-                    }
+                    self.handleTranscriptionSuccess(text: transcript.text, droppedPunctuation: transcript.droppedPunctuation)
                 case .failure(let err):
                     self.emit(.error, 0, err.localizedDescription)
                 }
@@ -464,6 +534,7 @@ class VoiceInputManager {
         var sumSquares: Double = 0
 
         // 零堆内存重新分配：直接复制进预分配的 100s 线性连续缓冲中，绝不阻塞 CoreAudio IO 实时线程
+        var chunkToStream: Data?
         samplesLock.lock()
         let available = VoiceInputManager.maxSampleCapacity - pcmSampleCount
         let toCopy = min(n, available)
@@ -476,7 +547,24 @@ class VoiceInputManager {
             }
             pcmSampleCount += toCopy
         }
+
+        // 满 960ms（15360 个采样点 = 30720 字节）时切出一个分块送入流式识别队列（对齐字幕服务参数，保持 GPU 恒定低负载与秒级出字）
+        let unstreamed = pcmSampleCount - lastStreamedSampleIndex
+        if unstreamed >= 15360 {
+            let chunkCount = 15360
+            let start = lastStreamedSampleIndex
+            lastStreamedSampleIndex += chunkCount
+            pcmBuffer.withUnsafeBufferPointer { buf in
+                if let base = buf.baseAddress {
+                    chunkToStream = Data(bytes: base.advanced(by: start), count: chunkCount * MemoryLayout<Int16>.size)
+                }
+            }
+        }
         samplesLock.unlock()
+
+        if let chunk = chunkToStream {
+            activeLiveSession?.sendChunk(chunk)
+        }
 
         for i in 0..<toCopy {
             let s = ptr[i]
@@ -490,7 +578,8 @@ class VoiceInputManager {
             lastLevelEmit = now
             let rms = sqrt(sumSquares / Double(max(1, toCopy)))
             let level = Float(min(1.0, rms * 4.0))
-            emit(.recording, level, nil)
+            currentLevel = level
+            emit(.recording, level, currentLiveText.isEmpty ? nil : currentLiveText)
         }
     }
 
@@ -500,6 +589,7 @@ class VoiceInputManager {
         let count = pcmSampleCount
         let samples = count > 0 ? Array(pcmBuffer[0..<count]) : []
         pcmSampleCount = 0
+        lastStreamedSampleIndex = 0
         samplesLock.unlock()
         guard !samples.isEmpty else { return nil }
         return VoiceInputManager.makeWAV(samples: samples, sampleRate: 16000)
@@ -717,6 +807,250 @@ struct VoiceInputError: LocalizedError {
 
 extension Notification.Name {
     static let simpleUIVoicePermissionsChanged = Notification.Name("SimpleUIVoicePermissionsChanged")
+}
+
+/// 单次语音输入的流式 ASR 会话管理器（双向流式，边说边识别）
+private class LiveAsrSession: NSObject, URLSessionDataDelegate {
+    private enum State {
+        case connecting
+        case active
+        case finishing
+        case done
+        case aborted
+    }
+
+    private let baseURL: String
+    private let language: String
+    private var state: State = .connecting
+    private var sessionId: String?
+    private var pendingChunks: [Data] = []
+    private var sseTask: URLSessionDataTask?
+    private var sseBuffer = Data()
+    private var sseSession: URLSession?
+    private let queue = DispatchQueue(label: "com.simpleui.asr.live", qos: .userInitiated)
+    private var finishCompletion: ((Result<(String, Bool), Error>) -> Void)?
+    private var hasResolvedFinish = false
+
+    var onTextDelta: ((String) -> Void)?
+    var onDone: ((String, Bool) -> Void)?
+
+    init(baseURL: String, language: String = "Auto") {
+        self.baseURL = baseURL
+        self.language = language
+        super.init()
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 60
+        self.sseSession = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        startSession()
+    }
+
+    private func startSession() {
+        guard let url = URL(string: "\(baseURL)/api/asr/live/start?language=\(language)") else {
+            failSession(VoiceInputError("无效的 ASR 服务地址"))
+            return
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 10
+        URLSession.shared.dataTask(with: req) { [weak self] data, res, err in
+            guard let self = self else { return }
+            self.queue.async {
+                if let err = err {
+                    self.failSession(err)
+                    return
+                }
+                guard let data = data,
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      (obj["ok"] as? Bool) == true,
+                      let sid = obj["sessionId"] as? String else {
+                    self.failSession(VoiceInputError("启动流式会话失败"))
+                    return
+                }
+                self.sessionId = sid
+                if self.state == .connecting {
+                    self.state = .active
+                    self.connectSSE()
+                    self.flushPendingChunks()
+                } else if self.state == .finishing {
+                    self.connectSSE()
+                    self.flushPendingChunks()
+                    self.executeFinishRequest()
+                } else if self.state == .aborted {
+                    self.executeAbortRequest(sid: sid)
+                }
+            }
+        }.resume()
+    }
+
+    private func connectSSE() {
+        guard let sid = sessionId,
+              let url = URL(string: "\(baseURL)/api/asr/live/events?sessionId=\(sid)") else { return }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 120
+        sseTask = sseSession?.dataTask(with: req)
+        sseTask?.resume()
+    }
+
+    private func flushPendingChunks() {
+        guard let sid = sessionId else { return }
+        for chunk in pendingChunks {
+            sendChunkInternal(chunk, sid: sid)
+        }
+        pendingChunks.removeAll()
+    }
+
+    func sendChunk(_ pcmData: Data) {
+        guard !pcmData.isEmpty else { return }
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            switch self.state {
+            case .connecting:
+                self.pendingChunks.append(pcmData)
+            case .active:
+                if let sid = self.sessionId {
+                    self.sendChunkInternal(pcmData, sid: sid)
+                }
+            default:
+                break
+            }
+        }
+    }
+
+    private func sendChunkInternal(_ data: Data, sid: String) {
+        guard let url = URL(string: "\(baseURL)/api/asr/live/chunk?sessionId=\(sid)") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        req.httpBody = data
+        req.timeoutInterval = 10
+        URLSession.shared.dataTask(with: req).resume()
+    }
+
+    func finish(completion: @escaping (Result<(String, Bool), Error>) -> Void) {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            self.finishCompletion = completion
+            if self.state == .connecting {
+                self.state = .finishing
+            } else if self.state == .active {
+                self.state = .finishing
+                self.executeFinishRequest()
+            }
+        }
+    }
+
+    private func executeFinishRequest() {
+        guard let sid = sessionId else { return }
+        guard let url = URL(string: "\(baseURL)/api/asr/live/finish?sessionId=\(sid)") else {
+            resolveFinish(.failure(VoiceInputError("无效的 finish URL")))
+            return
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 60
+        URLSession.shared.dataTask(with: req) { [weak self] data, _, err in
+            guard let self = self else { return }
+            self.queue.async {
+                if let err = err {
+                    self.resolveFinish(.failure(err))
+                    return
+                }
+                guard let data = data,
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    self.resolveFinish(.failure(VoiceInputError("识别结果解析失败")))
+                    return
+                }
+                if (obj["ok"] as? Bool) == true {
+                    let text = (obj["text"] as? String) ?? ""
+                    let dropped = (obj["droppedPunctuation"] as? Bool) ?? false
+                    self.resolveFinish(.success((text, dropped)))
+                } else {
+                    let errCode = (obj["error"] as? String) ?? "unknown"
+                    self.resolveFinish(.failure(VoiceInputError(errCode)))
+                }
+            }
+        }.resume()
+    }
+
+    private func resolveFinish(_ result: Result<(String, Bool), Error>) {
+        guard !hasResolvedFinish else { return }
+        hasResolvedFinish = true
+        state = .done
+        sseTask?.cancel()
+        sseSession?.invalidateAndCancel()
+        let cb = finishCompletion
+        finishCompletion = nil
+        DispatchQueue.main.async {
+            cb?(result)
+        }
+    }
+
+    func abort() {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            self.state = .aborted
+            self.sseTask?.cancel()
+            self.sseSession?.invalidateAndCancel()
+            self.pendingChunks.removeAll()
+            if let sid = self.sessionId {
+                self.executeAbortRequest(sid: sid)
+            }
+        }
+    }
+
+    private func executeAbortRequest(sid: String) {
+        guard let url = URL(string: "\(baseURL)/api/asr/live/abort?sessionId=\(sid)") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        URLSession.shared.dataTask(with: req).resume()
+    }
+
+    private func failSession(_ err: Error) {
+        state = .aborted
+        sseTask?.cancel()
+        sseSession?.invalidateAndCancel()
+        resolveFinish(.failure(err))
+    }
+
+    // URLSessionDataDelegate (SSE 事件流解析)
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            self.sseBuffer.append(data)
+            while let range = self.sseBuffer.range(of: Data("\n\n".utf8)) {
+                let eventData = self.sseBuffer.subdata(in: 0..<range.lowerBound)
+                self.sseBuffer.removeSubrange(0..<range.upperBound)
+                if let eventString = String(data: eventData, encoding: .utf8) {
+                    self.parseSSEBlock(eventString)
+                }
+            }
+        }
+    }
+
+    private func parseSSEBlock(_ block: String) {
+        for line in block.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("data:") {
+                let jsonPart = trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                guard let data = jsonPart.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                let type = obj["type"] as? String
+                if type == "delta" || type == "transcript.text.delta" {
+                    if let text = obj["text"] as? String {
+                        DispatchQueue.main.async { [weak self] in
+                            self?.onTextDelta?(text)
+                        }
+                    }
+                } else if type == "done" || type == "transcript.text.done" {
+                    let text = (obj["text"] as? String) ?? ""
+                    let dropped = (obj["droppedPunctuation"] as? Bool) ?? false
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onDone?(text, dropped)
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// CGEventTap 的 C 回调（必须是无捕获的顶层函数）

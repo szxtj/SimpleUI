@@ -15,8 +15,8 @@ class VoiceOverlayPanel: NSPanel {
 /// `http://127.0.0.1:31235/#/voice`，由 React 渲染胶囊本体（绿色渐变 + 麦克风 +
 /// 电平点阵）。Swift 侧只负责定位、显隐与状态下发。
 class VoiceOverlayPanelController: NSWindowController, WKScriptMessageHandler, WKNavigationDelegate {
-    /// 面板尺寸（含阴影留白与下方文本卡片空间）；胶囊本体居中偏上绘制
-    private static let panelWidth: CGFloat = 340
+    /// 面板尺寸（含阴影留白与下方文本卡片空间）；胶囊本体居中偏上绘制；宽度加宽以容纳 540px 的实时文本预览卡片
+    private static let panelWidth: CGFloat = 580
     private static let panelHeight: CGFloat = 110
     /// 距屏幕可视区底边的高度（紧贴 Dock 上方一点点）
     private static let bottomInset: CGFloat = 12

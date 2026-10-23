@@ -123,14 +123,22 @@ export const VoiceOverlay: React.FC = () => {
   // 落点只有两种：本 App 内插入（insert）/ 其它 App 粘贴（paste）
   const actionLabel = action === 'paste' ? t('voicePasted') : t('voiceInserted');
 
+  // 录音中实时预览：如果文本超出单行容量（约 50 字），前置省略号并展示最新的后半句，让用户实时看到最新的识别字词
+  const livePreviewText =
+    state === 'recording' && text
+      ? text.length > 50
+        ? `…${text.slice(-48)}`
+        : text
+      : undefined;
+
   const caption =
     state === 'error'
       ? text
       : state === 'done' && text
       ? `${actionLabel}：${text}`
       : state === 'transcribing'
-      ? t('voiceTranscribing')
-      : undefined;
+      ? (text ? `${t('voiceTranscribing')} ${text.length > 45 ? `…${text.slice(-42)}` : text}` : t('voiceTranscribing'))
+      : livePreviewText;
 
   return (
     <div className="relative h-screen w-screen bg-transparent flex flex-col items-center pt-2.5 overflow-visible select-none">
@@ -149,9 +157,9 @@ export const VoiceOverlay: React.FC = () => {
         </div>
         <div className="flex items-center gap-[4px]">{renderDots(4)}</div>
 
-        {/* 结果小框直接在球下方绝对定位浮现，绝对不抬高或位移状态球 */}
+        {/* 结果小框直接在球下方绝对定位浮现，宽度拉宽至 540px，避免过早截断出现省略号 */}
         {caption && (
-          <div className="absolute top-[calc(100%+6px)] left-1/2 -translate-x-1/2 max-w-[300px] whitespace-nowrap truncate rounded-lg px-2.5 py-1 text-[10.5px] leading-snug bg-white/95 text-zinc-800 border border-black/10 dark:bg-[#2a2c33] dark:text-zinc-50 dark:border-white/15 shadow-md shadow-black/15 dark:shadow-black/35 backdrop-blur z-10 pointer-events-none">
+          <div className="absolute top-[calc(100%+6px)] left-1/2 -translate-x-1/2 max-w-[540px] whitespace-nowrap overflow-hidden text-ellipsis rounded-lg px-3 py-1 text-[11px] leading-snug bg-white/95 text-zinc-800 border border-black/10 dark:bg-[#2a2c33] dark:text-zinc-50 dark:border-white/15 shadow-md shadow-black/15 dark:shadow-black/35 backdrop-blur z-10 pointer-events-none transition-all duration-150">
             {caption}
           </div>
         )}
