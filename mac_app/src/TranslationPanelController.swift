@@ -94,7 +94,19 @@ public final class TranslationPanelController: NSObject {
         return screens.first(where: { NSPointInRect(mouseLocation, $0.frame) }) ?? NSScreen.main ?? screens[0]
     }
 
+    /// 触发快速翻译模型后台静默预热（fire-and-forget，打开窗口时立即拉起模型，零额外翻译等待）
+    private func warmupService() {
+        guard let url = URL(string: "\(ProcessManager.baseURLString)/api/translate/warmup") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 10
+        URLSession.shared.dataTask(with: req).resume()
+    }
+
     private func performShow() {
+        // 调出翻译窗口时，在后台立即触发快速翻译模型按需预热
+        warmupService()
+
         let p = panel ?? makePanel()
         self.panel = p
 

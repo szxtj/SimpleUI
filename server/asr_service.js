@@ -157,6 +157,7 @@ class AsrService {
     this.childLogTail = [];
     this.idleTimer = null;
     this.lastUsedAt = 0;
+    this.inFlight = 0;
     this.startingPromise = null;
   }
 
@@ -246,7 +247,7 @@ class AsrService {
       backend: this.config.backend || 'metal',
       device: 0,
       threads: this.config.threads || 4,
-      lazy_load: true,
+      lazy_load: false,
       max_loaded_models: 1,
       idle_unload_ms: 0,
       min_free_memory_mb: 0,
@@ -283,6 +284,10 @@ class AsrService {
       this.idleTimer = null;
       const pid = readPid();
       if (!isPidAlive(pid)) return;
+      if (this.inFlight > 0) {
+        this.touch();
+        return;
+      }
       const idleMs = Date.now() - (this.lastUsedAt || 0);
       if (idleMs < minutes * 60_000) {
         this.touch();
@@ -577,6 +582,8 @@ class AsrService {
     if (restartIfRunning && wasRunning) {
       await this.restartService();
       restarted = true;
+    } else if (wasRunning) {
+      this.touch();
     }
     return { success: true, restarted, config: this.publicConfig() };
   }
@@ -850,9 +857,14 @@ class AsrService {
           return;
         }
         const lang = urlObj.searchParams.get('language') || undefined;
-        const result = await this.transcribe(audio, lang);
-        this.touch();
-        sendJson(result.ok ? 200 : 502, result);
+        this.inFlight++;
+        try {
+          const result = await this.transcribe(audio, lang);
+          this.touch();
+          sendJson(result.ok ? 200 : 502, result);
+        } finally {
+          this.inFlight = Math.max(0, this.inFlight - 1);
+        }
         return;
       }
 

@@ -206,10 +206,22 @@ public class OCRManager: NSObject {
 
     // MARK: - 截图与识别主入口
 
+    /// 触发 OCR 模型后台静默按需预热（fire-and-forget，边框选边加载模型，零额外识别延迟）
+    private func warmupService() {
+        guard let url = URL(string: "\(ProcessManager.baseURLString)/api/ocr/warmup") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 10
+        URLSession.shared.dataTask(with: req).resume()
+    }
+
     /// 触发 ⌘⇧2 截屏识别主入口
     public func startCapture() {
         guard !isCapturing else { return }
         isCapturing = true
+
+        // 用户按下快捷键进入框选截屏时，立即在后台预热 OCR 模型
+        warmupService()
 
         let tempPath = "/tmp/simpleui_ocr_\(UUID().uuidString).png"
 

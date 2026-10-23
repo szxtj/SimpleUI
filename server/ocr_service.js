@@ -131,6 +131,7 @@ class OcrService {
     this.starting = null;
     this.config = { ...DEFAULT_CONFIG };
     this.lastUsedAt = 0;
+    this.inFlight = 0;
     this.idleTimer = null;
     this.watchdog = null;
     this.loadError = null;
@@ -849,6 +850,10 @@ class OcrService {
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
       if (!this.isRunning()) return;
+      if (this.inFlight > 0) {
+        this.touch();
+        return;
+      }
       const idleMs = Date.now() - this.lastUsedAt;
       if (idleMs < minutes * 60_000) {
         this.touch();
@@ -921,50 +926,57 @@ class OcrService {
       max_pixels: maxPixels,
     });
 
-    return new Promise((resolve) => {
-      const req = http.request(
-        {
-          host: '127.0.0.1',
-          port: PORT,
-          path: '/recognize',
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(payload),
+    this.inFlight++;
+    try {
+      const result = await new Promise((resolve) => {
+        const req = http.request(
+          {
+            host: '127.0.0.1',
+            port: PORT,
+            path: '/recognize',
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(payload),
+            },
+            timeout: 60000,
           },
-          timeout: 60000,
-        },
-        (res) => {
-          let body = '';
-          res.on('data', (c) => (body += c));
-          res.on('end', () => {
-            try {
-              const parsed = JSON.parse(body);
-              if (res.statusCode === 200 && parsed.ok) {
-                resolve({
-                  ok: true,
-                  text: parsed.text,
-                  durationMs: parsed.duration_ms,
-                  task: parsed.task,
-                });
-              } else {
-                resolve({ ok: false, error: parsed.error || `HTTP_${res.statusCode}` });
+          (res) => {
+            let body = '';
+            res.on('data', (c) => (body += c));
+            res.on('end', () => {
+              try {
+                const parsed = JSON.parse(body);
+                if (res.statusCode === 200 && parsed.ok) {
+                  resolve({
+                    ok: true,
+                    text: parsed.text,
+                    durationMs: parsed.duration_ms,
+                    task: parsed.task,
+                  });
+                } else {
+                  resolve({ ok: false, error: parsed.error || `HTTP_${res.statusCode}` });
+                }
+              } catch (e) {
+                resolve({ ok: false, error: 'INVALID_JSON_RESPONSE', raw: body });
               }
-            } catch (e) {
-              resolve({ ok: false, error: 'INVALID_JSON_RESPONSE', raw: body });
-            }
-          });
-        }
-      );
+            });
+          }
+        );
 
-      req.on('error', (e) => resolve({ ok: false, error: e.message }));
-      req.on('timeout', () => {
-        req.destroy();
-        resolve({ ok: false, error: 'TIMEOUT' });
+        req.on('error', (e) => resolve({ ok: false, error: e.message }));
+        req.on('timeout', () => {
+          req.destroy();
+          resolve({ ok: false, error: 'TIMEOUT' });
+        });
+        req.write(payload);
+        req.end();
       });
-      req.write(payload);
-      req.end();
-    });
+      return result;
+    } finally {
+      this.inFlight = Math.max(0, this.inFlight - 1);
+      this.touch();
+    }
   }
 
   init() {
@@ -1008,6 +1020,17 @@ class OcrService {
     try {
       if (pathname === '/status' && req.method === 'GET') {
         sendJson(200, await this.getStatus());
+        return;
+      }
+      if (pathname === '/warmup' && req.method === 'POST') {
+        const startRes = await this.ensureRunning();
+        if (!startRes.ok) {
+          const code = startRes.error === 'MODEL_MISSING' ? 409 : 500;
+          sendJson(code, startRes);
+          return;
+        }
+        this.touch();
+        sendJson(200, { ok: true, status: (await this.getStatus()).status });
         return;
       }
       if (pathname === '/start' && req.method === 'POST') {

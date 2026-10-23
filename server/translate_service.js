@@ -394,7 +394,10 @@ class TranslateService {
     if (!quick.runtimeReady) {
       throw new TranslateError('QUICK_RUNTIME_MISSING', '未找到内置 llama-server 运行时。');
     }
-    if (await this.checkHealth()) return true;
+    if (await this.checkHealth()) {
+      this.touch();
+      return true;
+    }
     if (this.startingPromise) return this.startingPromise;
     this.startingPromise = this._spawnQuickServer().finally(() => {
       this.startingPromise = null;
@@ -573,6 +576,9 @@ class TranslateService {
     }
     this.config = next;
     persistConfig(this.config);
+    if (this.proc || isPidAlive(readQuickPid())) {
+      this.touch();
+    }
     return this.publicConfig();
   }
 
@@ -727,7 +733,12 @@ class TranslateService {
     const idleMin = Number(this.config.quickIdleUnloadMin ?? 30);
     if (!idleMin || idleMin <= 0) return;
     if (this.inFlight > 0) return;
-    if (!this.lastUsedAt) return;
+    const pid = this.proc?.pid || readQuickPid();
+    if (!isPidAlive(pid)) return;
+    if (!this.lastUsedAt) {
+      this.touch();
+      return;
+    }
     if (Date.now() - this.lastUsedAt < idleMin * 60 * 1000) return;
     this.stopQuickServer();
   }
