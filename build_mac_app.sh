@@ -77,6 +77,8 @@ swiftc -O \
     -framework CoreMedia \
     -framework SwiftUI \
     -framework NaturalLanguage \
+    -import-objc-header mac_app/src/SimpleUIBridging.h \
+    mac_app/src/AudioTapGuard.m \
     mac_app/src/main.swift \
     mac_app/src/AppDelegate.swift \
     mac_app/src/HotKeyManager.swift \

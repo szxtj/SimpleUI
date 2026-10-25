@@ -26,6 +26,10 @@ enum VoiceInputState: String {
 ///      组合键）则立刻取消，绝不抢用户的组合键。
 ///   2. 录音用 AVAudioEngine，硬件格式经 AVAudioConverter 转 16kHz 单声道 Int16，
 ///      再封装成 WAV 交给本地代理的 /api/asr/transcribe（Node 侧再转给 audiocpp）。
+///      **每次采集都新建一个 AVAudioEngine**：tap 是挂在 node 上的，而 installTap 在
+///      「bus 0 已存在 tap」时会抛 ObjC 异常（`nullptr == Tap()`），Swift 抓不到直接 abort。
+///      采集结束就把整个引擎丢掉，tap 随 engine 一起消亡 —— 不依赖任何 flag 记账。
+///      （2026-10-25 崩溃复盘：重试第二次在 installTap 处 abort。）
 ///   3. 是否「在输入框中」用辅助功能（AXUIElement）判定：先看角色是否文本类控件，
 ///      否则回退到「有选中文本范围且 value 可写」。
 ///   4. 写入方式：把文本放剪贴板后合成 ⌘V —— 与系统听写一致，兼容所有 App；
@@ -67,12 +71,16 @@ class VoiceInputManager {
     private static let maxSampleCapacity = 100 * 16000
     private var pcmBuffer = [Int16](repeating: 0, count: maxSampleCapacity)
     private var pcmSampleCount: Int = 0
-    private let audioEngine = AVAudioEngine()
+    /// 当前这次采集使用的引擎；每次采集新建、采集结束即丢弃（见 startRecording 注释）
+    private var audioEngine: AVAudioEngine?
     private var converter: AVAudioConverter?
     private var convOutBuffer: AVAudioPCMBuffer?
+    /// converter 是按「tap 回调里拿到的真实 buffer 格式」建立的，这里记下它对应的输入格式
+    private var converterInputFormat: AVAudioFormat?
     private var samplesLock = NSLock()
     private var lastLevelEmit = Date.distantPast
-    private var isTapInstalled = false
+    /// 采集启动过程中的保护位：此时不能因为配置变更把刚起来的引擎拆掉
+    private var isStartingCapture = false
 
     // 流式 ASR 会话与实时状态
     private var activeLiveSession: LiveAsrSession?
@@ -101,12 +109,13 @@ class VoiceInputManager {
             name: NSApplication.didBecomeActiveNotification,
             object: nil
         )
-        // 监听硬件音频配置（如 AirPods 连接/拔出、采样率变动），防止 Engine 底层抛出 Obj-C 崩溃
+        // 监听硬件音频配置（如 AirPods 连接/拔出、采样率变动）。object 传 nil，
+        // 因为引擎现在是「每次采集新建」的，实现里再按当前引擎实例过滤。
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(handleAudioEngineConfigChange),
+            selector: #selector(handleAudioEngineConfigChange(_:)),
             name: .AVAudioEngineConfigurationChange,
-            object: audioEngine
+            object: nil
         )
     }
 
@@ -115,13 +124,19 @@ class VoiceInputManager {
         VoiceInputManager.broadcastPermissionUpdate()
     }
 
-    @objc private func handleAudioEngineConfigChange() {
+    @objc private func handleAudioEngineConfigChange(_ note: Notification) {
+        // 只关心当前这次采集的引擎
+        guard let changed = note.object as? AVAudioEngine,
+              let current = audioEngine,
+              changed === current else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            // 启动瞬间的格式落定会打扰到刚开始的采集，此时不拆引擎
+            guard !self.isStartingCapture else { return }
             if self.isCapturing {
                 self.finishCapture()
             } else {
-                self.stopEngineIfNeeded()
+                self.teardownEngine()
             }
         }
     }
@@ -147,7 +162,7 @@ class VoiceInputManager {
         }
         eventTap = nil
         runLoopSource = nil
-        stopEngineIfNeeded()
+        teardownEngine()
     }
 
     /// 挂只读事件监听：优先 CGEventTap；无权限时退回 NSEvent 全局监视器。
@@ -299,7 +314,7 @@ class VoiceInputManager {
         guard let url = URL(string: "\(ProcessManager.baseURLString)/api/asr/warmup") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.timeoutInterval = 10
+        req.timeoutInterval = 30
         URLSession.shared.dataTask(with: req).resume()
     }
 
@@ -459,60 +474,85 @@ class VoiceInputManager {
     // MARK: - 录音（AVAudioEngine → 16kHz 单声道 Int16，预分配 100 秒零内存重新分配）
 
     private func startRecording() -> Bool {
-        if isCapturing || isTapInstalled {
-            stopEngineIfNeeded()
-        }
-        let input = audioEngine.inputNode
+        // 一次采集 = 一个全新引擎。旧引擎（连同它上面可能残留的 tap）整体作废，
+        // 从根上消除 installTap 抛 "nullptr == Tap()" 的整类崩溃。
+        teardownEngine()
+
+        let engine = AVAudioEngine()
+        audioEngine = engine
+        let input = engine.inputNode
         let hwFormat = input.outputFormat(forBus: 0)
         guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
             NSLog("[VoiceInput] ⚠ 硬件音频格式无效: sampleRate=\(hwFormat.sampleRate), channels=\(hwFormat.channelCount)")
+            teardownEngine()
             return false
         }
-
-        guard let targetFormat = AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
-            sampleRate: 16000,
-            channels: 1,
-            interleaved: true
-        ), let conv = AVAudioConverter(from: hwFormat, to: targetFormat) else {
-            NSLog("[VoiceInput] ⚠ 创建 AVAudioConverter 失败")
-            return false
-        }
-        converter = conv
-        // 预分配转换后临时输出缓冲（8192 帧 = 0.512s @ 16kHz，足以容纳单次 tap 回调的所有转码产物）
-        convOutBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: 8192)
 
         samplesLock.lock()
         pcmSampleCount = 0
         samplesLock.unlock()
 
+        // converter 延到第一帧音频到达时按 buffer 的真实格式建立（见 prepareConverter）
+        converter = nil
+        convOutBuffer = nil
+        converterInputFormat = nil
+
+        isStartingCapture = true
+        defer { isStartingCapture = false }
+
+        // format 传 nil：让 tap 直接用该 bus 自己的格式。传一个外部读到的 AVAudioFormat
+        // 会多一层「格式必须与内部 hwFormat 完全一致」的校验，是另一个异常来源。
+        var tapError: NSString?
+        let installed = SUIAudioInstallTap(input, 0, 2048, { [weak self] buffer, _ in
+            self?.handleAudioBuffer(buffer)
+        }, &tapError)
+        guard installed else {
+            NSLog("[VoiceInput] ⚠ installTap 失败: \(tapError ?? "unknown")")
+            teardownEngine()
+            return false
+        }
+
+        engine.prepare()
         do {
-            if isTapInstalled {
-                input.removeTap(onBus: 0)
-                isTapInstalled = false
-            }
-            input.installTap(onBus: 0, bufferSize: 2048, format: hwFormat) { [weak self] buffer, _ in
-                self?.handleAudioBuffer(buffer, hwFormat: hwFormat, targetFormat: targetFormat)
-            }
-            isTapInstalled = true
-            audioEngine.prepare()
-            try audioEngine.start()
+            try engine.start()
             return true
         } catch {
             NSLog("[VoiceInput] ⚠ 启动音频引擎异常: \(error.localizedDescription)")
-            if isTapInstalled {
-                input.removeTap(onBus: 0)
-                isTapInstalled = false
-            }
-            stopEngineIfNeeded()
+            teardownEngine()
             return false
         }
     }
 
-    private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer, hwFormat: AVAudioFormat, targetFormat: AVAudioFormat) {
+    /// 按 tap 回调里的真实格式建立 16kHz 单声道 Int16 转换器；格式变了就重建。
+    private func prepareConverter(for format: AVAudioFormat) -> Bool {
+        if let cur = converterInputFormat,
+           cur.sampleRate == format.sampleRate,
+           cur.channelCount == format.channelCount,
+           cur.commonFormat == format.commonFormat,
+           converter != nil, convOutBuffer != nil {
+            return true
+        }
+        guard let target = AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: 16000,
+            channels: 1,
+            interleaved: true
+        ), let conv = AVAudioConverter(from: format, to: target),
+              // 8192 帧 = 0.512s @ 16kHz，足以容纳单次 tap 回调的全部转码产物
+              let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: 8192) else {
+            return false
+        }
+        converter = conv
+        convOutBuffer = out
+        converterInputFormat = format
+        return true
+    }
+
+    private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer) {
+        guard buffer.frameLength > 0 else { return }
+        guard prepareConverter(for: buffer.format) else { return }
         // 关键防护 1：局部强引用 converter 与 convOutBuffer，防止主线程 stopEngine 析构引发 CoreAudio 实时线程野指针崩溃
         guard let conv = self.converter, let out = self.convOutBuffer else { return }
-        guard buffer.frameLength > 0 else { return }
 
         out.frameLength = 0
         var inputConsumed = false
@@ -584,7 +624,7 @@ class VoiceInputManager {
     }
 
     private func stopRecording() -> Data? {
-        stopEngineIfNeeded()
+        teardownEngine()
         samplesLock.lock()
         let count = pcmSampleCount
         let samples = count > 0 ? Array(pcmBuffer[0..<count]) : []
@@ -595,23 +635,32 @@ class VoiceInputManager {
         return VoiceInputManager.makeWAV(samples: samples, sampleRate: 16000)
     }
 
-    private func stopEngineIfNeeded() {
-        if isTapInstalled {
-            audioEngine.inputNode.removeTap(onBus: 0)
-            isTapInstalled = false
+    /// 拆掉本次采集的引擎：先摘 tap、停引擎、reset，再把整个 engine 引用置空。
+    /// 引擎与 converter 都延时释放，确保 CoreAudio 实时渲染队列里最后一帧执行完再析构。
+    private func teardownEngine() {
+        let oldEngine = audioEngine
+        audioEngine = nil
+
+        if let engine = oldEngine {
+            if engine.isRunning {
+                engine.stop()
+            }
+            SUIAudioRemoveTap(engine.inputNode, 0)
+            engine.reset()
         }
-        if audioEngine.isRunning {
-            audioEngine.stop()
-        }
-        audioEngine.reset()
-        // 延时清空 converter 和 convOutBuffer，确保 CoreAudio 实时渲染队列中最后一帧完全执行完毕再释放内存
+
         let oldConv = converter
         let oldOut = convOutBuffer
+        let oldFormat = converterInputFormat
         converter = nil
         convOutBuffer = nil
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.1) {
+        converterInputFormat = nil
+
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.25) {
+            _ = oldEngine
             _ = oldConv
             _ = oldOut
+            _ = oldFormat
         }
     }
 
@@ -667,7 +716,8 @@ class VoiceInputManager {
         req.httpMethod = "POST"
         req.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
         req.httpBody = wav
-        req.timeoutInterval = 60
+        // 这条回退路径同样可能要等冷启动把模型加载完，给足时间
+        req.timeoutInterval = 120
 
         URLSession.shared.dataTask(with: req) { data, _, error in
             if let error = error {
@@ -830,6 +880,11 @@ private class LiveAsrSession: NSObject, URLSessionDataDelegate {
     private let queue = DispatchQueue(label: "com.simpleui.asr.live", qos: .userInitiated)
     private var finishCompletion: ((Result<(String, Bool), Error>) -> Void)?
     private var hasResolvedFinish = false
+    /// 会话在 finish() 之前就失败时的结果（典型：服务端冷启动仍在加载模型 → 503）。
+    /// 先存住，等 finish() 到来时立刻交付，绝不静默丢弃 —— 调用方据此回退到整段离线转写。
+    private var pendingResult: Result<(String, Bool), Error>?
+    /// finish() 的兜底定时器：上游再不回话也要有个结论
+    private var finishWatchdog: DispatchWorkItem?
 
     var onTextDelta: ((String) -> Void)?
     var onDone: ((String, Bool) -> Void)?
@@ -851,7 +906,9 @@ private class LiveAsrSession: NSObject, URLSessionDataDelegate {
         }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.timeoutInterval = 10
+        // 冷启动时服务端要现场拉起 audiocpp 并加载 2.48GB 权重（实测 6s+，机器繁忙时更久），
+        // 这里只受「结果」约束，不设 10s 这种会把正常冷启动判死的超时。
+        req.timeoutInterval = 120
         URLSession.shared.dataTask(with: req) { [weak self] data, res, err in
             guard let self = self else { return }
             self.queue.async {
@@ -863,7 +920,11 @@ private class LiveAsrSession: NSObject, URLSessionDataDelegate {
                       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       (obj["ok"] as? Bool) == true,
                       let sid = obj["sessionId"] as? String else {
-                    self.failSession(VoiceInputError("启动流式会话失败"))
+                    // 带上服务端给出的原因（service_not_ready / detail），便于定位
+                    let detail = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                        .flatMap { $0 }
+                        .flatMap { ($0["error"] as? String) ?? ($0["detail"] as? String) }
+                    self.failSession(VoiceInputError(detail.map { "启动流式识别失败（\($0)）" } ?? "启动流式识别失败"))
                     return
                 }
                 self.sessionId = sid
@@ -926,17 +987,50 @@ private class LiveAsrSession: NSObject, URLSessionDataDelegate {
         URLSession.shared.dataTask(with: req).resume()
     }
 
+    /// 收尾并**必定**交付一个结果。
+    /// 之前这里在 state == .aborted（起流失败）时两个分支都不进，completion 永远不回调，
+    /// 于是「录制了几秒 → 胶囊卡在转写中 → 一个字都不吐」，录好的音频也白白丢掉。
     func finish(completion: @escaping (Result<(String, Bool), Error>) -> Void) {
         queue.async { [weak self] in
             guard let self = self else { return }
+            // 会话在 finish 之前就已经出过结果（绝大多数是起流失败）→ 直接交付
+            if let pending = self.pendingResult {
+                self.pendingResult = nil
+                DispatchQueue.main.async { completion(pending) }
+                return
+            }
             self.finishCompletion = completion
-            if self.state == .connecting {
+            switch self.state {
+            case .connecting:
+                // 起流请求还在路上（服务端仍在加载模型）：等它回来后再 flush + finish
                 self.state = .finishing
-            } else if self.state == .active {
+                self.armFinishWatchdog()
+            case .active:
                 self.state = .finishing
+                self.armFinishWatchdog()
                 self.executeFinishRequest()
+            case .aborted:
+                self.failSession(VoiceInputError("流式识别会话已中止"))
+            case .done:
+                DispatchQueue.main.async {
+                    completion(.failure(VoiceInputError("流式识别会话已结束")))
+                }
+                self.finishCompletion = nil
+            case .finishing:
+                self.armFinishWatchdog()
             }
         }
+    }
+
+    /// finish 之后的兜底：上游彻底不回话时也要给调用方一个结论（走离线转写回退）
+    private func armFinishWatchdog() {
+        finishWatchdog?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.failSession(VoiceInputError("识别超时"))
+        }
+        finishWatchdog = work
+        queue.asyncAfter(deadline: .now() + 75, execute: work)
     }
 
     private func executeFinishRequest() {
@@ -976,12 +1070,17 @@ private class LiveAsrSession: NSObject, URLSessionDataDelegate {
         guard !hasResolvedFinish else { return }
         hasResolvedFinish = true
         state = .done
+        finishWatchdog?.cancel()
+        finishWatchdog = nil
         sseTask?.cancel()
         sseSession?.invalidateAndCancel()
         let cb = finishCompletion
         finishCompletion = nil
-        DispatchQueue.main.async {
-            cb?(result)
+        if let cb = cb {
+            DispatchQueue.main.async { cb(result) }
+        } else {
+            // finish() 还没到：先把结果存住，等它来了立刻交付（不再静默吞掉）
+            pendingResult = result
         }
     }
 

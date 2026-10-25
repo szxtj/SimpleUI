@@ -480,9 +480,12 @@ class AsrService {
       });
       this.lastActionLog = `已拉起 audiocpp_server (pid=${child.pid}) · ${this.config.backend} · Confucius4-R2T2`;
 
-      // 等待健康探测通过（冷启动加载 2.48GB 模型权重与 Metal 图最长约需 8~10 秒）
+      // 等待健康探测通过（冷启动要加载 2.48GB 权重并编译 Metal 图：实测热缓存 6.3s，
+      // 磁盘冷 / 机器忙时可达数十秒）。这里给足 90s 的余量 —— 调用方（语音输入）
+      // 在等待期间持续把音频缓存着，所以「等」不会丢数据，而提前放弃才会。
       let healthy = false;
-      for (let i = 0; i < 48; i++) {
+      const healthDeadline = Date.now() + 90000;
+      while (Date.now() < healthDeadline) {
         await new Promise((r) => setTimeout(r, 250));
         if (await this.checkHealth()) {
           healthy = true;
