@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import {
   AppSettings,
   ServerHealthInfo,
@@ -210,7 +210,37 @@ export const SpotlightView: React.FC = () => {
   const prevLastUserMsgIdRef = useRef<string | undefined>(undefined);
 
   const hasMessages = messages.length > 0;
-  const isMultiline = input.includes('\n');
+  /**
+   * 「多行输入」= 有换行符 **或** 已经自然折行。
+   *
+   * 只判 `input.includes('\n')` 是不够的：不打 Shift+Enter 的长句同样会折行，而胶囊（540×88）
+   * 装不下它就溢出到按钮行。折行是排版事实，只能**量**（见下面 `inputWrapped` 的测量 effect）。
+   */
+  const [inputWrapped, setInputWrapped] = useState(false);
+  /**
+   * 输入法合成态：合成期间**只量高度、不切换形态**。
+   * 切换形态会换掉 `<textarea>` 实例 → 合成被中断、未上屏的拼音直接丢。
+   * 用 capture 阶段的原生事件跟踪（不覆盖 `inputImeBindings` 里的 React 处理器）。
+   */
+  const composingRef = useRef(false);
+  const [composeTick, setComposeTick] = useState(0);
+  useEffect(() => {
+    const onStart = () => {
+      composingRef.current = true;
+    };
+    const onEnd = () => {
+      composingRef.current = false;
+      setComposeTick((t) => t + 1); // 合成结束补一次判定（有时没有后续 input 事件）
+    };
+    document.addEventListener('compositionstart', onStart, true);
+    document.addEventListener('compositionend', onEnd, true);
+    return () => {
+      document.removeEventListener('compositionstart', onStart, true);
+      document.removeEventListener('compositionend', onEnd, true);
+    };
+  }, []);
+
+  const isMultiline = input.includes('\n') || inputWrapped;
   const isExpanded = hasMessages || isGenerating || isMultiline;
 
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -311,14 +341,30 @@ export const SpotlightView: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-resize textarea in Spotlight
-  useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-      const scrollHeight = textareaRef.current.scrollHeight;
-      textareaRef.current.style.height = `${Math.min(Math.max(scrollHeight, 24), 160)}px`;
-    }
-  }, [input, isExpanded]);
+  /**
+   * 文本框自适应高度，**顺便量出「是否已经折行」**（胶囊 ↔ 展开卡的判据）。
+   *
+   * - 用 `useLayoutEffect`：量完立刻 setState，避免「先按 88px 画一帧胶囊、下一帧才展开」的闪跳；
+   * - 行数用**计算样式里的 line-height 反推**（扣掉 padding），不写死像素 —— 字号设置变了也准；
+   * - 两种形态的文本框宽度不同（胶囊 ~496 / 展开 ~448，展开更窄），所以"折行就展开、展开后只会更折"，
+   *   不会出现「展开→不折→缩回→又折」的抖动。
+   */
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const scrollHeight = el.scrollHeight;
+    el.style.height = `${Math.min(Math.max(scrollHeight, 24), 160)}px`;
+
+    // 输入法合成中不判折行：换 DOM 会打断拼音
+    if (composingRef.current) return;
+
+    const cs = getComputedStyle(el);
+    const lineHeight = parseFloat(cs.lineHeight) || 22;
+    const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    const lines = Math.round((scrollHeight - padY) / lineHeight);
+    setInputWrapped(lines > 1);
+  }, [input, isExpanded, composeTick]);
 
   // Retain focus and cursor position ONLY when transitioning between capsule and expanded card
   // (NEVER trigger on input.length changes, which corrupts active macOS WebKit IME composition!)
@@ -727,6 +773,7 @@ export const SpotlightView: React.FC = () => {
   if (!isExpanded) {
     return (
       <div
+        data-spot-view="capsule"
         className="w-full h-full select-none bg-transparent relative flex flex-col justify-end"
         onDragEnter={handleDragEnter}
         onDragOver={handleDragOver}
@@ -913,6 +960,7 @@ export const SpotlightView: React.FC = () => {
   /* ========================================================================= */
   return (
     <div
+      data-spot-view="expanded"
       className="w-full h-full select-none bg-transparent relative"
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
