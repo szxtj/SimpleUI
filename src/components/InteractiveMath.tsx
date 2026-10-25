@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useId } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useId } from 'react';
 import { FileCode, Sigma, Check } from 'lucide-react';
 import { useI18n } from '../i18n';
 import {
@@ -133,6 +133,11 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
     const [isCrossedBySelection, setIsCrossedBySelection] = useState(false);
     const [copiedType, setCopiedType] = useState<'latex' | 'word' | null>(null);
     const [popoverPlacement, setPopoverPlacement] = useState<'top' | 'bottom'>('top');
+    /**
+     * 水平方向的夹紧偏移（px）。内联工具条是「以公式为中心」浮起来的，
+     * 小窗口里靠边（或公式很宽）时会被窗口边缘切掉，这里只补差值。
+     */
+    const [popoverShift, setPopoverShift] = useState(0);
     const copiedTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
     // Sync state with global store
@@ -374,6 +379,86 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
       }
     }, [showToolbar, display]);
 
+    /**
+     * 内联工具条的**水平夹紧**：只在会越出「可见区」时补偏移。
+     *
+     * 为什么需要：工具条用 `left:50% + translateX(-50%)` 锚在公式中心，没有任何夹紧。
+     * 可见区**不是视口**——主窗口的对话列是 `.chat-scroller`（`overflow-x-hidden`，左侧还有 260px 侧栏），
+     * 浮窗是同一个 `.chat-scroller`。公式贴着内容左缘时，工具条会伸进侧栏那条被裁掉的区域
+     * （大窗口截图的左半截就是这么没的）；贴右缘时又会超出窗口。
+     *
+     * 所以统一规则：**可见区 = 视口 ∩ 最近的裁剪祖先的 padding box**，两个窗口同一份逻辑。
+     *
+     * 约束：
+     *  - 用**自然几何**（公式中心 ± 半宽）算，与当前已应用的偏移无关，重复测量不会累加；
+     *  - 不越界时 shift 恒为 0 → 渲染与改前逐像素相同；
+     *  - 裁剪祖先只在开启时找一次（滚动时它的 rect 不变），滚动/尺寸变化只重量位置；
+     *  - 工具条关闭即解绑全部监听/观察器。
+     */
+    useLayoutEffect(() => {
+      if (!showToolbar || display || !containerRef.current) {
+        setPopoverShift((prev) => (prev === 0 ? prev : 0));
+        return;
+      }
+      const host = containerRef.current;
+      const margin = 8;
+
+      /** 可见区：视口 ∩ 最近裁剪祖先（没有裁剪祖先就只看视口） */
+      const computeBounds = () => {
+        let left = margin;
+        let right = document.documentElement.clientWidth - margin;
+        let clipNode: HTMLElement | null = null;
+        for (let node = host.parentElement; node && node !== document.body; node = node.parentElement) {
+          const cs = getComputedStyle(node);
+          if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') {
+            clipNode = node;
+            const r = node.getBoundingClientRect();
+            left = Math.max(left, r.left + margin);
+            right = Math.min(right, r.right - margin);
+            break;
+          }
+        }
+        return { left, right, clipNode };
+      };
+
+      let bounds = computeBounds();
+
+      const measure = () => {
+        const el = host.querySelector('[data-math-toolbar]') as HTMLElement | null;
+        if (!el) return;
+        const hostRect = host.getBoundingClientRect();
+        const width = el.getBoundingClientRect().width;
+        // 容器比工具条还窄的极端情况：至少保证左侧（贴近容器左缘）可见
+        const rightLimit = bounds.right - bounds.left < width ? bounds.left + width : bounds.right;
+        const naturalLeft = hostRect.left + hostRect.width / 2 - width / 2;
+        const naturalRight = naturalLeft + width;
+        let shift = 0;
+        if (naturalLeft < bounds.left) {
+          shift = bounds.left - naturalLeft;
+        } else if (naturalRight > rightLimit) {
+          shift = rightLimit - naturalRight;
+        }
+        setPopoverShift((prev) => (Math.abs(prev - shift) < 0.5 ? prev : shift));
+      };
+
+      const refreshBounds = () => {
+        bounds = computeBounds();
+        measure();
+      };
+
+      measure();
+      window.addEventListener('resize', refreshBounds);
+      window.addEventListener('scroll', measure, true);
+      // 侧栏拖动 / 面板开合会让裁剪容器变宽变窄，没有 resize 事件，用观察器补
+      const ro = new ResizeObserver(refreshBounds);
+      ro.observe(bounds.clipNode ?? document.documentElement);
+      return () => {
+        window.removeEventListener('resize', refreshBounds);
+        window.removeEventListener('scroll', measure, true);
+        ro.disconnect();
+      };
+    }, [showToolbar, display, copiedType, selectedCount]);
+
     const handleClick = (e: React.MouseEvent) => {
       e.stopPropagation();
       // 普通单选公式时清空原生文本选区，与普通文本点击逻辑统一（按住 Command/Ctrl/Shift 时支持多选并存）
@@ -514,9 +599,11 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
       >
         {showToolbar && (
           <span
-            className={`absolute left-1/2 -translate-x-1/2 z-30 px-1 py-0.5 rounded-md bg-white dark:bg-[#1e2025] border border-[#d0d7de] dark:border-[#383b42] shadow-md text-xs whitespace-nowrap ${
+            data-math-toolbar="true"
+            className={`absolute left-1/2 z-30 px-1 py-0.5 rounded-md bg-white dark:bg-[#1e2025] border border-[#d0d7de] dark:border-[#383b42] shadow-md text-xs whitespace-nowrap ${
               popoverPlacement === 'bottom' ? 'top-full mt-1.5' : 'bottom-full mb-1.5'
             }`}
+            style={{ transform: `translateX(calc(-50% + ${popoverShift}px))` }}
           >
             {toolbarContent}
           </span>
