@@ -769,6 +769,7 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
           onCollapse={toggleRightPanel}
           onOpenArticle={(title) => panel.openArticle(title, null)}
           onQueryChange={panel.setSearchQuery}
+          onImageIndexChange={panel.setImageIndex}
           onResizeStateChange={setPanelResizing}
           onLiveWidth={handleLivePanelWidth}
           onWidthChange={handlePanelWidthCommit}

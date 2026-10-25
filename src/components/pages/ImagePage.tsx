@@ -9,6 +9,8 @@ interface ImagePageProps {
   chrome?: PageChrome;
   /** 是否当前可见（不可见的页面不抢键盘快捷键） */
   active?: boolean;
+  /** 页内切图后回调（主窗口用它把标签标题的 n/总数 更新掉） */
+  onIndexChange?: (index: number) => void;
 }
 
 /**
@@ -19,7 +21,13 @@ interface ImagePageProps {
  * 复制图片、下载、在「预览」中打开，全部与原来的弹窗逐字一致。
  * 页头由外层页面注入（主窗口无、浮窗有 ← ✕），不再出现双层头部。
  */
-export const ImagePage: React.FC<ImagePageProps> = ({ images, index, chrome, active = true }) => (
+export const ImagePage: React.FC<ImagePageProps> = ({
+  images,
+  index,
+  chrome,
+  active = true,
+  onIndexChange,
+}) => (
   <ImagePreviewModal
     embedded
     active={active}
@@ -30,5 +38,6 @@ export const ImagePage: React.FC<ImagePageProps> = ({ images, index, chrome, act
     images={images}
     initialIndex={index}
     chrome={chrome}
+    onIndexChange={onIndexChange}
   />
 );

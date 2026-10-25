@@ -23,6 +23,8 @@ interface SidePanelProps {
   onCollapse: () => void;
   onOpenArticle: (title: string) => void;
   onQueryChange: (id: string, query: string) => void;
+  /** 图片页在页内切了图 → 把下标回写到标签（标题上的 n/总数 才会跟着变） */
+  onImageIndexChange?: (id: string, index: number) => void;
   /** 拖拽开始/结束（用于给对话区也盖上遮罩、并冻结它的重排） */
   onResizeStateChange?: (resizing: boolean) => void;
   /** 拖拽过程中每帧的面板宽度（App 用它更新两块遮罩上的数字） */
@@ -52,6 +54,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
   onCollapse,
   onOpenArticle,
   onQueryChange,
+  onImageIndexChange,
   onResizeStateChange,
   onLiveWidth,
   reservedLeft = 0,
@@ -81,7 +84,14 @@ export const SidePanel: React.FC<SidePanelProps> = ({
       case 'raw-text':
         return <RawTextPage content={tab.content} />;
       case 'image':
-        return <ImagePage images={tab.images} index={tab.index} active={tab.id === activeId} />;
+        return (
+          <ImagePage
+            images={tab.images}
+            index={tab.index}
+            active={tab.id === activeId}
+            onIndexChange={(i) => onImageIndexChange?.(tab.id, i)}
+          />
+        );
       default:
         return null;
     }

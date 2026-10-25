@@ -32,6 +32,8 @@ interface ImagePreviewModalProps {
   active?: boolean;
   /** 嵌入模式下由外层页面注入的页头插槽（← / ✕） */
   chrome?: PageChrome;
+  /** 当前图下标发生变化（左右箭头 / 循环）时上报，供外层同步标签标题 */
+  onIndexChange?: (index: number) => void;
 }
 
 // 辅助函数：计算当前缩放和尺寸下的有效平移边界
@@ -80,6 +82,20 @@ const clamp = (val: number, min: number, max: number) => {
   return Math.min(max, Math.max(min, val));
 };
 
+/**
+ * 画布内浮动的可交互控件（左右切图箭头等）。
+ *
+ * 画布在 pointerdown 里调了 `setPointerCapture` 做拖拽平移，**指针捕获会把 pointerup 重定向到画布**，
+ * 于是 click 的落点变成「pointerdown 目标与 pointerup 目标的最近公共祖先」= 画布本身，
+ * 按钮永远收不到 click（实测 `click` 落在 `DIV.relative` 上，「点了没反应」就是这个）。
+ * 所以按下时命中这类控件就直接放行，不开始拖拽、不捕获指针。
+ */
+const isCanvasControl = (target: EventTarget | null) => {
+  const el = target as HTMLElement | null;
+  if (!el || typeof el.closest !== 'function') return false;
+  return !!el.closest('button, a, input, select, textarea, [role="button"],[data-no-drag]');
+};
+
 export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
   isOpen,
   onClose,
@@ -89,6 +105,7 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
   embedded = false,
   active = true,
   chrome,
+  onIndexChange,
 }) => {
   const { t } = useI18n();
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
@@ -213,6 +230,14 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
       setPan({ x: 0, y: 0 });
     }
   }, [isOpen, initialIndex, images]);
+
+  // 页内切图后上报（主窗口据此更新标签标题里的「n/总数」）。首次挂载不报，值没变也不报。
+  const reportedIndexRef = useRef(currentIndex);
+  useEffect(() => {
+    if (!onIndexChange || reportedIndexRef.current === currentIndex) return;
+    reportedIndexRef.current = currentIndex;
+    onIndexChange(currentIndex);
+  }, [currentIndex, onIndexChange]);
 
   // 预读并同步图片原始物理尺寸（支持缓存立即命中）
   useEffect(() => {
@@ -417,6 +442,8 @@ export const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({
   // 指针拖拽（Pointer Capture 保证移出容器外仍平稳追踪，橡皮筋边界+吸附归中）
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
+    // 画布里的按钮（切图箭头）要正常收 click：一旦捕获指针，click 就会被重定向到画布。
+    if (isCanvasControl(e.target)) return;
     e.preventDefault();
 
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);

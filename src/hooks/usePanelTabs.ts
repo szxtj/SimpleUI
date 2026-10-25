@@ -48,6 +48,8 @@ export interface PanelTabsApi {
   openImage: (input: { messageId: string; images: string[]; index: number }) => void;
   closeTab: (id: string) => void;
   activateTab: (id: string) => void;
+  /** 图片页在页内切了图（左右箭头 / 循环）→ 让标签标题上的「n/总数」跟着走 */
+  setImageIndex: (id: string, index: number) => void;
   /** 搜索页把当前关键词回写到标签标题（仅展示用） */
   setSearchQuery: (id: string, query: string) => void;
   toggleVisible: () => void;
@@ -128,6 +130,22 @@ export function usePanelTabs(): PanelTabsApi {
     );
   }, []);
 
+  /**
+   * 图片页翻到第几张：只改 index（`images` 数组身份保持不变，图片页不会因此重新装载）。
+   * 值没变时返回原 state，避免无谓重渲染。
+   */
+  const setImageIndex = useCallback((id: string, index: number) => {
+    setState((s) => {
+      let changed = false;
+      const tabs = s.tabs.map((t) => {
+        if (t.id !== id || t.kind !== 'image' || t.index === index) return t;
+        changed = true;
+        return { ...t, index };
+      });
+      return changed ? { ...s, tabs } : s;
+    });
+  }, []);
+
   const setSearchQuery = useCallback((id: string, query: string) => {
     setState((s) => {
       let changed = false;
@@ -168,6 +186,7 @@ export function usePanelTabs(): PanelTabsApi {
     openImage,
     closeTab,
     activateTab,
+    setImageIndex,
     setSearchQuery,
     toggleVisible,
   };
