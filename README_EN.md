@@ -32,7 +32,7 @@ SimpleUI is deeply tuned for [TurboFieldfare](https://github.com/drumih/turbo-fi
 ## Highlights
 
 - **Local-first**: inference, knowledge retrieval, speech recognition, speech synthesis, OCR, subtitles, and translation all run on-device — no need to install or configure Python yourself, no vector database, and no cloud API.
-- **Model integration services**: unified management for base models, Confucius4-R2T2 speech input, Qwen3-TTS speech synthesis, PaddleOCR-VL visual OCR, R2T2 streaming captions, Index-Translate standalone on-device translation, and CoreML segmentation models; features a unified Service Manager with concurrent speed-tested downloads, resumable transfers, shared model weights, and on-demand lifecycle control.
+- **Model integration services**: unified management for base models, dual-engine speech input (Qwen3-ASR / Confucius4-R2T2), Qwen3-TTS speech synthesis, PaddleOCR-VL visual OCR, R2T2 streaming captions, Index-Translate standalone on-device translation, and CoreML segmentation models; features a unified Service Manager with concurrent speed-tested downloads, resumable transfers, shared model weights, and on-demand lifecycle control.
 - **Visual OCR (Screen Capture to Markdown)**: Global hotkey `⌘⇧2` captures any screen region and uses on-device PaddleOCR-VL to extract structured Markdown (paragraphs, headings, tables, LaTeX formulas) directly into the clipboard; runs strictly on demand and unloads on idle timeout to reclaim VRAM.
 - **DeepSeek API integration**: independent Base URL / API key / model / context / temperature / top_p / reasoning effort / stop strings / system prompt; requests go directly to the official endpoint, with cache-friendly context trimming.
 - **Offline Wiki RAG**: Kiwix ZIM + multi-channel retrieval + direct raw-text injection; no summarization, no rewriting, no mechanical truncation, with clickable citations.
@@ -55,7 +55,7 @@ Node.js proxy (127.0.0.1:31235)
         ├── Base model service (TTF :1235 / Mference :1241 / OpenAI-compatible)
         ├── DeepSeek official API (cloud)
         ├── Offline Wiki RAG (Kiwix :31236 + local ZIM)
-        ├── Speech input (Confucius4-R2T2 · audio.cpp :1236 · on-demand)
+        ├── Speech input (Qwen3-ASR-0.6B MLX / R2T2 audio.cpp · :1236 · on-demand)
         ├── Voice synthesis (Qwen3-TTS 1.7B · MLX :1237 · loads per run)
         ├── Visual OCR (PaddleOCR-VL 1.6 · MLX :1238 · on-demand)
         ├── Real-time bilingual subtitles
@@ -69,7 +69,7 @@ Node.js proxy (127.0.0.1:31235)
 | :--- | :--- | :--- |
 | Node proxy `proxy.js` | `31235` | Static hosting, SSE passthrough, dynamic routing, managed-service APIs and process watchdog |
 | Kiwix offline encyclopedia | `31236` | Local ZIM articles, title suggestions, full-text search |
-| Confucius4-R2T2 speech input | `1236` | Local dictation via long-press right ⌘ (audio.cpp · Metal, shares R2T2 model with subtitles, on-demand) |
+| Speech input (dual engine) | `1236` | Local dictation via long-press right ⌘; default Qwen3-ASR-0.6B (MLX, full-clip), switchable to R2T2 (audio.cpp streaming); on-demand |
 | Qwen3-TTS voice synthesis | `1237` | On-device speech synthesis for reading aloud (per-paragraph synthesis joined into one file; loads on every run) |
 | PaddleOCR-VL visual OCR | `1238` | `⌘⇧2` screen region capture to Markdown clipboard (on-demand, unloads on idle) |
 | R2T2 subtitle ASR | `1250` | Append-only streaming recognition with native punctuation (subtitle pipeline stage 1) |
@@ -78,7 +78,7 @@ Node.js proxy (127.0.0.1:31235)
 | Base models | `1235` / `1241` | TTF / Mference / other OpenAI-compatible services |
 | DeepSeek API | Cloud | Official API: chat, reasoning, and Quick Translate Detail mode |
 
-> Base-model repositories and weights are not distributed with this project; users provide them. Speech input, TTS, OCR, subtitle, and Quick Translate models can all be downloaded with one-click concurrent speed testing and resumable transfers under the in-app Service Manager. Identical weight files (R2T2 / Index-Translate) are automatically shared without duplicate downloads or disk usage.
+> Base-model repositories and weights are not distributed with this project; users provide them. Speech input, TTS, OCR, subtitle, and Quick Translate models can all be downloaded with one-click concurrent speed testing and resumable transfers under the in-app Service Manager. Identical weight files (R2T2 / Index-Translate) are automatically shared without duplicate downloads or disk usage; the two speech-input engines download independently.
 
 ---
 
@@ -129,9 +129,12 @@ Query
 
 ### Global Voice Input
 
-- Model: Confucius4-R2T2 Q8_0 (audio.cpp · Metal, ~2.31 GB), shares the exact same static GGUF weights with the live bilingual subtitle pipeline, requiring no duplicate downloads or extra disk space.
+- Two switchable engines (pick one at the top of "Service Manager → Speech Input"; switching restarts the process):
+  - **Qwen3-ASR-0.6B-8bit (default, MLX / mlx-audio)**: ~964 MB, noticeably better on Chinese-English code-switching and proper nouns (in our test the same sentence no longer turns "帮我" into "Help me"), RTF ~0.04 warm; **full-clip, non-streaming** — the transcript appears once you release the key.
+  - **Confucius4-R2T2 Q8_0 (audio.cpp · Metal, ~2.31 GB)**: shares the exact same static GGUF weights with the live bilingual subtitle pipeline, and streams word by word while you speak.
 - Usage: hold the right `⌘` key, speak, release; the transcript is inserted automatically at the current cursor position in any foreground application; in other apps it pastes seamlessly via the clipboard.
-- Architecture: strictly on-demand (default port `1236`), remains on standby when inactive, and automatically unloads the process after an idle timeout (default 30 minutes) to free unified memory/VRAM; fully offline.
+- Architecture: strictly on-demand (default port `1236`), remains on standby when inactive, and automatically unloads the process after an idle timeout (default 30 minutes) to free unified memory/VRAM; fully offline. The Qwen3 engine reuses the bundled Python + mlx-audio runtime from TTS/OCR, adding no new dependencies.
+- Independent language settings: R2T2 keeps its own `language`, Qwen3 has its own `qwen3Language` (default `Auto` = Chinese-English mixed, Chinese-based, English terms kept verbatim); switching engines never overwrites the other. When a model is missing the service reports incomplete and points at the download, exactly like TTS / OCR / Subtitles.
 - First use requires Microphone, Accessibility, and Input Monitoring permissions (easily view permission status and jump directly to macOS System Settings via "Service Manager → Speech Input").
 
 ### Offline Real-time Bilingual Subtitles
@@ -273,7 +276,7 @@ Builds the Swift native shell, frontend assets, and bundled runtimes, then insta
 ### Models and knowledge base
 
 - Base models: prepare TTF / Mference repositories and weights yourself, connect another OpenAI-compatible service, or configure a DeepSeek API key in Settings.
-- Speech input model: Confucius4-R2T2 Q8_0 (~2.31 GB), can be downloaded with one-click speed testing and resumable transfer in "Service Manager → Speech Input" or "Live Subtitles"; shares the same static weights with the subtitle service without duplicate downloads or storage.
+- Speech input models: the default Qwen3-ASR-0.6B-8bit (~964 MB, MLX) downloads from "Service Manager → Speech Input"; switching to Confucius4-R2T2 Q8_0 (~2.31 GB) reuses the subtitle service's existing weights without duplicate downloads or storage.
 - Voice synthesis model: Download Qwen3-TTS 1.7B (~2.5 GB) via one-click speed-tested download under Service Manager → Voice Synthesis. The speech codec is byte-identical to the previous release, so integrity checks reuse it.
 - Visual OCR model: Download PaddleOCR-VL 1.6 (~1.09 GB) via one-click speed-tested download under Service Manager → Visual OCR.
 - Subtitle models: download in Service Manager → Live Subtitles; the set includes R2T2, SaT, Index-Translate, and the tokenizer.
@@ -293,7 +296,9 @@ SimpleUI/
 │   ├── ocr_service.js    PaddleOCR-VL management service (`:1238`)
 │   ├── tts_service.js    Qwen3-TTS management service (`:1237`)
 │   ├── subtitle_service.js Subtitle pipeline service (ASR `:1250` / NMT `:1249`)
-│   ├── asr_service.js    Confucius4-R2T2 native ASR service (`:1236`)
+│   ├── asr_service.js    Speech input service (`:1236` · dual engine: Qwen3-ASR / R2T2)
+│   ├── asr/              Qwen3-ASR Python wrapper (mlx-audio, reuses the tts/python runtime)
+│   ├── asr_model_download.js  Qwen3-ASR weight downloader (dual-source probe + resume)
 │   ├── wiki_service.js   Kiwix offline encyclopedia service (`:31236`)
 │   ├── ocr/              Python MLX-VLM OCR engine
 │   ├── tts/              Python MLX-Audio TTS engine

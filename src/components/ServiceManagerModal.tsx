@@ -1960,12 +1960,18 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                         />
                         <div className="min-w-0">
                           <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
-                            {t('asrModelLabel')}
+                            {asrStatus?.model?.shortName ?? t('asrModelLabel')}
                           </div>
-                          <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
-                            {isAsrModelReady
-                              ? `${asrStatus?.model?.sizeDesc || '2.31 GB'} · ${t('runtimeBundledReady')}`
-                              : t('asrModelDesc')}
+                          <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono truncate">
+                            {[
+                              asrStatus?.model?.sizeDesc,
+                              asrStatus?.model?.format,
+                              asrStatus?.model?.sharedWithSubtitles
+                                ? t('asrModelSharedWithSubtitles')
+                                : null,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
                           </div>
                         </div>
                       </div>
@@ -2090,14 +2096,6 @@ export const ServiceManagerModal: React.FC<ServiceManagerModalProps> = ({
                         {formatDownloadError(asrDownload.error, t)}
                       </div>
                     )}
-
-                  {/* 前置检查错误提示 */}
-                  {asrStatus && !asrStatus.checks.binary && (
-                    <div className="mb-2 text-[10px] text-red-500">{t('asrCheckBinary')}</div>
-                  )}
-                  {asrStatus && !asrStatus.checks.model && !isAsrDownloading && (
-                    <div className="mb-2 text-[10px] text-red-500">{t('asrCheckModel')}</div>
-                  )}
 
                   {/* 服务启动失败原因提示 */}
                   {asrStatus && asrStatus.status === 'stopped' && asrStatus.lastActionLog && (

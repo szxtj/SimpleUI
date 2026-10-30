@@ -975,9 +975,13 @@ export class ASRServiceAPI {
     return null;
   }
 
-  static async startDownload(): Promise<{ ok: boolean; downloadState?: SubtitleDownloadState }> {
+  /** 下载当前引擎的模型；显式传 engine 时下载指定引擎的（默认交给服务端按当前引擎决定） */
+  static async startDownload(
+    engine?: 'qwen3' | 'r2t2'
+  ): Promise<{ ok: boolean; downloadState?: SubtitleDownloadState }> {
     try {
-      const res = await fetch('/api/asr/models/download', { method: 'POST' });
+      const qs = engine ? `?engine=${engine}` : '';
+      const res = await fetch(`/api/asr/models/download${qs}`, { method: 'POST' });
       if (res.ok) return await res.json();
     } catch (e) {
       console.error('ASRService startDownload failed:', e);
@@ -985,9 +989,12 @@ export class ASRServiceAPI {
     return { ok: false };
   }
 
-  static async cancelDownload(): Promise<{ ok: boolean; downloadState?: SubtitleDownloadState }> {
+  static async cancelDownload(
+    engine?: 'qwen3' | 'r2t2'
+  ): Promise<{ ok: boolean; downloadState?: SubtitleDownloadState }> {
     try {
-      const res = await fetch('/api/asr/models/cancel-download', { method: 'POST' });
+      const qs = engine ? `?engine=${engine}` : '';
+      const res = await fetch(`/api/asr/models/cancel-download${qs}`, { method: 'POST' });
       if (res.ok) return await res.json();
     } catch (e) {
       console.error('ASRService cancelDownload failed:', e);

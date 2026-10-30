@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { AppSettings, WikiStatusInfo, AsrServiceStatus, VoicePermissionStatus, SubtitleServiceStatus, TtsServiceStatus, OcrServiceStatus, OcrConfig, TranslateServiceStatus } from '../../types/chat';
+import { AppSettings, WikiStatusInfo, AsrServiceStatus, AsrEngineId, VoicePermissionStatus, SubtitleServiceStatus, TtsServiceStatus, OcrServiceStatus, OcrConfig, TranslateServiceStatus } from '../../types/chat';
 import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ASRServiceAPI, SubtitleServiceAPI, TtsServiceAPI, OcrServiceAPI, TranslateServiceAPI } from '../../services/api';
 import { resolveLanguage, formatArticleCount, translations, Language, TranslationKeys } from '../../i18n';
 import {
@@ -974,10 +974,13 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
     }
   };
 
+  /** 当前引擎（配置即真相，服务端不做任何自动切换） */
+  const activeAsrEngine: AsrEngineId = asrStatus?.engine ?? 'qwen3';
+
   const handleAsrDownload = async () => {
     setAsrBusy('download');
     try {
-      await ASRServiceAPI.startDownload();
+      await ASRServiceAPI.startDownload(activeAsrEngine);
       await Promise.all([refreshAsrStatus(), refreshSubtitleStatus()]);
     } finally {
       setAsrBusy(null);
@@ -987,8 +990,31 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
   const handleAsrCancelDownload = async () => {
     setAsrBusy('cancel-download');
     try {
-      await ASRServiceAPI.cancelDownload();
+      await ASRServiceAPI.cancelDownload(activeAsrEngine);
       await Promise.all([refreshAsrStatus(), refreshSubtitleStatus()]);
+    } finally {
+      setAsrBusy(null);
+    }
+  };
+
+  /**
+   * 切换识别引擎：只写配置。服务端若发现旧引擎进程还开着就把它停掉，
+   * 新引擎保持待命 —— 等下一次长按右 ⌘ 才按需加载，不会因为切一下就开始吃显存。
+   */
+  const handleAsrEngineSwitch = async (engine: AsrEngineId) => {
+    if (engine === activeAsrEngine || asrBusy !== null) return;
+    setAsrBusy('engine');
+    setAsrMsg(null);
+    try {
+      const res = await ASRServiceAPI.updateConfig({ engine });
+      if (res.success) {
+        showFeedback('asr', setAsrMsg, { text: t('asrEngineSwitched'), isError: false });
+        await refreshAsrStatus();
+      } else {
+        showFeedback('asr', setAsrMsg, { text: res.error || t('asrActionFailed'), isError: true });
+      }
+    } catch {
+      showFeedback('asr', setAsrMsg, { text: t('asrActionFailed'), isError: true });
     } finally {
       setAsrBusy(null);
     }
@@ -1911,7 +1937,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                         {t('asrServiceTitle')}
                       </span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded-md font-mono bg-violet-500/10 text-violet-600 dark:text-violet-400 font-medium">
-                        {t('asrEngineTag')}
+                        {asrStatus?.model?.shortName ?? t('asrEngineTag')}
                       </span>
                     </div>
                     <div className="flex flex-col items-end gap-1">
@@ -1954,6 +1980,74 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                     </kbd>
                   </div>
 
+                  {/* 识别引擎切换（写配置即生效，运行中会重启） */}
+                  <div className="space-y-1.5 mb-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
+                        {t('asrEngineSelectorLabel')}
+                      </span>
+                      {asrBusy === 'engine' && (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-violet-600 dark:text-violet-400">
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          <span>{t('asrEngineSwitchBusy')}</span>
+                        </span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(
+                        [
+                          {
+                            id: 'qwen3' as AsrEngineId,
+                            shortKey: 'asrEngineQwen3Short',
+                            descKey: 'asrEngineQwen3Desc',
+                          },
+                          {
+                            id: 'r2t2' as AsrEngineId,
+                            shortKey: 'asrEngineR2T2Short',
+                            descKey: 'asrEngineR2T2Desc',
+                          },
+                        ] as const
+                      ).map((opt) => {
+                        const selected = opt.id === activeAsrEngine;
+                        const info = asrStatus?.engines?.find((e) => e.id === opt.id);
+                        const ready = Boolean(info?.ready);
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            disabled={asrBusy !== null}
+                            onClick={() => handleAsrEngineSwitch(opt.id)}
+                            className={`text-left px-2.5 py-2 rounded-lg border transition-all active:scale-[0.98] disabled:opacity-60 cursor-pointer ${
+                              selected
+                                ? 'border-violet-500/50 bg-violet-500/10'
+                                : 'border-black/5 dark:border-white/10 bg-white dark:bg-[#202127] hover:border-violet-500/30'
+                            }`}
+                          >
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span
+                                className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                                  ready ? 'bg-emerald-500' : 'bg-amber-500'
+                                }`}
+                              />
+                              <span
+                                className={`text-[11px] font-medium truncate ${
+                                  selected
+                                    ? 'text-violet-700 dark:text-violet-300'
+                                    : 'text-zinc-700 dark:text-zinc-200'
+                                }`}
+                              >
+                                {t(opt.shortKey)}
+                              </span>
+                            </div>
+                            <div className="mt-0.5 text-[10px] text-zinc-400 dark:text-zinc-500 truncate">
+                              {t(opt.descKey)}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
                   {/* 内置运行环境与模型状态 */}
                   <div className="space-y-2 mb-3">
                     {/* 内置运行环境 */}
@@ -1969,7 +2063,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                             {t('runtimeLabel')}
                           </div>
                           <div className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate">
-                            {t('asrRuntimeDesc')}
+                            {activeAsrEngine === 'qwen3' ? t('asrRuntimeDescQwen3') : t('asrRuntimeDesc')}
                           </div>
                         </div>
                       </div>
@@ -2001,12 +2095,18 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                         />
                         <div className="min-w-0">
                           <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
-                            {t('asrModelLabel')}
+                            {asrStatus?.model?.shortName ?? t('asrModelLabel')}
                           </div>
-                          <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
-                            {isAsrModelReady
-                              ? `${asrStatus?.model?.sizeDesc || '2.31 GB'} · ${t('runtimeBundledReady')}`
-                              : t('asrModelDesc')}
+                          <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono truncate">
+                            {[
+                              asrStatus?.model?.sizeDesc,
+                              asrStatus?.model?.format,
+                              asrStatus?.model?.sharedWithSubtitles
+                                ? t('asrModelSharedWithSubtitles')
+                                : null,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
                           </div>
                         </div>
                       </div>
@@ -2051,7 +2151,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                               ? t('asrProbingSource')
                               : asrDownload.phase === 'cleaning'
                               ? t('asrCleaningCache')
-                              : asrDownload.currentModelName || t('asrModelLabel')}
+                              : asrDownload.currentModelName || asrStatus?.model?.shortName || t('asrDownloadBtn')}
                           </span>
                         </div>
                         <button
@@ -2131,14 +2231,6 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                         {formatDownloadError(asrDownload.error, t)}
                       </div>
                     )}
-
-                  {/* 前置检查错误提示 */}
-                  {asrStatus && !asrStatus.checks.binary && (
-                    <div className="mb-2 text-[10px] text-red-500">{t('asrCheckBinary')}</div>
-                  )}
-                  {asrStatus && !asrStatus.checks.model && !isAsrDownloading && (
-                    <div className="mb-2 text-[10px] text-red-500">{t('asrCheckModel')}</div>
-                  )}
 
                   {/* 服务启动失败原因提示 */}
                   {asrStatus && asrStatus.status === 'stopped' && asrStatus.lastActionLog && (

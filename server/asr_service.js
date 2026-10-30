@@ -1,12 +1,21 @@
-// ASR（语音输入识别）服务托管模块 —— Confucius4-R2T2 (GGUF) via audio.cpp
+// ASR（语音输入识别）服务托管模块 —— 双引擎可切换
 //
 // 职责：把「本地高精度语音识别」作为与基础模型服务、知识库服务并列的受管服务，
 // 内置到 SimpleUI 的 Node 服务层：
 //   - 纯按需待命模式（与 TTS、OCR、字幕服务保持完全统一的生命周期与四态逻辑）；
-//   - 启动时不常驻占用 1236 端口与 2.8GB GPU 显存，保持天蓝色「待命」状态；
+//   - 启动时不常驻占用 1236 端口与数 GB GPU 显存，保持天蓝色「待命」状态；
 //   - 用户在全系统任意位置长按右侧 Command 键录音时，由 Node 侧透明现场拉起并转写；
-//   - 闲置超时（默认 10 分钟）自动安全卸载进程并释放显存，重回「待命」状态；
-//   - 与字幕服务完全共用底层的 audio.cpp 原生推理引擎与 Confucius4-R2T2 Q8_0 模型文件。
+//   - 闲置超时（默认 30 分钟）自动安全卸载进程并释放显存，重回「待命」状态。
+//
+// 两个引擎（config.engine）：
+//   * 'qwen3'  —— Qwen3-ASR-0.6B-8bit (MLX / mlx-audio / 内置 Python)。**默认**。
+//                 整段非流式：录音结束一次性转写（0.6B 的增量解码只在 vLLM 存在，macOS 没有）。
+//   * 'r2t2'   —— Confucius4-R2T2 Q8_0 GGUF via audio.cpp，真流式、逐词上屏。
+//                 与字幕服务共用同一份模型文件与原生推理内核。
+//
+// 二者对外是同一套 API（/live/* 会话 + /transcribe + 四态 status），所以 Swift 端与前端
+// 都感知不到差异；只有「录音过程中有没有实时文字」不同 —— Qwen3 路径在 finish 之前不发 delta。
+// 识别语言也各存一份：r2t2 用 config.language，qwen3 用 config.qwen3Language（默认 Auto = 中英混说）。
 
 import { spawn } from 'child_process';
 import fs from 'fs';
@@ -16,6 +25,7 @@ import http from 'http';
 import { fileURLToPath } from 'url';
 import { startWatchdog } from './watchdog.js';
 import { SUBTITLE_MODELS_DIR, subtitleService } from './subtitle_service.js';
+import { Qwen3ModelDownloader, QWEN3_TOTAL_BYTES } from './asr_model_download.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,6 +39,8 @@ const CONFIG_FILE = path.join(userConfigDir, 'asr_config.json');
 const MODELS_DIR = path.join(userConfigDir, 'models');
 const SERVER_JSON_FILE = path.join(userConfigDir, 'asr_server.json');
 const LOG_FILE = process.env.SIMPLEUI_ASR_LOG || path.join(HOME, 'Library', 'Logs', 'simpleui-asr.log');
+// 两个引擎共用同一个 PID 文件：同一时刻只会有一个引擎在跑，切换 = 先停后起。
+// （Swift 侧 ProcessManager 的退出清扫清单里已经列着它，所以不需要跟着改。）
 const PID_FILE = '/tmp/simpleui_audiocpp.pid';
 
 // 统一复用字幕服务的 Confucius4-R2T2 Q8_0 模型（~2.48 GB，约 2.31 GiB）
@@ -40,15 +52,31 @@ export const MIN_MODEL_BYTES = 2300 * 1024 * 1024;
 export const SERVER_MODEL_ID = 'confucius_asr';
 export const BINARY_BASENAME = 'audiocpp_server';
 
+// Qwen3-ASR（MLX）引擎：模型目录 + Python 包装脚本。模型由面板下载、放这里。
+export const QWEN3_MODEL_DIR = path.join(userConfigDir, 'models', 'asr', 'qwen3-asr-0.6b-8bit');
+const QWEN3_SCRIPT = path.join(__dirname, 'asr', 'qwen3_asr_server.py');
+// Python 包装脚本在 argv 里的可识别名（看门狗靠它做「命令行校验」防 PID 复用误杀）
+const QWEN3_BIN_TAG = 'qwen3_asr_server.py';
+
+export const ENGINE_QWEN3 = 'qwen3';
+export const ENGINE_R2T2 = 'r2t2';
+const ENGINES = [ENGINE_QWEN3, ENGINE_R2T2];
+
 export const DEFAULT_ASR_CONFIG = {
+  engine: ENGINE_QWEN3, // 默认走 Qwen3-ASR（中英混说更准、热态快）；r2t2 作为可选引擎保留
   port: 1236,
   backend: 'metal',
   threads: 4,
+  // R2T2 的识别语言（audio.cpp 的 language 参数）
   language: 'Auto',
+  // Qwen3-ASR 自己的识别语言，与上面互不影响。
+  // 'Auto' = 中英混说（模型逐段自判语种，中文为基础、英文原词保留），这是它的推荐默认值。
+  qwen3Language: 'Auto',
   idleUnloadMin: 30, // 默认闲置 30 分钟自动退出进程返回待命（与 OCR 服务保持一致）
   projectDir: path.join(userConfigDir, 'runtime', 'asr'),
   binaryPath: '',
   modelPath: path.join(SUBTITLE_MODELS_DIR, MODEL_FILENAME),
+  qwen3ModelDir: QWEN3_MODEL_DIR,
 };
 
 // ----------------------------- 配置持久化 -----------------------------
@@ -107,6 +135,19 @@ function bundledAsrRoot() {
 function sanitizeConfig(partial) {
   const out = {};
   if (partial.enabled !== undefined) out.enabled = partial.enabled === true || partial.enabled === 'true';
+  if (partial.engine !== undefined) {
+    const engine = String(partial.engine).toLowerCase();
+    if (ENGINES.includes(engine)) out.engine = engine;
+  }
+  if (partial.qwen3Language !== undefined) {
+    const lang = String(partial.qwen3Language || '').trim();
+    // 'Auto' = 中英混说（推荐默认）；其余按 Qwen3-ASR 的语种名原样透传
+    if (lang && lang.length <= 32) out.qwen3Language = lang;
+  }
+  if (partial.qwen3ModelDir !== undefined) {
+    const dir = String(partial.qwen3ModelDir || '').trim();
+    if (dir) out.qwen3ModelDir = expandHome(dir);
+  }
   if (partial.port !== undefined) {
     const port = Number(partial.port);
     if (Number.isInteger(port) && port >= 1024 && port <= 65535) out.port = port;
@@ -119,6 +160,30 @@ function sanitizeConfig(partial) {
     if (Number.isFinite(m) && m >= 0) out.idleUnloadMin = m;
   }
   return out;
+}
+
+/**
+ * 把编译期/包内/工程内的 Python 解释器找出来。
+ *
+ * 只服务 Qwen3 引擎，所以刻意不去改 tts_service 里那份已有的解析逻辑 —— 朗读链路
+ * 正在正常服役，把它的解析器抽出来共享只会带来无收益的回归面。顺序与它保持一致：
+ * 显式环境变量 → 随包的 server/tts/python → 开发机的 bin/tts_runtime → 系统 python3。
+ */
+function resolvePython() {
+  const candidates = [
+    process.env.SIMPLEUI_ASR_PYTHON,
+    path.join(__dirname, 'tts', 'python', 'bin', 'python3'),
+    path.join(process.resourcesPath || '', 'tts', 'python', 'bin', 'python3'),
+    path.resolve(__dirname, '..', 'bin', 'tts_runtime', 'python', 'bin', 'python3'),
+  ];
+  for (const p of candidates) {
+    try {
+      if (p && fs.existsSync(p)) return p;
+    } catch (e) {
+      // ignore
+    }
+  }
+  return null;
 }
 
 // ----------------------------- 资源探测 -----------------------------
@@ -160,6 +225,57 @@ class AsrService {
     this.inFlight = 0;
     this.startingPromise = null;
     this.liveSessions = new Map();
+    /** Qwen3-ASR 的模型下载器（目录随配置走，切换目录时重建） */
+    this.qwen3Downloader = null;
+    this.qwen3DownloaderDir = '';
+  }
+
+  // ----------------------------- 引擎 -----------------------------
+
+  /**
+   * 当前引擎 = 配置里选的引擎。
+   *
+   * 不做任何「另一个模型顶上」的自动切换：模型没就绪就是 incomplete，
+   * 与 TTS / OCR / 字幕完全同一条规范（缺模型 → 面板提示下载）。
+   */
+  activeEngine() {
+    return ENGINES.includes(this.config.engine) ? this.config.engine : ENGINE_QWEN3;
+  }
+
+  qwen3ModelDir() {
+    return resolveDir(String(this.config.qwen3ModelDir || '').trim(), QWEN3_MODEL_DIR);
+  }
+
+  /** 懒建下载器；模型目录被改过就换一个新的（旧下载器的状态自然作废） */
+  qwen3Download() {
+    const dir = this.qwen3ModelDir();
+    if (!this.qwen3Downloader || this.qwen3DownloaderDir !== dir) {
+      this.qwen3Downloader = new Qwen3ModelDownloader(dir);
+      this.qwen3DownloaderDir = dir;
+    }
+    return this.qwen3Downloader;
+  }
+
+  /** Qwen3 模型是否就绪（目录里必需文件齐全且大小达标） */
+  findQwen3Model() {
+    const dir = this.qwen3ModelDir();
+    try {
+      return this.qwen3Download().ready() ? dir : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** Qwen3 引擎的运行时就绪信息：内置 Python + 包装脚本 */
+  findQwen3Runtime() {
+    const python = resolvePython();
+    let scriptReady = false;
+    try {
+      scriptReady = fs.existsSync(QWEN3_SCRIPT) && fs.statSync(QWEN3_SCRIPT).isFile();
+    } catch (e) {
+      scriptReady = false;
+    }
+    return { python, script: QWEN3_SCRIPT, ready: Boolean(python) && scriptReady };
   }
 
   findBinary() {
@@ -314,25 +430,38 @@ class AsrService {
     const pid = readPid();
     const alive = isPidAlive(pid);
     const healthy = alive ? await this.checkHealth() : false;
+    const engine = this.activeEngine();
 
-    const binaryPath = this.findBinary();
-    const modelPath = this.findModel();
-    const modelReady = Boolean(
-      modelPath &&
-      fs.existsSync(modelPath) &&
-      fs.statSync(modelPath).size >= MIN_MODEL_BYTES
+    // 两个引擎各自探测一次：当前引擎决定 status，另一个只用于面板上的就绪点
+    const r2t2Path = this.findModel();
+    const r2t2Ready = Boolean(
+      r2t2Path && fs.existsSync(r2t2Path) && fs.statSync(r2t2Path).size >= MIN_MODEL_BYTES
     );
-    let modelStat = null;
-    if (modelPath && fs.existsSync(modelPath)) {
+    let r2t2Stat = null;
+    if (r2t2Path && fs.existsSync(r2t2Path)) {
       try {
-        modelStat = fs.statSync(modelPath);
+        r2t2Stat = fs.statSync(r2t2Path);
       } catch (e) {
         // ignore
       }
     }
+    const qwen3Dir = this.qwen3ModelDir();
+    const qwen3Ready = Boolean(this.findQwen3Model());
+    const qwen3Bytes = this.qwen3Download().presentBytes();
+
+    // 与其余服务同构：runtime 就是「跑这个模型的可执行程序」，模型就是权重
+    const r2t2Binary = this.findBinary();
+    const qwen3Runtime = this.findQwen3Runtime();
+    const runtimeReady = engine === ENGINE_QWEN3 ? qwen3Runtime.ready : Boolean(r2t2Binary);
+    const modelReady = engine === ENGINE_QWEN3 ? qwen3Ready : r2t2Ready;
+    const binaryPath = engine === ENGINE_QWEN3 ? qwen3Runtime.python : r2t2Binary;
+    const modelPath =
+      engine === ENGINE_QWEN3
+        ? qwen3Dir
+        : r2t2Path || path.join(SUBTITLE_MODELS_DIR, MODEL_FILENAME);
 
     let status = 'incomplete';
-    if (!modelReady || !binaryPath) {
+    if (!modelReady || !runtimeReady) {
       status = 'incomplete';
     } else if (this.pendingOp === 'start' || this.pendingOp === 'restart' || this.startingPromise) {
       status = 'loading';
@@ -346,48 +475,82 @@ class AsrService {
       status = 'standby';
     }
 
+    // 面板要显示的三个事实：多大、什么格式、是不是与字幕共用同一份权重。
+    // 两个模型都是「用户下载」的（R2T2 那份就是字幕管线在用的同一个文件），
+    // 没有任何一个随包分发 —— 文案由前端按这三个字段拼，不再按引擎猜。
+    const model =
+      engine === ENGINE_QWEN3
+        ? {
+            shortName: 'Qwen3-ASR 0.6B',
+            ready: qwen3Ready,
+            path: qwen3Dir,
+            sizeBytes: qwen3Bytes,
+            expectedBytes: QWEN3_TOTAL_BYTES,
+            sizeMb: (qwen3Bytes / (1024 * 1024)).toFixed(1),
+            sizeDesc: '964 MB',
+            format: 'MLX 8bit',
+            sharedWithSubtitles: false,
+            streaming: false,
+          }
+        : {
+            shortName: 'Confucius4-R2T2 Q8_0',
+            ready: r2t2Ready,
+            path: r2t2Path || path.join(SUBTITLE_MODELS_DIR, MODEL_FILENAME),
+            sizeBytes: r2t2Stat?.size || 0,
+            expectedBytes: EXPECTED_MODEL_BYTES,
+            sizeMb: r2t2Stat ? (r2t2Stat.size / (1024 * 1024)).toFixed(1) : '0',
+            sizeDesc: '2.31 GB',
+            format: 'GGUF Q8_0',
+            sharedWithSubtitles: true,
+            streaming: true,
+          };
+
     return {
       status,
       running: alive && healthy,
       ready: alive && healthy,
       modelsReady: modelReady,
-      runtimeReady: Boolean(binaryPath),
+      runtimeReady,
+      engine,
+      // 面板的两个选项只需要「这个引擎能不能切」+「它自己选的识别语言」
+      engines: [
+        { id: ENGINE_QWEN3, ready: qwen3Ready, language: this.config.qwen3Language || 'Auto' },
+        { id: ENGINE_R2T2, ready: r2t2Ready, language: this.config.language || 'Auto' },
+      ],
       pid: alive ? pid : null,
       port: this.config.port || 1236,
       backend: this.config.backend || 'metal',
       language: this.config.language || 'Auto',
+      qwen3Language: this.config.qwen3Language || 'Auto',
       idleUnloadMin: this.config.idleUnloadMin ?? 30,
       projectDir: resolveDir(this.config.projectDir, DEFAULT_ASR_CONFIG.projectDir),
       runtimeRoot: this.resolveRuntimeRoot(),
       bundled: !!bundledAsrRoot(),
-      checks: {
-        binary: Boolean(binaryPath),
-        model: modelReady,
-        binaryPath,
-        modelPath: modelPath || path.join(SUBTITLE_MODELS_DIR, MODEL_FILENAME),
-      },
-      model: {
-        name: 'Confucius4-R2T2 Q8_0 GGUF (有道真流式与离线 ASR)',
-        shortName: 'Confucius4-R2T2 Q8_0',
-        ready: modelReady,
-        path: modelPath || path.join(SUBTITLE_MODELS_DIR, MODEL_FILENAME),
-        sizeBytes: modelStat?.size || 0,
-        expectedBytes: EXPECTED_MODEL_BYTES,
-        sizeMb: modelStat ? (modelStat.size / (1024 * 1024)).toFixed(1) : '0',
-        sizeDesc: '2.31 GB',
-      },
-      download: subtitleService.downloadState,
+      checks: { binary: runtimeReady, model: modelReady, binaryPath, modelPath },
+      model,
+      // 每个引擎只有一个下载器，status 就报当前引擎的那个，与 TTS/OCR 同构
+      download: engine === ENGINE_QWEN3 ? this.qwen3Download().status() : subtitleService.downloadState,
       lastActionAt: this.lastActionAt || undefined,
       lastActionLog: this.lastActionLog || undefined,
     };
   }
 
-  ensureWatchdog() {
-    if (this.watchdog) return;
+  /**
+   * 看门狗跟着「当前这次启动的引擎」重建。
+   *
+   * 同一个 PID 文件会承载两个不同的可执行程序（audiocpp_server / qwen3_asr_server.py），
+   * 而看门狗的命令行校验只认创建时那个名字；Node 存活期间换过引擎 ⇒ 名字对不上 ⇒
+   * 崩溃时它会把该清理的进程放走。所以每次启动前先结束旧看门狗，再按当前引擎名新建。
+   */
+  ensureWatchdog(engine = this.activeEngine()) {
     try {
+      if (this.watchdog) {
+        this.watchdog.kill('SIGKILL');
+        this.watchdog = null;
+      }
       this.watchdog = startWatchdog({
         pidFile: PID_FILE,
-        binaryBasename: BINARY_BASENAME,
+        binaryBasename: engine === ENGINE_QWEN3 ? QWEN3_BIN_TAG : BINARY_BASENAME,
       });
     } catch (e) {
       // ignore
@@ -406,18 +569,49 @@ class AsrService {
   }
 
   async startService() {
-    const binary = this.findBinary();
-    if (!binary) {
-      this.lastActionLog = `${BINARY_BASENAME} 未找到（请检查本地 audiocpp 构建产物）`;
-      this.lastActionAt = Date.now();
-      return { accepted: false, reason: 'binary_not_found' };
+    const engine = this.activeEngine();
+
+    // ---- 1) 运行时与模型就绪校验（两个引擎各查各的） ----
+    let command = null;
+    let args = null;
+    let engineLabel = '';
+    let modelDir = null;
+
+    if (engine === ENGINE_QWEN3) {
+      const rt = this.findQwen3Runtime();
+      if (!rt.ready) {
+        const why = !rt.python
+          ? '未找到内置 Python 运行时（bin/tts_runtime 或包内 server/tts/python）'
+          : `未找到 Qwen3-ASR 包装脚本 ${QWEN3_SCRIPT}`;
+        this.lastActionLog = why;
+        this.lastActionAt = Date.now();
+        return { accepted: false, reason: !rt.python ? 'python_not_found' : 'script_not_found' };
+      }
+      modelDir = this.findQwen3Model();
+      if (!modelDir) {
+        this.lastActionLog = 'Qwen3-ASR 模型未就绪（请在服务管理面板中点击下载）';
+        this.lastActionAt = Date.now();
+        return { accepted: false, reason: 'model_not_found' };
+      }
+      command = rt.python;
+      args = [QWEN3_SCRIPT, '--model-dir', modelDir, '--port', String(this.config.port || 1236)];
+      engineLabel = 'Qwen3-ASR-0.6B-8bit (MLX)';
+    } else {
+      const binary = this.findBinary();
+      if (!binary) {
+        this.lastActionLog = `${BINARY_BASENAME} 未找到（请检查本地 audiocpp 构建产物）`;
+        this.lastActionAt = Date.now();
+        return { accepted: false, reason: 'binary_not_found' };
+      }
+      if (!this.findModel()) {
+        this.lastActionLog = `Confucius4-R2T2 模型未就绪（请在服务管理面板中点击下载）`;
+        this.lastActionAt = Date.now();
+        return { accepted: false, reason: 'model_not_found' };
+      }
+      command = binary;
+      engineLabel = 'Confucius4-R2T2 Q8_0 (audio.cpp)';
     }
-    const model = this.findModel();
-    if (!model) {
-      this.lastActionLog = `Confucius4-R2T2 模型未就绪（请在服务管理面板中点击下载）`;
-      this.lastActionAt = Date.now();
-      return { accepted: false, reason: 'model_not_found' };
-    }
+
     const alive = isPidAlive(readPid());
     if (alive && !this.pendingOp) {
       return { accepted: true, alreadyRunning: true };
@@ -426,24 +620,27 @@ class AsrService {
     this.pendingOp = 'start';
     this.lastActionAt = Date.now();
 
-    let serverJsonFile;
-    try {
-      serverJsonFile = this.buildServerJson().serverJsonFile;
-    } catch (e) {
-      this.pendingOp = null;
-      this.lastActionLog = `生成 server.json 失败: ${e.message}`;
-      return { accepted: false, reason: 'config_write_failed' };
+    if (engine === ENGINE_R2T2) {
+      try {
+        // 只有 audio.cpp 引擎需要 server.json；Qwen3 的参数全部走 argv
+        this.buildServerJson();
+        args = ['--config', SERVER_JSON_FILE];
+      } catch (e) {
+        this.pendingOp = null;
+        this.lastActionLog = `生成 server.json 失败: ${e.message}`;
+        return { accepted: false, reason: 'config_write_failed' };
+      }
     }
 
-    this.ensureWatchdog();
+    this.ensureWatchdog(engine);
     const log = this.openLogStream();
 
     try {
       if (!fs.existsSync(userConfigDir)) fs.mkdirSync(userConfigDir, { recursive: true });
-      const child = spawn(binary, ['--config', serverJsonFile], {
+      const child = spawn(command, args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: userConfigDir,
-        env: { ...process.env },
+        env: { ...process.env, PYTHONUNBUFFERED: '1' },
       });
       this.child = child;
       try {
@@ -452,7 +649,7 @@ class AsrService {
         // ignore
       }
       if (log) {
-        log.write(`[${new Date().toISOString()}] start: ${binary} --config ${serverJsonFile}\n`);
+        log.write(`[${new Date().toISOString()}] start(${engine}): ${command} ${args.join(' ')}\n`);
       }
       this.childLogTail = [];
       const captureTail = (d) => {
@@ -469,19 +666,26 @@ class AsrService {
       child.stderr.on('data', captureTail);
       let exitedBadly = false;
       child.on('exit', (code, signal) => {
-        if (log) log.write(`\n[${new Date().toISOString()}] audiocpp_server exited code=${code} signal=${signal}\n`);
+        if (log) log.write(`\n[${new Date().toISOString()}] ${engine} exited code=${code} signal=${signal}\n`);
         if (this.child === child) this.child = null;
-        try { fs.unlinkSync(PID_FILE); } catch (e) { /* ignore */ }
+        // 只清理「自己写的那条」PID 记录：启动失败（如端口被占）的子进程退出时若无条件
+        // unlink，会把另一个活着的实例的 PID 文件删掉，服务就彻底失联（不会被空闲卸载、
+        // 也不会被退出清扫），下次启动还会撞端口。
+        try {
+          if (readPid() === child.pid) fs.unlinkSync(PID_FILE);
+        } catch (e) {
+          /* ignore */
+        }
         if (code !== null && code !== 0) {
           exitedBadly = true;
-          this.lastActionLog = `audiocpp_server 异常退出 (code=${code})：\n${this.childLogTail.slice(-4).join('\n')}`;
+          this.lastActionLog = `${engineLabel} 异常退出 (code=${code})：\n${this.childLogTail.slice(-4).join('\n')}`;
           this.lastActionAt = Date.now();
         }
       });
-      this.lastActionLog = `已拉起 audiocpp_server (pid=${child.pid}) · ${this.config.backend} · Confucius4-R2T2`;
+      this.lastActionLog = `已拉起 ${engineLabel} (pid=${child.pid})`;
 
-      // 等待健康探测通过（冷启动要加载 2.48GB 权重并编译 Metal 图：实测热缓存 6.3s，
-      // 磁盘冷 / 机器忙时可达数十秒）。这里给足 90s 的余量 —— 调用方（语音输入）
+      // 等待健康探测通过。两个引擎的冷启动都在秒级（实测 Qwen3 ~1.3s、R2T2 ~6.5s，
+      // 磁盘冷 / 机器忙时会更久）。这里沿用原来的 90s 余量 —— 调用方（语音输入）
       // 在等待期间持续把音频缓存着，所以「等」不会丢数据，而提前放弃才会。
       let healthy = false;
       const healthDeadline = Date.now() + 90000;
@@ -509,39 +713,43 @@ class AsrService {
     }
   }
 
-  // 按需唤醒入口：有录音请求来时若尚未拉起则现场拉起并重置闲置计时
+  // 按需唤醒入口：有录音请求来时若尚未拉起则现场拉起并重置闲置计时。
+  // 并发调用（长按时的 /warmup 与 /live/start，或连点两次启动）共享同一次启动，
+  // 绝不各自 spawn 一个进程 —— 后到的那个只会等同一个 Promise。
   async ensureRunning() {
-    const binary = this.findBinary();
-    if (!binary) {
-      return { ok: false, error: 'BINARY_MISSING' };
-    }
-    const model = this.findModel();
-    if (!model) {
-      return { ok: false, error: 'MODEL_MISSING' };
+    const engine = this.activeEngine();
+    if (engine === ENGINE_QWEN3) {
+      if (!this.findQwen3Runtime().ready) {
+        return { ok: false, error: 'RUNTIME_MISSING' };
+      }
+      if (!this.findQwen3Model()) {
+        return { ok: false, error: 'MODEL_MISSING' };
+      }
+    } else {
+      if (!this.findBinary()) {
+        return { ok: false, error: 'BINARY_MISSING' };
+      }
+      if (!this.findModel()) {
+        return { ok: false, error: 'MODEL_MISSING' };
+      }
     }
     const pid = readPid();
-    const alive = isPidAlive(pid);
-    if (alive) {
-      const healthy = await this.checkHealth();
-      if (healthy) {
-        this.touch();
-        return { ok: true, existing: true };
-      }
+    if (isPidAlive(pid) && (await this.checkHealth())) {
+      this.touch();
+      return { ok: true, existing: true };
     }
-    if (this.startingPromise) {
-      return await this.startingPromise;
+
+    if (!this.startingPromise) {
+      this.startingPromise = this.startService().finally(() => {
+        this.startingPromise = null;
+      });
     }
-    this.startingPromise = this.startService();
-    try {
-      const res = await this.startingPromise;
-      if (res && res.accepted) {
-        this.touch();
-        return { ok: true, existing: false };
-      }
-      return { ok: false, error: res?.reason || 'SPAWN_FAILED', detail: this.lastActionLog };
-    } finally {
-      this.startingPromise = null;
+    const res = await this.startingPromise;
+    if (res && res.accepted) {
+      this.touch();
+      return { ok: true, existing: false };
     }
+    return { ok: false, error: res?.reason || 'SPAWN_FAILED', detail: this.lastActionLog };
   }
 
   async stopService() {
@@ -587,6 +795,10 @@ class AsrService {
       return { success: false, error: 'NO_VALID_FIELDS' };
     }
     const wasRunning = isPidAlive(readPid());
+    // 换引擎 / 换模型目录：旧进程必须让位，否则它会继续占着端口用旧模型答话
+    const engineChanged =
+      (clean.engine !== undefined && clean.engine !== this.activeEngine()) ||
+      (clean.qwen3ModelDir !== undefined && clean.qwen3ModelDir !== this.qwen3ModelDir());
     this.config = { ...this.config, ...clean };
     try {
       if (!fs.existsSync(userConfigDir)) fs.mkdirSync(userConfigDir, { recursive: true });
@@ -595,14 +807,22 @@ class AsrService {
       return { success: false, error: e.message };
     }
 
+    // 切引擎后回到待命：**不顺手把新引擎拉起来**，等长按右 ⌘ 时才按需加载。
+    // 只改其它参数（如 idleUnloadMin）且进程在跑时，按原逻辑热重启。
     let restarted = false;
-    if (restartIfRunning && wasRunning) {
+    let stopped = false;
+    if (wasRunning && engineChanged) {
+      await this.stopService();
+      stopped = true;
+      this.lastActionLog = `已切换识别引擎: ${this.activeEngine()}（回到待命）`;
+      this.lastActionAt = Date.now();
+    } else if (wasRunning && restartIfRunning) {
       await this.restartService();
       restarted = true;
     } else if (wasRunning) {
       this.touch();
     }
-    return { success: true, restarted, config: this.publicConfig() };
+    return { success: true, restarted, stopped, config: this.publicConfig() };
   }
 
   publicConfig() {
@@ -662,7 +882,141 @@ class AsrService {
 
   // ----------------------------- 转写与流式引擎 -----------------------------
 
-  createLiveSession({ language, onDelta, onDone, onError }) {
+  /**
+   * 会话入口：按当前引擎分流。
+   *
+   * 两者的对外契约完全一致（write / finish / abort / broadcast / SSE 事件），
+   * 区别只有「finish 之前会不会有 delta」：
+   *   - r2t2：真流式，边录边出词；
+   *   - qwen3：只累积 PCM，finish 时一次性整段转写，中途不发任何 delta。
+   */
+  createLiveSession(opts) {
+    return this.activeEngine() === ENGINE_QWEN3
+      ? this.createBufferedSession(opts)
+      : this.createR2T2Session(opts);
+  }
+
+  /**
+   * Qwen3-ASR 的「会话」——其实是个缓冲器。
+   *
+   * 为什么还要维持会话形状：Swift 侧的 LiveAsrSession 与 /api/asr/live/* 协议完全不变，
+   * 这样切引擎只是服务端内部的事，原生端一行都不用改、也不需要重新编译验证。
+   */
+  createBufferedSession({ onDelta, onDone, onError }) {
+    const session = {
+      state: 'open', // 'open' | 'finishing' | 'done' | 'error'
+      abandoned: false,
+      finished: false,
+      chunks: [],
+      bytes: 0,
+      sseClients: new Set(),
+      onDelta,
+      onDone,
+      onError,
+      text: '',
+    };
+
+    session.broadcast = (msg) => {
+      const payload = `data: ${JSON.stringify(msg)}\n\n`;
+      for (const client of session.sseClients) {
+        try {
+          client.write(payload);
+        } catch {
+          session.sseClients.delete(client);
+        }
+      }
+    };
+
+    // 只累积，不截断：录音长度由 Swift 侧决定，这里不做任何机械裁剪
+    session.write = (pcm) => {
+      if (session.abandoned || session.state !== 'open') return false;
+      session.chunks.push(pcm);
+      session.bytes += pcm.length;
+      return true;
+    };
+
+    session.finish = () => {
+      if (session.finished) return;
+      session.finished = true;
+      if (session.abandoned) return;
+      session.state = 'finishing';
+
+      const pcm = session.chunks.length ? Buffer.concat(session.chunks) : Buffer.alloc(0);
+      session.chunks = [];
+
+      this.postQwen3Transcribe(pcm)
+        .then((result) => {
+          if (session.abandoned) return;
+          session.state = 'done';
+          session.text = result.text || '';
+          session.onDone?.(session.text, null);
+          session.broadcast({ type: 'done', text: session.text });
+        })
+        .catch((err) => {
+          if (session.abandoned) return;
+          session.state = 'error';
+          session.onError?.(err);
+          session.broadcast({ type: 'error', error: err.message });
+        });
+    };
+
+    session.abort = () => {
+      session.abandoned = true;
+      session.state = 'error';
+      session.chunks = [];
+    };
+
+    return session;
+  }
+
+  /**
+   * 调 Python 侧整段转写：PCM(s16le/16k/mono) 进，文本出。
+   * 语言只用 Qwen3 自己的那份配置（qwen3Language，默认 Auto = 中英混说），
+   * 不读 R2T2 的 language —— 两个模型的配置互不影响。
+   */
+  postQwen3Transcribe(pcm) {
+    const port = this.config.port || 1236;
+    const lang = String(this.config.qwen3Language || 'Auto');
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port,
+          path: `/transcribe?sample_rate=16000&language=${encodeURIComponent(lang)}`,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'Content-Length': pcm.length,
+          },
+          timeout: 180000,
+        },
+        (res) => {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => {
+            const body = Buffer.concat(chunks).toString('utf-8');
+            let parsed = null;
+            try {
+              parsed = JSON.parse(body);
+            } catch (e) {
+              reject(new Error(`bad_upstream_json: ${body.slice(0, 120)}`));
+              return;
+            }
+            if (res.statusCode !== 200 || !parsed?.ok) {
+              reject(new Error(parsed?.error || `upstream_${res.statusCode}`));
+              return;
+            }
+            resolve({ text: String(parsed.text || ''), language: parsed.language || '' });
+          });
+        }
+      );
+      req.on('timeout', () => req.destroy(new Error('upstream_timeout')));
+      req.on('error', reject);
+      req.end(pcm);
+    });
+  }
+
+  createR2T2Session({ language, onDelta, onDone, onError }) {
     const port = this.config.port || 1236;
     const rawLang = language || this.config.language || 'Auto';
     const lang = String(rawLang).toLowerCase() === 'auto' ? 'Auto' : rawLang;
@@ -947,6 +1301,14 @@ class AsrService {
         resolve({ ok: false, error: err.message || 'transcribe_failed' });
       };
 
+      // Qwen3 走整段直连：不分块、不建会话，一次请求拿回全文
+      if (this.activeEngine() === ENGINE_QWEN3) {
+        this.postQwen3Transcribe(pcm)
+          .then((r) => doneCallback(r.text))
+          .catch(errorCallback);
+        return;
+      }
+
       const session = this.createLiveSession({
         language: lang,
         onDone: (finalText) => doneCallback(finalText),
@@ -1018,9 +1380,11 @@ class AsrService {
         return;
       }
 
+      // 手动启动与语音输入的按需唤醒走同一条路（共享同一次 spawn），
+      // 这样连点两次 /start、或 /start 与录音同时到达都不会拉起两个进程。
       if (pathname === '/start' && req.method === 'POST') {
-        const r = await this.startService();
-        sendJson(200, { ...r, status: (await this.getStatus()).status });
+        const r = await this.ensureRunning();
+        sendJson(r.ok ? 200 : 503, { ...r, status: (await this.getStatus()).status });
         return;
       }
 
@@ -1056,8 +1420,18 @@ class AsrService {
         return;
       }
 
-      // 模型下载控制（与字幕服务复用同一套底层下载器）
+      // 模型下载控制
+      //   ?engine=qwen3 -> 走 Qwen3 自己的下载器（MLX 权重，放到 models/asr/ 下）
+      //   其它/缺省     -> 走字幕服务那套 R2T2 GGUF 下载器（两个引擎共用同一份 GGUF）
       if (pathname === '/models/download' && req.method === 'POST') {
+        const target = urlObj.searchParams.get('engine');
+        if (target === ENGINE_QWEN3) {
+          this.qwen3Download()
+            .start()
+            .catch((err) => console.error('[AsrService] qwen3 download error:', err.message));
+          sendJson(200, { ok: true, downloadState: this.qwen3Download().status() });
+          return;
+        }
         subtitleService.startDownload('asr').catch((err) => {
           console.error('[AsrService] start download error:', err.message);
         });
@@ -1066,16 +1440,22 @@ class AsrService {
       }
 
       if (pathname === '/models/cancel-download' && req.method === 'POST') {
-        const state = subtitleService.cancelDownload();
-        sendJson(200, { ok: true, downloadState: state });
+        const target = urlObj.searchParams.get('engine');
+        if (target === ENGINE_QWEN3) {
+          sendJson(200, { ok: true, downloadState: this.qwen3Download().cancel() });
+          return;
+        }
+        sendJson(200, { ok: true, downloadState: subtitleService.cancelDownload() });
         return;
       }
 
       if (pathname === '/open-dir' && req.method === 'POST') {
         try {
-          fs.mkdirSync(SUBTITLE_MODELS_DIR, { recursive: true });
-          spawn('open', [SUBTITLE_MODELS_DIR], { detached: true, stdio: 'ignore' }).unref();
-          sendJson(200, { ok: true, path: SUBTITLE_MODELS_DIR });
+          const dir =
+            this.activeEngine() === ENGINE_QWEN3 ? this.qwen3ModelDir() : SUBTITLE_MODELS_DIR;
+          fs.mkdirSync(dir, { recursive: true });
+          spawn('open', [dir], { detached: true, stdio: 'ignore' }).unref();
+          sendJson(200, { ok: true, path: dir });
         } catch (e) {
           sendJson(500, { ok: false, error: e.message });
         }

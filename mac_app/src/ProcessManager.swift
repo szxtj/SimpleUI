@@ -120,6 +120,7 @@ class ProcessManager {
         pkill -f "llama-server.*--port 1248" 2>/dev/null || true
         pkill -x "subtitle_ml_helper" 2>/dev/null || true
         pkill -x "audiocpp_server" 2>/dev/null || true
+        pkill -f "qwen3_asr_server.py" 2>/dev/null || true
         pkill -f "tts_server.py" 2>/dev/null || true
         pkill -f "ocr_server.py" 2>/dev/null || true
         pkill -x "TurboFieldfareServer" 2>/dev/null || true

@@ -285,6 +285,12 @@ export interface AsrServiceStatus {
   ready?: boolean;
   modelsReady?: boolean;
   runtimeReady?: boolean;
+  /** 当前生效的引擎 */
+  engine?: AsrEngineId;
+  /** 两个引擎各自的可切换信息（是否就绪 + 它自己的识别语言） */
+  engines?: AsrEngineOption[];
+  /** Qwen3-ASR 自己的识别语言（默认 Auto = 中英混说），与 R2T2 的 language 互不影响 */
+  qwen3Language?: string;
   idleUnloadMin?: number;
   pid: number | null;
   port: number;
@@ -298,7 +304,6 @@ export interface AsrServiceStatus {
     modelPath: string | null;
   };
   model?: {
-    name: string;
     shortName: string;
     ready: boolean;
     path: string;
@@ -306,15 +311,31 @@ export interface AsrServiceStatus {
     expectedBytes: number;
     sizeMb: string;
     sizeDesc: string;
+    /** 权重格式，如 GGUF Q8_0 / MLX 8bit */
+    format: string;
+    /** 是否与实时字幕服务共用同一份权重文件（R2T2 为 true） */
+    sharedWithSubtitles: boolean;
+    streaming?: boolean;
   };
   download?: SubtitleDownloadState;
   lastActionAt?: number;
   lastActionLog?: string;
 }
 
+/** 语音输入识别引擎：qwen3 = Qwen3-ASR-0.6B (MLX，整段)，r2t2 = Confucius4-R2T2 (audio.cpp，流式) */
+export type AsrEngineId = 'qwen3' | 'r2t2';
+
+/** 面板上的引擎选项：只需要「能不能切」和「它自己的识别语言」 */
+export interface AsrEngineOption {
+  id: AsrEngineId;
+  ready: boolean;
+  language: string;
+}
+
 /** 语音识别服务运行配置：与后端 asr_config.json 对应 */
 export interface AsrServiceConfig {
   enabled?: boolean;
+  engine?: AsrEngineId;
   port: number;
   backend: 'cpu' | 'metal' | 'best';
   threads: number;
@@ -323,6 +344,8 @@ export interface AsrServiceConfig {
   projectDir: string;
   binaryPath: string;
   modelPath: string;
+  qwen3Language?: string;
+  qwen3ModelDir?: string;
 }
 
 /** 原生侧回推的语音输入权限快照 */
