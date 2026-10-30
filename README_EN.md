@@ -151,14 +151,14 @@ System audio (16 kHz mono PCM)
 
 | Component | Model / version | Size | Runtime |
 | :--- | :--- | ---: | :--- |
-| Streaming ASR | Confucius4-R2T2 Q8_0 | 2.31 GiB | audiocpp · Metal (`:1250`) |
-| Sentence segmentation | [SaT-3L-sm](https://huggingface.co/segment-any-text/sat-3l-sm) CoreML FP16 | 240 MB | CoreML · ANE / CPU |
-| Sentence translation | [Index-Translate-2B](https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF) Q4_K_M | 1.22 GiB | llama-server · Metal (`:1249`) |
+| Streaming ASR | Confucius4-R2T2 Q8_0 | 2.31 GB | audiocpp · Metal (`:1250`) |
+| Sentence segmentation | [SaT-3L-sm](https://huggingface.co/segment-any-text/sat-3l-sm) CoreML FP16 | 238 MB | CoreML · ANE / CPU |
+| Sentence translation | [Index-Translate-2B](https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF) Q4_K_M | 1.22 GB | llama-server · Metal (`:1249`) |
 | Segmentation tokenizer | XLM-R `tokenizer.json` | 9 MB | Node |
 
 > Subtitle models follow their upstream licenses; SaT weights are MIT — verify the distribution terms of the CoreML conversion package.
 >
-> R2T2 only accepts GGUF files in the **audio.cpp package format** (currently `Q8_0`, 2.31 GiB). The official
+> R2T2 only accepts GGUF files in the **audio.cpp package format** (currently `Q8_0`, 2.31 GB). The official
 > [netease-youdao/Confucius4-R2T2-GGUF](https://huggingface.co/netease-youdao/Confucius4-R2T2-GGUF) uses the
 > llama.cpp layout (`blk.*` plus a separate `mmproj`), which audio.cpp cannot load — so its `Q4_K_M` and other
 > low-bit variants are not usable yet.
@@ -179,7 +179,7 @@ How it works:
 - Select any text in a message; two rounded buttons appear next to the selection — **Translate** and **Read**. Translate opens the Quick Translate panel with the selected plain text filled in and starts translating immediately in Quick mode; Read uses the macOS system voice, and clicking again (or pressing `Esc`) stops it.
 - The selection toolbar is shared by the main window and the Spotlight panel, so both behave identically; the Translate button is hidden in plain-browser development where the native bridge is unavailable.
 - Every answer also has a read-aloud button in its footer, to the left of Retry. Clicking it splits the answer into **visual blocks** (headings, lists and tables each become their own block, while soft line breaks inside a paragraph are joined back), then feeds them to the model one by one. Code blocks and math (`$…$` / `$$…$$` / `\[…\]`) are skipped entirely, emoji and keycap symbols are stripped, and tables are read row by row with cells joined by commas. A per-segment progress bar appears under the message and turns into a player when finished (play/pause, seek, mute, regenerate, delete audio).
-- Model: Qwen3-TTS 1.7B CustomVoice (MLX 6bit, ~2.5 GB including the separate speech codec); default voice `serena`.
+- Model: Qwen3-TTS 1.7B CustomVoice (MLX 6bit, ~2.51 GB including the separate speech codec); default voice `serena`.
 - Formula blocks are `select-none`, so they are skipped naturally; code blocks are read as plain text.
 - The model is loaded on every run and unloaded as soon as synthesis finishes: **no resident process and no idle timer**. Loading takes ~15 s (faster when the weights are already in the page cache); the progress bar shows "Loading voice model".
 - The finished audio is joined into one WAV under `~/Library/Application Support/SimpleUI/tts_output/`, and the player bar is restored by content fingerprint after a restart; endpoint `POST /api/tts/article` (NDJSON progress stream).
@@ -189,7 +189,7 @@ How it works:
 ### Screen Capture OCR (Markdown Extraction)
 
 - Global hotkey `⌘⇧2` (or triggered via the macOS menubar menu) launches a native full-screen crosshair region capture tool.
-- Model: PaddleOCR-VL 1.6 (MLX 8-bit quantized, ~1.09 GB), runs entirely on-device; screen captures and recognized text never leave the local machine.
+- Model: PaddleOCR-VL 1.6 (MLX 8-bit quantized, ~1.02 GB), runs entirely on-device; screen captures and recognized text never leave the local machine.
 - Structured extraction: Deeply optimized for complex document layouts, automatically extracting paragraphs, hierarchical headings, Markdown tables, LaTeX inline/display math formulas (`$...$` / `$$...$$`), and charts directly into the system clipboard with an instant completion notification.
 - Strictly on-demand: Automatically starts the Python MLX-VLM backend on first capture (2–5s warmup), then stays in standby; **unloads the model and terminates the process after the idle timeout** (default 30 minutes, customizable) to completely free unified memory and VRAM; endpoint `POST /api/ocr/recognize`.
 - Service Manager: Allows switching recognition tasks (general document, table extraction, formula, chart), adjusting resolution budget (balanced, high, max), customizing idle unload timeout, and auto speed-testing official vs. mirror sources with resumable downloads.
@@ -277,10 +277,10 @@ Builds the Swift native shell, frontend assets, and bundled runtimes, then insta
 
 - Base models: prepare TTF / Mference repositories and weights yourself, connect another OpenAI-compatible service, or configure a DeepSeek API key in Settings.
 - Speech input models: the default Qwen3-ASR-0.6B-8bit (~964 MB, MLX) downloads from "Service Manager → Speech Input"; switching to Confucius4-R2T2 Q8_0 (~2.31 GB) reuses the subtitle service's existing weights without duplicate downloads or storage.
-- Voice synthesis model: Download Qwen3-TTS 1.7B (~2.5 GB) via one-click speed-tested download under Service Manager → Voice Synthesis. The speech codec is byte-identical to the previous release, so integrity checks reuse it.
-- Visual OCR model: Download PaddleOCR-VL 1.6 (~1.09 GB) via one-click speed-tested download under Service Manager → Visual OCR.
+- Voice synthesis model: Download Qwen3-TTS 1.7B (~2.51 GB) via one-click speed-tested download under Service Manager → Voice Synthesis. The speech codec is byte-identical to the previous release, so integrity checks reuse it.
+- Visual OCR model: Download PaddleOCR-VL 1.6 (~1.02 GB) via one-click speed-tested download under Service Manager → Visual OCR.
 - Subtitle models: download in Service Manager → Live Subtitles; the set includes R2T2, SaT, Index-Translate, and the tokenizer.
-- Quick Translate model: download in "Service Manager → Quick Translate" or directly reuse the Index-Translate-2B Q4_K_M weights (~1.25 GB) from Live Subtitles.
+- Quick Translate model: download in "Service Manager → Quick Translate" or directly reuse the Index-Translate-2B Q4_K_M weights (~1.22 GB) from Live Subtitles.
 - Offline wiki: select a local ZIM file under Service Manager → Knowledge Base.
 
 ---

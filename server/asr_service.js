@@ -26,6 +26,7 @@ import { fileURLToPath } from 'url';
 import { startWatchdog } from './watchdog.js';
 import { SUBTITLE_MODELS_DIR, subtitleService } from './subtitle_service.js';
 import { Qwen3ModelDownloader, QWEN3_TOTAL_BYTES } from './asr_model_download.js';
+import { formatBytes } from './format_bytes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -487,7 +488,7 @@ class AsrService {
             sizeBytes: qwen3Bytes,
             expectedBytes: QWEN3_TOTAL_BYTES,
             sizeMb: (qwen3Bytes / (1024 * 1024)).toFixed(1),
-            sizeDesc: '964 MB',
+            sizeDesc: formatBytes(QWEN3_TOTAL_BYTES),
             format: 'MLX 8bit',
             sharedWithSubtitles: false,
             streaming: false,
@@ -499,7 +500,7 @@ class AsrService {
             sizeBytes: r2t2Stat?.size || 0,
             expectedBytes: EXPECTED_MODEL_BYTES,
             sizeMb: r2t2Stat ? (r2t2Stat.size / (1024 * 1024)).toFixed(1) : '0',
-            sizeDesc: '2.31 GB',
+            sizeDesc: formatBytes(EXPECTED_MODEL_BYTES),
             format: 'GGUF Q8_0',
             sharedWithSubtitles: true,
             streaming: true,

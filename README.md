@@ -151,14 +151,14 @@ SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传
 
 | 组件 | 模型 / 版本 | 体积 | 运行位置 |
 | :--- | :--- | ---: | :--- |
-| 流式识别 | Confucius4-R2T2 Q8_0 | 2.31 GiB | audiocpp · Metal（`:1250`） |
-| 智能断句 | [SaT-3L-sm](https://huggingface.co/segment-any-text/sat-3l-sm) CoreML FP16 | 240 MB | CoreML · ANE / CPU |
-| 整句翻译 | [Index-Translate-2B](https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF) Q4_K_M | 1.22 GiB | llama-server · Metal（`:1249`） |
+| 流式识别 | Confucius4-R2T2 Q8_0 | 2.31 GB | audiocpp · Metal（`:1250`） |
+| 智能断句 | [SaT-3L-sm](https://huggingface.co/segment-any-text/sat-3l-sm) CoreML FP16 | 238 MB | CoreML · ANE / CPU |
+| 整句翻译 | [Index-Translate-2B](https://huggingface.co/IndexTeam/Index-Translate-2B-GGUF) Q4_K_M | 1.22 GB | llama-server · Metal（`:1249`） |
 | 断句分词 | XLM-R `tokenizer.json` | 9 MB | Node |
 
 > 字幕模型遵循各自上游许可证；SaT 权重为 MIT，其 CoreML 转换包请自行确认分发授权。
 >
-> R2T2 只接受 **audio.cpp 打包格式**的 GGUF（当前随下载提供 `Q8_0`，2.31 GiB）。官方
+> R2T2 只接受 **audio.cpp 打包格式**的 GGUF（当前随下载提供 `Q8_0`，2.31 GB）。官方
 > [netease-youdao/Confucius4-R2T2-GGUF](https://huggingface.co/netease-youdao/Confucius4-R2T2-GGUF)
 > 是 llama.cpp 布局（`blk.*` + 独立 `mmproj`），audio.cpp 无法加载，因此其中的 `Q4_K_M` 等低比特档位暂不可用。
 
@@ -178,7 +178,7 @@ SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传
 - 在任意消息正文中划选文本，选区旁会出现「**翻译**」与「**朗读**」两个圆角按钮：翻译会直接呼出快捷翻译窗口，把选区的纯文本填入，并以快速模式自动翻译；朗读走 macOS 系统语音，再点一次或按 `Esc` 停止。
 - 划选浮标由主窗口与 Spotlight 浮窗共用同一套实现，两个窗口行为完全一致；纯浏览器调试（无原生桥）时自动隐藏「翻译」按钮。
 - 每条回答下方也有一个朗读按钮（在「重试」左侧）：点击后按**视觉段落**切开（标题、列表、表格各自成段，段落内的软换行先拼回一行），逐段交给模型合成；代码块与公式（`$…$` / `$$…$$` / `\[…\]`）整段跳过、一个字符都不送进去，emoji 与键帽符号一律剔除，表格按行读取、单元格用「，」连接。消息下方先出现分段进度条，全部完成后变成播放器（播放 / 暂停、进度拖动、静音、重新生成与删除音频）。
-- 模型：Qwen3-TTS 1.7B CustomVoice（MLX 6bit，约 2.5 GB，含独立语音 codec），默认音色 `serena`。
+- 模型：Qwen3-TTS 1.7B CustomVoice（MLX 6bit，约 2.51 GB，含独立语音 codec），默认音色 `serena`。
 - 公式块带 `select-none`，划选时会自然跳过；代码块按原文朗读，不解释语法。
 - 每次生成现场加载模型、生成结束后立即卸载，**不保留常驻进程，也没有闲置计时**；模型载入约 15 秒（权重已在页缓存时更快），进度条会显示「正在加载语音模型」。
 - 合成完成的音频会拼成一条 WAV 落盘到 `~/Library/Application Support/SimpleUI/tts_output/`，重启应用后播放条按内容指纹自动恢复；接口 `POST /api/tts/article`（NDJSON 进度流）。
@@ -188,7 +188,7 @@ SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传
 ### 截屏图文识别（OCR 提取 Markdown）
 
 - 全局快捷键 `⌘⇧2`（或通过状态栏菜单触发），调起原生全屏十字框选截屏工具。
-- 模型：PaddleOCR-VL 1.6（MLX 8-bit 量化，约 1.09 GB），纯端侧运行，图像与文本数据不离开本机。
+- 模型：PaddleOCR-VL 1.6（MLX 8-bit 量化，约 1.02 GB），纯端侧运行，图像与文本数据不离开本机。
 - 结构化提取：针对复杂版面深度优化，自动提取正文段落、层级标题、Markdown 复杂表格、LaTeX 行内/行间数学公式（`$...$` / `$$...$$`）与图表文本，识别完成后自动存入系统剪贴板并弹出完成通知。
 - 纯按需运行：首次截图触发时拉起 Python MLX-VLM 后端（冷启动预热约 2~5 秒），**闲置超时自动卸载**（默认 30 分钟，可自由指定）并退出进程，彻底释放统一内存与显存；对应接口 `POST /api/ocr/recognize`。
 - 服务管理面板：支持切换识别任务模式（通用文档 / 表格提取 / 公式识别 / 图表解析）、调节图像分辨率预算（均衡 / 高 / 最高）、自定义闲置超时，并提供官方源与国内镜像源自动并发测速下载与断点续传。
@@ -276,10 +276,10 @@ npm run dev
 
 - 基础模型：自行准备 TTF / Mference 本体与权重；也可连接其它 OpenAI 兼容服务，或在设置中直接配置 DeepSeek API Key。
 - 语音输入模型：默认 Qwen3-ASR-0.6B-8bit（约 964 MB，MLX）在「服务管理 → 语音输入服务」下载；切到 Confucius4-R2T2 Q8_0（约 2.31 GB）时可直接复用字幕服务那份静态权重文件，无需重复下载或多占磁盘。
-- 语音合成模型：在「服务管理 → 语音合成服务」一键测速下载 Qwen3-TTS 1.7B 模型（约 2.5 GB；语音 codec 与旧版字节相同，会被完整性校验直接复用）。
-- 视觉 OCR 模型：在「服务管理 → 视觉图文识别服务」一键测速下载 PaddleOCR-VL 1.6 模型（约 1.09 GB）。
+- 语音合成模型：在「服务管理 → 语音合成服务」一键测速下载 Qwen3-TTS 1.7B 模型（约 2.51 GB；语音 codec 与旧版字节相同，会被完整性校验直接复用）。
+- 视觉 OCR 模型：在「服务管理 → 视觉图文识别服务」一键测速下载 PaddleOCR-VL 1.6 模型（约 1.02 GB）。
 - 字幕模型：在「服务管理 → 实时字幕服务」下载，包含 R2T2、SaT、Index-Translate 与 tokenizer。
-- 快速翻译模型：在「服务管理 → 快速翻译服务」一键下载或直接复用实时字幕的 Index-Translate-2B Q4_K_M 权重（约 1.25 GB）。
+- 快速翻译模型：在「服务管理 → 快速翻译服务」一键下载或直接复用实时字幕的 Index-Translate-2B Q4_K_M 权重（约 1.22 GB）。
 - 离线维基：在「服务管理 → 知识库」中指定本地 ZIM 文件。
 
 ---

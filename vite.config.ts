@@ -49,7 +49,7 @@ export default defineConfig({
               return 'vendor-react';
             }
           }
-          if (id.includes('/src/components/ServiceManagerModal') || id.includes('/src/components/SettingsModal')) {
+          if (id.includes('/src/components/SettingsModal')) {
             return 'ui-modals';
           }
           if (id.includes('/src/i18n/')) {

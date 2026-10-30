@@ -39,6 +39,7 @@ import http from 'http';
 import https from 'https';
 import { fileURLToPath } from 'url';
 import { startWatchdog } from './watchdog.js';
+import { formatBytes } from './format_bytes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -86,7 +87,6 @@ const PARAM_RANGES = {
 const MODEL_KEY = 'tts';
 const MODEL_NAME = 'Qwen3-TTS 1.7B CustomVoice (MLX 6bit)';
 const MODEL_SHORT_NAME = 'Qwen3-TTS 1.7B';
-const MODEL_SIZE_DESC = '2.5 GB';
 
 // 模型来源：mlx-community 的 1.7B 6bit 转换。根目录是 talker，speech_tokenizer/ 是独立 codec，
 // 两者缺一不可（缺 codec 会报 Speech tokenizer not loaded）。codec 与 0.6B 版本字节完全一致，
@@ -848,7 +848,7 @@ class TtsService {
       missing,
       bytes,
       expectedBytes: MODEL_TOTAL_BYTES,
-      sizeDesc: MODEL_SIZE_DESC,
+      sizeDesc: formatBytes(MODEL_TOTAL_BYTES),
       path: path.join(MODEL_DIR, MODEL_FILES[0]?.path || ''),
     };
   }

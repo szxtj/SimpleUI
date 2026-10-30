@@ -2493,9 +2493,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                       {t('ttsModelLabel')}
                     </div>
                     <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
-                      {ttsStatus?.model?.ready
-                        ? `${(ttsStatus.model.bytes / 1024 ** 3).toFixed(2)} GB`
-                        : ttsStatus?.model?.sizeDesc || '1.6 GB'}
+                      {ttsStatus?.model?.sizeDesc ?? '—'}
                     </div>
                   </div>
                 </div>
@@ -2840,9 +2838,9 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
               <div className="space-y-1.5">
                 {(
                   [
-                    { key: 'asr' as const, label: t('subtitleModelStage1'), fallbackSize: '2.31 GB' },
-                    { key: 'segment' as const, label: t('subtitleModelStage2'), fallbackSize: '250 MB' },
-                    { key: 'translate' as const, label: t('subtitleModelStage3'), fallbackSize: '1.25 GB' },
+                    { key: 'asr' as const, label: t('subtitleModelStage1') },
+                    { key: 'segment' as const, label: t('subtitleModelStage2') },
+                    { key: 'translate' as const, label: t('subtitleModelStage3') },
                   ]
                 ).map((item) => {
                   const m = subtitleStatus?.modelsStatus?.[item.key];
@@ -2850,13 +2848,6 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                   const isDownloadingThis =
                     Boolean(subtitleStatus?.downloadState?.active) &&
                     subtitleStatus?.downloadState?.currentModelKey === item.key;
-
-                  const formatDiskSize = (bytes?: number, desc?: string) => {
-                    if (!bytes || bytes <= 0) return desc || item.fallbackSize;
-                    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-                    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-                    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-                  };
 
                   return (
                     <div
@@ -2878,9 +2869,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                             {item.label}
                           </div>
                           <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
-                            {isReady
-                              ? formatDiskSize(m?.sizeBytes, m?.sizeDesc)
-                              : m?.sizeDesc || item.fallbackSize}
+                            {m?.sizeDesc ?? '—'}
                           </div>
                         </div>
                       </div>
@@ -3039,8 +3028,6 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                 <span>{t('subtitleOpenModelsDirBtn')}</span>
               </button>
             </div>
-
-            {cardResetButton(undefined, true)}
           </div>
       )}
       {activeTab === 'svc-translate' && (
@@ -3162,9 +3149,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                             {t('translateQuickModelLabel')}
                           </div>
                           <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono truncate">
-                            {isReady
-                              ? `${quick?.sizeDesc || '1.25 GB'} · ${t('runtimeBundledReady')}`
-                              : t('translateModelDesc')}
+                            {quick?.sizeDesc ?? '—'}
                           </div>
                         </div>
                       </div>
@@ -3632,9 +3617,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                       {t('ocrModelLabel')}
                     </div>
                     <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
-                      {ocrStatus?.model?.ready
-                        ? `${(ocrStatus.model.bytes / 1024 ** 3).toFixed(2)} GB`
-                        : ocrStatus?.model?.sizeDesc || '1.09 GB'}
+                      {ocrStatus?.model?.sizeDesc ?? '—'}
                     </div>
                   </div>
                 </div>

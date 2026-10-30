@@ -27,6 +27,7 @@ import http from 'http';
 import https from 'https';
 import { fileURLToPath } from 'url';
 import { startWatchdog } from './watchdog.js';
+import { formatBytes } from './format_bytes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -58,7 +59,6 @@ const DEFAULT_CONFIG = {
 const MODEL_KEY = 'ocr';
 const MODEL_NAME = 'PaddleOCR-VL 1.6 (MLX 8bit)';
 const MODEL_SHORT_NAME = 'PaddleOCR-VL 1.6';
-const MODEL_SIZE_DESC = '1.09 GB';
 const MODEL_REPO = 'OpenGryd/PaddleOCR-VL-1.6-MLX-8bit';
 
 const MODEL_FILES = [
@@ -615,7 +615,7 @@ class OcrService {
       missing,
       bytes,
       expectedBytes: expected,
-      sizeDesc: MODEL_SIZE_DESC,
+      sizeDesc: formatBytes(MODEL_TOTAL_BYTES),
       path: MODEL_DIR,
       files: fileStatuses,
     };

@@ -397,7 +397,7 @@ class TranslateService {
       modelReady: Boolean(model?.ready),
       modelName: model?.name || 'Index-Translate-2B Q4_K_M',
       sizeMb: model?.sizeMb || '0.0',
-      sizeDesc: model?.sizeDesc || '1.25 GB',
+      sizeDesc: model?.sizeDesc || '—',
       path: model?.path || path.join(SUBTITLE_MODELS_DIR, QUICK_MODEL_FILE),
       runtimeReady: Boolean(runtime.ready),
       runtimePath: runtime.binPath || null,

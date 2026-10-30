@@ -135,7 +135,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
       const res = await triggerMediaGC(0);
       if (!res) {
         setMediaMsg({
-          text: activeLang === 'zh' ? '清理失败，请稍后重试。' : 'Cleanup failed. Please try again.',
+          text: t('settingsCleanFailed'),
           isError: true,
         });
       } else if (res.deletedCount === 0) {
@@ -339,9 +339,6 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
             <h2 className="text-xl font-bold tracking-tight text-[#1f2328] dark:text-[#f1f3f7]">
               {t('tabGeneral')}
             </h2>
-            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-              {t('settingsAppCard')} · {t('themeLabel')} / {t('languageLabel')} / {t('spotlightResetLabel')}
-            </p>
           </div>
 
           <div className="p-4 rounded-2xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c] space-y-4 shadow-xs">
@@ -455,7 +452,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                   }`}
                 >
                   <SlidersHorizontal className="w-3.5 h-3.5" />
-                  <span>{t('providerTTFShort')}</span>
+                  <span className="whitespace-nowrap">{t('providerTTFShort')}</span>
                 </button>
                 <button
                   type="button"
@@ -467,7 +464,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                   }`}
                 >
                   <SlidersHorizontal className="w-3.5 h-3.5" />
-                  <span>{t('providerMferenceShort')}</span>
+                  <span className="whitespace-nowrap">{t('providerMferenceShort')}</span>
                 </button>
                 <button
                   type="button"
@@ -479,7 +476,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                   }`}
                 >
                   <Terminal className="w-3.5 h-3.5" />
-                  <span>{t('providerCustomShort')}</span>
+                  <span className="whitespace-nowrap">{t('providerCustomShort')}</span>
                 </button>
                 <button
                   type="button"
@@ -582,7 +579,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                     >
                       <option value={32768}>32,768 (32K)</option>
                       <option value={65536}>65,536 (64K)</option>
-                      <option value={131072}>131,072 (128K - 推荐)</option>
+                      <option value={131072}>{t('contextOption128kRecommended')}</option>
                       <option value={262144}>262,144 (256K)</option>
                       <option value={1000000}>1,000,000 (1M)</option>
                     </select>
@@ -644,9 +641,9 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                   >
                     <div className="flex items-center gap-2 font-medium">
                       <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-500" />
-                      <span>{activeLang === 'zh' ? '高级采样与推理参数' : 'Advanced Sampling & Reasoning Parameters'}</span>
+                      <span>{t('advancedSamplingTitle')}</span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 font-normal">
-                        {activeLang === 'zh' ? '已配置官方推荐默认值' : 'Using recommended defaults'}
+                        {t('advancedSamplingBadge')}
                       </span>
                     </div>
                     <ChevronDown className={`w-4 h-4 text-zinc-400 transition-transform duration-200 ${showAdvanced ? 'rotate-180' : ''}`} />
@@ -940,9 +937,9 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                   >
                     <div className="flex items-center gap-2 font-medium">
                       <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-500" />
-                      <span>{activeLang === 'zh' ? '高级采样参数' : 'Advanced Sampling Parameters'}</span>
+                      <span>{t('advancedSamplingTitleShort')}</span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-normal">
-                        {activeLang === 'zh' ? '默认已配置推荐值' : 'Using recommended defaults'}
+                        {t('advancedSamplingBadge')}
                       </span>
                     </div>
                     <ChevronDown className={`w-4 h-4 text-zinc-400 transition-transform duration-200 ${showAdvanced ? 'rotate-180' : ''}`} />
@@ -1049,7 +1046,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                       className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none cursor-pointer"
                     >
                       <option value={8192}>8,192 (8K)</option>
-                      <option value={16384}>16,384 (16K - 默认)</option>
+                      <option value={16384}>{t('contextOption16kDefault')}</option>
                       <option value={32768}>32,768 (32K)</option>
                       <option value={65536}>65,536 (64K)</option>
                       <option value={131072}>131,072 (128K)</option>
@@ -1080,9 +1077,9 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                   >
                     <div className="flex items-center gap-2 font-medium">
                       <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-500" />
-                      <span>{activeLang === 'zh' ? '高级采样与推理参数' : 'Advanced Sampling & Reasoning Parameters'}</span>
+                      <span>{t('advancedSamplingTitle')}</span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 font-normal">
-                        {activeLang === 'zh' ? '已配置官方推荐默认值' : 'Using recommended defaults'}
+                        {t('advancedSamplingBadge')}
                       </span>
                     </div>
                     <ChevronDown className={`w-4 h-4 text-zinc-400 transition-transform duration-200 ${showAdvanced ? 'rotate-180' : ''}`} />
@@ -1285,7 +1282,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                       className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none cursor-pointer"
                     >
                       <option value={8192}>8,192 (8K)</option>
-                      <option value={16384}>16,384 (16K - 默认)</option>
+                      <option value={16384}>{t('contextOption16kDefault')}</option>
                       <option value={32768}>32,768 (32K)</option>
                       <option value={65536}>65,536 (64K)</option>
                       <option value={128000}>128,000 (128K)</option>
@@ -1332,9 +1329,9 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                   >
                     <div className="flex items-center gap-2 font-medium">
                       <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-500" />
-                      <span>{activeLang === 'zh' ? '高级采样与推理参数' : 'Advanced Sampling & Reasoning Parameters'}</span>
+                      <span>{t('advancedSamplingTitle')}</span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 font-normal">
-                        {activeLang === 'zh' ? '已配置官方推荐默认值' : 'Using recommended defaults'}
+                        {t('advancedSamplingBadge')}
                       </span>
                     </div>
                     <ChevronDown className={`w-4 h-4 text-zinc-400 transition-transform duration-200 ${showAdvanced ? 'rotate-180' : ''}`} />
@@ -1528,9 +1525,6 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
             <h2 className="text-xl font-bold tracking-tight text-[#1f2328] dark:text-[#f1f3f7]">
               {t('tabStorage')}
             </h2>
-            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-              {t('mediaStorageDesc')}
-            </p>
           </div>
 
           <div className="p-4 rounded-2xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c] space-y-4 shadow-xs">
@@ -1544,7 +1538,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
               <div className="p-3.5 rounded-xl bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
                 <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                  {activeLang === 'zh' ? '媒体文件总数' : 'Total Files'}
+                  {t('mediaTotalFiles')}
                 </div>
                 <div className="text-lg font-bold text-[#1f2328] dark:text-[#f1f3f7] mt-1">
                   {mediaStats ? mediaStats.fileCount : '—'}
@@ -1553,7 +1547,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
 
               <div className="p-3.5 rounded-xl bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
                 <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                  {activeLang === 'zh' ? '占用空间' : 'Total Size'}
+                  {t('mediaTotalSize')}
                 </div>
                 <div className="text-lg font-bold text-[#1f2328] dark:text-[#f1f3f7] mt-1">
                   {mediaStats ? `${mediaStats.totalMB} MB` : '—'}
@@ -1562,7 +1556,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
 
               <div className="p-3.5 rounded-xl bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5 col-span-2 md:col-span-1">
                 <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                  {activeLang === 'zh' ? '待清理孤立文件' : 'Unused Files'}
+                  {t('mediaOrphanFiles')}
                 </div>
                 <div className="text-lg font-bold text-amber-600 dark:text-amber-400 mt-1">
                   {mediaStats ? `${mediaStats.orphanCount} (${mediaStats.orphanMB} MB)` : '—'}

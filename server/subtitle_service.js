@@ -25,6 +25,7 @@ import os from 'os';
 import { spawn, execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { startWatchdog } from './watchdog.js';
+import { formatBytes } from './format_bytes.js';
 import { SubtitleError, SubtitleMlHelper } from './subtitles/ml_helper.js';
 import { SatSegmenter } from './subtitles/segmenter.js';
 import { TranslationEngine } from './subtitles/translation.js';
@@ -68,7 +69,6 @@ export const MODEL_SPECS = {
     name: 'Confucius4-R2T2 Q8_0 (audio.cpp 追加式流式识别)',
     shortName: 'Confucius4-R2T2 (GGUF)',
     repo: 'davidxifeng/Confucius4-R2T2-gguf',
-    sizeDesc: '2.31 GB',
     expectedBytes: 2477512064,
     files: [
       {
@@ -84,7 +84,6 @@ export const MODEL_SPECS = {
     name: 'Index-Translate-2B Q4_K_M (专精神经机器翻译)',
     shortName: 'Index-Translate-2B (GGUF)',
     repo: 'IndexTeam/Index-Translate-2B-GGUF',
-    sizeDesc: '1.25 GB',
     expectedBytes: Math.round(1251.4 * 1024 * 1024),
     files: [
       {
@@ -105,7 +104,6 @@ export const MODEL_SPECS = {
     name: 'SaT-3l-sm CoreML (SOTA 智能断句)',
     shortName: 'SaT-3l-sm (CoreML)',
     repo: 'smdesai/SaT',
-    sizeDesc: '250 MB',
     expectedBytes: 249999974,
     dstPrefix: 'SaT.mlmodelc',
     files: [
@@ -989,7 +987,7 @@ class SubtitleService {
         sizeBytes: totalSizeBytes,
         expectedBytes: spec.expectedBytes,
         sizeMb: (totalSizeBytes / (1024 * 1024)).toFixed(1),
-        sizeDesc: spec.sizeDesc,
+        sizeDesc: formatBytes(spec.expectedBytes),
         path: path.join(SUBTITLE_MODELS_DIR, primaryRelPath),
       };
       if (!ready) {
