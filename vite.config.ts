@@ -49,9 +49,6 @@ export default defineConfig({
               return 'vendor-react';
             }
           }
-          if (id.includes('/src/components/SettingsModal')) {
-            return 'ui-modals';
-          }
           if (id.includes('/src/i18n/')) {
             return 'ui-i18n';
           }

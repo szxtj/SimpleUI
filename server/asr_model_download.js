@@ -12,6 +12,8 @@ import fs from 'fs';
 import http from 'http';
 import https from 'https';
 import path from 'path';
+import { DOWNLOAD_ERROR, downloadError, classifyDownloadError } from './download_errors.js';
+import { ModelStaging, isModelReady, sweepStaleStaging } from './download_store.js';
 
 export const QWEN3_REPO = 'mlx-community/Qwen3-ASR-0.6B-8bit';
 export const QWEN3_MODEL_NAME = 'Qwen3-ASR-0.6B-8bit (MLX)';
@@ -56,7 +58,7 @@ function request(urlStr, { method = 'GET', headers = {}, timeout = 30000, signal
         if (status >= 300 && status < 400 && res.headers.location) {
           res.resume();
           if (redirects <= 0) {
-            reject(new Error('too_many_redirects'));
+            reject(downloadError(DOWNLOAD_ERROR.DOWNLOAD_FAILED, 'too_many_redirects'));
             return;
           }
           const next = new URL(res.headers.location, urlStr).toString();
@@ -105,6 +107,7 @@ export class Qwen3ModelDownloader {
       speedBps: 0,
       etaSeconds: null,
       error: null,
+      errorCode: null,
       updatedAt: 0,
     };
   }
@@ -113,27 +116,32 @@ export class Qwen3ModelDownloader {
     return { ...this.state };
   }
 
-  /** 目录内是否已有完整可用的权重（只校验必需文件） */
+  /** 目录内是否已有完整可用的权重（只校验必需文件 + 提交封条） */
   ready() {
-    try {
+    const filesOk = () => {
       for (const f of QWEN3_FILES) {
         if (!f.required) continue;
         const p = path.join(this.modelDir, f.path);
         if (!fs.existsSync(p) || fs.statSync(p).size < f.minBytes) return false;
       }
       return true;
-    } catch {
-      return false;
-    }
+    };
+    return isModelReady(this.modelDir, 'qwen3', filesOk);
   }
 
   /** 已存在的总字节数，用于面板展示「已下载 x / 964MB」 */
   presentBytes() {
     let total = 0;
+    const stagingDir = path.join(this.modelDir, '.incoming', 'qwen3');
     for (const f of QWEN3_FILES) {
       try {
         const p = path.join(this.modelDir, f.path);
-        if (fs.existsSync(p)) total += fs.statSync(p).size;
+        if (fs.existsSync(p)) {
+          total += fs.statSync(p).size;
+          continue; // 已在目标目录的不会再有暂存副本
+        }
+        const sp = path.join(stagingDir, f.path);
+        if (fs.existsSync(sp)) total += fs.statSync(sp).size;
       } catch {
         // ignore
       }
@@ -218,15 +226,19 @@ export class Qwen3ModelDownloader {
       speedBps: 0,
       etaSeconds: null,
       error: null,
+      errorCode: null,
       updatedAt: Date.now(),
     };
 
+    let staging = null;
     try {
       fs.mkdirSync(this.modelDir, { recursive: true });
+      sweepStaleStaging(this.modelDir);
+      staging = new ModelStaging(this.modelDir, 'qwen3').begin();
       const probeFile = QWEN3_FILES.reduce((a, b) => (b.expectedBytes > a.expectedBytes ? b : a));
       const best = await this.probeBestSource(signal, `${QWEN3_REPO}/resolve/main/${probeFile.path}`);
       if (signal.aborted) throw new Error('cancelled');
-      if (!best) throw new Error('ALL_SOURCES_UNREACHABLE');
+      if (!best) throw downloadError(DOWNLOAD_ERROR.ALL_SOURCES_UNREACHABLE, 'ALL_SOURCES_UNREACHABLE');
 
       this.state.selectedSource = {
         id: best.id,
@@ -240,10 +252,10 @@ export class Qwen3ModelDownloader {
 
       for (const file of QWEN3_FILES) {
         if (signal.aborted) throw new Error('cancelled');
-        const dst = path.join(this.modelDir, file.path);
-        if (fs.existsSync(dst) && fs.statSync(dst).size >= file.minBytes) continue;
-
-        const partPath = `${dst}.part`;
+        // 目标目录已达标就不重下；否则写进暂存区（提交前目标目录保持原样）
+        const finalPath = path.join(this.modelDir, file.path);
+        if (fs.existsSync(finalPath) && fs.statSync(finalPath).size >= file.minBytes) continue;
+        const dst = staging.pathFor(file.path);
         let done = false;
         let lastErr = null;
 
@@ -251,11 +263,7 @@ export class Qwen3ModelDownloader {
           if (signal.aborted) throw new Error('cancelled');
           const url = `${src.baseUrl}/${QWEN3_REPO}/resolve/main/${file.path}`;
           let offset = 0;
-          try {
-            if (fs.existsSync(partPath)) offset = fs.statSync(partPath).size;
-          } catch {
-            offset = 0;
-          }
+          offset = staging.sizeOf(file.path);
 
           try {
             await new Promise((resolve, reject) => {
@@ -264,7 +272,7 @@ export class Qwen3ModelDownloader {
                 .then(({ res, status }) => {
                   if (status !== 200 && status !== 206) {
                     res.resume();
-                    reject(new Error(`HTTP ${status}`));
+                    reject(downloadError(DOWNLOAD_ERROR.DOWNLOAD_FAILED, `HTTP ${status}`));
                     return;
                   }
                   const isResume = status === 206 && offset > 0;
@@ -275,7 +283,7 @@ export class Qwen3ModelDownloader {
                   this.state.currentFile = file.path;
                   this.state.updatedAt = Date.now();
 
-                  const out = fs.createWriteStream(partPath, { flags: isResume ? 'a' : 'w' });
+                  const out = fs.createWriteStream(dst, { flags: isResume ? 'a' : 'w' });
                   out.on('error', (err) => {
                     res.destroy();
                     reject(err);
@@ -317,18 +325,17 @@ export class Qwen3ModelDownloader {
                   });
                   res.on('aborted', () => {
                     out.destroy();
-                    reject(new Error('Download aborted'));
+                    reject(downloadError(DOWNLOAD_ERROR.DOWNLOAD_FAILED, 'Download aborted'));
                   });
                   res.on('end', () => {
                     out.end();
                     out.on('finish', () => {
                       try {
-                        const finalSize = fs.statSync(partPath).size;
+                        const finalSize = fs.statSync(dst).size;
                         if (finalSize < file.minBytes) {
-                          reject(new Error(`FILE_SIZE_MISMATCH (${finalSize} < ${file.minBytes})`));
+                          reject(downloadError(DOWNLOAD_ERROR.FILE_SIZE_MISMATCH, `FILE_SIZE_MISMATCH (${finalSize} < ${file.minBytes})`));
                           return;
                         }
-                        fs.renameSync(partPath, dst);
                         resolve();
                       } catch (e) {
                         reject(e);
@@ -351,6 +358,11 @@ export class Qwen3ModelDownloader {
       }
 
       this.state.phase = 'cleaning';
+      staging.commit(
+        QWEN3_FILES.map((f) => ({ relPath: f.path, minBytes: f.minBytes })),
+        { markKeys: ['qwen3'], totalBytes: QWEN3_TOTAL_BYTES }
+      );
+      staging = null;
       this.cleanTempFiles({ removePartFiles: true });
       this.state.phase = 'completed';
       this.state.active = false;
@@ -362,8 +374,15 @@ export class Qwen3ModelDownloader {
       console.log('[Qwen3Download] 模型下载完成:', this.modelDir);
     } catch (err) {
       const cancelled = signal.aborted || err.message === 'cancelled';
+      if (staging) {
+        // 取消 = 不留残片；失败 = 保留暂存区供续传，但释放锁，否则下次下载会被判「已在下载中」
+        try { cancelled ? staging.discard() : staging.releaseSlot(); } catch {}
+        staging = null;
+      }
+      if (err.code === 'DOWNLOAD_IN_PROGRESS') this.state.errorCode = 'DOWNLOAD_IN_PROGRESS';
       this.state.phase = cancelled ? 'cancelled' : 'error';
-      this.state.error = cancelled ? null : err.message || '下载失败';
+      this.state.error = cancelled ? null : err.message || 'unknown';
+      this.state.errorCode = cancelled ? null : classifyDownloadError(err);
       this.state.active = false;
       this.state.speedBps = 0;
       this.state.etaSeconds = null;

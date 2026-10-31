@@ -411,6 +411,8 @@ export interface SubtitleDownloadState {
   speedBps: number;
   etaSeconds: number | null;
   error: string | null;
+  /** 失败归类（ALL_SOURCES_UNREACHABLE / FILE_SIZE_MISMATCH / DOWNLOAD_FAILED），UI 只认它 */
+  errorCode?: string | null;
   updatedAt: number;
 }
 
@@ -486,6 +488,8 @@ export interface TtsDownloadState {
   speedBps: number;
   etaSeconds: number | null;
   error: string | null;
+  /** 失败归类（ALL_SOURCES_UNREACHABLE / FILE_SIZE_MISMATCH / DOWNLOAD_FAILED） */
+  errorCode?: string | null;
   updatedAt: number;
 }
 
@@ -562,6 +566,8 @@ export interface OcrDownloadState {
   speedBps: number;
   etaSeconds: number | null;
   error: string | null;
+  /** 失败归类（ALL_SOURCES_UNREACHABLE / FILE_SIZE_MISMATCH / DOWNLOAD_FAILED） */
+  errorCode?: string | null;
   updatedAt: number;
 }
 

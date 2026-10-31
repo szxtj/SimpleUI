@@ -28,6 +28,8 @@ import https from 'https';
 import { fileURLToPath } from 'url';
 import { startWatchdog } from './watchdog.js';
 import { formatBytes } from './format_bytes.js';
+import { DOWNLOAD_ERROR, downloadError, classifyDownloadError } from './download_errors.js';
+import { ModelStaging, sweepStaleStaging } from './download_store.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -327,6 +329,8 @@ class OcrService {
     if (this.modelStatus().ready) return this.downloadStatus();
 
     this.downloadAbortController = new AbortController();
+    let staging = null;
+    const commitEntries = [];
     const signal = this.downloadAbortController.signal;
 
     this.download = {
@@ -353,7 +357,7 @@ class OcrService {
 
       const best = await this.probeBestMirror(signal, probeRelative);
       if (signal.aborted) throw new Error('cancelled');
-      if (!best) throw new Error('ALL_SOURCES_UNREACHABLE');
+      if (!best) throw downloadError(DOWNLOAD_ERROR.ALL_SOURCES_UNREACHABLE, 'ALL_SOURCES_UNREACHABLE');
 
       const backup = DOWNLOAD_SOURCES.find((s) => s.id !== best.id);
       const orderedSources = [best, ...(backup ? [backup] : [])];
@@ -405,12 +409,14 @@ class OcrService {
       let lastBytes = downloadedBytes;
       let lastTime = Date.now();
 
+      // 全部先下到 <模型目录>/.incoming/ocr/，全部到齐再一次性 rename 到正式目录
+      sweepStaleStaging(MODEL_DIR);
+      staging = new ModelStaging(MODEL_DIR, 'ocr').begin();
+
       for (const fileDef of filesToDownload) {
         if (signal.aborted) throw new Error('cancelled');
 
-        const destFile = path.join(MODEL_DIR, fileDef.path);
-        const partFile = `${destFile}.part`;
-        fs.mkdirSync(path.dirname(destFile), { recursive: true });
+        const partFile = staging.pathFor(fileDef.path);
 
         this.download.currentFile = fileDef.path;
         this.download.updatedAt = Date.now();
@@ -449,7 +455,7 @@ class OcrService {
 
             if (res.statusCode !== 200 && res.statusCode !== 206) {
               res.resume();
-              throw new Error(`HTTP ${res.statusCode} from ${source.name}`);
+              throw downloadError(DOWNLOAD_ERROR.DOWNLOAD_FAILED, `HTTP ${res.statusCode} from ${source.name}`);
             }
 
             const writeStream = fs.createWriteStream(partFile, {
@@ -500,10 +506,10 @@ class OcrService {
 
             const stat = fs.statSync(partFile);
             if (fileDef.minBytes && stat.size < fileDef.minBytes) {
-              throw new Error(`FILE_SIZE_MISMATCH: ${stat.size} < ${fileDef.minBytes}`);
+              throw downloadError(DOWNLOAD_ERROR.FILE_SIZE_MISMATCH, `FILE_SIZE_MISMATCH: ${stat.size} < ${fileDef.minBytes}`);
             }
 
-            fs.renameSync(partFile, destFile);
+            commitEntries.push({ relPath: fileDef.path, minBytes: fileDef.minBytes });
             fileSuccess = true;
             break;
           } catch (err) {
@@ -520,6 +526,8 @@ class OcrService {
 
       this.download.phase = 'cleaning';
       this.download.updatedAt = Date.now();
+      staging.commit(commitEntries, { markKeys: ['ocr'] });
+      staging = null;
       this.cleanTempFiles({ removePartFiles: true });
 
       this.download = {
@@ -531,18 +539,24 @@ class OcrService {
         speedBps: 0,
         etaSeconds: 0,
         error: null,
+        errorCode: null,
         updatedAt: Date.now(),
       };
       return this.downloadStatus();
     } catch (err) {
       const isCancel = err.message === 'cancelled' || signal?.aborted;
+      if (staging) {
+        try { isCancel ? staging.discard() : staging.releaseSlot(); } catch {}
+        staging = null;
+      }
       this.download = {
         ...this.download,
         active: false,
         phase: isCancel ? 'cancelled' : 'error',
         speedBps: 0,
         etaSeconds: null,
-        error: isCancel ? null : err.message || '下载失败',
+        error: isCancel ? null : err.message || 'unknown',
+        errorCode: isCancel ? null : classifyDownloadError(err),
         updatedAt: Date.now(),
       };
       return this.downloadStatus();

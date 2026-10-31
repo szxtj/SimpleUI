@@ -280,6 +280,7 @@ Builds the Swift native shell, frontend assets, and bundled runtimes, then insta
 - Voice synthesis model: Download Qwen3-TTS 1.7B (~2.51 GB) via one-click speed-tested download under Service Manager → Voice Synthesis. The speech codec is byte-identical to the previous release, so integrity checks reuse it.
 - Visual OCR model: Download PaddleOCR-VL 1.6 (~1.02 GB) via one-click speed-tested download under Service Manager → Visual OCR.
 - Subtitle models: download in Service Manager → Live Subtitles; the set includes R2T2, SaT, Index-Translate, and the tokenizer.
+- Model downloads use a **stage → commit** flow: files are written to `<model dir>/.incoming/<model>/` first and moved into place in one go only after everything is present and verified. The target directory therefore never contains half-finished files, and two concurrent downloads can never corrupt each other. Cancel clears the staging area; a failure keeps it for resuming later (leftovers older than 7 days are cleaned on the next download). A `.ready-*` marker is written once committed, as proof that the set was verified complete.
 - Quick Translate model: download in "Service Manager → Quick Translate" or directly reuse the Index-Translate-2B Q4_K_M weights (~1.22 GB) from Live Subtitles.
 - Offline wiki: select a local ZIM file under Service Manager → Knowledge Base.
 

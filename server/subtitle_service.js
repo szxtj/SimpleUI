@@ -26,6 +26,8 @@ import { spawn, execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { startWatchdog } from './watchdog.js';
 import { formatBytes } from './format_bytes.js';
+import { DOWNLOAD_ERROR, downloadError, classifyDownloadError } from './download_errors.js';
+import { ModelStaging, sweepStaleStaging } from './download_store.js';
 import { SubtitleError, SubtitleMlHelper } from './subtitles/ml_helper.js';
 import { SatSegmenter } from './subtitles/segmenter.js';
 import { TranslationEngine } from './subtitles/translation.js';
@@ -1149,11 +1151,18 @@ class SubtitleService {
       speedBps: 0,
       etaSeconds: null,
       error: null,
+      errorCode: null,
       updatedAt: Date.now(),
     };
     this.broadcastStatus();
 
+    // 声音讯号：先把文件全部下到 <模型目录>/.incoming/subtitles/，全部到齐后一次性 rename 到正式目录。
+    // 这样下载中途「打开模型目录」看不到半成品，也不会有两条写入流写同一个 .part。
+    let staging = null;
+    const commitEntries = [];
     try {
+      sweepStaleStaging(SUBTITLE_MODELS_DIR);
+      staging = new ModelStaging(SUBTITLE_MODELS_DIR, 'subtitles').begin();
       const specsToDownload =
         targetModel === 'all'
           ? MODEL_ORDER.map((key) => [key, MODEL_SPECS[key]])
@@ -1168,7 +1177,7 @@ class SubtitleService {
 
       const best = await this.probeBestMirror(signal, probeRelative);
       if (signal.aborted) throw new Error('cancelled');
-      if (!best) throw new Error('ALL_SOURCES_UNREACHABLE');
+      if (!best) throw downloadError(DOWNLOAD_ERROR.ALL_SOURCES_UNREACHABLE, 'ALL_SOURCES_UNREACHABLE');
       this.downloadState.selectedSource = {
         id: best.id,
         name: best.name,
@@ -1191,11 +1200,9 @@ class SubtitleService {
 
         for (const file of spec.files) {
           if (signal.aborted) throw new Error('cancelled');
-          const dst = path.join(SUBTITLE_MODELS_DIR, file.dst);
-          if (fs.existsSync(dst) && fs.statSync(dst).size >= file.minBytes) continue;
-
-          fs.mkdirSync(path.dirname(dst), { recursive: true });
-          const partPath = `${dst}.part`;
+          const finalPath = path.join(SUBTITLE_MODELS_DIR, file.dst);
+          if (fs.existsSync(finalPath) && fs.statSync(finalPath).size >= file.minBytes) continue;
+          const dst = staging.pathFor(file.dst);
 
           let fileDone = false;
           let lastErr = null;
@@ -1203,14 +1210,7 @@ class SubtitleService {
           for (const srcNode of candidateSources) {
             if (signal.aborted) throw new Error('cancelled');
             const url = `${srcNode.baseUrl}/${file.repo || spec.repo}/resolve/main/${file.src}`;
-            let existingBytes = 0;
-            try {
-              if (fs.existsSync(partPath)) {
-                existingBytes = fs.statSync(partPath).size;
-              }
-            } catch {
-              existingBytes = 0;
-            }
+            const existingBytes = staging.sizeOf(file.dst);
 
             try {
               await new Promise((resolve, reject) => {
@@ -1223,7 +1223,7 @@ class SubtitleService {
                   .then(({ res }) => {
                     if (res.statusCode !== 200 && res.statusCode !== 206) {
                       res.resume();
-                      reject(new Error(`HTTP ${res.statusCode}`));
+                      reject(downloadError(DOWNLOAD_ERROR.DOWNLOAD_FAILED, `HTTP ${res.statusCode}`));
                       return;
                     }
                     const isResume = res.statusCode === 206 && existingBytes > 0;
@@ -1236,7 +1236,7 @@ class SubtitleService {
                     this.downloadState.currentFile = file.src;
                     this.broadcastStatus();
 
-                    const fileStream = fs.createWriteStream(partPath, {
+                    const fileStream = fs.createWriteStream(dst, {
                       flags: isResume ? 'a' : 'w',
                     });
                     fileStream.on('error', (err) => {
@@ -1277,18 +1277,17 @@ class SubtitleService {
                     });
                     res.on('aborted', () => {
                       fileStream.destroy();
-                      reject(new Error('Download aborted'));
+                      reject(downloadError(DOWNLOAD_ERROR.DOWNLOAD_FAILED, 'Download aborted'));
                     });
                     res.on('end', () => {
                       fileStream.end();
                       fileStream.on('finish', () => {
                         try {
-                          const finalSize = fs.statSync(partPath).size;
+                          const finalSize = fs.statSync(dst).size;
                           if (file.minBytes && finalSize < file.minBytes) {
-                            reject(new Error(`FILE_SIZE_MISMATCH (${finalSize} < ${file.minBytes})`));
+                            reject(downloadError(DOWNLOAD_ERROR.FILE_SIZE_MISMATCH, `FILE_SIZE_MISMATCH (${finalSize} < ${file.minBytes})`));
                             return;
                           }
-                          fs.renameSync(partPath, dst);
                           resolve();
                         } catch (e) {
                           reject(e);
@@ -1302,6 +1301,7 @@ class SubtitleService {
                   .catch(reject);
               });
               fileDone = true;
+              commitEntries.push({ relPath: file.dst, minBytes: file.minBytes });
               break;
             } catch (err) {
               lastErr = err;
@@ -1320,6 +1320,9 @@ class SubtitleService {
 
       this.downloadState.phase = 'cleaning';
       this.broadcastStatus();
+      // 全部下齐 → 一次性搬到正式目录（同卷 rename，原子替换旧文件）
+      staging.commit(commitEntries, { markKeys: [] });
+      staging = null;
       this.cleanLegacyModels({ removePartFiles: true });
       this.downloadState.phase = 'completed';
       this.downloadState.active = false;
@@ -1328,8 +1331,14 @@ class SubtitleService {
       this.broadcastStatus();
     } catch (err) {
       const cancelled = signal.aborted || err.message === 'cancelled' || err.message === 'Download cancelled';
+      if (staging) {
+        // 取消 = 不留残片；失败 = 保留暂存区供下次续传，但必须释放锁，否则下次下载会被判「已在下载中」
+        try { cancelled ? staging.discard() : staging.releaseSlot(); } catch {}
+        staging = null;
+      }
       this.downloadState.phase = cancelled ? 'cancelled' : 'error';
-      this.downloadState.error = cancelled ? null : err.message || '下载失败';
+      this.downloadState.error = cancelled ? null : err.message || 'unknown';
+      this.downloadState.errorCode = cancelled ? null : classifyDownloadError(err);
       this.downloadState.active = false;
       this.downloadState.updatedAt = Date.now();
       this.broadcastStatus();

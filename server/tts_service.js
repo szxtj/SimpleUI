@@ -40,6 +40,8 @@ import https from 'https';
 import { fileURLToPath } from 'url';
 import { startWatchdog } from './watchdog.js';
 import { formatBytes } from './format_bytes.js';
+import { DOWNLOAD_ERROR, downloadError, classifyDownloadError } from './download_errors.js';
+import { ModelStaging, sweepStaleStaging } from './download_store.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -337,6 +339,7 @@ class TtsService {
     this.pyReq = null;
     this.download = {
       active: false,
+      errorCode: null,
       phase: 'idle',
       targetModel: null,
       currentModelKey: null,
@@ -580,10 +583,16 @@ class TtsService {
       speedBps: 0,
       etaSeconds: null,
       error: null,
+      errorCode: null,
       updatedAt: Date.now(),
     };
 
+    // 先把文件全部下到 <模型目录>/.incoming/tts/，全部到齐再一次性 rename 到正式目录
+    let staging = null;
+    const commitEntries = [];
     try {
+      sweepStaleStaging(MODEL_DIR);
+      staging = new ModelStaging(MODEL_DIR, 'tts').begin();
       const probeFile = MODEL_FILES.reduce((a, b) =>
         (Number(b.expectedBytes) || 0) > (Number(a.expectedBytes) || 0) ? b : a
       );
@@ -591,7 +600,7 @@ class TtsService {
 
       const best = await this.probeBestMirror(signal, probeRelative);
       if (signal.aborted) throw new Error('cancelled');
-      if (!best) throw new Error('ALL_SOURCES_UNREACHABLE');
+      if (!best) throw downloadError(DOWNLOAD_ERROR.ALL_SOURCES_UNREACHABLE, 'ALL_SOURCES_UNREACHABLE');
       this.download.selectedSource = {
         id: best.id,
         name: best.name,
@@ -606,11 +615,9 @@ class TtsService {
 
       for (const file of MODEL_FILES) {
         if (signal.aborted) throw new Error('cancelled');
-        const dst = path.join(MODEL_DIR, file.path);
-        if (fs.existsSync(dst) && fs.statSync(dst).size >= file.minBytes) continue;
-
-        fs.mkdirSync(path.dirname(dst), { recursive: true });
-        const partPath = `${dst}.part`;
+        const finalPath = path.join(MODEL_DIR, file.path);
+        if (fs.existsSync(finalPath) && fs.statSync(finalPath).size >= file.minBytes) continue;
+        const dst = staging.pathFor(file.path);
 
         let fileDone = false;
         let lastErr = null;
@@ -618,14 +625,7 @@ class TtsService {
         for (const srcNode of candidateSources) {
           if (signal.aborted) throw new Error('cancelled');
           const url = `${srcNode.baseUrl}/${MODEL_REPO}/resolve/main/${file.path}`;
-          let existingBytes = 0;
-          try {
-            if (fs.existsSync(partPath)) {
-              existingBytes = fs.statSync(partPath).size;
-            }
-          } catch {
-            existingBytes = 0;
-          }
+            const existingBytes = staging.sizeOf(file.path);
 
           try {
             await new Promise((resolve, reject) => {
@@ -638,7 +638,7 @@ class TtsService {
                 .then(({ res }) => {
                   if (res.statusCode !== 200 && res.statusCode !== 206) {
                     res.resume();
-                    reject(new Error(`HTTP ${res.statusCode}`));
+                    reject(downloadError(DOWNLOAD_ERROR.DOWNLOAD_FAILED, `HTTP ${res.statusCode}`));
                     return;
                   }
                   const isResume = res.statusCode === 206 && existingBytes > 0;
@@ -651,7 +651,7 @@ class TtsService {
                   this.download.currentFile = file.path;
                   this.download.updatedAt = Date.now();
 
-                  const fileStream = fs.createWriteStream(partPath, {
+                  const fileStream = fs.createWriteStream(dst, {
                     flags: isResume ? 'a' : 'w',
                   });
                   fileStream.on('error', (err) => {
@@ -691,18 +691,17 @@ class TtsService {
                   });
                   res.on('aborted', () => {
                     fileStream.destroy();
-                    reject(new Error('Download aborted'));
+                    reject(downloadError(DOWNLOAD_ERROR.DOWNLOAD_FAILED, 'Download aborted'));
                   });
                   res.on('end', () => {
                     fileStream.end();
                     fileStream.on('finish', () => {
                       try {
-                        const finalSize = fs.statSync(partPath).size;
+                        const finalSize = fs.statSync(dst).size;
                         if (finalSize < file.minBytes) {
-                          reject(new Error(`FILE_SIZE_MISMATCH (${finalSize} < ${file.minBytes})`));
+                          reject(downloadError(DOWNLOAD_ERROR.FILE_SIZE_MISMATCH, `FILE_SIZE_MISMATCH (${finalSize} < ${file.minBytes})`));
                           return;
                         }
-                        fs.renameSync(partPath, dst);
                         resolve();
                       } catch (e) {
                         reject(e);
@@ -716,6 +715,7 @@ class TtsService {
                 .catch(reject);
             });
             fileDone = true;
+            commitEntries.push({ relPath: file.path, minBytes: file.minBytes });
             break;
           } catch (err) {
             lastErr = err;
@@ -736,6 +736,8 @@ class TtsService {
       }
 
       this.download.phase = 'cleaning';
+      staging.commit(commitEntries, { markKeys: ['tts'] });
+      staging = null;
       this.cleanTempFiles({ removePartFiles: true });
       this.download.phase = 'completed';
       this.download.active = false;
@@ -744,8 +746,13 @@ class TtsService {
     } catch (err) {
       const cancelled =
         signal.aborted || err.message === 'cancelled' || err.message === 'Download cancelled';
+      if (staging) {
+        try { cancelled ? staging.discard() : staging.releaseSlot(); } catch {}
+        staging = null;
+      }
       this.download.phase = cancelled ? 'cancelled' : 'error';
-      this.download.error = cancelled ? null : err.message || '下载失败';
+      this.download.error = cancelled ? null : err.message || 'unknown';
+      this.download.errorCode = cancelled ? null : classifyDownloadError(err);
       this.download.active = false;
       this.download.updatedAt = Date.now();
       if (!cancelled) console.warn('[TTS] 模型下载失败:', err.message);

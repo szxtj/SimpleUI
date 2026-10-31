@@ -1413,7 +1413,7 @@ export const translations = {
     ttfServiceAutoStart: 'Start TurboFieldfare Service',
     mferenceServiceAutoStart: 'Start Mference Service',
     ttfServiceAutoStartDesc: 'Runs Gemma 4 26B multimodal inference service locally (default port 1235)',
-    mferenceServiceAutoStartDesc: 'Runs Qwen 3.6 35B-A3B high-performance inference service locally (default port 1241)',
+    mferenceServiceAutoStartDesc: 'Runs Qwen 3.6 35B-A3B high-performance inference service locally',
     resetCardDefaults: 'Restore Default Settings',
     modelServicePathLabel: 'Upstream project directory',
     modelServicePathBrowse: 'Browse...',

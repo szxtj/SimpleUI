@@ -144,24 +144,16 @@ function formatSourceName(
  * 格式化下载错误信息（双语国际化）
  */
 function formatDownloadError(
-  err: string | null | undefined,
+  code: string | null | undefined,
+  message: string | null | undefined,
   t: (k: TranslationKeys) => string
 ): string | null {
-  if (!err) return null;
-  if (err.includes('ALL_SOURCES_UNREACHABLE') || err.includes('所有下载源均不可达')) {
-    return t('downloadErrorAllSourcesUnreachable');
-  }
-  if (
-    err.includes('FILE_SIZE_MISMATCH') ||
-    err.includes('文件大小校验失败') ||
-    err.includes('文件未完整下载')
-  ) {
-    return t('downloadErrorSizeMismatch');
-  }
-  if (err.includes('DOWNLOAD_FAILED') || (err.includes('下载') && err.includes('失败'))) {
-    return t('downloadErrorGeneric');
-  }
-  return err;
+  if (!message && !code) return null;
+  if (code === 'ALL_SOURCES_UNREACHABLE') return t('downloadErrorAllSourcesUnreachable');
+  if (code === 'FILE_SIZE_MISMATCH') return t('downloadErrorSizeMismatch');
+  if (code === 'DOWNLOAD_FAILED') return t('downloadErrorGeneric');
+  // 后端未给 code（老状态 / 未知错误）才直接显示原始消息
+  return message || t('downloadErrorGeneric');
 }
 
 /**
@@ -2228,7 +2220,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                     asrDownload?.phase === 'error' &&
                     asrDownload?.error && (
                       <div className="mb-2.5 text-[11px] text-red-500">
-                        {formatDownloadError(asrDownload.error, t)}
+                        {formatDownloadError(asrDownload.errorCode, asrDownload.error, t)}
                       </div>
                     )}
 
@@ -2619,7 +2611,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
               ttsStatus?.download?.phase === 'error' &&
               ttsStatus?.download?.error && (
                 <div className="mt-2.5 text-[11px] text-red-500">
-                  {formatDownloadError(ttsStatus.download.error, t)}
+                  {formatDownloadError(ttsStatus.download.errorCode, ttsStatus.download.error, t)}
                 </div>
               )}
 
@@ -3002,7 +2994,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
               subtitleStatus?.downloadState?.phase === 'error' &&
               subtitleStatus?.downloadState?.error && (
                 <div className="mt-2.5 text-[11px] text-red-500">
-                  {formatDownloadError(subtitleStatus.downloadState.error, t)}
+                  {formatDownloadError(subtitleStatus.downloadState.errorCode, subtitleStatus.downloadState.error, t)}
                 </div>
               )}
 
@@ -3263,7 +3255,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                   )}
                   {!isDownloading && translateDl?.phase === 'error' && translateDl?.error && (
                     <div className="mb-2.5 text-[11px] text-red-500">
-                      {formatDownloadError(translateDl.error, t)}
+                      {formatDownloadError(translateDl.errorCode, translateDl.error, t)}
                     </div>
                   )}
 
@@ -3743,7 +3735,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
               ocrStatus?.download?.phase === 'error' &&
               ocrStatus?.download?.error && (
                 <div className="mt-2.5 text-[11px] text-red-500">
-                  {formatDownloadError(ocrStatus.download.error, t)}
+                  {formatDownloadError(ocrStatus.download.errorCode, ocrStatus.download.error, t)}
                 </div>
               )}
 

@@ -248,9 +248,23 @@ class AsrService {
   }
 
   /** 懒建下载器；模型目录被改过就换一个新的（旧下载器的状态自然作废） */
+  /**
+   * 取 Qwen3 下载器（一个目录一个实例）。
+   *
+   * 目录被改过时，先把旧实例上正在跑的下载**停掉**再换新的：否则旧实例失去引用、
+   * 却仍握着 socket 与写流继续下（既占带宽又没法取消），甚至会和新的写同一批文件。
+   */
   qwen3Download() {
     const dir = this.qwen3ModelDir();
-    if (!this.qwen3Downloader || this.qwen3DownloaderDir !== dir) {
+    if (this.qwen3Downloader && this.qwen3DownloaderDir !== dir) {
+      try {
+        this.qwen3Downloader.cancel();
+      } catch {
+        /* ignore */
+      }
+      this.qwen3Downloader = null;
+    }
+    if (!this.qwen3Downloader) {
       this.qwen3Downloader = new Qwen3ModelDownloader(dir);
       this.qwen3DownloaderDir = dir;
     }
@@ -806,6 +820,15 @@ class AsrService {
       fs.writeFileSync(CONFIG_FILE, JSON.stringify(this.config, null, 2));
     } catch (e) {
       return { success: false, error: e.message };
+    }
+
+    // 模型目录变了：立刻把旧目录上正在跑的下载停掉（不等下一次 status 轮询才发现）
+    if (clean.qwen3ModelDir !== undefined) {
+      try {
+        this.qwen3Download();
+      } catch {
+        /* ignore */
+      }
     }
 
     // 切引擎后回到待命：**不顺手把新引擎拉起来**，等长按右 ⌘ 时才按需加载。
