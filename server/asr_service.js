@@ -44,6 +44,11 @@ const LOG_FILE = process.env.SIMPLEUI_ASR_LOG || path.join(HOME, 'Library', 'Log
 // （Swift 侧 ProcessManager 的退出清扫清单里已经列着它，所以不需要跟着改。）
 const PID_FILE = '/tmp/simpleui_audiocpp.pid';
 
+// Python 字节码缓存必须写在 App 包外（原因同 tts_service.js / ocr_service.js）：
+// Qwen3 引擎用的解释器同样是打进 Contents/Resources/tts/python/ 的那一份，
+// 默认的 __pycache__ 写在源码旁，会变成「签名之后新增的文件」让 sealed resource 失效。
+const PYCACHE_DIR = path.join(HOME, 'Library', 'Caches', 'SimpleUI', 'pycache');
+
 // 统一复用字幕服务的 Confucius4-R2T2 Q8_0 模型（~2.48 GB，约 2.31 GiB）
 export const MODEL_FILENAME = 'r2t2-q8_0.gguf';
 export const EXPECTED_MODEL_BYTES = 2477512064;
@@ -655,7 +660,7 @@ class AsrService {
       const child = spawn(command, args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         cwd: userConfigDir,
-        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONPYCACHEPREFIX: PYCACHE_DIR },
       });
       this.child = child;
       try {

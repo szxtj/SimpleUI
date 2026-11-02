@@ -417,6 +417,15 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
           : info
       );
       if (info.online) {
+        // Maple 的 /v1/models 返回权重目录路径，不能进模型列表 → 对账跳过。
+        // 但列表要**重置**成它唯一的模型名，否则会残留上一个 provider 的模型
+        // （实测：切到 Maple 后下拉里还挂着 gemma-4-26b-a4b-it）。
+        if (settings.apiProvider === 'maple') {
+          setAvailableModels((prev) =>
+            prev.length === 1 && prev[0] === 'default_model' ? prev : ['default_model']
+          );
+          return;
+        }
         const models = await TurboFieldfareAPI.fetchModels(settings);
         if (models.length > 0) {
           setAvailableModels((prev) =>
@@ -435,7 +444,10 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
             }
           } else {
             const activeModel = info.modelId || (models.includes(settings.modelId) ? settings.modelId : models[0]);
-            if (activeModel && activeModel !== settings.modelId && !models.includes(settings.modelId)) {
+            // 兜底：以绝对路径形式出现的「model id」其实是权重目录（mlx_lm / 某些服务会这么返回），
+            // 绝不能写回 Chat Model 设置（历史事故：TTF 的 modelId 被写成 Maple 权重目录）。
+            const looksLikePath = typeof activeModel === 'string' && activeModel.startsWith('/');
+            if (!looksLikePath && activeModel && activeModel !== settings.modelId && !models.includes(settings.modelId)) {
               setSettings((prev) => {
                 const nextLocal = { ...(prev.localConfig || DEFAULT_LOCAL_CONFIG), modelId: activeModel };
                 const updated = { ...prev, modelId: activeModel, localConfig: nextLocal };
@@ -548,14 +560,6 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     saveSettings(newSettings);
   };
 
-  const handleServiceApiPortChange = (port: number) => {
-    setSettings((prev) => {
-      const nextLocal = { ...(prev.localConfig || DEFAULT_LOCAL_CONFIG), apiPort: port };
-      const updated = { ...prev, apiPort: port, localConfig: nextLocal };
-      saveSettings(updated);
-      return updated;
-    });
-  };
 
   const handleSend = async (overridePrompt?: string) => {
     const textToSend = (overridePrompt ?? input).trim();
@@ -567,7 +571,9 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     setImages([]);
 
     const isDeepSeek = settings.apiProvider === 'deepseek';
-    const sessionEnableThinking = currentSession?.enableThinking ?? false;
+    // Maple 的 chat template 恒开 <think>，思考开关对它无效，这里直接按开处理
+    const sessionEnableThinking =
+      settings.apiProvider === 'maple' ? true : (currentSession?.enableThinking ?? false);
     const sessionEnableWiki = isDeepSeek ? false : (currentSession?.enableWikiSearch ?? false);
     const sessionSettings = buildSessionSettings(settings, sessionEnableThinking, sessionEnableWiki);
 
@@ -590,7 +596,7 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
       const isDeepSeek = settings.apiProvider === 'deepseek';
       const sessionSettings = buildSessionSettings(
         settings,
-        sessionThinking,
+        settings.apiProvider === 'maple' ? true : sessionThinking,
         isDeepSeek ? false : sessionWiki
       );
 
@@ -700,11 +706,15 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
           onStop={handleStop}
           usedTokens={usedTokens}
           maxContext={settings.maxContext}
-          enableThinking={currentSession?.enableThinking ?? false}
+          enableThinking={
+            settings.apiProvider === 'maple' ? true : (currentSession?.enableThinking ?? false)
+          }
           setEnableThinking={(val) => {
             if (!currentSessionId) return;
+            if (settings.apiProvider === 'maple') return; // 锁定：Maple 无法关闭思考
             updateSessionMeta(currentSessionId, { enableThinking: val });
           }}
+          provider={settings.apiProvider}
           modelId={settings.apiProvider === 'deepseek' ? (settings.deepseekModelId || 'deepseek-flash') : settings.modelId}
           availableModels={availableModels}
           onSelectModel={(m) => {
@@ -730,7 +740,6 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
             }
           }}
           isDeepSeek={settings.apiProvider === 'deepseek'}
-          isMference={settings.apiProvider === 'mference'}
           visionReady={healthInfo.vision === 'ready'}
           serviceOnline={healthInfo.online}
           lastMetrics={lastMetrics}
@@ -782,7 +791,6 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
           onClose={() => setIsSettingsOpen(false)}
           settings={settings}
           onSave={handleSaveSettings}
-          onApiPortChange={handleServiceApiPortChange}
           initialTab={settingsTab}
         />
 

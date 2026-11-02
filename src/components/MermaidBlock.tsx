@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useId } from 'react';
 import { Check, Copy, Image as ImageIcon, Code2, Eye } from 'lucide-react';
 import { useI18n } from '../i18n';
 
@@ -6,46 +6,26 @@ interface MermaidBlockProps {
   code: string;
 }
 
-interface FlowNode {
-  id: string;
-  label: string;
-  shape: 'rect' | 'round' | 'stadium' | 'diamond' | 'circle' | 'cylinder' | 'subroutine' | 'hexagon';
-  subgraph?: string;
-}
+type Mermaid = typeof import('mermaid')['default'];
 
-interface FlowEdge {
-  from: string;
-  to: string;
-  label?: string;
-  style: 'solid' | 'dotted' | 'thick';
-  arrow: boolean;
-}
-
-interface SubgraphGroup {
-  id: string;
-  title: string;
-  nodeIds: string[];
-  depth: number;
-}
+const FONT_STACK =
+  '"PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif';
 
 interface MermaidPalette {
   bg: string;
   nodeFill: string;
   nodeStroke: string;
-  diamondFill: string;
-  diamondStroke: string;
-  circleFill: string;
-  circleStroke: string;
-  hexFill: string;
-  hexStroke: string;
   nodeText: string;
-  edgeStroke: string;
+  edge: string;
   labelBg: string;
   labelBorder: string;
   labelText: string;
-  subgraphFill: string;
-  subgraphStroke: string;
-  subgraphTitle: string;
+  clusterFill: string;
+  clusterBorder: string;
+  noteBg: string;
+  noteBorder: string;
+  noteText: string;
+  pie: string[];
 }
 
 function getMermaidPalette(isDark: boolean): MermaidPalette {
@@ -54,747 +34,211 @@ function getMermaidPalette(isDark: boolean): MermaidPalette {
       bg: '#1a1b1e',
       nodeFill: '#232733',
       nodeStroke: '#4f8ff7',
-      diamondFill: '#2a261d',
-      diamondStroke: '#f59e0b',
-      circleFill: '#1c2b27',
-      circleStroke: '#10b981',
-      hexFill: '#272134',
-      hexStroke: '#a855f7',
       nodeText: '#f1f5f9',
-      edgeStroke: '#64748b',
+      edge: '#64748b',
       labelBg: '#1e2028',
       labelBorder: '#3b404d',
       labelText: '#cbd5e1',
-      subgraphFill: 'rgba(59, 130, 246, 0.05)',
-      subgraphStroke: 'rgba(148, 163, 184, 0.35)',
-      subgraphTitle: '#94a3b8',
+      clusterFill: 'rgba(59, 130, 246, 0.06)',
+      clusterBorder: 'rgba(148, 163, 184, 0.35)',
+      noteBg: '#242832',
+      noteBorder: '#4a5160',
+      noteText: '#dbe3ec',
+      pie: ['#3b82f6', '#10b981', '#f59e0b', '#a855f7', '#ec4899', '#06b6d4', '#f97316'],
     };
   }
   return {
     bg: '#ffffff',
     nodeFill: '#f0f6ff',
     nodeStroke: '#3b82f6',
-    diamondFill: '#fffbeb',
-    diamondStroke: '#d97706',
-    circleFill: '#ecfdf5',
-    circleStroke: '#059669',
-    hexFill: '#faf5ff',
-    hexStroke: '#9333ea',
     nodeText: '#1e293b',
-    edgeStroke: '#64748b',
+    edge: '#64748b',
     labelBg: '#ffffff',
     labelBorder: '#cbd5e1',
     labelText: '#334155',
-    subgraphFill: 'rgba(59, 130, 246, 0.035)',
-    subgraphStroke: 'rgba(100, 116, 139, 0.4)',
-    subgraphTitle: '#475569',
+    clusterFill: 'rgba(59, 130, 246, 0.035)',
+    clusterBorder: 'rgba(100, 116, 139, 0.4)',
+    noteBg: '#f6f8fb',
+    noteBorder: '#cbd5e1',
+    noteText: '#334155',
+    pie: ['#3b82f6', '#10b981', '#f59e0b', '#a855f7', '#ec4899', '#06b6d4', '#f97316'],
   };
 }
 
-function escapeXml(str: string): string {
-  return String(str || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+/** Mindmap / timeline 按层级取色：同一色相的单色梯度，避免出现彩虹色阶 */
+function scaleColor(step: number, isDark: boolean): string {
+  const i = Math.min(11, Math.max(0, step));
+  return isDark ? `hsl(218, 17%, ${17 + i * 1.5}%)` : `hsl(214, 62%, ${97 - i * 2.2}%)`;
 }
 
-function measureTextWidth(text: string, fontSize = 13): number {
-  let w = 0;
-  for (const ch of text) {
-    w += /[\u4e00-\u9fa5\u3000-\u30ff\uff00-\uffef]/.test(ch) ? fontSize * 1.02 : fontSize * 0.6;
-  }
-  return Math.ceil(w);
+/** 单色梯度下每一级仍需可辨识的边框色 */
+function scaleBorder(step: number, isDark: boolean): string {
+  const i = Math.min(11, Math.max(0, step));
+  return isDark ? `hsl(218, 26%, ${30 + i * 1.8}%)` : `hsl(214, 55%, ${84 - i * 2.6}%)`;
 }
 
-function parseNodeToken(
-  rawToken: string,
-  nodesMap: Map<string, FlowNode>,
-  currentSubgraph?: string
-): string {
-  const token = rawToken.trim();
-  if (!token) return '';
+/**
+ * 关闭 mermaid 的 useMaxWidth：默认行为会给 svg 写 inline max-width + width=100%，
+ * 于是比容器窄的小图被整幅放大（字号跟着放大到 28px），比容器宽的大图反而溢出。
+ * 关掉后 svg 保留 viewBox 的自然尺寸，由 .mermaid-diagram 的 CSS 统一「只缩不放」。
+ */
+const NO_MAX_WIDTH: Record<string, { useMaxWidth: boolean }> = Object.fromEntries(
+  [
+    'flowchart',
+    'sequence',
+    'gantt',
+    'class',
+    'state',
+    'er',
+    'journey',
+    'gitGraph',
+    'pie',
+    'quadrantChart',
+    'timeline',
+    'mindmap',
+    'sankey',
+    'architecture',
+    'requirement',
+    'block',
+    'packet',
+    'kanban',
+    'radar',
+    'treemap',
+    'xychart',
+    'c4',
+  ].map((key) => [key, { useMaxWidth: false }])
+);
 
-  const patterns: {
-    regex: RegExp;
-    shape: FlowNode['shape'];
-  }[] = [
-    { regex: /^([A-Za-z0-9_.\-\u4e00-\u9fa5]+)\(\[([\s\S]+)\]\)$/, shape: 'stadium' },
-    { regex: /^([A-Za-z0-9_.\-\u4e00-\u9fa5]+)\[\[([\s\S]+)\]\]$/, shape: 'subroutine' },
-    { regex: /^([A-Za-z0-9_.\-\u4e00-\u9fa5]+)\[\(([\s\S]+)\)\]$/, shape: 'cylinder' },
-    { regex: /^([A-Za-z0-9_.\-\u4e00-\u9fa5]+)\(\(([\s\S]+)\)\)$/, shape: 'circle' },
-    { regex: /^([A-Za-z0-9_.\-\u4e00-\u9fa5]+)\{\{([\s\S]+)\}\}$/, shape: 'hexagon' },
-    { regex: /^([A-Za-z0-9_.\-\u4e00-\u9fa5]+)\{([\s\S]+)\}$/, shape: 'diamond' },
-    { regex: /^([A-Za-z0-9_.\-\u4e00-\u9fa5]+)\(([\s\S]+)\)$/, shape: 'round' },
-    { regex: /^([A-Za-z0-9_.\-\u4e00-\u9fa5]+)\[([\s\S]+)\]$/, shape: 'rect' },
-  ];
-
-  for (const { regex, shape } of patterns) {
-    const m = token.match(regex);
-    if (m) {
-      const id = m[1].trim();
-      const rawLabel = m[2]
-        .trim()
-        .replace(/^["']|["']$/g, '')
-        .replace(/<br\s*\/?>/gi, '\n');
-      const existing = nodesMap.get(id);
-      nodesMap.set(id, {
-        id,
-        label: rawLabel || id,
-        shape,
-        subgraph: currentSubgraph || existing?.subgraph,
-      });
-      return id;
-    }
-  }
-
-  if (token === '[*]') {
-    const id = '__state_star__';
-    if (!nodesMap.has(id)) {
-      nodesMap.set(id, { id, label: '●', shape: 'circle', subgraph: currentSubgraph });
-    }
-    return id;
-  }
-
-  const cleanId = token.replace(/^["']|["']$/g, '').split(/\s+/)[0];
-  if (!nodesMap.has(cleanId)) {
-    nodesMap.set(cleanId, {
-      id: cleanId,
-      label: cleanId,
-      shape: 'rect',
-      subgraph: currentSubgraph,
-    });
-  } else if (currentSubgraph && !nodesMap.get(cleanId)!.subgraph) {
-    nodesMap.get(cleanId)!.subgraph = currentSubgraph;
-  }
-  return cleanId;
-}
-
-function renderFlowchartSvg(code: string, isDark: boolean): string | null {
-  const palette = getMermaidPalette(isDark);
-  const lines = code
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith('%%'));
-  if (lines.length === 0) return null;
-
-  const header = lines[0];
-  let direction: 'TD' | 'LR' | 'BT' | 'RL' = 'TD';
-  const dirMatch = header.match(/^(?:flowchart|graph)\s+(TD|TB|LR|RL|BT)/i);
-  if (dirMatch) {
-    const d = dirMatch[1].toUpperCase();
-    direction = d === 'TB' ? 'TD' : (d as 'TD' | 'LR' | 'BT' | 'RL');
-  }
-
-  const nodesMap = new Map<string, FlowNode>();
-  const edges: FlowEdge[] = [];
-  const subgraphs: SubgraphGroup[] = [];
-  const subgraphStack: SubgraphGroup[] = [];
-
-  const registerNodeInActiveSubgraphs = (nodeId: string) => {
-    if (!nodeId) return;
-    for (const sg of subgraphStack) {
-      if (!sg.nodeIds.includes(nodeId)) {
-        sg.nodeIds.push(nodeId);
-      }
-    }
+function buildMermaidConfig(isDark: boolean) {  const p = getMermaidPalette(isDark);
+  const themeVariables: Record<string, string | boolean> = {
+    darkMode: isDark,
+    background: p.bg,
+    primaryColor: p.nodeFill,
+    primaryTextColor: p.nodeText,
+    primaryBorderColor: p.nodeStroke,
+    secondaryColor: p.nodeFill,
+    secondaryTextColor: p.nodeText,
+    secondaryBorderColor: p.nodeStroke,
+    tertiaryColor: p.bg,
+    tertiaryTextColor: p.nodeText,
+    tertiaryBorderColor: p.nodeStroke,
+    mainBkg: p.nodeFill,
+    nodeBorder: p.nodeStroke,
+    nodeTextColor: p.nodeText,
+    textColor: p.nodeText,
+    titleColor: p.nodeText,
+    lineColor: p.edge,
+    defaultLinkColor: p.edge,
+    edgeLabelBackground: p.labelBg,
+    clusterBkg: p.clusterFill,
+    clusterBorder: p.clusterBorder,
+    classText: p.nodeText,
+    fontFamily: FONT_STACK,
+    fontSize: '14px',
+    // act/sequence
+    actorBkg: p.nodeFill,
+    actorBorder: p.nodeStroke,
+    actorTextColor: p.nodeText,
+    actorLineColor: p.edge,
+    signalColor: p.edge,
+    signalTextColor: p.labelText,
+    labelBoxBkgColor: p.labelBg,
+    labelBoxBorderColor: p.labelBorder,
+    labelTextColor: p.labelText,
+    loopTextColor: p.labelText,
+    noteBkgColor: p.noteBg,
+    noteBorderColor: p.noteBorder,
+    noteTextColor: p.noteText,
+    activationBkgColor: p.nodeFill,
+    activationBorderColor: p.nodeStroke,
+    sequenceNumberColor: p.labelText,
+    // gantt
+    sectionBkgColor: p.clusterFill,
+    altSectionBkgColor: isDark ? 'rgba(148, 163, 184, 0.04)' : 'rgba(148, 163, 184, 0.06)',
+    sectionBkgColor2: p.clusterFill,
+    taskBkgColor: p.nodeFill,
+    taskBorderColor: p.nodeStroke,
+    taskTextColor: p.nodeText,
+    taskTextOutsideColor: p.labelText,
+    taskTextDarkColor: p.nodeText,
+    taskTextLightColor: p.nodeText,
+    gridColor: p.clusterBorder,
+    doneTaskBkgColor: isDark ? '#2b3a2f' : '#e8f5ec',
+    doneTaskBorderColor: isDark ? '#3f6b4a' : '#9dcaa9',
+    activeTaskBkgColor: isDark ? '#2a3346' : '#e3eeff',
+    activeTaskBorderColor: p.nodeStroke,
+    critBkgColor: isDark ? '#4a2c2f' : '#fde8e8',
+    critBorderColor: isDark ? '#8a4a4e' : '#d98b8b',
+    todayLineColor: isDark ? '#e07b7b' : '#d94a4a',
+    // journey
+    fillType0: p.nodeFill,
+    fillType1: isDark ? '#272c39' : '#eef4fd',
+    fillType2: isDark ? '#2b3140' : '#e6eefc',
+    fillType3: isDark ? '#2f3647' : '#dde8fb',
+    fillType4: isDark ? '#333b4e' : '#d4e2fa',
+    fillType5: isDark ? '#374055' : '#cbdcf9',
+    fillType6: isDark ? '#3b455c' : '#c2d6f8',
+    fillType7: isDark ? '#3f4a63' : '#b9d0f7',
+    // ER
+    attributeBackgroundColorOdd: p.nodeFill,
+    attributeBackgroundColorEven: isDark ? '#1f232e' : '#f8fafd',
   };
 
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].replace(/;$/, '').trim();
-    if (!line || /^(classDef|class|style|linkStyle|click|direction)\b/i.test(line)) {
-      continue;
-    }
-
-    const subMatch = line.match(/^subgraph\s+([^\[]+?)(?:\s*\[(.+)\])?$/i);
-    if (subMatch) {
-      const rawId = subMatch[1].trim().replace(/^["']|["']$/g, '');
-      const rawTitle = (subMatch[2] || rawId).trim().replace(/^["']|["']$/g, '');
-      const sg: SubgraphGroup = {
-        id: rawId,
-        title: rawTitle,
-        nodeIds: [],
-        depth: subgraphStack.length,
-      };
-      subgraphs.push(sg);
-      subgraphStack.push(sg);
-      continue;
-    }
-    if (/^end$/i.test(line)) {
-      subgraphStack.pop();
-      continue;
-    }
-
-    const topSubgraph = subgraphStack[subgraphStack.length - 1];
-
-    const stateAlias = line.match(/^state\s+"([^"]+)"\s+as\s+([A-Za-z0-9_.\-]+)/i);
-    if (stateAlias) {
-      const id = stateAlias[2];
-      nodesMap.set(id, {
-        id,
-        label: stateAlias[1],
-        shape: 'round',
-        subgraph: topSubgraph?.id,
-      });
-      registerNodeInActiveSubgraphs(id);
-      continue;
-    }
-
-    const edgeRegex =
-      /^(.+?)\s*(?:--\s*([^>-][^>]*?)\s*-->|-\.\s*([^.]*?)\s*\.->|==\s*([^=]*?)\s*==>|--+>|-\.->|==+>|---)\s*(?:\|([^|]*)\|\s*)?(.+)$/;
-    const m = line.match(edgeRegex);
-    if (m) {
-      const leftRaw = m[1].trim();
-      let rightRaw = m[6].trim();
-      let trailingLabel = '';
-      const colonSplit = rightRaw.match(/^(.+?)\s*:\s*(.+)$/);
-      if (colonSplit && !colonSplit[1].includes('[')) {
-        rightRaw = colonSplit[1].trim();
-        trailingLabel = colonSplit[2].trim();
-      }
-      const label = (m[2] || m[3] || m[4] || m[5] || trailingLabel || '').trim();
-      const rawConnector = line.slice(leftRaw.length, line.length - m[6].length);
-      const style: FlowEdge['style'] = rawConnector.includes('.')
-        ? 'dotted'
-        : rawConnector.includes('=')
-        ? 'thick'
-        : 'solid';
-      const arrow = rawConnector.includes('>');
-
-      const fromId = parseNodeToken(leftRaw, nodesMap, topSubgraph?.id);
-      const toId = parseNodeToken(rightRaw, nodesMap, topSubgraph?.id);
-      if (fromId && toId) {
-        registerNodeInActiveSubgraphs(fromId);
-        registerNodeInActiveSubgraphs(toId);
-        edges.push({ from: fromId, to: toId, label: label || undefined, style, arrow });
-      }
-      continue;
-    }
-
-    const nodeId = parseNodeToken(line, nodesMap, topSubgraph?.id);
-    if (nodeId) {
-      registerNodeInActiveSubgraphs(nodeId);
-    }
+  for (let i = 0; i < 12; i++) {
+    themeVariables[`cScale${i}`] = scaleColor(i, isDark);
+    themeVariables[`cScalePeer${i}`] = scaleBorder(i, isDark);
+    themeVariables[`cScaleLabel${i}`] = p.nodeText;
+    themeVariables[`cScaleInv${i}`] = scaleBorder(i, isDark);
   }
-
-  if (nodesMap.size === 0) return null;
-
-  // Assign layers (longest-path DAG layering for clean vertical/horizontal hierarchy)
-  const nodes = Array.from(nodesMap.values());
-  const inDegree = new Map<string, number>();
-  const adj = new Map<string, string[]>();
-  nodes.forEach((n) => {
-    inDegree.set(n.id, 0);
-    adj.set(n.id, []);
-  });
-  edges.forEach((e) => {
-    if (adj.has(e.from) && inDegree.has(e.to) && e.from !== e.to) {
-      adj.get(e.from)!.push(e.to);
-      inDegree.set(e.to, (inDegree.get(e.to) || 0) + 1);
-    }
+  p.pie.forEach((color, i) => {
+    themeVariables[`pie${i + 1}`] = color;
   });
 
-  const layerMap = new Map<string, number>();
-  const queue: string[] = [];
-  nodes.forEach((n) => {
-    if ((inDegree.get(n.id) || 0) === 0) {
-      layerMap.set(n.id, 0);
-      queue.push(n.id);
-    }
+  // mindmap 的根节点填充/文字取自 git0 / gitBranchLabel0（gitGraph 共用同一组），
+  // 不显式指定就会落到 mermaid 默认的亮蓝色。
+  const gitColors = isDark
+    ? ['#2c4a70', '#356089', '#2f6f63', '#6b5a2f', '#5c3f63', '#3f5566', '#4a4a63', '#5a4436']
+    : ['#dbe9fd', '#cfe3fb', '#d3f0e6', '#f7ead2', '#eee0f5', '#dbe8f0', '#e3e3f4', '#f2e5d9'];
+  gitColors.forEach((color, i) => {
+    themeVariables[`git${i}`] = color;
+    themeVariables[`gitBranchLabel${i}`] = isDark ? '#e8f1ff' : '#1e3a5f';
   });
-  if (queue.length === 0 && nodes.length > 0) {
-    layerMap.set(nodes[0].id, 0);
-    queue.push(nodes[0].id);
-  }
+  themeVariables.commitLabelColor = p.nodeText;
+  themeVariables.commitLabelBackground = p.bg;
+  themeVariables.tagLabelColor = p.labelText;
+  themeVariables.tagLabelBackground = p.labelBg;
+  themeVariables.tagLabelBorder = p.labelBorder;
 
-  const visited = new Set<string>(queue);
-  while (queue.length > 0) {
-    const u = queue.shift()!;
-    const uLayer = layerMap.get(u) || 0;
-    for (const v of adj.get(u) || []) {
-      const nextLayer = Math.min(nodes.length, uLayer + 1);
-      if (!layerMap.has(v) || layerMap.get(v)! < nextLayer) {
-        layerMap.set(v, nextLayer);
-      }
-      if (!visited.has(v)) {
-        visited.add(v);
-        queue.push(v);
-      }
-    }
-  }
-  nodes.forEach((n) => {
-    if (!layerMap.has(n.id)) layerMap.set(n.id, 0);
-  });
-
-  const layers = new Map<number, FlowNode[]>();
-  nodes.forEach((n) => {
-    const l = layerMap.get(n.id) || 0;
-    if (!layers.has(l)) layers.set(l, []);
-    layers.get(l)!.push(n);
-  });
-
-  const sortedLayerIndices = Array.from(layers.keys()).sort((a, b) => a - b);
-  if (direction === 'BT' || direction === 'RL') {
-    sortedLayerIndices.reverse();
-  }
-
-  const isHorizontal = direction === 'LR' || direction === 'RL';
-  const hasEdgeLabels = edges.some((e) => Boolean(e.label));
-
-  // Compute node dimensions
-  const nodeDims = new Map<string, { w: number; h: number }>();
-  nodes.forEach((n) => {
-    const linesOfLabel = n.label.split('\n');
-    const maxLineW = Math.max(...linesOfLabel.map((l) => measureTextWidth(l, 13)), 36);
-    const padX = n.shape === 'diamond' ? 44 : 28;
-    const padY = n.shape === 'diamond' ? 26 : 18;
-    const w = Math.max(78, maxLineW + padX);
-    const h = Math.max(40, linesOfLabel.length * 18 + padY);
-    nodeDims.set(n.id, { w, h });
-  });
-
-  const layerGap = isHorizontal ? (hasEdgeLabels ? 115 : 90) : (hasEdgeLabels ? 96 : 72);
-  const siblingGap = isHorizontal ? 40 : 54;
-  const margin = 48;
-
-  const posMap = new Map<string, { cx: number; cy: number; w: number; h: number }>();
-  let maxCrossSpan = 0;
-  const layerMainSize: number[] = [];
-
-  sortedLayerIndices.forEach((layerIdx) => {
-    const group = layers.get(layerIdx)!;
-    if (isHorizontal) {
-      const maxW = Math.max(...group.map((n) => nodeDims.get(n.id)!.w));
-      const totalH =
-        group.reduce((acc, n) => acc + nodeDims.get(n.id)!.h, 0) +
-        Math.max(0, group.length - 1) * siblingGap;
-      layerMainSize.push(maxW);
-      if (totalH > maxCrossSpan) maxCrossSpan = totalH;
-    } else {
-      const maxH = Math.max(...group.map((n) => nodeDims.get(n.id)!.h));
-      const totalW =
-        group.reduce((acc, n) => acc + nodeDims.get(n.id)!.w, 0) +
-        Math.max(0, group.length - 1) * siblingGap;
-      layerMainSize.push(maxH);
-      if (totalW > maxCrossSpan) maxCrossSpan = totalW;
-    }
-  });
-
-  let currentMainOffset = margin;
-  sortedLayerIndices.forEach((layerIdx, idx) => {
-    const group = layers.get(layerIdx)!;
-    const mainSize = layerMainSize[idx];
-
-    if (isHorizontal) {
-      const totalH =
-        group.reduce((acc, n) => acc + nodeDims.get(n.id)!.h, 0) +
-        Math.max(0, group.length - 1) * siblingGap;
-      let cursorY = margin + (maxCrossSpan - totalH) / 2;
-      group.forEach((n) => {
-        const { w, h } = nodeDims.get(n.id)!;
-        posMap.set(n.id, {
-          cx: currentMainOffset + mainSize / 2,
-          cy: cursorY + h / 2,
-          w,
-          h,
-        });
-        cursorY += h + siblingGap;
-      });
-    } else {
-      const totalW =
-        group.reduce((acc, n) => acc + nodeDims.get(n.id)!.w, 0) +
-        Math.max(0, group.length - 1) * siblingGap;
-      let cursorX = margin + (maxCrossSpan - totalW) / 2;
-      group.forEach((n) => {
-        const { w, h } = nodeDims.get(n.id)!;
-        posMap.set(n.id, {
-          cx: cursorX + w / 2,
-          cy: currentMainOffset + mainSize / 2,
-          w,
-          h,
-        });
-        cursorX += w + siblingGap;
-      });
-    }
-
-    currentMainOffset += mainSize + layerGap;
-  });
-
-  const totalMainSpan = currentMainOffset - layerGap + margin;
-  const svgWidth = Math.max(260, Math.ceil(isHorizontal ? totalMainSpan : maxCrossSpan + margin * 2));
-  const svgHeight = Math.max(120, Math.ceil(isHorizontal ? maxCrossSpan + margin * 2 : totalMainSpan));
-
-  // Subgraph boxes (outermost drawn first, nested subgraphs inset cleanly so headers never collide)
-  const subgraphEls = subgraphs
-    .map((sg) => {
-      const pts = sg.nodeIds.map((id) => posMap.get(id)).filter(Boolean) as {
-        cx: number;
-        cy: number;
-        w: number;
-        h: number;
-      }[];
-      if (pts.length === 0) return '';
-      const maxDepth = Math.max(...subgraphs.map((s) => s.depth), 0);
-      const outerExtra = (maxDepth - sg.depth) * 14;
-      const minX = Math.min(...pts.map((p) => p.cx - p.w / 2)) - 18 - outerExtra;
-      const maxX = Math.max(...pts.map((p) => p.cx + p.w / 2)) + 18 + outerExtra;
-      const minY = Math.min(...pts.map((p) => p.cy - p.h / 2)) - 30 - outerExtra * 1.3;
-      const maxY = Math.max(...pts.map((p) => p.cy + p.h / 2)) + 16 + outerExtra * 0.8;
-      return `<g>
-        <rect x="${minX}" y="${minY}" width="${maxX - minX}" height="${maxY - minY}" rx="10" fill="${palette.subgraphFill}" stroke="${palette.subgraphStroke}" stroke-dasharray="5,4" stroke-width="1.25" />
-        <text x="${minX + 12}" y="${minY + 18}" fill="${palette.subgraphTitle}" font-size="11.5" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">${escapeXml(sg.title)}</text>
-      </g>`;
-    })
-    .join('\n');
-
-  // Track placed boxes (starting with all node boxes) so edge labels avoid overlapping nodes or each other
-  const occupiedBoxes: { x: number; y: number; w: number; h: number }[] = [];
-  posMap.forEach((p) => {
-    occupiedBoxes.push({ x: p.cx - p.w / 2 - 4, y: p.cy - p.h / 2 - 4, w: p.w + 8, h: p.h + 8 });
-  });
-
-  const boxesOverlap = (
-    a: { x: number; y: number; w: number; h: number },
-    b: { x: number; y: number; w: number; h: number }
-  ) => {
-    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  return {
+    theme: 'base',
+    look: 'classic',
+    startOnLoad: false,
+    securityLevel: 'strict',
+    suppressErrorRendering: true,
+    // 用 SVG <text> 而非 <foreignObject>：WebKit 无法把含 foreignObject 的 SVG 画进 canvas，
+    // 会让「复制图像」在真实 App（WKWebView）里静默产出空白图。
+    htmlLabels: false,
+    fontFamily: FONT_STACK,
+    themeVariables,
+    // 关掉 useMaxWidth：否则 mermaid 会给 svg 写 inline max-width + width=100%，
+    // 小图被拉伸放大（字号一起放大），大图又会溢出容器。交给 index.css 统一约束。
+    ...NO_MAX_WIDTH,
   };
-
-  const cubicPoint = (t: number, p0: number, p1: number, p2: number, p3: number) => {
-    const mt = 1 - t;
-    return (
-      mt * mt * mt * p0 +
-      3 * mt * mt * t * p1 +
-      3 * mt * t * t * p2 +
-      t * t * t * p3
-    );
-  };
-
-  const edgePathEls: string[] = [];
-  const edgeLabelEls: string[] = [];
-
-  edges.forEach((e) => {
-    const p1 = posMap.get(e.from);
-    const p2 = posMap.get(e.to);
-    if (!p1 || !p2) return;
-
-    let x1 = p1.cx;
-    let y1 = p1.cy;
-    let x2 = p2.cx;
-    let y2 = p2.cy;
-
-    if (isHorizontal) {
-      if (p1.cx <= p2.cx) {
-        x1 = p1.cx + p1.w / 2;
-        x2 = p2.cx - p2.w / 2 - (e.arrow ? 5 : 0);
-      } else {
-        x1 = p1.cx - p1.w / 2;
-        x2 = p2.cx + p2.w / 2 + (e.arrow ? 5 : 0);
-      }
-    } else {
-      if (p1.cy <= p2.cy) {
-        y1 = p1.cy + p1.h / 2;
-        y2 = p2.cy - p2.h / 2 - (e.arrow ? 5 : 0);
-      } else {
-        y1 = p1.cy - p1.h / 2;
-        y2 = p2.cy + p2.h / 2 + (e.arrow ? 5 : 0);
-      }
-    }
-
-    const midX = (x1 + x2) / 2;
-    const midY = (y1 + y2) / 2;
-    const cx1 = isHorizontal ? midX : x1;
-    const cy1 = isHorizontal ? y1 : midY;
-    const cx2 = isHorizontal ? midX : x2;
-    const cy2 = isHorizontal ? y2 : midY;
-
-    const d = `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
-    const dash = e.style === 'dotted' ? 'stroke-dasharray="5,4"' : '';
-    const strokeW = e.style === 'thick' ? '2.5' : '1.65';
-    const marker = e.arrow ? 'marker-end="url(#mermaid-arrow)"' : '';
-
-    edgePathEls.push(
-      `<path d="${d}" fill="none" stroke="${palette.edgeStroke}" stroke-width="${strokeW}" ${dash} ${marker} />`
-    );
-
-    if (e.label) {
-      const lw = measureTextWidth(e.label, 11.5) + 14;
-      const lh = 20;
-      const candidateTs = [0.5, 0.36, 0.64, 0.26, 0.74, 0.43, 0.57];
-      let bestX = cubicPoint(0.5, x1, cx1, cx2, x2);
-      let bestY = cubicPoint(0.5, y1, cy1, cy2, y2);
-
-      for (const t of candidateTs) {
-        const px = cubicPoint(t, x1, cx1, cx2, x2);
-        const py = cubicPoint(t, y1, cy1, cy2, y2);
-        const box = { x: px - lw / 2 - 2, y: py - lh / 2 - 2, w: lw + 4, h: lh + 4 };
-        if (!occupiedBoxes.some((b) => boxesOverlap(box, b))) {
-          bestX = px;
-          bestY = py;
-          break;
-        }
-      }
-
-      occupiedBoxes.push({ x: bestX - lw / 2, y: bestY - lh / 2, w: lw, h: lh });
-      edgeLabelEls.push(`<g>
-        <rect x="${bestX - lw / 2}" y="${bestY - lh / 2}" width="${lw}" height="${lh}" rx="5" fill="${palette.labelBg}" stroke="${palette.labelBorder}" stroke-width="1" />
-        <text x="${bestX}" y="${bestY + 4}" text-anchor="middle" fill="${palette.labelText}" font-size="11.5" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">${escapeXml(e.label)}</text>
-      </g>`);
-    }
-  });
-
-  const nodeEls = nodes
-    .map((n) => {
-      const pos = posMap.get(n.id);
-      if (!pos) return '';
-      const { cx, cy, w, h } = pos;
-      const x = cx - w / 2;
-      const y = cy - h / 2;
-
-      let shapeSvg = '';
-      const sw = '1.5';
-
-      if (n.shape === 'diamond') {
-        const pts = `${cx},${y} ${x + w},${cy} ${cx},${y + h} ${x},${cy}`;
-        shapeSvg = `<polygon points="${pts}" fill="${palette.diamondFill}" stroke="${palette.diamondStroke}" stroke-width="${sw}" />`;
-      } else if (n.shape === 'circle') {
-        const r = Math.max(w, h) / 2;
-        shapeSvg = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${palette.circleFill}" stroke="${palette.circleStroke}" stroke-width="${sw}" />`;
-      } else if (n.shape === 'stadium') {
-        shapeSvg = `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${h / 2}" fill="${palette.circleFill}" stroke="${palette.circleStroke}" stroke-width="${sw}" />`;
-      } else if (n.shape === 'round') {
-        shapeSvg = `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10" fill="${palette.nodeFill}" stroke="${palette.nodeStroke}" stroke-width="${sw}" />`;
-      } else if (n.shape === 'hexagon') {
-        const inset = 14;
-        const pts = `${x + inset},${y} ${x + w - inset},${y} ${x + w},${cy} ${x + w - inset},${y + h} ${x + inset},${y + h} ${x},${cy}`;
-        shapeSvg = `<polygon points="${pts}" fill="${palette.hexFill}" stroke="${palette.hexStroke}" stroke-width="${sw}" />`;
-      } else {
-        shapeSvg = `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="6" fill="${palette.nodeFill}" stroke="${palette.nodeStroke}" stroke-width="${sw}" />`;
-      }
-
-      const labelLines = n.label.split('\n');
-      const startY = cy - ((labelLines.length - 1) * 17) / 2 + 4.5;
-      const textSvg = labelLines
-        .map(
-          (lineText, idx) =>
-            `<text x="${cx}" y="${startY + idx * 17}" text-anchor="middle" fill="${palette.nodeText}" font-size="13" font-weight="500" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">${escapeXml(lineText)}</text>`
-        )
-        .join('');
-
-      return `<g>${shapeSvg}${textSvg}</g>`;
-    })
-    .join('\n');
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${svgWidth} ${svgHeight}" width="${svgWidth}" height="${svgHeight}" style="max-width:100%;height:auto;display:block;margin:0 auto;">
-    <defs>
-      <marker id="mermaid-arrow" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
-        <path d="M 0 1.5 L 8.5 5 L 0 8.5 z" fill="${palette.edgeStroke}" />
-      </marker>
-    </defs>
-    ${subgraphEls}
-    ${edgePathEls.join('\n')}
-    ${nodeEls}
-    ${edgeLabelEls.join('\n')}
-  </svg>`;
 }
 
-function renderSequenceDiagramSvg(code: string, isDark: boolean): string | null {
-  const palette = getMermaidPalette(isDark);
-  const lines = code
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith('%%'));
-  if (lines.length <= 1) return null;
+let mermaidLoader: Promise<Mermaid> | null = null;
+let initializedTheme: boolean | null = null;
 
-  const participants: { id: string; label: string }[] = [];
-  const pMap = new Map<string, string>();
-  const messages: { from: string; to: string; text: string; dashed: boolean }[] = [];
-
-  const ensureParticipant = (id: string, label?: string) => {
-    const cleanId = id.trim().replace(/^["']|["']$/g, '');
-    if (!cleanId) return '';
-    if (!pMap.has(cleanId)) {
-      const finalLabel = (label || cleanId).trim().replace(/^["']|["']$/g, '');
-      pMap.set(cleanId, finalLabel);
-      participants.push({ id: cleanId, label: finalLabel });
-    }
-    return cleanId;
-  };
-
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    const pMatch = line.match(/^(?:participant|actor)\s+([^\s]+)(?:\s+as\s+(.+))?$/i);
-    if (pMatch) {
-      ensureParticipant(pMatch[1], pMatch[2]);
-      continue;
-    }
-    const msgMatch = line.match(/^([^-:]+?)\s*(--?>?>?|--?[x)])\s*([^:]+?)\s*:\s*(.*)$/);
-    if (msgMatch) {
-      const from = ensureParticipant(msgMatch[1]);
-      const arrow = msgMatch[2];
-      const to = ensureParticipant(msgMatch[3]);
-      const text = msgMatch[4].trim();
-      if (from && to) {
-        messages.push({ from, to, text, dashed: arrow.startsWith('--') });
-      }
-    }
+async function getMermaid(isDark: boolean): Promise<Mermaid> {
+  if (!mermaidLoader) {
+    mermaidLoader = import('mermaid').then((mod) => mod.default);
   }
-
-  if (participants.length === 0) return null;
-
-  const colGap = 150;
-  const marginX = 70;
-  const topY = 30;
-  const boxH = 36;
-  const rowH = 52;
-  const svgWidth = Math.max(320, marginX * 2 + (participants.length - 1) * colGap + 120);
-  const bottomBoxY = topY + boxH + 28 + messages.length * rowH + 16;
-  const svgHeight = bottomBoxY + boxH + 24;
-
-  const xOf = (id: string) => {
-    const idx = participants.findIndex((p) => p.id === id);
-    return marginX + 60 + Math.max(0, idx) * colGap;
-  };
-
-  const lifelines = participants
-    .map((p) => {
-      const cx = xOf(p.id);
-      const w = Math.max(88, measureTextWidth(p.label, 13) + 28);
-      return `<g>
-        <line x1="${cx}" y1="${topY + boxH}" x2="${cx}" y2="${bottomBoxY}" stroke="${palette.edgeStroke}" stroke-width="1.4" stroke-dasharray="5,5" />
-        <rect x="${cx - w / 2}" y="${topY}" width="${w}" height="${boxH}" rx="7" fill="${palette.nodeFill}" stroke="${palette.nodeStroke}" stroke-width="1.5" />
-        <text x="${cx}" y="${topY + 23}" text-anchor="middle" fill="${palette.nodeText}" font-size="13" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">${escapeXml(p.label)}</text>
-        <rect x="${cx - w / 2}" y="${bottomBoxY}" width="${w}" height="${boxH}" rx="7" fill="${palette.nodeFill}" stroke="${palette.nodeStroke}" stroke-width="1.5" />
-        <text x="${cx}" y="${bottomBoxY + 23}" text-anchor="middle" fill="${palette.nodeText}" font-size="13" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">${escapeXml(p.label)}</text>
-      </g>`;
-    })
-    .join('\n');
-
-  const msgEls = messages
-    .map((m, idx) => {
-      const y = topY + boxH + 40 + idx * rowH;
-      const x1 = xOf(m.from);
-      const x2 = xOf(m.to);
-      const dash = m.dashed ? 'stroke-dasharray="5,4"' : '';
-      if (m.from === m.to) {
-        return `<g>
-          <path d="M ${x1} ${y - 8} L ${x1 + 36} ${y - 8} L ${x1 + 36} ${y + 12} L ${x1 + 6} ${y + 12}" fill="none" stroke="${palette.edgeStroke}" stroke-width="1.6" ${dash} marker-end="url(#seq-arrow)" />
-          <text x="${x1 + 42}" y="${y + 4}" fill="${palette.labelText}" font-size="12" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">${escapeXml(m.text)}</text>
-        </g>`;
-      }
-      const dir = x2 > x1 ? 1 : -1;
-      const targetX = x2 - dir * 6;
-      const midX = (x1 + x2) / 2;
-      return `<g>
-        <line x1="${x1}" y1="${y}" x2="${targetX}" y2="${y}" stroke="${palette.edgeStroke}" stroke-width="1.65" ${dash} marker-end="url(#seq-arrow)" />
-        <text x="${midX}" y="${y - 8}" text-anchor="middle" fill="${palette.labelText}" font-size="12" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">${escapeXml(m.text)}</text>
-      </g>`;
-    })
-    .join('\n');
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${svgWidth} ${svgHeight}" width="${svgWidth}" height="${svgHeight}" style="max-width:100%;height:auto;display:block;margin:0 auto;">
-    <defs>
-      <marker id="seq-arrow" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
-        <path d="M 0 1.5 L 8.5 5 L 0 8.5 z" fill="${palette.edgeStroke}" />
-      </marker>
-    </defs>
-    ${lifelines}
-    ${msgEls}
-  </svg>`;
-}
-
-function renderPieChartSvg(code: string, isDark: boolean): string | null {
-  const palette = getMermaidPalette(isDark);
-  const lines = code
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith('%%'));
-  let title = '';
-  const slices: { label: string; value: number }[] = [];
-
-  for (const line of lines) {
-    const titleMatch = line.match(/^(?:pie\s+)?title\s+(.+)$/i);
-    if (titleMatch) {
-      title = titleMatch[1].trim().replace(/^["']|["']$/g, '');
-      continue;
-    }
-    const sliceMatch = line.match(/^"([^"]+)"\s*:\s*([0-9.]+)$/);
-    if (sliceMatch) {
-      const val = parseFloat(sliceMatch[2]);
-      if (val > 0) {
-        slices.push({ label: sliceMatch[1], value: val });
-      }
-    }
+  const mermaid = await mermaidLoader;
+  if (initializedTheme !== isDark) {
+    mermaid.initialize(buildMermaidConfig(isDark) as unknown as Parameters<Mermaid['initialize']>[0]);
+    initializedTheme = isDark;
   }
-
-  if (slices.length === 0) return null;
-  const total = slices.reduce((acc, s) => acc + s.value, 0);
-  const colors = ['#3b82f6', '#10b981', '#f59e0b', '#a855f7', '#ec4899', '#06b6d4', '#f97316'];
-
-  const svgWidth = 460;
-  const svgHeight = Math.max(240, (title ? 44 : 16) + Math.max(180, slices.length * 28 + 20));
-  const cx = 125;
-  const cy = (title ? 32 : 10) + 100;
-  const r = 78;
-
-  let startAngle = -Math.PI / 2;
-  const paths = slices
-    .map((s, idx) => {
-      const fraction = s.value / total;
-      const angle = fraction * Math.PI * 2;
-      const endAngle = startAngle + angle;
-      const x1 = cx + r * Math.cos(startAngle);
-      const y1 = cy + r * Math.sin(startAngle);
-      const x2 = cx + r * Math.cos(endAngle);
-      const y2 = cy + r * Math.sin(endAngle);
-      const largeArc = angle > Math.PI ? 1 : 0;
-      const color = colors[idx % colors.length];
-      startAngle = endAngle;
-      if (slices.length === 1) {
-        return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${color}" />`;
-      }
-      return `<path d="M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} Z" fill="${color}" stroke="${palette.bg}" stroke-width="2" />`;
-    })
-    .join('\n');
-
-  const legend = slices
-    .map((s, idx) => {
-      const pct = ((s.value / total) * 100).toFixed(1);
-      const ly = (title ? 52 : 32) + idx * 26;
-      const color = colors[idx % colors.length];
-      return `<g>
-        <rect x="240" y="${ly - 10}" width="12" height="12" rx="3" fill="${color}" />
-        <text x="260" y="${ly}" fill="${palette.nodeText}" font-size="12.5" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">${escapeXml(s.label)} (${pct}%)</text>
-      </g>`;
-    })
-    .join('\n');
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${svgWidth} ${svgHeight}" width="${svgWidth}" height="${svgHeight}" style="max-width:100%;height:auto;display:block;margin:0 auto;">
-    ${title ? `<text x="${svgWidth / 2}" y="26" text-anchor="middle" fill="${palette.nodeText}" font-size="14" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">${escapeXml(title)}</text>` : ''}
-    ${paths}
-    ${legend}
-  </svg>`;
-}
-
-export function renderMermaidToSvg(code: string, isDark: boolean = true): string | null {
-  const trimmed = (code || '').trim();
-  if (!trimmed) return null;
-  const firstLine = trimmed.split(/\r?\n/)[0].trim();
-
-  if (/^sequenceDiagram\b/i.test(firstLine)) {
-    return renderSequenceDiagramSvg(trimmed, isDark);
-  }
-  if (/^pie\b/i.test(firstLine)) {
-    return renderPieChartSvg(trimmed, isDark);
-  }
-  if (/^(?:flowchart|graph|stateDiagram(?:-v2)?)\b/i.test(firstLine)) {
-    return renderFlowchartSvg(trimmed, isDark);
-  }
-  if (/-->|---|-\.->|==>/.test(trimmed)) {
-    return renderFlowchartSvg(`flowchart TD\n${trimmed}`, isDark);
-  }
-  return null;
+  return mermaid;
 }
 
 export const MermaidBlock: React.FC<MermaidBlockProps> = React.memo(({ code }) => {
@@ -805,7 +249,13 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = React.memo(({ code }) =
   const [isDark, setIsDark] = useState<boolean>(() =>
     typeof document !== 'undefined' ? document.documentElement.classList.contains('dark') : true
   );
+  const [svgMarkup, setSvgMarkup] = useState<string | null>(null);
   const svgContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // 每次渲染用独立 id：mermaid 生成的 marker/style 全部以该 id 派生，
+  // 同一页多张图（或同一张图多次重渲染）不会出现重复 DOM id。
+  const blockId = useId().replace(/[^a-zA-Z0-9]/g, '');
+  const renderSeq = useRef(0);
 
   // Observe html.dark class changes so switching Light/Dark theme immediately updates the SVG diagram
   useEffect(() => {
@@ -818,7 +268,35 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = React.memo(({ code }) =
     return () => observer.disconnect();
   }, []);
 
-  const svgMarkup = useMemo(() => renderMermaidToSvg(code, isDark), [code, isDark]);
+  useEffect(() => {
+    let alive = true;
+    const seq = ++renderSeq.current;
+    const renderId = `mermaid-${blockId}-${seq}`;
+
+    const run = async () => {
+      let mermaid: Mermaid;
+      try {
+        mermaid = await getMermaid(isDark);
+      } catch (e) {
+        console.error('Failed to load mermaid:', e);
+        if (alive) setSvgMarkup(null);
+        return;
+      }
+      try {
+        const { svg } = await mermaid.render(renderId, code);
+        // 只接受最后一次渲染的结果：代码在流式增长时，先发起的渲染可能后返回
+        if (alive) setSvgMarkup(svg);
+      } catch {
+        // 语法不完整或不受支持：交回源码视图（与既有的代码框降级路径一致）
+        if (alive) setSvgMarkup(null);
+      }
+    };
+
+    void run();
+    return () => {
+      alive = false;
+    };
+  }, [code, isDark, blockId]);
 
   const handleCopySource = async () => {
     try {
@@ -836,17 +314,17 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = React.memo(({ code }) =
       const svgEl = svgContainerRef.current?.querySelector('svg');
       if (!svgEl) return;
 
-      const serializer = new XMLSerializer();
-      let svgString = serializer.serializeToString(svgEl);
-      if (!svgString.includes('xmlns="http://www.w3.org/2000/svg"')) {
-        svgString = svgString.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
-      }
-
       const viewBox = svgEl.getAttribute('viewBox')?.split(/\s+/).map(Number);
-      const width = (viewBox && viewBox[2]) || svgEl.clientWidth || 600;
-      const height = (viewBox && viewBox[3]) || svgEl.clientHeight || 400;
-      const scale = 2; // 2x Retina resolution
+      const width = Math.round((viewBox && viewBox[2]) || svgEl.clientWidth || 600);
+      const height = Math.round((viewBox && viewBox[3]) || svgEl.clientHeight || 400);
 
+      const clone = svgEl.cloneNode(true) as SVGSVGElement;
+      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      clone.setAttribute('width', String(width));
+      clone.setAttribute('height', String(height));
+      const svgString = new XMLSerializer().serializeToString(clone);
+
+      const scale = 2; // 2x Retina resolution
       const img = new Image();
       const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
       const url = URL.createObjectURL(svgBlob);
@@ -868,7 +346,7 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = React.memo(({ code }) =
       }
 
       ctx.scale(scale, scale);
-      ctx.fillStyle = isDark ? '#1a1b1e' : '#ffffff';
+      ctx.fillStyle = getMermaidPalette(isDark).bg;
       ctx.fillRect(0, 0, width + pad * 2, height + pad * 2);
       ctx.drawImage(img, pad, pad, width, height);
       URL.revokeObjectURL(url);
@@ -985,7 +463,7 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = React.memo(({ code }) =
       {svgMarkup && viewMode === 'diagram' ? (
         <div
           ref={svgContainerRef}
-          className="p-4 overflow-x-auto overflow-y-hidden flex justify-center items-center bg-white dark:bg-[#1a1b1e]"
+          className="mermaid-diagram p-4 overflow-x-auto overflow-y-hidden flex justify-center items-center bg-white dark:bg-[#1a1b1e]"
           dangerouslySetInnerHTML={{ __html: svgMarkup }}
         />
       ) : (

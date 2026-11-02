@@ -1,6 +1,9 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { ArrowUp, Plus, Square, Zap, Brain, BookOpen } from 'lucide-react';
+import { ArrowUp, Plus, Square, BookOpen } from 'lucide-react';
 import { useI18n } from '../i18n';
+import { ThinkingToggle } from './ThinkingToggle';
+import { supportsVision } from '../utils/providerCapabilities';
+import { ApiProvider } from '../types/chat';
 import { ContextRing } from './ContextRing';
 import { ImageAttachment } from './ImageAttachment';
 import { ImagePreviewModal } from './ImagePreviewModal';
@@ -26,7 +29,8 @@ interface ChatInputProps {
   wikiConnected?: boolean;
   wikiEnabled?: boolean;
   isDeepSeek?: boolean;
-  isMference?: boolean;
+  /** 当前对话的 provider（思考是否可关由 ThinkingToggle 按能力判定） */
+  provider?: ApiProvider;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = ({
@@ -48,9 +52,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   wikiConnected = false,
   wikiEnabled = true,
   isDeepSeek = false,
-  isMference = false,
+  provider,
 }) => {
   const { t } = useI18n();
+  // 视觉能力统一按 provider 判定（原来散落的 isMference 布尔已收编）
+  const visionOk = supportsVision(provider);
   const [previewDraftIndex, setPreviewDraftIndex] = useState<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -73,7 +79,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   });
 
   const handlePaste = async (e: React.ClipboardEvent) => {
-    if (isMference) return;
+    if (!visionOk) return;
     const files = extractImagesFromPaste(e);
     if (files.length > 0) {
       e.preventDefault();
@@ -87,7 +93,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (isMference) return;
+    if (!visionOk) return;
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
     try {
@@ -143,43 +149,22 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           {/* Add Attachment Button */}
           <button
             type="button"
-            disabled={isMference}
-            onClick={isMference ? undefined : () => fileInputRef.current?.click()}
+            disabled={!visionOk}
+            onClick={visionOk ? () => fileInputRef.current?.click() : undefined}
             className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors flex-shrink-0 ${
-              isMference
+              !visionOk
                 ? 'opacity-40 text-zinc-400 dark:text-zinc-600 bg-black/5 dark:bg-white/5 cursor-not-allowed'
                 : images.length > 0
                 ? 'bg-blue-600 text-white shadow-sm cursor-pointer'
                 : 'bg-black/5 hover:bg-black/10 text-zinc-600 hover:text-black dark:bg-white/5 dark:hover:bg-white/10 dark:text-zinc-300 dark:hover:text-white cursor-pointer'
             }`}
-            title={isMference ? t('visionDisabledMference') : (visionReady ? t('attachImage') : t('attachImageReady'))}
+            title={!visionOk ? t('visionDisabledModel') : (visionReady ? t('attachImage') : t('attachImageReady'))}
           >
             <Plus className="w-4 h-4 stroke-[2.5]" />
           </button>
 
-          {/* Quick / Thinking Direct Toggle Button */}
-          <button
-            type="button"
-            onClick={() => setEnableThinking(!enableThinking)}
-            className={`flex items-center gap-1.5 px-2 cq-md:px-3 py-1.5 rounded-full text-xs font-medium transition-all active:scale-95 border flex-shrink-0 ${
-              enableThinking
-                ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 dark:bg-blue-950/70 dark:text-blue-300 dark:border-blue-500/40 dark:hover:bg-blue-900/80 shadow-sm'
-                : 'bg-black/5 text-zinc-600 border-black/5 hover:bg-black/10 hover:text-black dark:bg-white/5 dark:text-zinc-300 dark:border-white/5 dark:hover:bg-white/10 dark:hover:text-white'
-            }`}
-            title={enableThinking ? t('thinkingOnTooltip') : t('thinkingOffTooltip')}
-          >
-            {enableThinking ? (
-              <>
-                <Brain className="w-3.5 h-3.5 text-blue-500 dark:text-blue-400" />
-                <span className="hidden cq-md:inline">{t('thinkingOn')}</span>
-              </>
-            ) : (
-              <>
-                <Zap className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" />
-                <span className="hidden cq-md:inline">{t('thinkingOff')}</span>
-              </>
-            )}
-          </button>
+          {/* 思考 / 快速 切换：主窗与浮窗共用 ThinkingToggle，锁定逻辑只此一份 */}
+          <ThinkingToggle provider={provider} thinking={enableThinking} onToggle={setEnableThinking} />
 
           {/* Offline Wiki Knowledge Toggle Button — 服务总开关关闭或 DeepSeek 模式下完全不渲染
               （DeepSeek 用不到知识库，留着只会误导；知识库面板本身仍可打开查看） */}

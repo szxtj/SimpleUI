@@ -42,6 +42,11 @@ const LOG_FILE = process.env.SIMPLEUI_OCR_LOG || path.join(HOME, 'Library', 'Log
 const PID_FILE = '/tmp/simpleui_ocr.pid';
 const SCRIPT = path.join(__dirname, 'ocr', 'ocr_server.py');
 
+// 与 tts_service.js 同因同治：Python 运行时就打包在 Contents/Resources/ocr/python/ 里，
+// 默认把 __pycache__/*.pyc 写在源码旁 → 签名后新增文件 → sealed resource 失效。
+// 统一挪到用户的 Caches 目录（共享同一个 prefix 目录，解释器版本差异由 Python 自己分子目录）。
+const PYCACHE_DIR = path.join(HOME, 'Library', 'Caches', 'SimpleUI', 'pycache');
+
 const PORT = 1256;
 const TASKS = ['ocr', 'table', 'formula', 'chart', 'spotting', 'seal'];
 const RESOLUTIONS = {
@@ -667,7 +672,12 @@ class OcrService {
     this._lastCheckTime = now;
     let ready = false;
     try {
-      const check = spawnSync(python, ['-c', 'import mlx_vlm, PIL'], { timeout: 3000 });
+      // 体检本身也是 python 进程，同样要带上 pycache prefix —— 否则 `import mlx_vlm, PIL`
+      // 会在包内写下几百个 .pyc（App 一启动、状态接口被拉取一次就会触发）。
+      const check = spawnSync(python, ['-c', 'import mlx_vlm, PIL'], {
+        timeout: 3000,
+        env: { ...process.env, PYTHONPYCACHEPREFIX: PYCACHE_DIR },
+      });
       ready = check.status === 0;
       this._runtimeReady = ready;
     } catch {
@@ -797,7 +807,7 @@ class OcrService {
 
       const child = spawn(python, [SCRIPT, '--model-dir', MODEL_DIR, '--port', String(PORT)], {
         cwd: __dirname,
-        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONPYCACHEPREFIX: PYCACHE_DIR },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       this.proc = child;

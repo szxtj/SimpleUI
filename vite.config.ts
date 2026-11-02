@@ -9,6 +9,12 @@ export default defineConfig({
   server: {
     port: 5173,
     host: '127.0.0.1',
+    // build_mac_app.sh 会在项目根的 build/ 里生成整个 .app（含 ~800MB Python 运行时），
+    // 不忽略的话每次构建都会被 watcher 当成源码变更，触发成百次整页 reload。
+    // dist/ 同理（vite build 的产物）。两者都不参与 dev 的模块图。
+    watch: {
+      ignored: ['**/build/**', '**/dist/**', '**/.workbuddy/**'],
+    },
     proxy: {
       '/v1': {
         target: 'http://127.0.0.1:1235',

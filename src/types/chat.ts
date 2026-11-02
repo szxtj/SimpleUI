@@ -77,7 +77,7 @@ export interface ChatSession {
   enableWikiSearch?: boolean; // Conversation-level independent offline wiki toggle (default false)
 }
 
-export type ApiProvider = 'ttf' | 'mference' | 'custom' | 'deepseek' | 'local';
+export type ApiProvider = 'ttf' | 'mference' | 'maple' | 'custom' | 'deepseek' | 'local';
 
 /** 本地引擎独立设置 (兼容保留) */
 export interface LocalProviderConfig {
@@ -126,6 +126,30 @@ export interface MferenceProviderConfig {
   presencePenalty?: number;     // 默认 1.5
   repetitionPenalty?: number;   // 默认 1.0
   reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
+  seed?: number;
+  stopStrings?: string[];
+  systemPrompt: string;
+}
+
+/**
+ * Maple MLX（官方 mlx-lm 运行时，默认端口 1242）。
+ *
+ * 与 Mference / TTF 的关键差异：chat template 一上来就开 `<think>`，无法关闭，
+ * 因此这里没有 reasoningEffort；maxTokens 必须留足思考预算，否则会出现
+ * 「finish=length 但正文为空」。
+ */
+export interface MapleProviderConfig {
+  apiPort: number;              // 默认 1242
+  apiBaseUrl?: string;
+  modelId: string;              // mlx_lm.server 固定回 "default_model"
+  maxContext: number;           // 默认 16384
+  maxTokens: number;            // 默认 2048（含隐藏思考）
+  temperature: number;          // 默认 0.8
+  topP: number;                 // 默认 0.95
+  topK?: number;                // 默认 40
+  minP?: number;                // 默认 0
+  presencePenalty?: number;
+  repetitionPenalty?: number;
   seed?: number;
   stopStrings?: string[];
   systemPrompt: string;
@@ -226,6 +250,7 @@ export interface AppSettings {
   // 四套独立存储的模型配置
   ttfConfig?: TtfProviderConfig;
   mferenceConfig?: MferenceProviderConfig;
+  mapleConfig?: MapleProviderConfig;
   customConfig?: CustomProviderConfig;
   localConfig?: LocalProviderConfig;
   deepseekConfig?: DeepSeekProviderConfig;

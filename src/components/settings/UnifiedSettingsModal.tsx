@@ -25,7 +25,6 @@ interface UnifiedSettingsModalProps {
   onClose: () => void;
   settings: AppSettings;
   onSave: (settings: AppSettings) => void;
-  onApiPortChange?: (port: number) => void;
   initialTab?: SettingsTabId;
 }
 
@@ -34,7 +33,6 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
   onClose,
   settings,
   onSave,
-  onApiPortChange,
   initialTab = 'general',
 }) => {
   const { t } = useI18n();
@@ -374,6 +372,7 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
             <div className={['general', 'chat-models', 'storage'].includes(activeTab) ? 'block' : 'hidden'}>
               <AppSettingsPanel
                 activeTab={activeTab}
+                isOpen={isOpen}
                 settings={settings}
                 onSave={onSave}
               />
@@ -383,7 +382,6 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
                 activeTab={activeTab}
                 settings={settings}
                 isOpen={isOpen}
-                onApiPortChange={onApiPortChange}
                 onStatusChange={handleServiceStatusUpdate}
               />
             </div>

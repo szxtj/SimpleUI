@@ -4,10 +4,7 @@ import {
   ServerHealthInfo,
   WikiStatusInfo,
 } from '../types/chat';
-import {
-  loadSettings,
-  syncChannel,
-} from '../services/storage';
+import { loadSettings } from '../services/storage';
 import { TurboFieldfareAPI, WikiAPI } from '../services/api';
 import {
   buildSessionSettings,
@@ -30,8 +27,6 @@ import {
   ArrowUp,
   Square,
   Plus,
-  Zap,
-  Brain,
   BookOpen,
   Search,
   Copy,
@@ -47,6 +42,9 @@ import {
 import { SpotlightPageLayer } from './SpotlightPageLayer';
 import { useSpotlightPage } from '../hooks/useSpotlightPage';
 import { useI18n } from '../i18n';
+import { ThinkingToggle } from './ThinkingToggle';
+import { isThinkingForced, supportsVision } from '../utils/providerCapabilities';
+import { syncChannel, syncSettingsFromServer } from '../services/storage';
 import { useTheme } from '../hooks/useTheme';
 import { estimateHistoryTokens, applyTokenCalibration } from '../utils/token';
 
@@ -55,6 +53,22 @@ export const SpotlightView: React.FC = () => {
   const defaultTitle = lang === 'en' ? 'New Chat' : '新对话';
   const [settings, setSettings] = useState<AppSettings>(loadSettings());
   useTheme(settings.theme, true);
+
+  // 设置同步（此前缺失）：浮窗的 settings 只在首次 loadSettings()（localStorage 引导）取一次，
+  // 之后既不从服务端同步、也不听跨窗广播 —— 主窗切到 Maple（1242）后，浮窗永远停在 ttf/1235：
+  // 思考按钮不锁、加号可点、对话打到没有服务的端口。这里补齐与主窗完全相同的两条同步路径。
+  useEffect(() => {
+    syncSettingsFromServer((loaded) => setSettings(loaded));
+    const channel = syncChannel;
+    if (!channel) return;
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type !== 'SETTINGS_CHANGED') return;
+      // 内存缓存里是旧值，必须重新向服务端拉，而不能只 loadSettings()
+      syncSettingsFromServer((loaded) => setSettings(loaded));
+    };
+    channel.addEventListener('message', handler);
+    return () => channel.removeEventListener('message', handler);
+  }, []);
 
   const [input, setInput] = useState('');
   const [images, setImages] = useState<string[]>([]);
@@ -170,7 +184,13 @@ export const SpotlightView: React.FC = () => {
   // Fallback local toggles when currentSession is not yet bound
   const [localThinking, setLocalThinking] = useState(false);
   const [localWiki, setLocalWiki] = useState(false);
-  const enableThinking = currentSession ? (currentSession.enableThinking ?? false) : localThinking;
+  // 强制思考的引擎（Maple）：始终按「开」处理，避免会话里存的旧值把它带成 false
+  const thinkingForced = isThinkingForced(settings.apiProvider);
+  const enableThinking = thinkingForced
+    ? true
+    : currentSession
+    ? (currentSession.enableThinking ?? false)
+    : localThinking;
   const enableWikiSearch = currentSession ? (currentSession.enableWikiSearch ?? false) : localWiki;
 
   // Clean persistent conversation history tokens (user text + assistant text only)
@@ -428,13 +448,13 @@ export const SpotlightView: React.FC = () => {
   }, [currentSessionId]);
 
   const isDeepSeek = settings.apiProvider === 'deepseek';
-  const isMference = settings.apiProvider === 'mference';
+  const visionOk = supportsVision(settings.apiProvider);
 
   useEffect(() => {
-    if (isMference && images.length > 0) {
+    if (!visionOk && images.length > 0) {
       setImages([]);
     }
-  }, [isMference, images]);
+  }, [visionOk, images]);
 
   /** 知识库是否可用：服务开启 && ZIM 就绪 && 非 DeepSeek（与主窗口口径一致） */
   const kbReady = wikiStatus.enabled && wikiStatus.connected && !isDeepSeek;
@@ -703,7 +723,7 @@ export const SpotlightView: React.FC = () => {
   };
 
   const handlePaste = async (e: React.ClipboardEvent) => {
-    if (isMference) return;
+    if (!visionOk) return;
     const files = extractImagesFromPaste(e);
     if (files.length > 0) {
       e.preventDefault();
@@ -721,7 +741,7 @@ export const SpotlightView: React.FC = () => {
 
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
-    if (isMference) return;
+    if (!visionOk) return;
     if (e.dataTransfer.types.includes('Files')) {
       dragCounterRef.current++;
       setIsDragOver(true);
@@ -730,7 +750,7 @@ export const SpotlightView: React.FC = () => {
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
-    if (isMference) return;
+    if (!visionOk) return;
     if (e.dataTransfer.types.includes('Files')) {
       e.dataTransfer.dropEffect = 'copy';
       setIsDragOver(true);
@@ -750,7 +770,7 @@ export const SpotlightView: React.FC = () => {
     e.preventDefault();
     dragCounterRef.current = 0;
     setIsDragOver(false);
-    if (isMference) return;
+    if (!visionOk) return;
 
     const droppedFiles = Array.from(e.dataTransfer.files).filter(isImageFile);
     if (droppedFiles.length > 0) {
@@ -795,7 +815,7 @@ export const SpotlightView: React.FC = () => {
             multiple
             className="hidden"
             onChange={async (e) => {
-              if (isMference) return;
+              if (!visionOk) return;
               const files = Array.from(e.target.files || []);
               if (files.length > 0) {
                 const urls = await Promise.all(files.map(fileToDataURL));
@@ -851,42 +871,21 @@ export const SpotlightView: React.FC = () => {
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
-                  disabled={isMference}
-                  onClick={isMference ? undefined : () => fileInputRef.current?.click()}
+                  disabled={!visionOk}
+                  onClick={visionOk ? () => fileInputRef.current?.click() : undefined}
                   className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${
-                    isMference
+                    !visionOk
                       ? 'opacity-40 text-zinc-400 dark:text-zinc-600 bg-black/5 dark:bg-white/5 cursor-not-allowed'
                       : images.length > 0
                       ? 'bg-blue-600 text-white cursor-pointer'
                       : 'bg-black/5 hover:bg-black/10 text-zinc-600 hover:text-black dark:bg-white/5 dark:hover:bg-white/10 dark:text-zinc-300 dark:hover:text-white cursor-pointer'
                   }`}
-                  title={isMference ? t('visionDisabledMference') : t('attachImage')}
+                  title={!visionOk ? t('visionDisabledModel') : t('attachImage')}
                 >
                   <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => toggleThinking(!enableThinking)}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all active:scale-95 border ${
-                    enableThinking
-                      ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 dark:bg-blue-950/70 dark:text-blue-300 dark:border-blue-500/40 dark:hover:bg-blue-900/80'
-                      : 'bg-black/5 text-zinc-600 border-black/5 hover:bg-black/10 hover:text-black dark:bg-white/5 dark:text-zinc-300 dark:border-white/5 dark:hover:bg-white/10 dark:hover:text-white'
-                  }`}
-                  title={enableThinking ? t('thinkingOnTooltip') : t('thinkingOffTooltip')}
-                >
-                  {enableThinking ? (
-                    <>
-                      <Brain className="w-3.5 h-3.5 text-blue-500 dark:text-blue-400" />
-                      <span>{t('thinkingOn')}</span>
-                    </>
-                  ) : (
-                    <>
-                      <Zap className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" />
-                      <span>{t('thinkingOff')}</span>
-                    </>
-                  )}
-                </button>
+                  <ThinkingToggle provider={settings.apiProvider} thinking={enableThinking} onToggle={toggleThinking} compact />
 
                 {wikiStatus.enabled && (
                   <button
@@ -1277,40 +1276,19 @@ export const SpotlightView: React.FC = () => {
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
-                    disabled={isMference}
-                    onClick={isMference ? undefined : () => fileInputRef.current?.click()}
+                    disabled={!visionOk}
+                    onClick={visionOk ? () => fileInputRef.current?.click() : undefined}
                     className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${
-                      isMference
+                      !visionOk
                         ? 'opacity-40 text-zinc-400 dark:text-zinc-600 bg-black/5 dark:bg-white/5 cursor-not-allowed'
                         : 'bg-black/5 hover:bg-black/10 text-zinc-600 hover:text-black dark:bg-white/5 dark:hover:bg-white/10 dark:text-zinc-300 dark:hover:text-white cursor-pointer'
                     }`}
-                    title={isMference ? t('visionDisabledMference') : t('spotlightAddImage')}
+                    title={!visionOk ? t('visionDisabledModel') : t('spotlightAddImage')}
                   >
                     <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => toggleThinking(!enableThinking)}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all active:scale-95 border ${
-                      enableThinking
-                        ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 dark:bg-blue-950/70 dark:text-blue-300 dark:border-blue-500/40 dark:hover:bg-blue-900/80'
-                        : 'bg-black/5 text-zinc-600 border-black/5 hover:bg-black/10 hover:text-black dark:bg-white/5 dark:text-zinc-300 dark:border-white/5 dark:hover:bg-white/10 dark:hover:text-white'
-                    }`}
-                    title={enableThinking ? t('thinkingOnTooltip') : t('thinkingOffTooltip')}
-                  >
-                    {enableThinking ? (
-                      <>
-                        <Brain className="w-3.5 h-3.5 text-blue-500 dark:text-blue-400" />
-                        <span>{t('thinkingOn')}</span>
-                      </>
-                    ) : (
-                      <>
-                        <Zap className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" />
-                        <span>{t('thinkingOff')}</span>
-                      </>
-                    )}
-                  </button>
+                  <ThinkingToggle provider={settings.apiProvider} thinking={enableThinking} onToggle={toggleThinking} compact />
 
                   {wikiStatus.enabled && (
                     <button

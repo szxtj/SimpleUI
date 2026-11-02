@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { AppSettings, WikiStatusInfo, AsrServiceStatus, AsrEngineId, VoicePermissionStatus, SubtitleServiceStatus, TtsServiceStatus, OcrServiceStatus, OcrConfig, TranslateServiceStatus } from '../../types/chat';
-import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ASRServiceAPI, SubtitleServiceAPI, TtsServiceAPI, OcrServiceAPI, TranslateServiceAPI } from '../../services/api';
+import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ModelEngine, MapleAssets, ASRServiceAPI, SubtitleServiceAPI, TtsServiceAPI, OcrServiceAPI, TranslateServiceAPI } from '../../services/api';
 import { resolveLanguage, formatArticleCount, translations, Language, TranslationKeys } from '../../i18n';
 import {
   SERVICE_STATE_CARD_DOT_CLASS,
@@ -31,7 +31,7 @@ const SVC_CARD_DEFAULTS_TTF: Partial<ModelServiceConfig> = {
   thinking: 'default',
   rdadvise: 'adaptive',
   allowUnbackedContext: false,
-  idleAutoResetMinutes: 15,
+  idleAutoResetMinutes: 30,
 };
 
 const SVC_CARD_DEFAULTS_MFERENCE: Partial<ModelServiceConfig> = {
@@ -43,7 +43,23 @@ const SVC_CARD_DEFAULTS_MFERENCE: Partial<ModelServiceConfig> = {
   mferenceVerify: 'auto',
   mferenceQueueLimit: 4,
   mferencePrefillChunk: '2048',
-  idleAutoResetMinutes: 15,
+  idleAutoResetMinutes: 30,
+};
+
+// Maple MLX 卡片默认值（运行时 + 权重的路径由 App 托管且固定，这里只留可调参数）
+const SVC_CARD_DEFAULTS_MAPLE: Partial<ModelServiceConfig> = {
+  maplePort: 1242,
+  maplePromptCacheSize: 4,
+  maplePrefillStepSize: 2048,
+  mapleFlashHead: false,
+  idleAutoResetMinutes: 30,
+};
+
+/** 引擎的中立展示名（与后端 ENGINE_METADATA 的 name 一致） */
+const ENGINE_DISPLAY_NAME: Record<ModelEngine, string> = {
+  'turbo-fieldfare': 'TurboFieldfare',
+  mference: 'Mference',
+  'maple-mlx': 'Maple MLX',
 };
 
 // 语音合成服务卡片默认值（与后端 tts_service.js DEFAULT_CONFIG 保持一致）
@@ -253,11 +269,112 @@ const IdleTimeoutSelector: React.FC<{
  * 视觉与交互（弹窗外壳、卡片样式、按钮样式、Esc 关闭）与设置界面完全一致。
  */
 
+/**
+ * Maple MLX 的「托管资源」行：运行时（Python venv）与权重各一行。
+ *
+ * 与语音/字幕/合成卡片的下载行保持同一套视觉：就绪显示绿勾、下载中显示
+ * violet→emerald 渐变进度条与 MB/s、失败显示红色错误行。抽成组件是因为
+ * 运行时和权重的交互完全对称，复制两份会立刻出现文案漂移。
+ */
+const MapleAssetRow: React.FC<{
+  title: string;
+  subtitle: string;
+  ready: boolean;
+  readyText: string;
+  progressText: string;
+  percent: number;
+  active: boolean;
+  bytesLine: string;
+  speedLine: string;
+  error: string | null;
+  startLabel: string;
+  cancelLabel: string;
+  busy: boolean;
+  onStart: () => void;
+  onCancel: () => void;
+}> = ({
+  title,
+  subtitle,
+  ready,
+  readyText,
+  progressText,
+  percent,
+  active,
+  bytesLine,
+  speedLine,
+  error,
+  startLabel,
+  cancelLabel,
+  busy,
+  onStart,
+  onCancel,
+}) => (
+  <div className="rounded-lg border border-black/10 dark:border-white/10 bg-[#f6f8fa] dark:bg-[#18191c] px-2.5 py-2">
+    <div className="flex items-start justify-between gap-2">
+      <div className="min-w-0">
+        <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">{title}</div>
+        <div className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate">{subtitle}</div>
+      </div>
+      {ready && !active ? (
+        <span className="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium flex-shrink-0">
+          <Check className="w-3 h-3" />
+          {readyText}
+        </span>
+      ) : active ? (
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={busy}
+          className="px-2 py-0.5 rounded-md border border-black/10 dark:border-white/15 text-[10px] text-zinc-600 dark:text-zinc-300 hover:bg-black/5 dark:hover:bg-white/10 transition-colors disabled:opacity-50 cursor-pointer flex-shrink-0"
+        >
+          {cancelLabel}
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={onStart}
+          disabled={busy}
+          className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-medium transition-all active:scale-95 disabled:opacity-50 cursor-pointer flex-shrink-0"
+        >
+          <Download className="w-3 h-3" />
+          {startLabel}
+        </button>
+      )}
+    </div>
+
+    {active && (
+      <div className="mt-1.5 space-y-1">
+        <div className="flex items-center justify-between text-[10px] text-zinc-500 dark:text-zinc-400">
+          <span className="truncate">{progressText}</span>
+          <span className="font-mono text-violet-600 dark:text-violet-400 font-semibold flex-shrink-0 ml-2">
+            {percent.toFixed(0)}%
+          </span>
+        </div>
+        <div className="w-full h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-violet-500 to-emerald-500 transition-all duration-200"
+            style={{ width: `${Math.max(3, Math.min(100, percent))}%` }}
+          />
+        </div>
+        {(bytesLine || speedLine) && (
+          <div className="flex items-center justify-between text-[10px] font-mono text-zinc-500 dark:text-zinc-400">
+            <span>{bytesLine}</span>
+            <span>{speedLine}</span>
+          </div>
+        )}
+      </div>
+    )}
+
+    {error && !active && (
+      <div className="mt-1 text-[10px] text-red-500 break-words line-clamp-2">{error}</div>
+    )}
+  </div>
+);
+
 export interface ServicesPanelProps {
   activeTab: SettingsTabId;
   settings: AppSettings;
   isOpen: boolean;
-  onApiPortChange?: (port: number) => void;
   onStatusChange?: (statuses: {
     model?: ServiceState;
     kb?: ServiceState;
@@ -273,7 +390,6 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
   activeTab,
   settings,
   isOpen,
-  onApiPortChange,
   onStatusChange,
 }) => {
   // 语言取已保存的设置（本界面不提供语言切换）
@@ -297,10 +413,10 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
   const [isApplyingPath, setIsApplyingPath] = useState(false);
   const [pathMessage, setPathMessage] = useState<{ text: string; isError: boolean } | null>(null);
 
-  // ---- 基础模型服务（支持 TurboFieldfare / Mference 双引擎切换）----
+  // ---- 基础模型服务（支持 TurboFieldfare / Mference / Maple MLX 三引擎切换）----
   const [svcStatus, setSvcStatus] = useState<ModelServiceStatus | null>(null);
   const [svcForm, setSvcForm] = useState<Partial<ModelServiceConfig>>({});
-  const [selectedEngine, setSelectedEngine] = useState<'turbo-fieldfare' | 'mference'>('turbo-fieldfare');
+  const [selectedEngine, setSelectedEngine] = useState<ModelEngine>('turbo-fieldfare');
   const [svcProjectDir, setSvcProjectDir] = useState('');
   const [svcMferenceProjectDir, setSvcMferenceProjectDir] = useState('');
   const [svcBusy, setSvcBusy] = useState<string | null>(null);
@@ -808,8 +924,8 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, settings.customWikiDir]);
 
-  // 切换基础模型引擎（TTF 与 Mference）：立即切换选项卡并异步持久化，无闪烁回退
-  const handleSwitchEngine = (engine: 'turbo-fieldfare' | 'mference') => {
+  // 切换基础模型引擎（TTF / Mference / Maple MLX）：立即切换选项卡并异步持久化，无闪烁回退
+  const handleSwitchEngine = (engine: ModelEngine) => {
     if (selectedEngine === engine) return;
     setSelectedEngine(engine);
     selectedEngineRef.current = engine;
@@ -823,18 +939,66 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
   };
 
   // 独立引擎启停开关：按当前选中的引擎分别控制，互相解耦
-  const handleEngineToggle = async (engine: 'turbo-fieldfare' | 'mference', next: boolean) => {
+  const handleEngineToggle = async (engine: ModelEngine, next: boolean) => {
     setSvcBusy(`toggle-${engine}`);
     try {
-      if (engine === 'mference') {
-        await ModelServiceAPI.updateConfig({ mferenceEnabled: next, engine: next ? 'mference' : selectedEngine }, false);
-      } else {
-        await ModelServiceAPI.updateConfig({ ttfEnabled: next, engine: next ? 'turbo-fieldfare' : selectedEngine }, false);
-      }
+      const enabledKey =
+        engine === 'mference' ? 'mferenceEnabled' : engine === 'maple-mlx' ? 'mapleEnabled' : 'ttfEnabled';
+      await ModelServiceAPI.updateConfig(
+        { [enabledKey]: next, engine: next ? engine : selectedEngine } as Partial<ModelServiceConfig>,
+        false
+      );
       await ModelServiceAPI.control(next ? 'start' : 'stop', engine);
       await refreshSvcStatus();
     } finally {
       setSvcBusy(null);
+    }
+  };
+
+  // ---- Maple MLX：运行时安装 / 权重下载 ----
+  const [mapleBusy, setMapleBusy] = useState<string | null>(null);
+
+  const isMference = selectedEngine === 'mference';
+  const isMaple = selectedEngine === 'maple-mlx';
+  const mapleAssets: MapleAssets | undefined = svcStatus?.maple?.assets;
+
+  const handleMapleInstallRuntime = async () => {
+    setMapleBusy('runtime');
+    try {
+      await ModelServiceAPI.installMapleRuntime();
+      await refreshSvcStatus();
+    } finally {
+      setMapleBusy(null);
+    }
+  };
+
+  const handleMapleCancelRuntime = async () => {
+    setMapleBusy('runtime-cancel');
+    try {
+      await ModelServiceAPI.cancelMapleRuntime();
+      await refreshSvcStatus();
+    } finally {
+      setMapleBusy(null);
+    }
+  };
+
+  const handleMapleDownloadModel = async () => {
+    setMapleBusy('model');
+    try {
+      await ModelServiceAPI.downloadMapleModel();
+      await refreshSvcStatus();
+    } finally {
+      setMapleBusy(null);
+    }
+  };
+
+  const handleMapleCancelModel = async () => {
+    setMapleBusy('model-cancel');
+    try {
+      await ModelServiceAPI.cancelMapleModel();
+      await refreshSvcStatus();
+    } finally {
+      setMapleBusy(null);
     }
   };
 
@@ -902,23 +1066,29 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
     setSvcBusy('apply');
     setSvcMsg(null);
     try {
-      const isMference = selectedEngine === 'mference';
-      const targetPort = isMference
-        ? (Number(svcForm.mferencePort) || 1241)
-        : (Number(svcForm.port) || 1235);
-
       const payload: Partial<ModelServiceConfig> = {
         ...svcForm,
         engine: selectedEngine,
-        projectDir: svcProjectDir.trim() || SVC_DEFAULT_PROJECT_DIR,
-        mferenceProjectDir: svcMferenceProjectDir.trim() || SVC_DEFAULT_MFERENCE_DIR,
         port: Number(svcForm.port) || 1235,
         mferencePort: Number(svcForm.mferencePort) || 1241,
+        maplePort: Number(svcForm.maplePort) || 1242,
       };
+
+      // 目录留空 = 「不改」，绝不能拿默认值兜底：
+      // 面板刚打开、配置还没回填时保存一次，会把用户已选好的目录（例如外置盘上的权重）
+      // 悄悄改回默认路径，表现为「模型明明在，却显示 Download」。
+      // Maple 的运行时/权重路径是固定的，不在可写字段里
+      const dirFields: Array<[keyof ModelServiceConfig, string]> = [
+        ['projectDir', svcProjectDir],
+        ['mferenceProjectDir', svcMferenceProjectDir],
+      ];
+      for (const [key, value] of dirFields) {
+        const trimmed = value.trim();
+        if (trimmed) (payload as Record<string, unknown>)[key] = trimmed;
+      }
 
       const r = await ModelServiceAPI.updateConfig(payload, true);
       if (r.success) {
-        onApiPortChange?.(targetPort);
         showFeedback('svc', setSvcMsg, {
           text: r.restarted ? t('modelServiceApplyDone') : t('modelServiceApplySaved'),
           isError: false,
@@ -1052,7 +1222,12 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
   };
 
   const handleSvcCardReset = () => {
-    if (selectedEngine === 'mference') {
+    if (isMaple) {
+      setSvcForm((prev) => ({
+        ...prev,
+        ...SVC_CARD_DEFAULTS_MAPLE,
+      }));
+    } else if (selectedEngine === 'mference') {
       setSvcForm((prev) => ({
         ...prev,
         ...SVC_CARD_DEFAULTS_MFERENCE,
@@ -1224,13 +1399,38 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
   }, [svcStatus, wikiStatus, asrStatus, ttsStatus, subtitleStatus, translateStatus, ocrStatus, onStatusChange]);
 
 
-  const isMference = selectedEngine === 'mference';
-  const currentEngineStatus = svcStatus ? (isMference ? svcStatus.mference : svcStatus.ttf) : null;
+  const currentEngineStatus = svcStatus
+    ? isMference
+      ? svcStatus.mference
+      : isMaple
+      ? svcStatus.maple ?? null
+      : svcStatus.ttf
+    : null;
   const isCurrentEngineActive =
     currentEngineStatus?.status === 'running' ||
     currentEngineStatus?.status === 'loading' ||
     currentEngineStatus?.status === 'starting' ||
     currentEngineStatus?.status === 'restart';
+
+  // Maple MLX 的两条托管资源（运行时 / 权重）——下载与安装状态都由后端实测下发
+  const mapleRuntimeState = mapleAssets?.runtime.installState;
+  const mapleDownloadState = mapleAssets?.model.downloadState;
+
+  const mapleRuntimePhaseText = mapleRuntimeState?.active
+    ? (() => {
+        const key = `mapleStep_${mapleRuntimeState.step || 'prepare'}` as TranslationKeys;
+        const label = t(key);
+        return label === key ? mapleRuntimeState.stepLabel || t('maplePhaseWorking') : label;
+      })()
+    : '';
+
+  const mapleModelPhaseText = mapleDownloadState?.active
+    ? mapleDownloadState.phase === 'probing'
+      ? t('maplePhaseProbing')
+      : mapleDownloadState.phase === 'cleaning'
+      ? t('maplePhaseCleaning')
+      : t('maplePhaseDownloading')
+    : '';
 
   // 快速翻译服务：下载进度直接引用字幕服务的 downloadState，
   // 但只有「正在下载翻译模型」才算本卡片的下载中，避免字幕 ASR / 断句模型的下载串台显示。
@@ -1268,7 +1468,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                     </div>
                     <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
                       {cardState === 'online'
-                        ? `${t('modelDetailCurrentEngine')}: ${selectedEngine === 'mference' ? 'Mference' : 'TurboFieldfare'}`
+                        ? `${t('modelDetailCurrentEngine')}: ${ENGINE_DISPLAY_NAME[selectedEngine]}`
                         : cardState === 'starting'
                         ? t('modelDetailLoading')
                         : t('modelDetailStopped')}
@@ -1283,7 +1483,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
               <label className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-1.5">
                 {t('modelEngineLabel')}
               </label>
-              <div className="grid grid-cols-2 gap-2 p-1 bg-black/5 dark:bg-white/5 rounded-xl border border-black/5 dark:border-white/5">
+              <div className="grid grid-cols-3 gap-2 p-1 bg-black/5 dark:bg-white/5 rounded-xl border border-black/5 dark:border-white/5">
                 <button
                   type="button"
                   onClick={() => handleSwitchEngine('turbo-fieldfare')}
@@ -1299,7 +1499,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                         SERVICE_STATE_CARD_DOT_CLASS[deriveServiceState({ status: svcStatus?.ttf?.status })]
                       }`}
                     />
-                    <span className="whitespace-nowrap">{t('modelEngineTTF')}</span>
+                    <span className="truncate" title={t('modelEngineTTF')}>{t('modelEngineTTF')}</span>
                   </div>
                   <span className="text-[10px] font-mono opacity-60 flex-shrink-0 ml-1">
                     {svcStatus?.ttf?.port ? `:${svcStatus.ttf.port}` : ''}
@@ -1320,10 +1520,31 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                         SERVICE_STATE_CARD_DOT_CLASS[deriveServiceState({ status: svcStatus?.mference?.status })]
                       }`}
                     />
-                    <span className="whitespace-nowrap">{t('modelEngineMference')}</span>
+                    <span className="truncate" title={t('modelEngineMference')}>{t('modelEngineMference')}</span>
                   </div>
                   <span className="text-[10px] font-mono opacity-60 flex-shrink-0 ml-1">
                     {svcStatus?.mference?.port ? `:${svcStatus.mference.port}` : ''}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSwitchEngine('maple-mlx')}
+                  className={`py-1.5 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-between cursor-pointer gap-2 ${
+                    selectedEngine === 'maple-mlx'
+                      ? 'bg-white dark:bg-[#202127] text-amber-700 dark:text-amber-400 shadow-sm font-semibold'
+                      : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                        SERVICE_STATE_CARD_DOT_CLASS[deriveServiceState({ status: svcStatus?.maple?.status })]
+                      }`}
+                    />
+                    <span className="truncate" title={t('modelEngineMaple')}>{t('modelEngineMaple')}</span>
+                  </div>
+                  <span className="text-[10px] font-mono opacity-60 flex-shrink-0 ml-1">
+                    {svcStatus?.maple?.port ? `:${svcStatus.maple.port}` : ''}
                   </span>
                 </button>
               </div>
@@ -1338,10 +1559,16 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                 className="flex-1 min-w-0 text-left cursor-pointer disabled:cursor-not-allowed"
               >
                 <div className="font-medium text-zinc-700 dark:text-zinc-200">
-                  {isMference ? t('mferenceServiceAutoStart') : t('ttfServiceAutoStart')}
+                  {isMaple
+                    ? t('mapleServiceAutoStart')
+                    : isMference
+                    ? t('mferenceServiceAutoStart')
+                    : t('ttfServiceAutoStart')}
                 </div>
                 <div className="text-[10px] text-zinc-500 dark:text-zinc-400">
-                  {isMference
+                  {isMaple
+                    ? t('mapleServiceAutoStartDesc')
+                    : isMference
                     ? t('mferenceServiceAutoStartDesc')
                     : t('ttfServiceAutoStartDesc')}
                 </div>
@@ -1366,43 +1593,48 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
               </button>
             </div>
 
-            {/* 本体项目目录 */}
-            <label className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-1">
-              {t('modelServicePathLabel')}
-            </label>
-            <div className="flex gap-2 mb-1.5">
-              <input
-                type="text"
-                value={selectedEngine === 'mference' ? svcMferenceProjectDir : svcProjectDir}
-                onChange={(e) => {
-                  if (selectedEngine === 'mference') {
-                    setSvcMferenceProjectDir(e.target.value);
-                  } else {
-                    setSvcProjectDir(e.target.value);
-                  }
-                }}
-                placeholder={selectedEngine === 'mference' ? '~/Mference' : '~/turbo-fieldfare'}
-                className="flex-1 bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-[#1f2328] dark:text-[#f1f3f7] font-mono focus:outline-none focus:border-amber-500"
-              />
-              <button
-                type="button"
-                onClick={handleBrowseDirectory}
-                disabled={svcBusy !== null}
-                title={t('modelServicePathBrowse')}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-zinc-700 dark:text-zinc-200 border border-black/10 dark:border-white/10 text-xs font-medium transition-all active:scale-95 disabled:opacity-50 cursor-pointer flex-shrink-0"
-              >
-                <FolderOpen className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
-                <span>{t('modelServicePathBrowse')}</span>
-              </button>
-              <button
-                type="button"
-                onClick={handleSvcPathApply}
-                disabled={svcBusy !== null || !(selectedEngine === 'mference' ? svcMferenceProjectDir.trim() : svcProjectDir.trim())}
-                className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 active:scale-95 disabled:opacity-50 text-white text-xs font-medium transition-all flex-shrink-0"
-              >
-                {svcBusy === 'path' ? t('modelServicePathApplying') : t('modelServicePathApply')}
-              </button>
-            </div>
+            {/* 本体项目目录（仅 TTF / Mference：上游仓库由用户自备、可放任意位置）
+                Maple 与语音/合成/字幕/翻译/视觉识别一致 —— 运行时与权重都由 App 托管、路径固定 */}
+            {!isMaple && (
+              <>
+              <label className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                {t('modelServicePathLabel')}
+              </label>
+              <div className="flex gap-2 mb-1.5">
+                <input
+                  type="text"
+                  value={isMference ? svcMferenceProjectDir : svcProjectDir}
+                  onChange={(e) => {
+                    if (isMference) {
+                      setSvcMferenceProjectDir(e.target.value);
+                    } else {
+                      setSvcProjectDir(e.target.value);
+                    }
+                  }}
+                  placeholder={isMference ? '~/Mference' : '~/turbo-fieldfare'}
+                  className="flex-1 bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-[#1f2328] dark:text-[#f1f3f7] font-mono focus:outline-none focus:border-amber-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleBrowseDirectory}
+                  disabled={svcBusy !== null}
+                  title={t('modelServicePathBrowse')}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-zinc-700 dark:text-zinc-200 border border-black/10 dark:border-white/10 text-xs font-medium transition-all active:scale-95 disabled:opacity-50 cursor-pointer flex-shrink-0"
+                >
+                  <FolderOpen className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
+                  <span>{t('modelServicePathBrowse')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSvcPathApply}
+                  disabled={svcBusy !== null || !(isMference ? svcMferenceProjectDir.trim() : svcProjectDir.trim())}
+                  className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 active:scale-95 disabled:opacity-50 text-white text-xs font-medium transition-all flex-shrink-0"
+                >
+                  {svcBusy === 'path' ? t('modelServicePathApplying') : t('modelServicePathApply')}
+                </button>
+              </div>
+              </>
+            )}
 
             {/* 服务监听端口 */}
             <div className="mb-1.5">
@@ -1413,10 +1645,18 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                 type="number"
                 min={1024}
                 max={65535}
-                value={selectedEngine === 'mference' ? (svcForm.mferencePort ?? 1241) : (svcForm.port ?? 1235)}
+                value={
+                  isMaple
+                    ? (svcForm.maplePort ?? 1242)
+                    : isMference
+                    ? (svcForm.mferencePort ?? 1241)
+                    : (svcForm.port ?? 1235)
+                }
                 onChange={(e) => {
                   const val = Number(e.target.value);
-                  if (selectedEngine === 'mference') {
+                  if (isMaple) {
+                    setSvcForm({ ...svcForm, maplePort: val || 1242 });
+                  } else if (isMference) {
                     setSvcForm({ ...svcForm, mferencePort: val || 1241 });
                   } else {
                     setSvcForm({ ...svcForm, port: val || 1235 });
@@ -1426,25 +1666,97 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
               />
             </div>
 
-            {/* 前置条件检测引导 */}
-            {currentEngineStatus && (!currentEngineStatus.checks.repo || !currentEngineStatus.checks.binary || !currentEngineStatus.checks.model) && (
-              <div className="mt-1 rounded-lg border border-black/10 dark:border-white/10 bg-[#f6f8fa] dark:bg-[#18191c] px-2.5 py-2">
-                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 mb-1.5">
-                  {!currentEngineStatus.checks.repo
-                    ? t('modelServiceCheckRepo')
-                    : !currentEngineStatus.checks.binary
-                    ? t('modelServiceCheckBinary')
-                    : t('modelServiceCheckModel')}
+            {/* 前置条件：TTF/Mference 引导用户自备本体；Maple 由 App 托管，直接给下载入口 */}
+            {isMaple ? (
+              <div className="mt-1 space-y-2">
+                <MapleAssetRow
+                  title={t('mapleRuntimeTitle')}
+                  subtitle={t('mapleRuntimeDesc')}
+                  ready={Boolean(mapleAssets?.runtime.ready)}
+                  readyText={t('mapleReady')}
+                  progressText={mapleRuntimePhaseText}
+                  percent={mapleRuntimeState?.progressPercent || 0}
+                  active={Boolean(mapleRuntimeState?.active)}
+                  bytesLine={
+                    mapleRuntimeState?.active
+                      ? `${((mapleRuntimeState.downloadedBytes || 0) / 1048576).toFixed(0)} MB / ${(
+                          (mapleRuntimeState.totalBytes || 0) / 1048576
+                        ).toFixed(0)} MB`
+                      : ''
+                  }
+                  speedLine=""
+                  error={mapleRuntimeState?.error || null}
+                  startLabel={t('mapleInstallBtn')}
+                  cancelLabel={t('mapleCancelBtn')}
+                  busy={mapleBusy !== null}
+                  onStart={handleMapleInstallRuntime}
+                  onCancel={handleMapleCancelRuntime}
+                />
+                <MapleAssetRow
+                  title={t('mapleModelTitle')}
+                  subtitle={t('mapleModelDesc')}
+                  ready={Boolean(mapleAssets?.model.ready)}
+                  readyText={t('mapleReady')}
+                  progressText={mapleModelPhaseText}
+                  percent={mapleDownloadState?.progressPercent || 0}
+                  active={Boolean(mapleDownloadState?.active)}
+                  bytesLine={
+                    mapleDownloadState?.active || mapleDownloadState?.phase === 'completed'
+                      ? `${((mapleDownloadState?.downloadedBytes || 0) / 1048576).toFixed(0)} MB / ${(
+                          (mapleDownloadState?.totalBytes || 0) / 1048576
+                        ).toFixed(0)} MB`
+                      : ''
+                  }
+                  speedLine={
+                    mapleDownloadState?.speedBps
+                      ? `${(mapleDownloadState.speedBps / 1048576).toFixed(2)} MB/s${
+                          mapleDownloadState.etaSeconds
+                            ? ` · ETA ${Math.floor(mapleDownloadState.etaSeconds / 60)}m${String(
+                                mapleDownloadState.etaSeconds % 60
+                              ).padStart(2, '0')}s`
+                            : ''
+                        }`
+                      : ''
+                  }
+                  error={mapleDownloadState?.error || null}
+                  startLabel={t('mapleDownloadBtn')}
+                  cancelLabel={t('mapleCancelBtn')}
+                  busy={mapleBusy !== null}
+                  onStart={handleMapleDownloadModel}
+                  onCancel={handleMapleCancelModel}
+                />
+                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 break-all">
+                  {t('mapleRuntimeDirLabel')}:{' '}
+                  <span className="font-mono">{mapleAssets?.runtime.dir || '—'}</span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => openExternalUrl(currentEngineStatus.projectUrl)}
-                  className="flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
-                >
-                  <ExternalLink className="w-3 h-3" />
-                  <span>{t('modelServiceOpenProjectPage')}</span>
-                </button>
+                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 break-all">
+                  {t('mapleModelDirLabel')}:{' '}
+                  <span className="font-mono">{mapleAssets?.model.dir || '—'}</span>
+                </div>
               </div>
+            ) : (
+              currentEngineStatus &&
+              (!currentEngineStatus.checks.repo ||
+                !currentEngineStatus.checks.binary ||
+                !currentEngineStatus.checks.model) && (
+                <div className="mt-1 rounded-lg border border-black/10 dark:border-white/10 bg-[#f6f8fa] dark:bg-[#18191c] px-2.5 py-2">
+                  <div className="text-[10px] text-zinc-500 dark:text-zinc-400 mb-1.5">
+                    {!currentEngineStatus.checks.repo
+                      ? t('modelServiceCheckRepo')
+                      : !currentEngineStatus.checks.binary
+                      ? t('modelServiceCheckBinary')
+                      : t('modelServiceCheckModel')}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => openExternalUrl(currentEngineStatus.projectUrl)}
+                    className="flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    <span>{t('modelServiceOpenProjectPage')}</span>
+                  </button>
+                </div>
+              )
             )}
             {svcMsg && (
               <div
@@ -1462,7 +1774,77 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                 {t('modelServiceParamsTitle')}
               </div>
 
-              {selectedEngine === 'mference' ? (
+              {isMaple ? (
+                /* Maple MLX 进程参数。采样（温度/top-p/top-k/min-p/重复惩罚）是请求级的，
+                   统一在「Chat Model → Maple」里调 —— 与 TTF / Mference 同一边界；
+                   启动命令里的同名 CLI 值只是进程默认，每次请求都会被 App 覆盖。 */
+                <div className="grid grid-cols-2 gap-2.5">
+
+                  <div>
+                    <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">
+                      {t('mapleFlashHeadLabel')}
+                    </label>
+                    <select
+                      value={svcForm.mapleFlashHead === false ? 'off' : 'on'}
+                      onChange={(e) => setSvcForm({ ...svcForm, mapleFlashHead: e.target.value === 'on' })}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                    >
+                      <option value="on">{t('mapleFlashHeadOn')}</option>
+                      <option value="off">{t('mapleFlashHeadOff')}</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">
+                      {t('maplePromptCacheLabel')}
+                    </label>
+                    <select
+                      value={svcForm.maplePromptCacheSize ?? 4}
+                      onChange={(e) => setSvcForm({ ...svcForm, maplePromptCacheSize: Number(e.target.value) })}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                    >
+                      {[1, 2, 4, 8, 16].map((v) => (
+                        <option key={v} value={v}>
+                          {v}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">
+                      {t('maplePrefillStepLabel')}
+                    </label>
+                    <select
+                      value={svcForm.maplePrefillStepSize ?? 2048}
+                      onChange={(e) => setSvcForm({ ...svcForm, maplePrefillStepSize: Number(e.target.value) })}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                    >
+                      {[512, 1024, 2048, 4096].map((v) => (
+                        <option key={v} value={v}>
+                          {v}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">
+                      {t('svcIdleResetLabel')}
+                    </label>
+                    <select
+                      value={svcForm.idleAutoResetMinutes ?? 30}
+                      onChange={(e) => setSvcForm({ ...svcForm, idleAutoResetMinutes: Number(e.target.value) })}
+                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
+                    >
+                      <option value={0}>{t('svcIdleResetDisabled')}</option>
+                      {[5, 10, 15, 30, 60, 120].map((v) => (
+                        <option key={v} value={v}>
+                          {v} {t('svcMinutesUnit')}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                </div>
+              ) : selectedEngine === 'mference' ? (
                 /* Mference 运行参数 */
                 <div className="grid grid-cols-2 gap-2.5">
                   <div>
@@ -1548,7 +1930,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                   <div>
                     <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcIdleResetLabel')}</label>
                     <select
-                      value={svcForm.idleAutoResetMinutes ?? 15}
+                      value={svcForm.idleAutoResetMinutes ?? 30}
                       onChange={(e) => setSvcForm({ ...svcForm, idleAutoResetMinutes: Number(e.target.value) })}
                       className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
                     >
@@ -1675,7 +2057,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                     <div>
                       <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcIdleResetLabel')}</label>
                       <select
-                        value={svcForm.idleAutoResetMinutes ?? 15}
+                        value={svcForm.idleAutoResetMinutes ?? 30}
                         onChange={(e) => setSvcForm({ ...svcForm, idleAutoResetMinutes: Number(e.target.value) })}
                         className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
                       >

@@ -52,7 +52,7 @@ React frontend / Swift native windows
         ▼
 Node.js proxy (127.0.0.1:31235)
         │
-        ├── Base model service (TTF :1235 / Mference :1241 / OpenAI-compatible)
+        ├── Base model service (TTF :1235 / Mference :1241 / Maple MLX :1242 / OpenAI-compatible)
         ├── DeepSeek official API (cloud)
         ├── Offline Wiki RAG (Kiwix :31236 + local ZIM)
         ├── Speech input (Qwen3-ASR-0.6B MLX / R2T2 audio.cpp · :1236 · on-demand)
@@ -75,7 +75,8 @@ Node.js proxy (127.0.0.1:31235)
 | R2T2 subtitle ASR | `1250` | Append-only streaming recognition with native punctuation (subtitle pipeline stage 1) |
 | Index-Translate subtitle translation | `1249` | Specialized NMT (subtitle pipeline stage 3, runs parallel to Quick Translate 1248) |
 | Quick Translate on-device engine | `1248` | `⌃Space` fast selection translation (llama-server standalone instance, 4096 context, unloads on idle) |
-| Base models | `1235` / `1241` | TTF / Mference / other OpenAI-compatible services |
+| Base models | `1235` / `1241` / `1242` | TTF / Mference / Maple MLX / other OpenAI-compatible services |
+| Maple MLX runtime | `—` | Dedicated Python venv (~311 MB), one-click download in Service Manager |
 | DeepSeek API | Cloud | Official API: chat, reasoning, and Quick Translate Detail mode |
 
 > Base-model repositories and weights are not distributed with this project; users provide them. Speech input, TTS, OCR, subtitle, and Quick Translate models can all be downloaded with one-click concurrent speed testing and resumable transfers under the in-app Service Manager. Identical weight files (R2T2 / Index-Translate) are automatically shared without duplicate downloads or disk usage; the two speech-input engines download independently.
@@ -119,12 +120,15 @@ Query
 
 ### Base Models and DeepSeek API
 
-- Deeply tuned for local **TurboFieldfare** (default port `1235`); **Mference** (default port `1241`) is also supported.
+- Deeply tuned for local **TurboFieldfare** (default port `1235`); **Mference** (default port `1241`) and **Maple MLX** (default port `1242`) are also supported.
+- **Maple MLX uses the official [mlx-lm](https://github.com/deepgrove-ai/mlx-lm-deepgrove) runtime** to load Maple Preview 20B-A1B (`deepgrove/maple-preview-2bit-mlx`). Both the runtime dependencies (~311 MB) and the weights (5.31 GB) are one-click downloads in Service Manager; only the mlx-lm and Maple native-kernel wheels (~0.5 MB) are bundled, so no large files ship with the app. As with the voice / TTS / subtitle / translate / OCR services, **the runtime and weights paths are app-managed and fixed** (`Application Support/SimpleUI/{runtimes,models}/maple-*`); there is no path picker.
 - **The DeepSeek official API is a first-class provider**: configure Base URL, API key, model, context window, temperature, top_p, reasoning effort, stop strings, and system prompt independently. Requests go directly to `api.deepseek.com`, not through a local inference process.
 - DeepSeek mode trims context in batches to the 70% watermark to preserve prompt-cache hits and avoid repeated prefill.
 - Connects to Ollama, vLLM, llama.cpp server, LM Studio, and other services via OpenAI-compatible APIs.
-- The Service Manager provides start/stop, status, parameter tuning, logs, and model-directory browsing; switching local base engines releases VRAM mutually.
-- Local upstream projects and weights must be prepared by the user: [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) / [Mference](https://github.com/NeelM0906/Mference). DeepSeek only needs an API key in Settings.
+- The Service Manager provides start/stop, status, parameter tuning, logs, and model-directory browsing; switching local base engines releases VRAM mutually (the three engines are pairwise exclusive).
+- Local upstream projects and weights must be prepared by the user: [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) / [Mference](https://github.com/NeelM0906/Mference). Maple MLX downloads its runtime and weights from inside the app. DeepSeek only needs an API key in Settings.
+- **Sampling parameters for all three local engines (temperature / top-p / top-k / min-p / repetition penalty) live in Settings → Chat Model**; the Service Manager only handles process-level parameters. Max completion tokens are always 50% of the context window. Maple's defaults follow the official/community recommendations (temp 1.0, top-p 0.95, top-k 40, min-p 0.05, repetition penalty 1.15).
+- Maple's Flash head defaults to **off**: the flag must match the shipped weights — enabling it on the released 2-bit weights causes token-level corruption in the output. Correctness over speed.
 - Note: DeepSeek mode automatically disables the knowledge-base entry; Offline Wiki RAG targets the local-model path.
 
 ### Global Voice Input
@@ -245,7 +249,7 @@ Word-compatible formula/table serialization lives in `src/utils/selectionToMarkd
 
 - Node.js ≥ 18
 - macOS 15+ (for the native app build)
-- Optional: a local base-model service (TTF / Mference / Ollama / vLLM / llama.cpp / LM Studio)
+- Optional: a local base-model service (TTF / Mference / Maple MLX / Ollama / vLLM / llama.cpp / LM Studio)
 - Optional: a DeepSeek API key (cloud chat/translation)
 - Optional: a local Kiwix ZIM file (offline wiki)
 
@@ -275,7 +279,7 @@ Builds the Swift native shell, frontend assets, and bundled runtimes, then insta
 
 ### Models and knowledge base
 
-- Base models: prepare TTF / Mference repositories and weights yourself, connect another OpenAI-compatible service, or configure a DeepSeek API key in Settings.
+- Base models: prepare TTF / Mference repositories and weights yourself; Maple MLX downloads its runtime (~311 MB) and weights (~5.31 GB) from Service Manager → Base Model Service → Maple MLX; connect another OpenAI-compatible service, or configure a DeepSeek API key in Settings.
 - Speech input models: the default Qwen3-ASR-0.6B-8bit (~964 MB, MLX) downloads from "Service Manager → Speech Input"; switching to Confucius4-R2T2 Q8_0 (~2.31 GB) reuses the subtitle service's existing weights without duplicate downloads or storage.
 - Voice synthesis model: Download Qwen3-TTS 1.7B (~2.51 GB) via one-click speed-tested download under Service Manager → Voice Synthesis. The speech codec is byte-identical to the previous release, so integrity checks reuse it.
 - Visual OCR model: Download PaddleOCR-VL 1.6 (~1.02 GB) via one-click speed-tested download under Service Manager → Visual OCR.

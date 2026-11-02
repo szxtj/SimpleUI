@@ -23,6 +23,7 @@ class ProcessManager {
     private let managedPidFiles: [String] = [
         "/tmp/turbo_fieldfare_server.pid",
         "/tmp/mference_server.pid",
+        "/tmp/maple_mlx_server.pid",
         "/tmp/simpleui_kiwix.pid",
         "/tmp/simpleui_audiocpp.pid",
         "/tmp/simpleui_subtitle_audiocpp.pid",
@@ -125,6 +126,7 @@ class ProcessManager {
         pkill -f "ocr_server.py" 2>/dev/null || true
         pkill -x "TurboFieldfareServer" 2>/dev/null || true
         pkill -x "MferenceServer" 2>/dev/null || true
+        pkill -f "mlx_lm\\.server" 2>/dev/null || true
         pkill -x "kiwix-serve" 2>/dev/null || true
         pkill -f "server/proxy.js" 2>/dev/null || true
         lsof -ti:\(port) | xargs kill -9 2>/dev/null || true

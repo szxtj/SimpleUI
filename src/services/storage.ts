@@ -7,6 +7,7 @@ import {
   ApiProvider,
   TtfProviderConfig,
   MferenceProviderConfig,
+  MapleProviderConfig,
   CustomProviderConfig,
 } from '../types/chat';
 
@@ -61,6 +62,25 @@ export const DEFAULT_MFERENCE_CONFIG: MferenceProviderConfig = {
   seed: undefined,
   stopStrings: [],
   systemPrompt: '', // 官方推荐置空
+};
+
+/** Maple MLX 默认配置（与 mlx_lm.server 默认参数一致） */
+export const DEFAULT_MAPLE_CONFIG: MapleProviderConfig = {
+  apiPort: 1242,
+  apiBaseUrl: '',
+  modelId: 'default_model',
+  maxContext: 16384,
+  maxTokens: 8192, // 恒为 maxContext 的 50%（与 TTF / Mference 同一规则），见 normalize
+  // 官方/社区推荐采样参数（2026-11；DRY 采样 mlx_lm 运行时不支持，未采用）
+  temperature: 1.0,
+  topP: 0.95,
+  topK: 40,
+  minP: 0.05,
+  presencePenalty: 0,
+  repetitionPenalty: 1.15,
+  seed: undefined,
+  stopStrings: [],
+  systemPrompt: '',
 };
 
 /** 自定义 (Custom / OpenAI 兼容) 极简默认独立配置 */
@@ -131,6 +151,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   apiProvider: 'ttf',
   ttfConfig: { ...DEFAULT_TTF_CONFIG },
   mferenceConfig: { ...DEFAULT_MFERENCE_CONFIG },
+  mapleConfig: { ...DEFAULT_MAPLE_CONFIG },
   customConfig: { ...DEFAULT_CUSTOM_CONFIG },
   localConfig: { ...DEFAULT_LOCAL_CONFIG },
   deepseekConfig: { ...DEFAULT_DEEPSEEK_CONFIG },
@@ -180,7 +201,7 @@ export function normalizeSettingsObject(parsed: any, fallbackApiKey: string = ''
   // 确定 provider
   let provider: ApiProvider = parsed?.apiProvider || 'ttf';
   if (provider === 'local') provider = 'ttf';
-  if (!['ttf', 'mference', 'custom', 'deepseek'].includes(provider)) {
+  if (!['ttf', 'mference', 'maple', 'custom', 'deepseek'].includes(provider)) {
     provider = 'ttf';
   }
 
@@ -194,9 +215,11 @@ export function normalizeSettingsObject(parsed: any, fallbackApiKey: string = ''
   const ttfConfig: TtfProviderConfig = {
     ...DEFAULT_TTF_CONFIG,
     ...rawTtf,
+    // 顶层 apiPort 只在「当前确实是 TTF」时作为兜底来源：
+    // 否则把别的引擎端口（如 Maple 的 1242）带进 TTF 配置，切回 TTF 就打错端口。
     apiPort:
       rawTtf.apiPort ||
-      (parsed.apiPort && parsed.apiPort !== 1241 ? parsed.apiPort : DEFAULT_TTF_CONFIG.apiPort),
+      (provider === 'ttf' && parsed.apiPort ? parsed.apiPort : DEFAULT_TTF_CONFIG.apiPort),
     apiBaseUrl: rawTtf.apiBaseUrl ?? DEFAULT_TTF_CONFIG.apiBaseUrl,
     modelId:
       rawTtf.modelId ||
@@ -261,6 +284,50 @@ export function normalizeSettingsObject(parsed: any, fallbackApiKey: string = ''
       rawMference.systemPrompt !== undefined
         ? rawMference.systemPrompt
         : DEFAULT_MFERENCE_CONFIG.systemPrompt,
+  };
+
+  // 2.5 Maple MLX 配置
+  const rawMaple = parsed?.mapleConfig || {};
+  const mapleMaxContext = Number(
+    rawMaple.maxContext ||
+      (provider === 'maple' ? parsed.maxContext : undefined) ||
+      DEFAULT_MAPLE_CONFIG.maxContext
+  );
+  const mapleConfig: MapleProviderConfig = {
+    ...DEFAULT_MAPLE_CONFIG,
+    ...rawMaple,
+    apiPort:
+      rawMaple.apiPort ||
+      (parsed.apiPort === 1242 ? 1242 : DEFAULT_MAPLE_CONFIG.apiPort),
+    apiBaseUrl: rawMaple.apiBaseUrl ?? DEFAULT_MAPLE_CONFIG.apiBaseUrl,
+    modelId:
+      rawMaple.modelId ||
+      (provider === 'maple' ? parsed.modelId : undefined) ||
+      DEFAULT_MAPLE_CONFIG.modelId,
+    maxContext: mapleMaxContext,
+    // 与 TTF / Mference 一致：maxTokens 锁定为 maxContext 的 50%，不单独存
+    maxTokens: Math.floor(mapleMaxContext / 2),
+    temperature:
+      rawMaple.temperature !== undefined
+        ? Number(rawMaple.temperature)
+        : DEFAULT_MAPLE_CONFIG.temperature,
+    topP: rawMaple.topP !== undefined ? Number(rawMaple.topP) : DEFAULT_MAPLE_CONFIG.topP,
+    topK: rawMaple.topK !== undefined ? Number(rawMaple.topK) : DEFAULT_MAPLE_CONFIG.topK,
+    minP: rawMaple.minP !== undefined ? Number(rawMaple.minP) : DEFAULT_MAPLE_CONFIG.minP,
+    presencePenalty:
+      rawMaple.presencePenalty !== undefined
+        ? Number(rawMaple.presencePenalty)
+        : DEFAULT_MAPLE_CONFIG.presencePenalty,
+    repetitionPenalty:
+      rawMaple.repetitionPenalty !== undefined
+        ? Number(rawMaple.repetitionPenalty)
+        : DEFAULT_MAPLE_CONFIG.repetitionPenalty,
+    seed: rawMaple.seed !== undefined ? Number(rawMaple.seed) : undefined,
+    stopStrings: Array.isArray(rawMaple.stopStrings) ? rawMaple.stopStrings : [],
+    systemPrompt:
+      rawMaple.systemPrompt !== undefined
+        ? rawMaple.systemPrompt
+        : DEFAULT_MAPLE_CONFIG.systemPrompt,
   };
 
   // 3. Custom 配置
@@ -369,6 +436,23 @@ export function normalizeSettingsObject(parsed: any, fallbackApiKey: string = ''
     activeSeed = mferenceConfig.seed;
     activeStopStrings = mferenceConfig.stopStrings || [];
     activeSystemPrompt = mferenceConfig.systemPrompt;
+  } else if (provider === 'maple') {
+    activePort = mapleConfig.apiPort;
+    activeBaseUrl = mapleConfig.apiBaseUrl || '';
+    activeModel = mapleConfig.modelId;
+    activeMaxContext = mapleConfig.maxContext;
+    activeMaxTokens = mapleConfig.maxTokens;
+    activeTemp = mapleConfig.temperature;
+    activeTopP = mapleConfig.topP;
+    activeTopK = mapleConfig.topK;
+    activeMinP = mapleConfig.minP;
+    activePresencePenalty = mapleConfig.presencePenalty;
+    activeRepPenalty = mapleConfig.repetitionPenalty;
+    // Maple 没有 reasoning_effort（传了会被拒），保持 'default' 让请求层不发该字段
+    activeReasoning = 'default';
+    activeSeed = mapleConfig.seed;
+    activeStopStrings = mapleConfig.stopStrings || [];
+    activeSystemPrompt = mapleConfig.systemPrompt;
   } else if (provider === 'custom') {
     activePort = customConfig.apiPort;
     activeBaseUrl = customConfig.apiBaseUrl || '';
@@ -404,6 +488,7 @@ export function normalizeSettingsObject(parsed: any, fallbackApiKey: string = ''
     apiProvider: provider,
     ttfConfig,
     mferenceConfig,
+    mapleConfig,
     customConfig,
     deepseekConfig,
     localConfig: ttfConfig as any,
@@ -509,7 +594,10 @@ export function saveSettings(settings: AppSettings): void {
   try {
     let provider: ApiProvider = settings.apiProvider || 'ttf';
     if (provider === 'local') provider = 'ttf';
-    if (!['ttf', 'mference', 'custom', 'deepseek'].includes(provider)) {
+    // 这份白名单必须与 normalizeSettingsObject 里的保持一致：
+    // 少一个 'maple' 就会出现「Chat Model 选了 Maple，保存后被打回 ttf，
+    // 同时把 Maple 的端口/模型写进 TTF 配置」——之前那串污染就是这个原因。
+    if (!['ttf', 'mference', 'maple', 'custom', 'deepseek'].includes(provider)) {
       provider = 'ttf';
     }
 
@@ -541,6 +629,14 @@ export function saveSettings(settings: AppSettings): void {
       ...DEFAULT_MFERENCE_CONFIG,
       ...existingMference,
       ...(settings.mferenceConfig || {}),
+    };
+
+    const existingMaple = existing.mapleConfig || {};
+
+    const mapleConfig: MapleProviderConfig = {
+      ...DEFAULT_MAPLE_CONFIG,
+      ...existingMaple,
+      ...(settings.mapleConfig || {}),
     };
 
     const customConfig: CustomProviderConfig = {
@@ -593,6 +689,23 @@ export function saveSettings(settings: AppSettings): void {
       if (settings.seed !== undefined) mferenceConfig.seed = settings.seed;
       if (Array.isArray(settings.stopStrings)) mferenceConfig.stopStrings = settings.stopStrings;
       if (settings.systemPrompt !== undefined) mferenceConfig.systemPrompt = settings.systemPrompt;
+    } else if (provider === 'maple') {
+      if (settings.apiPort !== undefined) mapleConfig.apiPort = settings.apiPort;
+      if (settings.apiBaseUrl !== undefined) mapleConfig.apiBaseUrl = settings.apiBaseUrl;
+      if (settings.modelId !== undefined) mapleConfig.modelId = settings.modelId;
+      if (settings.maxContext !== undefined) {
+        mapleConfig.maxContext = settings.maxContext;
+        mapleConfig.maxTokens = Math.floor(settings.maxContext / 2);
+      }
+      if (settings.temperature !== undefined) mapleConfig.temperature = settings.temperature;
+      if (settings.topP !== undefined) mapleConfig.topP = settings.topP;
+      if (settings.topK !== undefined) mapleConfig.topK = settings.topK;
+      if (settings.minP !== undefined) mapleConfig.minP = settings.minP;
+      if (settings.presencePenalty !== undefined) mapleConfig.presencePenalty = settings.presencePenalty;
+      if (settings.repetitionPenalty !== undefined) mapleConfig.repetitionPenalty = settings.repetitionPenalty;
+      if (settings.seed !== undefined) mapleConfig.seed = settings.seed;
+      if (Array.isArray(settings.stopStrings)) mapleConfig.stopStrings = settings.stopStrings;
+      if (settings.systemPrompt !== undefined) mapleConfig.systemPrompt = settings.systemPrompt;
     } else if (provider === 'custom') {
       if (settings.apiPort !== undefined) customConfig.apiPort = settings.apiPort;
       if (settings.apiBaseUrl !== undefined) customConfig.apiBaseUrl = settings.apiBaseUrl;
@@ -621,6 +734,7 @@ export function saveSettings(settings: AppSettings): void {
       apiProvider: provider,
       ttfConfig,
       mferenceConfig,
+      mapleConfig,
       customConfig,
       deepseekConfig,
       deepseekApiKey: effectiveApiKey,

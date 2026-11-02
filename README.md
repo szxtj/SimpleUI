@@ -52,7 +52,7 @@ React 前端 / Swift 原生窗口
         ▼
 Node.js 代理（127.0.0.1:31235）
         │
-        ├── 基础模型服务（TTF :1235 / Mference :1241 / OpenAI 兼容）
+        ├── 基础模型服务（TTF :1235 / Mference :1241 / Maple MLX :1242 / OpenAI 兼容）
         ├── DeepSeek 官方 API（云端）
         ├── 离线维基 RAG（Kiwix :31236 + 本地 ZIM）
         ├── 语音输入（Qwen3-ASR-0.6B MLX / R2T2 audio.cpp · :1236 · 按需）
@@ -75,7 +75,8 @@ Node.js 代理（127.0.0.1:31235）
 | R2T2 字幕识别 | `1250` | 追加式流式识别，原生标点（字幕流水线第 1 级） |
 | Index-Translate 字幕翻译 | `1249` | 专精神经机器翻译（字幕流水线第 3 级，与快速翻译 1248 并行独立运行） |
 | 快速翻译端侧引擎 | `1248` | `⌃Space` 快速划选翻译（llama-server 独立实例，4096 上下文，闲置超时自动卸载） |
-| 基础模型 | `1235` / `1241` | TTF / Mference / 兼容 OpenAI 的推理服务 |
+| 基础模型 | `1235` / `1241` / `1242` | TTF / Mference / Maple MLX / 兼容 OpenAI 的推理服务 |
+| Maple MLX 运行时 | `—` | 独立 Python venv（约 311 MB），首次使用在设置面板一键下载 |
 | DeepSeek API | 云端 | 官方 API：对话、推理与快捷翻译详解模式 |
 
 > 基础模型本体与权重不随本仓库分发，需要用户自行准备；语音输入、TTS、OCR、字幕与快速翻译模型均可在应用内「服务管理」面板一键并发自动测速下载与断点续传。同款权重文件（R2T2 / Index-Translate）系统自动复用，不重复下载；语音输入的两个引擎各自独立下载、互不覆盖。
@@ -119,12 +120,15 @@ SimpleUI 使用本地 Kiwix ZIM 构建端到端离线知识库。核心原则是
 
 ### 基础模型与 DeepSeek API
 
-- 本地深度适配 **TurboFieldfare**（默认端口 `1235`），同时支持 **Mference**（默认端口 `1241`）。
+- 本地深度适配 **TurboFieldfare**（默认端口 `1235`），同时支持 **Mference**（默认端口 `1241`）与 **Maple MLX**（默认端口 `1242`）。
+- **Maple MLX 走官方 [mlx-lm](https://github.com/deepgrove-ai/mlx-lm-deepgrove) 运行时**：载入 Maple Preview 20B-A1B（deepgrove/maple-preview-2bit-mlx）；运行时依赖（约 311 MB）与权重（5.31 GB）都在「服务管理 → 基础模型服务」里一键下载，内置的只有 mlx-lm 与 Maple 原生内核两个 wheel（约 0.5 MB），因此不随包分发大文件。与语音/合成/字幕/翻译/视觉识别一致，**运行时与权重路径由 App 托管且固定，不提供路径选择**（`Application Support/SimpleUI/{runtimes,models}/maple-*`）。
 - **DeepSeek 官方 API 是一等 Provider**：独立配置 Base URL、API Key、模型、上下文窗口、温度、top_p、推理强度、停止串与系统提示词；请求直接发往 `api.deepseek.com`，不经过本地推理进程。
 - DeepSeek 模式针对官方缓存行为做上下文修剪（批量修剪到 70% 水位），减少缓存失效与重复 prefill。
 - 通过 OpenAI 兼容接口连接 Ollama、vLLM、llama.cpp server、LM Studio 等。
-- 服务管理面板提供启停、状态、参数调优、日志与模型目录浏览；切换本地基础引擎时执行显存互斥释放。
-- 本地上游项目与模型权重需自行准备，详见 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) / [Mference](https://github.com/NeelM0906/Mference)；DeepSeek 只需在设置中填写 API Key。
+- 服务管理面板提供启停、状态、参数调优、日志与模型目录浏览；切换本地基础引擎时执行显存互斥释放（三个引擎两两互斥）。
+- 本地上游项目与模型权重需自行准备，详见 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) / [Mference](https://github.com/NeelM0906/Mference)；Maple MLX 的运行时与权重由 App 托管下载；DeepSeek 只需在设置中填写 API Key。
+- **三个本地引擎的采样参数（温度 / top-p / top-k / min-p / 重复惩罚）统一在「设置 → 对话模型」里调整**，服务管理面板只管进程参数；最大生成长度恒为上下文的 50%。Maple 各默认值取官方/社区推荐（temp 1.0、top-p 0.95、top-k 40、min-p 0.05、重复惩罚 1.15）。
+- Maple 的 Flash head 默认**关闭**：该开关需与权重配套，对当前发布的 2-bit 权重开启会导致输出异常（token 级抄写错误），宁慢勿错。
 - 说明：DeepSeek 模式会自动关闭知识库入口；离线维基 RAG 面向本地模型链路。
 
 ### 全局语音输入
@@ -244,7 +248,7 @@ SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传
 
 - Node.js ≥ 18
 - macOS 15+（构建原生 App）
-- 可选：本地基础模型服务（TTF / Mference / Ollama / vLLM / llama.cpp / LM Studio）
+- 可选：本地基础模型服务（TTF / Mference / Maple MLX / Ollama / vLLM / llama.cpp / LM Studio）
 - 可选：DeepSeek API Key（云端对话/翻译）
 - 可选：本地 Kiwix ZIM 文件（离线维基）
 
@@ -274,7 +278,7 @@ npm run dev
 
 ### 模型与知识库
 
-- 基础模型：自行准备 TTF / Mference 本体与权重；也可连接其它 OpenAI 兼容服务，或在设置中直接配置 DeepSeek API Key。
+- 基础模型：自行准备 TTF / Mference 本体与权重；Maple MLX 的运行时与权重在「服务管理 → 基础模型服务 → Maple MLX」一键下载（运行时约 311 MB、权重约 5.31 GB）；也可连接其它 OpenAI 兼容服务，或在设置中直接配置 DeepSeek API Key。
 - 语音输入模型：默认 Qwen3-ASR-0.6B-8bit（约 964 MB，MLX）在「服务管理 → 语音输入服务」下载；切到 Confucius4-R2T2 Q8_0（约 2.31 GB）时可直接复用字幕服务那份静态权重文件，无需重复下载或多占磁盘。
 - 语音合成模型：在「服务管理 → 语音合成服务」一键测速下载 Qwen3-TTS 1.7B 模型（约 2.51 GB；语音 codec 与旧版字节相同，会被完整性校验直接复用）。
 - 视觉 OCR 模型：在「服务管理 → 视觉图文识别服务」一键测速下载 PaddleOCR-VL 1.6 模型（约 1.02 GB）。

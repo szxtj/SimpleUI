@@ -56,6 +56,14 @@ const LOG_FILE = process.env.SIMPLEUI_TTS_LOG || path.join(HOME, 'Library', 'Log
 const PID_FILE = '/tmp/simpleui_tts.pid';
 const SCRIPT = path.join(__dirname, 'tts', 'tts_server.py');
 
+// Python 字节码缓存必须写到 App 包外。
+// 解释器默认把 __pycache__/*.pyc 写在源码旁边，而这个 Python 运行时是打进
+// Contents/Resources/tts/python/ 的：一旦写进去，这些文件就是「签名之后新增的」，
+// 会让 codesign --verify 报 a sealed resource is missing or invalid（sealed resource 失效）。
+// 用 PYTHONPYCACHEPREFIX 把缓存挪到用户的 Caches 目录：包内不再多出文件，
+// 同时仍保留缓存（不至于每次启动都重新编译一遍 mlx_audio）。
+const PYCACHE_DIR = path.join(HOME, 'Library', 'Caches', 'SimpleUI', 'pycache');
+
 const PORT = 1255;
 const VOICES = ['serena', 'vivian', 'aiden', 'ryan', 'sohee', 'ono_anna', 'uncle_fu', 'dylan', 'eric'];
 
@@ -913,7 +921,7 @@ class TtsService {
 
       const child = spawn(python, [SCRIPT, '--model-dir', MODEL_DIR, '--port', String(PORT)], {
         cwd: __dirname,
-        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONPYCACHEPREFIX: PYCACHE_DIR },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       this.proc = child;

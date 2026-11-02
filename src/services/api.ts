@@ -330,7 +330,10 @@ export class TurboFieldfareAPI {
         (typeof settings.modelId === 'string' && settings.modelId.toLowerCase().includes('qwen'));
 
       // Thinking controls (针对 TTF、Mference 与自定义引擎做协议适配)
-      if (settings.apiProvider === 'custom') {
+      if (settings.apiProvider === 'maple') {
+        // Maple（mlx_lm.server）：chat template 恒开 <think>，不接受 reasoning_effort /
+        // chat_template_kwargs；思考预算由 max_tokens 承担，这里什么都不加。
+      } else if (settings.apiProvider === 'custom') {
         if (settings.enableThinking) {
           payload.chat_template_kwargs = { enable_thinking: true };
           if (settings.reasoningEffort && settings.reasoningEffort !== 'default') {
@@ -506,17 +509,25 @@ export class TurboFieldfareAPI {
               const delta = choice.delta;
               if (!delta) continue;
 
+              // 思考通道的字段名各引擎不同，这里做**唯一一次**归一化：
+              //   - TTF / Mference：reasoning_content（OpenAI 习惯）
+              //   - Maple（deepgrove 版 mlx_lm.server）：reasoning
+              // 少认一个字段的后果就是「思考被整段丢弃、界面上没有思考过程」。
+              const thoughtDelta =
+                (delta as { reasoning?: string }).reasoning ??
+                (delta as { reasoning_content?: string }).reasoning_content;
+
               // Mark first token time (TTFT) and notify initial prompt load
-              if (!firstTokenTime && (delta.content || delta.reasoning_content)) {
+              if (!firstTokenTime && (delta.content || thoughtDelta)) {
                 firstTokenTime = performance.now();
                 callbacks.onFirstToken?.();
                 // 若已从服务端日志拿到真实 prompt，用真实值；否则才回退估算值
                 callbacks.onTokenProgress?.(realPromptTokens ?? initialPromptTokens);
               }
 
-              if (delta.reasoning_content) {
+              if (thoughtDelta) {
                 generatedTokensCount++;
-                callbacks.onThought?.(delta.reasoning_content);
+                callbacks.onThought?.(thoughtDelta);
                 if (generatedTokensCount - lastReportedMilestone >= 20) {
                   lastReportedMilestone = generatedTokensCount;
                   const livePrompt = finalUsage?.prompt_tokens ?? realPromptTokens ?? initialPromptTokens;
@@ -760,7 +771,41 @@ export class WikiAPI {
   }
 }
 
-export type ModelEngine = 'turbo-fieldfare' | 'mference';
+export type ModelEngine = 'turbo-fieldfare' | 'mference' | 'maple-mlx';
+
+/** 下载/安装任务状态（与 asr/tts 下载器同名字段，便于复用同一套进度条 UI） */
+export interface AssetTaskState {
+  active: boolean;
+  phase: string;
+  step?: string;
+  stepLabel?: string;
+  progressPercent: number;
+  downloadedBytes: number;
+  totalBytes: number;
+  speedBps: number;
+  etaSeconds: number | null;
+  error: string | null;
+  errorCode: string | null;
+  updatedAt: number;
+}
+
+/** Maple MLX 托管资源状态（运行时 venv / 权重） */
+export interface MapleAssets {
+  runtime: {
+    ready: boolean;
+    dir: string;
+    presentBytes: number;
+    totalBytes: number;
+    installState: AssetTaskState;
+  };
+  model: {
+    ready: boolean;
+    dir: string;
+    presentBytes: number;
+    totalBytes: number;
+    downloadState: AssetTaskState;
+  };
+}
 
 export interface SingleEngineStatus {
   engine: ModelEngine;
@@ -772,6 +817,8 @@ export interface SingleEngineStatus {
   projectDir: string;
   modelPath: string;
   projectUrl: string;
+  /** 仅 Maple MLX：运行时与权重的下载进度 */
+  assets?: MapleAssets;
 }
 
 /** 模型服务聚合状态：与后端 ttf_service.js getStatus 对应 */
@@ -793,6 +840,8 @@ export interface ModelServiceStatus {
   /** 独立的双引擎状态块 */
   ttf: SingleEngineStatus;
   mference: SingleEngineStatus;
+  /** Maple MLX（运行时 + 权重按需下载） */
+  maple?: SingleEngineStatus;
 }
 
 /** 模型服务运行配置：与后端 model_config.json 对应 */
@@ -825,6 +874,13 @@ export interface ModelServiceConfig {
   mferenceVerify?: 'auto' | 'full-sha256' | 'trusted-receipt';
   mferenceQueueLimit?: number;
   mferencePrefillChunk?: string;
+
+  // Maple MLX 运行参数（运行时与权重由 SimpleUI 托管）
+  mapleEnabled?: boolean;
+  maplePort?: number;
+  maplePromptCacheSize?: number;
+  maplePrefillStepSize?: number;
+  mapleFlashHead?: boolean;
 
   // 极低负载闲置保护
   idleAutoResetMinutes: number;
@@ -897,6 +953,47 @@ export class ModelServiceAPI {
       if (res.ok) return await res.json();
     } catch (e) {
       console.error('ModelService getLogs failed:', e);
+    }
+    return null;
+  }
+
+  // ------------------------- Maple MLX 托管资源 -------------------------
+
+  /** 运行时 + 权重的就绪状态与下载进度 */
+  static async getMapleState(): Promise<MapleAssets | null> {
+    try {
+      const res = await fetch('/api/model/maple/state');
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('ModelService getMapleState failed:', e);
+    }
+    return null;
+  }
+
+  /** 安装/取消运行时（Python venv，约 311MB 依赖） */
+  static async installMapleRuntime(): Promise<MapleAssets | null> {
+    return this.postMaple('/api/model/maple/runtime/install');
+  }
+
+  static async cancelMapleRuntime(): Promise<MapleAssets | null> {
+    return this.postMaple('/api/model/maple/runtime/cancel');
+  }
+
+  /** 下载/取消 Maple 权重（5.31GB） */
+  static async downloadMapleModel(): Promise<MapleAssets | null> {
+    return this.postMaple('/api/model/maple/download/start');
+  }
+
+  static async cancelMapleModel(): Promise<MapleAssets | null> {
+    return this.postMaple('/api/model/maple/download/cancel');
+  }
+
+  private static async postMaple(url: string): Promise<MapleAssets | null> {
+    try {
+      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('ModelService maple action failed:', e);
     }
     return null;
   }

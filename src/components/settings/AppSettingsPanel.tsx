@@ -5,6 +5,7 @@ import {
   ApiProvider,
   TtfProviderConfig,
   MferenceProviderConfig,
+  MapleProviderConfig,
   CustomProviderConfig,
 } from '../../types/chat';
 import {
@@ -12,6 +13,7 @@ import {
   DEFAULT_DEEPSEEK_CONFIG,
   DEFAULT_TTF_CONFIG,
   DEFAULT_MFERENCE_CONFIG,
+  DEFAULT_MAPLE_CONFIG,
   DEFAULT_CUSTOM_CONFIG,
 } from '../../services/storage';
 import { resolveLanguage, translations, Language, TranslationKeys } from '../../i18n';
@@ -34,12 +36,14 @@ import { SettingsTabId } from './types';
 
 interface AppSettingsPanelProps {
   activeTab: SettingsTabId;
+  isOpen: boolean;
   settings: AppSettings;
   onSave: (settings: AppSettings) => void;
 }
 
 export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
   activeTab,
+  isOpen,
   settings,
   onSave,
 }) => {
@@ -68,6 +72,11 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
   const [mferenceStopInput, setMferenceStopInput] = useState<string>(() =>
     (settings?.mferenceConfig?.stopStrings || []).join(', ')
   );
+
+  const [mapleConfig, setMapleConfig] = useState<MapleProviderConfig>(() => ({
+    ...DEFAULT_MAPLE_CONFIG,
+    ...(settings?.mapleConfig || {}),
+  }));
 
   const [customConfig, setCustomConfig] = useState<CustomProviderConfig>(() => ({
     ...DEFAULT_CUSTOM_CONFIG,
@@ -108,6 +117,31 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
     setMediaStats(stats);
     return stats;
   }, []);
+
+  // 表单初值是惰性初始化的，只在挂载时读一次 settings。而设置是由 App 异步同步下来的
+  // （模态框常驻 DOM，挂载早于 settings 到位），不补这一步就会出现「实际 provider 是 Maple、
+  // 表单却停在 TTF」的错位，用户一保存就把 TTF 配置写坏。
+  //
+  // 只在**每次打开面板时**回填（isOpen 由 false→true），不能跟着 settings 走：
+  // settings 保存后会变化，跟着它回填会把用户刚点选的 provider 冲回去（实测过）。
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  useEffect(() => {
+    if (!isOpen) return;
+    const settings = settingsRef.current;
+    if (!settings) return;
+    const p = settings.apiProvider === 'local' ? 'ttf' : (settings.apiProvider || 'ttf');
+    setApiProvider(p);
+    setTheme(settings.theme || 'system');
+    setLanguage(settings.language || 'system');
+    setSpotlightResetMinutes(settings.spotlightResetMinutes ?? 15);
+    setTtfConfig({ ...DEFAULT_TTF_CONFIG, ...(settings.ttfConfig || settings.localConfig || {}) });
+    setMferenceConfig({ ...DEFAULT_MFERENCE_CONFIG, ...(settings.mferenceConfig || {}) });
+    setMapleConfig({ ...DEFAULT_MAPLE_CONFIG, ...(settings.mapleConfig || {}) });
+    setCustomConfig({ ...DEFAULT_CUSTOM_CONFIG, ...(settings.customConfig || {}) });
+    setDeepseekConfig((prev) => ({ ...DEFAULT_DEEPSEEK_CONFIG, ...(settings.deepseekConfig || {}), apiKey: prev.apiKey || settings.deepseekConfig?.apiKey || '' }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
   useEffect(() => {
     if (activeTab === 'storage') {
@@ -180,6 +214,8 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
     } else if (apiProvider === 'mference') {
       setMferenceConfig({ ...DEFAULT_MFERENCE_CONFIG });
       setMferenceStopInput((DEFAULT_MFERENCE_CONFIG.stopStrings || []).join(', '));
+    } else if (apiProvider === 'maple') {
+      setMapleConfig({ ...DEFAULT_MAPLE_CONFIG });
     } else if (apiProvider === 'custom') {
       setCustomConfig({ ...DEFAULT_CUSTOM_CONFIG });
     } else if (apiProvider === 'deepseek') {
@@ -222,6 +258,9 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
     const finalMference: MferenceProviderConfig = {
       ...mferenceConfig,
       stopStrings: mferenceStops,
+    };
+    const finalMaple: MapleProviderConfig = {
+      ...mapleConfig,
     };
     const finalCustom: CustomProviderConfig = {
       ...customConfig,
@@ -267,6 +306,23 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
       activeSeed = finalMference.seed;
       activeStopStrings = finalMference.stopStrings || [];
       activeSystemPrompt = finalMference.systemPrompt;
+    } else if (apiProvider === 'maple') {
+      activePort = finalMaple.apiPort;
+      activeBaseUrl = finalMaple.apiBaseUrl || '';
+      activeModel = finalMaple.modelId;
+      activeMaxContext = finalMaple.maxContext;
+      activeMaxTokens = finalMaple.maxTokens;
+      activeTemp = finalMaple.temperature;
+      activeTopP = finalMaple.topP;
+      activeTopK = finalMaple.topK;
+      activeMinP = finalMaple.minP;
+      activePresencePenalty = finalMaple.presencePenalty;
+      activeRepPenalty = finalMaple.repetitionPenalty;
+      // Maple 不接受 reasoning_effort：保持 default，请求层不会下发该字段
+      activeReasoning = 'default';
+      activeSeed = finalMaple.seed;
+      activeStopStrings = finalMaple.stopStrings || [];
+      activeSystemPrompt = finalMaple.systemPrompt;
     } else if (apiProvider === 'custom') {
       activePort = finalCustom.apiPort;
       activeBaseUrl = finalCustom.apiBaseUrl || '';
@@ -304,6 +360,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
       apiProvider,
       ttfConfig: finalTtf,
       mferenceConfig: finalMference,
+      mapleConfig: finalMaple,
       customConfig: finalCustom,
       deepseekConfig: finalDs,
       localConfig: finalTtf as any,
@@ -441,7 +498,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
               <label className="block font-medium mb-2 text-zinc-600 dark:text-[#9aa0ac]">
                 {t('apiProviderLabel')}
               </label>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
                 <button
                   type="button"
                   onClick={() => setApiProvider('ttf')}
@@ -465,6 +522,18 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                 >
                   <SlidersHorizontal className="w-3.5 h-3.5" />
                   <span className="whitespace-nowrap">{t('providerMferenceShort')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setApiProvider('maple')}
+                  className={`flex items-center justify-center gap-2 py-2 px-3 rounded-xl border text-xs font-medium transition-all cursor-pointer ${
+                    apiProvider === 'maple'
+                      ? 'bg-amber-500/10 border-amber-500/40 text-amber-700 dark:text-amber-400 font-semibold shadow-xs'
+                      : 'bg-white dark:bg-[#202127] border-black/10 dark:border-[#343740] text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
+                  }`}
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  <span className="whitespace-nowrap">{t('providerMapleShort')}</span>
                 </button>
                 <button
                   type="button"
@@ -1221,6 +1290,170 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
             )}
 
             {/* Mference (Qwen 3.6) Settings */}
+            {apiProvider === 'maple' && (
+              <div className="space-y-3 pt-2 border-t border-black/5 dark:border-white/5">
+                <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-800 dark:text-blue-300 text-[11px] flex items-start gap-2">
+                  <SlidersHorizontal className="w-4 h-4 flex-shrink-0 text-blue-600 dark:text-blue-400 mt-px" />
+                  <span>{t('thinkingLockedMaple')}</span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('servicePortLabel')}
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="65535"
+                      value={mapleConfig.apiPort ?? 1242}
+                      onChange={(e) => setMapleConfig({ ...mapleConfig, apiPort: Number(e.target.value) || 1242 })}
+                      placeholder="1242"
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('customBaseUrlLabel')}
+                    </label>
+                    <input
+                      type="text"
+                      value={mapleConfig.apiBaseUrl ?? ''}
+                      onChange={(e) => setMapleConfig({ ...mapleConfig, apiBaseUrl: e.target.value })}
+                      placeholder="http://127.0.0.1:1242"
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('modelLabel')}
+                    </label>
+                    <input
+                      type="text"
+                      value={mapleConfig.modelId ?? 'default_model'}
+                      onChange={(e) => setMapleConfig({ ...mapleConfig, modelId: e.target.value })}
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('maxContextLabel')}
+                    </label>
+                    <select
+                      value={mapleConfig.maxContext ?? 16384}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        // maxTokens 恒为上下文的 50%（与 TTF / Mference 同一规则）
+                        setMapleConfig({ ...mapleConfig, maxContext: val, maxTokens: Math.floor(val / 2) });
+                      }}
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none cursor-pointer"
+                    >
+                      <option value={8192}>8,192 (8K)</option>
+                      <option value={16384}>{t('contextOption16kDefault')}</option>
+                      <option value={32768}>32,768 (32K)</option>
+                      <option value={65536}>65,536 (64K)</option>
+                      <option value={128000}>128,000 (128K)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('systemPromptLabel')}
+                    </label>
+                    <input
+                      type="text"
+                      value={mapleConfig.systemPrompt ?? ''}
+                      onChange={(e) => setMapleConfig({ ...mapleConfig, systemPrompt: e.target.value })}
+                      placeholder={t('systemPromptPlaceholderMaple')}
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('temperatureLabel')}: <span className="font-mono text-amber-500 dark:text-amber-400">{mapleConfig.temperature ?? 1.0}</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="2"
+                      step="0.05"
+                      value={mapleConfig.temperature ?? 1.0}
+                      onChange={(e) => setMapleConfig({ ...mapleConfig, temperature: Number(e.target.value) })}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('topPLabel')}: <span className="font-mono text-amber-500 dark:text-amber-400">{mapleConfig.topP ?? 0.95}</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="1"
+                      step="0.01"
+                      value={mapleConfig.topP ?? 0.95}
+                      onChange={(e) => setMapleConfig({ ...mapleConfig, topP: Number(e.target.value) })}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('topKLabel')}: <span className="font-mono text-amber-500 dark:text-amber-400">{mapleConfig.topK ?? 40}</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="1"
+                      value={mapleConfig.topK ?? 40}
+                      onChange={(e) => setMapleConfig({ ...mapleConfig, topK: Number(e.target.value) })}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('minPLabel')}: <span className="font-mono text-amber-500 dark:text-amber-400">{mapleConfig.minP ?? 0.05}</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={mapleConfig.minP ?? 0.05}
+                      onChange={(e) => setMapleConfig({ ...mapleConfig, minP: Number(e.target.value) })}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('repetitionPenaltyLabel')}: <span className="font-mono text-amber-500 dark:text-amber-400">{mapleConfig.repetitionPenalty ?? 1.15}</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="1"
+                      max="2"
+                      step="0.05"
+                      value={mapleConfig.repetitionPenalty ?? 1.15}
+                      onChange={(e) => setMapleConfig({ ...mapleConfig, repetitionPenalty: Number(e.target.value) })}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
             {apiProvider === 'mference' && (
               <div className="space-y-3 pt-2 border-t border-black/5 dark:border-white/5">
                 <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-[11px] flex items-center gap-2">

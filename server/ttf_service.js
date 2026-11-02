@@ -1,8 +1,8 @@
-// 模型服务托管模块（支持 TurboFieldfare 与 Mference 双引擎切换）
+// 模型服务托管模块（支持 TurboFieldfare / Mference / Maple MLX 三引擎切换）
 //
 // 职责：把模型服务的日常管理能力（启停 / 运行参数 / 路径 / 日志）
 // 内置到 SimpleUI 的 Node 服务层，SimpleUI 成为本地模型服务的唯一管理方：
-//   - 支持在 TurboFieldfare (Gemma 4) 与 Mference (Qwen 3.6) 之间自由切换；
+//   - 支持在 TurboFieldfare (Gemma 4)、Mference (Qwen 3.6)、Maple MLX (Maple 20B-A1B) 之间切换；
 //   - 随 SimpleUI 启动自动拉起选中的基础模型服务（enabled 开关，默认开启）；
 //   - 切换引擎时严格互斥，安全停止前一个模型以彻底释放统一显存；
 //   - SimpleUI 退出时一并终止服务（与 wiki 数据库服务行为对齐）；
@@ -11,6 +11,8 @@
 // 运行时依赖：
 //   - TurboFieldfare: ttf_server.sh -> .build/release/TurboFieldfareServer (默认端口 1235)
 //   - Mference: mference_server.sh -> .build/release/MferenceServer (默认端口 1241)
+//   - Maple MLX: maple_mlx_server.sh -> 独立 Python venv 里的 mlx_lm.server (默认端口 1242)
+//     运行时与权重都由本模块托管（见 maple_download.js），首次使用需在设置面板下载。
 
 import { spawn, execSync } from 'child_process';
 import fs from 'fs';
@@ -19,6 +21,7 @@ import path from 'path';
 import http from 'http';
 import { fileURLToPath } from 'url';
 import { startWatchdog } from './watchdog.js';
+import { MapleModelDownloader, MapleRuntimeInstaller } from './maple_download.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -55,15 +58,35 @@ export const ENGINE_METADATA = {
     projectUrl: 'https://github.com/NeelM0906/Mference',
     scriptBasename: 'mference_server.sh',
   },
+  'maple-mlx': {
+    name: 'Maple MLX',
+    modelName: 'Maple Preview 20B-A1B',
+    defaultPort: 1242,
+    // 看门狗只拿它做命令行校验（`ps -o args=` 里含 mlx_lm.server），不做全局匹配
+    binaryBasename: 'mlx_lm.server',
+    pidFile: '/tmp/maple_mlx_server.pid',
+    logFile: path.join(HOME, 'Library', 'Logs', 'maple-mlx.log'),
+    projectUrl: 'https://github.com/deepgrove-ai/mlx-lm-deepgrove',
+    scriptBasename: 'maple_mlx_server.sh',
+  },
 };
+
+/** 全部受管引擎（顺序即界面顺序） */
+export const ALL_ENGINES = ['turbo-fieldfare', 'mference', 'maple-mlx'];
 
 const defaultMferenceDir = path.join(HOME, 'Mference');
 
+// Maple MLX 的运行时与权重由 SimpleUI 托管（非用户自备仓库）
+export const SUPPORT_DIR = path.join(userConfigDir);
+export const DEFAULT_MAPLE_RUNTIME_DIR = path.join(SUPPORT_DIR, 'runtimes', 'maple-mlx');
+export const DEFAULT_MAPLE_MODEL_DIR = path.join(SUPPORT_DIR, 'models', 'maple-preview-2bit-mlx');
+
 export const DEFAULT_MODEL_CONFIG = {
   enabled: false,
-  engine: 'turbo-fieldfare', // 'turbo-fieldfare' | 'mference'
+  engine: 'turbo-fieldfare', // 'turbo-fieldfare' | 'mference' | 'maple-mlx'
   ttfEnabled: false,
   mferenceEnabled: false,
+  mapleEnabled: false,
 
   // 1. TurboFieldfare 配置参数
   projectDir: path.join(HOME, 'turbo-fieldfare'),
@@ -89,13 +112,19 @@ export const DEFAULT_MODEL_CONFIG = {
   mferenceQueueLimit: 4,
   mferencePrefillChunk: '2048',
 
+  // 3. Maple MLX 配置参数（运行时 + 权重由 SimpleUI 托管）
+  maplePort: 1242,
+  maplePromptCacheSize: 4,
+  maplePrefillStepSize: 2048,
+  mapleFlashHead: false,
+
   // 闲置自动重置
-  idleAutoResetMinutes: 15,
+  idleAutoResetMinutes: 30,
 };
 
 // 合法取值域
 const ENUMS = {
-  engine: ['turbo-fieldfare', 'mference'],
+  engine: ALL_ENGINES,
   // TurboFieldfare
   expertCacheSlots: [8, 16, 24, 32],
   expertCachePolicy: ['lfu', 'lru'],
@@ -112,6 +141,9 @@ const ENUMS = {
   mferenceShadowBudget: [0, 1, 2, 3, 4, 6, 8],
   mferenceVerify: ['auto', 'full-sha256', 'trusted-receipt'],
   mferenceQueueLimit: [1, 2, 4, 8, 16, 32],
+  // Maple MLX（mlx_lm.server 只接受生成参数，没有上下文/专家槽概念）
+  maplePromptCacheSize: [1, 2, 4, 8, 16],
+  maplePrefillStepSize: [512, 1024, 2048, 4096],
 };
 
 function loadStoredConfig() {
@@ -152,6 +184,7 @@ function sanitizeConfig(partial) {
   if (partial.enabled !== undefined) out.enabled = partial.enabled === true || partial.enabled === 'true';
   if (partial.ttfEnabled !== undefined) out.ttfEnabled = partial.ttfEnabled === true || partial.ttfEnabled === 'true';
   if (partial.mferenceEnabled !== undefined) out.mferenceEnabled = partial.mferenceEnabled === true || partial.mferenceEnabled === 'true';
+  if (partial.mapleEnabled !== undefined) out.mapleEnabled = partial.mapleEnabled === true || partial.mapleEnabled === 'true';
   if (partial.engine !== undefined && ENUMS.engine.includes(partial.engine)) {
     out.engine = partial.engine;
   }
@@ -215,6 +248,42 @@ function sanitizeConfig(partial) {
     out.mferencePrefillChunk = String(partial.mferencePrefillChunk);
   }
 
+  // Maple MLX：运行时与权重目录固定由 App 托管，这里刻意**不接受**路径覆写
+  // （设置了也不生效，避免「面板能填、实际不认」的错觉）。
+  if (partial.maplePort !== undefined) {
+    const port = Number(partial.maplePort);
+    if (Number.isInteger(port) && port >= 1024 && port <= 65535) out.maplePort = port;
+  }
+  for (const key of ['maplePromptCacheSize', 'maplePrefillStepSize']) {
+    if (partial[key] !== undefined) {
+      const v = Number(partial[key]);
+      if (ENUMS[key].includes(v)) out[key] = v;
+    }
+  }
+  if (partial.mapleTemperature !== undefined) {
+    const v = Number(partial.mapleTemperature);
+    if (Number.isFinite(v) && v >= 0 && v <= 2) out.mapleTemperature = v;
+  }
+  if (partial.mapleTopP !== undefined) {
+    const v = Number(partial.mapleTopP);
+    if (Number.isFinite(v) && v > 0 && v <= 1) out.mapleTopP = v;
+  }
+  if (partial.mapleTopK !== undefined) {
+    const v = Number(partial.mapleTopK);
+    if (Number.isInteger(v) && v >= 0 && v <= 256) out.mapleTopK = v;
+  }
+  if (partial.mapleMinP !== undefined) {
+    const v = Number(partial.mapleMinP);
+    if (Number.isFinite(v) && v >= 0 && v <= 1) out.mapleMinP = v;
+  }
+  if (partial.mapleRepPenalty !== undefined) {
+    const v = Number(partial.mapleRepPenalty);
+    if (Number.isFinite(v) && v >= 1 && v <= 2) out.mapleRepPenalty = v;
+  }
+  if (partial.mapleFlashHead !== undefined) {
+    out.mapleFlashHead = partial.mapleFlashHead === true || partial.mapleFlashHead === 'true';
+  }
+
   // 闲置重置
   if (partial.idleAutoResetMinutes !== undefined) {
     const v = Number(partial.idleAutoResetMinutes);
@@ -261,16 +330,59 @@ class TtfService {
     this.watchdogs = new Map();
     this.idleTimer = null;
     this.idleState = { hasHandled: false, inFlight: 0, lastFinishedAt: null };
+    // Maple MLX：运行时安装与权重下载（首次使用需要按需下载）
+    this.mapleModelDownloader = null;
+    this.mapleRuntimeInstaller = null;
   }
 
   getActiveEngine() {
-    return this.config.engine === 'mference' ? 'mference' : 'turbo-fieldfare';
+    const engine = this.config.engine;
+    return ALL_ENGINES.includes(engine) ? engine : 'turbo-fieldfare';
   }
 
   getActivePort() {
-    return this.getActiveEngine() === 'mference'
-      ? (this.config.mferencePort || 1241)
-      : (this.config.port || 1235);
+    return this.portForEngine(this.getActiveEngine());
+  }
+
+  /** 该引擎的「自动启动」独立开关对应的配置键 */
+  engineEnabledKey(engine) {
+    if (engine === 'mference') return 'mferenceEnabled';
+    if (engine === 'maple-mlx') return 'mapleEnabled';
+    return 'ttfEnabled';
+  }
+
+  isEngineEnabled(engine) {
+    return Boolean(this.config[this.engineEnabledKey(engine)]);
+  }
+
+  // ---- Maple MLX 托管资源（惰性构造：只有用到才建目录/对象） ----
+
+  /**
+   * Maple 的运行时与权重目录是**固定**的（App 托管），与语音输入 / 语音合成 / 实时字幕 /
+   * 快速翻译 / 视觉识别五个服务保持同一套约定：用户只需要「安装/下载/启停」，
+   * 不提供路径选择。配置里即使残留旧的 mapleModelDir/mapleRuntimeDir 也不采信。
+   */
+  mapleDirs() {
+    return {
+      runtimeDir: DEFAULT_MAPLE_RUNTIME_DIR,
+      modelDir: DEFAULT_MAPLE_MODEL_DIR,
+    };
+  }
+
+  getMapleModelDownloader() {
+    const { modelDir } = this.mapleDirs();
+    if (!this.mapleModelDownloader || this.mapleModelDownloader.modelDir !== modelDir) {
+      this.mapleModelDownloader = new MapleModelDownloader(modelDir);
+    }
+    return this.mapleModelDownloader;
+  }
+
+  getMapleRuntimeInstaller() {
+    const { runtimeDir } = this.mapleDirs();
+    if (!this.mapleRuntimeInstaller || this.mapleRuntimeInstaller.runtimeDir !== runtimeDir) {
+      this.mapleRuntimeInstaller = new MapleRuntimeInstaller(runtimeDir);
+    }
+    return this.mapleRuntimeInstaller;
   }
 
   getActiveMeta() {
@@ -311,6 +423,18 @@ class TtfService {
       };
     }
 
+    if (engine === 'maple-mlx') {
+      const { runtimeDir, modelDir } = this.mapleDirs();
+      return {
+        MAPLE_PORT: String(this.config.maplePort || 1242),
+        MAPLE_RUNTIME_DIR: runtimeDir,
+        MAPLE_MODEL_DIR: modelDir,
+        MAPLE_PROMPT_CACHE_SIZE: String(this.config.maplePromptCacheSize || 4),
+        MAPLE_PREFILL_STEP_SIZE: String(this.config.maplePrefillStepSize || 2048),
+        MAPLE_FLASH_HEAD: this.config.mapleFlashHead === false ? 'off' : 'on',
+      };
+    }
+
     const projectDir = resolveProjectDir(this.config.projectDir, DEFAULT_MODEL_CONFIG.projectDir);
     return {
       TURBO_FIELDFARE_DIR: projectDir,
@@ -325,7 +449,7 @@ class TtfService {
       TURBO_THINKING: this.config.thinking || 'default',
       TURBO_FIELDFARE_ALLOW_UNBACKED_CONTEXT: this.config.allowUnbackedContext ? '1' : '0',
       TURBO_RDADVISE: this.config.rdadvise || 'adaptive',
-      TURBO_IDLE_RESET_MINUTES: String(this.config.idleAutoResetMinutes ?? 15),
+      TURBO_IDLE_RESET_MINUTES: String(this.config.idleAutoResetMinutes ?? 30),
     };
   }
 
@@ -333,8 +457,15 @@ class TtfService {
     // 所有配置已统一收敛至 ~/Library/Application Support/SimpleUI/model_config.json
   }
 
+  /** 任一引擎的监听端口（三引擎唯一端口映射来源） */
+  portForEngine(engine) {
+    if (engine === 'mference') return Number(this.config.mferencePort) || 1241;
+    if (engine === 'maple-mlx') return Number(this.config.maplePort) || 1242;
+    return Number(this.config.port) || 1235;
+  }
+
   async checkHealth(engine = this.getActiveEngine()) {
-    const port = engine === 'mference' ? (this.config.mferencePort || 1241) : (this.config.port || 1235);
+    const port = this.portForEngine(engine);
     return new Promise((resolve) => {
       // 先尝试 /health，再尝试 /v1/models
       const req = http.get(`http://127.0.0.1:${port}/health`, { timeout: 1500 }, (res) => {
@@ -407,24 +538,61 @@ class TtfService {
     };
     const mferencePort = Number(this.config.mferencePort) || 1241;
 
-    // 当前活跃引擎
-    const activeEngine = ttfAlive ? 'turbo-fieldfare' : (mferenceAlive ? 'mference' : (this.config.engine || 'turbo-fieldfare'));
-    const isMferenceActive = activeEngine === 'mference';
+    // 3. 独立探测 Maple MLX
+    const maplePid = this.readPid('maple-mlx');
+    const mapleAlive = isPidAlive(maplePid);
+    const mapleHealthy = mapleAlive ? await this.checkHealth('maple-mlx') : false;
+    let mapleStatus = 'stopped';
+    if (this.pendingOp && this.pendingOpEngine === 'maple-mlx') {
+      mapleStatus = this.pendingOp;
+    } else if (mapleAlive && mapleHealthy) {
+      mapleStatus = 'running';
+    } else if (mapleAlive) {
+      mapleStatus = 'loading';
+    }
 
-    return {
-      activeEngine,
-      engine: activeEngine,
-      status: isMferenceActive ? mferenceStatus : ttfStatus,
-      port: isMferenceActive ? mferencePort : ttfPort,
-      pid: isMferenceActive ? (mferenceAlive ? mferencePid : null) : (ttfAlive ? ttfPid : null),
-      projectDir: isMferenceActive ? mferenceProjectDir : ttfProjectDir,
-      modelPath: isMferenceActive ? mferenceModelPath : ttfModelPath,
-      projectUrl: ENGINE_METADATA[activeEngine].projectUrl,
-      checks: isMferenceActive ? mferenceChecks : ttfChecks,
-      enabled: isMferenceActive ? Boolean(this.config.mferenceEnabled) : Boolean(this.config.ttfEnabled),
+    const { runtimeDir: mapleRuntimeDir, modelDir: mapleModelDir } = this.mapleDirs();
+    const mapleRuntimeReady = this.getMapleRuntimeInstaller().ready();
+    const mapleModelReady = this.getMapleModelDownloader().ready();
+    const mapleChecks = {
+      // 与另外两个引擎的字段对齐：repo→运行时，binary→可执行 python，model→权重
+      repo: mapleRuntimeReady,
+      binary: fs.existsSync(path.join(mapleRuntimeDir, 'bin', 'python')),
+      model: mapleModelReady,
+      vision: false,
+    };
+    const maplePort = Number(this.config.maplePort) || 1242;
+    const mapleRuntime = this.getMapleRuntimeInstaller();
+    const mapleDownload = this.getMapleModelDownloader();
+    const mapleAssets = {
+      runtime: {
+        ready: mapleRuntimeReady,
+        dir: mapleRuntimeDir,
+        presentBytes: mapleRuntime.presentBytes(),
+        totalBytes: mapleRuntime.state.totalBytes,
+        installState: mapleRuntime.status(),
+      },
+      model: {
+        ready: mapleModelReady,
+        dir: mapleModelDir,
+        presentBytes: mapleDownload.presentBytes(),
+        totalBytes: mapleDownload.state.totalBytes,
+        downloadState: mapleDownload.status(),
+      },
+    };
 
-      // 独立双服务数据（彻底独立，前端各取所需）
-      ttf: {
+    // 当前活跃引擎：谁在跑就是谁；都没跑则回落到配置里的选择
+    const runningEngine = ttfAlive
+      ? 'turbo-fieldfare'
+      : mferenceAlive
+      ? 'mference'
+      : mapleAlive
+      ? 'maple-mlx'
+      : null;
+    const activeEngine = runningEngine || this.getActiveEngine();
+
+    const byEngine = {
+      'turbo-fieldfare': {
         engine: 'turbo-fieldfare',
         status: ttfStatus,
         port: ttfPort,
@@ -446,6 +614,38 @@ class TtfService {
         modelPath: mferenceModelPath,
         projectUrl: ENGINE_METADATA['mference'].projectUrl,
       },
+      'maple-mlx': {
+        engine: 'maple-mlx',
+        status: mapleStatus,
+        port: maplePort,
+        pid: mapleAlive ? maplePid : null,
+        enabled: Boolean(this.config.mapleEnabled),
+        checks: mapleChecks,
+        projectDir: mapleRuntimeDir,
+        modelPath: mapleModelDir,
+        projectUrl: ENGINE_METADATA['maple-mlx'].projectUrl,
+        assets: mapleAssets,
+      },
+    };
+
+    const current = byEngine[activeEngine];
+
+    return {
+      activeEngine,
+      engine: activeEngine,
+      status: current.status,
+      port: current.port,
+      pid: current.pid,
+      projectDir: current.projectDir,
+      modelPath: current.modelPath,
+      projectUrl: current.projectUrl,
+      checks: current.checks,
+      enabled: current.enabled,
+
+      // 独立三服务数据（彻底独立，前端各取所需）
+      ttf: byEngine['turbo-fieldfare'],
+      mference: byEngine.mference,
+      maple: byEngine['maple-mlx'],
 
       lastActionAt: this.lastActionAt || undefined,
       lastActionLog: this.lastActionLog || undefined,
@@ -455,7 +655,7 @@ class TtfService {
 
   ensureWatchdogs() {
     if (!this.watchdogs) this.watchdogs = new Map();
-    for (const engine of ['turbo-fieldfare', 'mference']) {
+    for (const engine of ALL_ENGINES) {
       const meta = ENGINE_METADATA[engine];
       if (meta && !this.watchdogs.has(meta.pidFile)) {
         try {
@@ -508,29 +708,47 @@ class TtfService {
     if (this.pendingOp) return;
     if (!isPidAlive(this.readPid())) return;
 
-    const { lines } = this.tailLog(this.getActiveEngine(), 5000);
+    const engine = this.getActiveEngine();
+    const { lines } = this.tailLog(engine, 5000);
     let acceptedCount = 0;
     let terminalCount = 0;
     let latestTerminalAt = null;
 
-    for (const line of lines) {
-      if (!line.includes('] request ')) continue;
-      // 兼容 TTF 与 Mference 日志词汇
-      const isTerminal =
-        line.includes(' completed in ') ||
-        line.includes(' cancelled by client ') ||
-        line.includes(' cancelled streaming=') ||
-        line.includes(' failed phase=') ||
-        line.includes(' failed status=') ||
-        line.includes(' stream aborted');
-
-      if (line.includes(' accepted') || line.includes(' started streaming=')) {
+    if (engine === 'maple-mlx') {
+      // mlx_lm.server 用的是 Python http.server 日志：请求在**响应结束时**才落一行
+      // `127.0.0.1 - - [02/Nov/2026 16:17:35] "POST /v1/chat/completions HTTP/1.1" 200 -`
+      // 所以「有这行 = 已完成」，不像 TTF/Mference 那样有 accepted/completed 两段。
+      for (const line of lines) {
+        if (!/"(POST|GET) \/v1\/(chat\/completions|completions|models)/.test(line)) continue;
+        if (!/"\s(200|4\d\d|5\d\d)\s/.test(line)) continue;
+        const m = /\[(\d{2})\/(\w{3})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})\]/.exec(line);
         acceptedCount++;
-      }
-      if (isTerminal) {
         terminalCount++;
-        const ts = this.parseLogTimestamp(line);
-        if (ts && (latestTerminalAt === null || ts > latestTerminalAt)) latestTerminalAt = ts;
+        if (m) {
+          const ts = Date.parse(`${m[2]} ${m[1]}, ${m[3]} ${m[4]}:${m[5]}:${m[6]}`);
+          if (Number.isFinite(ts) && (latestTerminalAt === null || ts > latestTerminalAt)) latestTerminalAt = ts;
+        }
+      }
+    } else {
+      for (const line of lines) {
+        if (!line.includes('] request ')) continue;
+        // 兼容 TTF 与 Mference 日志词汇
+        const isTerminal =
+          line.includes(' completed in ') ||
+          line.includes(' cancelled by client ') ||
+          line.includes(' cancelled streaming=') ||
+          line.includes(' failed phase=') ||
+          line.includes(' failed status=') ||
+          line.includes(' stream aborted');
+
+        if (line.includes(' accepted') || line.includes(' started streaming=')) {
+          acceptedCount++;
+        }
+        if (isTerminal) {
+          terminalCount++;
+          const ts = this.parseLogTimestamp(line);
+          if (ts && (latestTerminalAt === null || ts > latestTerminalAt)) latestTerminalAt = ts;
+        }
       }
     }
 
@@ -596,11 +814,7 @@ class TtfService {
   async startService(engineToStart) {
     const activeEngine = engineToStart || this.getActiveEngine();
     this.config.engine = activeEngine;
-    if (activeEngine === 'mference') {
-      this.config.mferenceEnabled = true;
-    } else {
-      this.config.ttfEnabled = true;
-    }
+    this.config[this.engineEnabledKey(activeEngine)] = true;
     this.config.enabled = true;
 
     try {
@@ -608,13 +822,14 @@ class TtfService {
       fs.writeFileSync(CONFIG_FILE, JSON.stringify(this.config, null, 2));
     } catch (e) { /* ignore */ }
 
-    const otherEngine = activeEngine === 'mference' ? 'turbo-fieldfare' : 'mference';
-
-    // 显存严格互斥：确保非当前选中的引擎完全停止
-    const otherPid = this.readPid(otherEngine);
-    if (isPidAlive(otherPid)) {
-      console.log(`[ModelService] 正在停止互斥的旧引擎 (${otherEngine})...`);
-      await this.stopEngine(otherEngine);
+    // 显存严格互斥：三个引擎两两互斥，确保非当前选中的引擎完全停止
+    for (const otherEngine of ALL_ENGINES) {
+      if (otherEngine === activeEngine) continue;
+      const otherPid = this.readPid(otherEngine);
+      if (isPidAlive(otherPid)) {
+        console.log(`[ModelService] 正在停止互斥的旧引擎 (${otherEngine})...`);
+        await this.stopEngine(otherEngine);
+      }
     }
 
     const script = this.findScript(activeEngine);
@@ -662,18 +877,16 @@ class TtfService {
     this.pendingOpEngine = engineToStop || null;
     this.lastActionAt = Date.now();
     try {
-      if (engineToStop === 'mference') {
-        this.config.mferenceEnabled = false;
-        await this.stopEngine('mference');
-      } else if (engineToStop === 'turbo-fieldfare') {
-        this.config.ttfEnabled = false;
-        await this.stopEngine('turbo-fieldfare');
+      if (ALL_ENGINES.includes(engineToStop)) {
+        this.config[this.engineEnabledKey(engineToStop)] = false;
+        await this.stopEngine(engineToStop);
       } else {
-        this.config.ttfEnabled = false;
-        this.config.mferenceEnabled = false;
+        // 无参数 = 全停（退出 App / 关闭总开关）
+        for (const engine of ALL_ENGINES) this.config[this.engineEnabledKey(engine)] = false;
         this.config.enabled = false;
-        await this.stopEngine('turbo-fieldfare');
-        await this.stopEngine('mference');
+        for (const engine of ALL_ENGINES) {
+          await this.stopEngine(engine);
+        }
       }
     } finally {
       this.pendingOp = null;
@@ -704,12 +917,13 @@ class TtfService {
     }
 
     // 若只传了通用的 enabled（如状态栏原生菜单），根据当前活跃引擎同步到对应的独立开关
-    if (clean.enabled !== undefined && clean.ttfEnabled === undefined && clean.mferenceEnabled === undefined) {
-      if (this.getActiveEngine() === 'mference') {
-        clean.mferenceEnabled = clean.enabled;
-      } else {
-        clean.ttfEnabled = clean.enabled;
-      }
+    if (
+      clean.enabled !== undefined &&
+      clean.ttfEnabled === undefined &&
+      clean.mferenceEnabled === undefined &&
+      clean.mapleEnabled === undefined
+    ) {
+      clean[this.engineEnabledKey(this.getActiveEngine())] = clean.enabled;
     }
 
     const oldEngine = this.getActiveEngine();
@@ -752,9 +966,9 @@ class TtfService {
       return;
     }
     const target = this.getActiveEngine();
-    const isTargetEnabled = target === 'mference' ? Boolean(this.config.mferenceEnabled) : Boolean(this.config.ttfEnabled);
+    const isTargetEnabled = this.isEngineEnabled(target);
     if (!isTargetEnabled) {
-      console.log(`[ModelService] auto-start disabled for ${target} (${target === 'mference' ? 'mferenceEnabled' : 'ttfEnabled'}=false)`);
+      console.log(`[ModelService] auto-start disabled for ${target} (${this.engineEnabledKey(target)}=false)`);
       return;
     }
     this.startService(target)
@@ -772,7 +986,7 @@ class TtfService {
 
   shutdownSync() {
     this.stopIdleMonitor();
-    for (const engine of ['turbo-fieldfare', 'mference']) {
+    for (const engine of ALL_ENGINES) {
       const pid = this.readPid(engine);
       if (isPidAlive(pid)) {
         try { process.kill(pid, 'SIGTERM'); } catch (e) { /* ignore */ }
@@ -781,20 +995,27 @@ class TtfService {
   }
 
   shutdownForce() {
-    for (const engine of ['turbo-fieldfare', 'mference']) {
+    for (const engine of ALL_ENGINES) {
       const pid = this.readPid(engine);
       if (isPidAlive(pid)) {
         try { process.kill(pid, 'SIGKILL'); } catch (e) { /* ignore */ }
       }
       try { fs.unlinkSync(ENGINE_METADATA[engine].pidFile); } catch (e) { /* ignore */ }
-      // 兜底双保险：若仍有同名孤儿进程残留，按二进制全名精确清理
       const bin = ENGINE_METADATA[engine]?.binaryBasename;
-      if (bin) {
-        try {
+      if (!bin) continue;
+      try {
+        if (engine === 'maple-mlx') {
+          // 进程名是 python3.12，不是 mlx_lm.server —— `pkill -x` 一定匹配不到。
+          // 这里只按「命令行含 mlx_lm.server + 本引擎端口」精确兜底，
+          // 绝不裸杀 python（会误伤用户自己的脚本）。
+          const port = Number(this.config.maplePort) || 1242;
+          execSync(`pkill -f "mlx_lm\\.server.*--port ${port}"`, { stdio: 'ignore' });
+        } else {
+          // 兜底双保险：若仍有同名孤儿进程残留，按二进制全名精确清理
           execSync(`pkill -x "${bin}"`, { stdio: 'ignore' });
-        } catch (e) {
-          // ignore (pkill returns 1 when no matching processes exist)
         }
+      } catch (e) {
+        // ignore (pkill returns 1 when no matching processes exist)
       }
     }
   }
@@ -902,6 +1123,66 @@ class TtfService {
         const engine = urlObj.searchParams.get('engine') || this.getActiveEngine();
         const maxLines = Math.min(Number(urlObj.searchParams.get('lines')) || 200, 1000);
         sendJson(200, this.tailLog(engine, maxLines));
+        return;
+      }
+
+      // ---------------- Maple MLX 托管资源（运行时 / 权重） ----------------
+      // 与其它受管服务一致：只暴露状态与动作，真正的下载逻辑在 maple_download.js。
+      const mapleState = () => {
+        const runtime = this.getMapleRuntimeInstaller();
+        const model = this.getMapleModelDownloader();
+        const { runtimeDir, modelDir } = this.mapleDirs();
+        return {
+          runtime: {
+            ready: runtime.ready(),
+            dir: runtimeDir,
+            presentBytes: runtime.presentBytes(),
+            totalBytes: runtime.state.totalBytes,
+            state: runtime.status(),
+          },
+          model: {
+            ready: model.ready(),
+            dir: modelDir,
+            presentBytes: model.presentBytes(),
+            totalBytes: model.state.totalBytes,
+            state: model.status(),
+          },
+        };
+      };
+
+      if (pathname === '/maple/state' && req.method === 'GET') {
+        sendJson(200, mapleState());
+        return;
+      }
+
+      if (pathname === '/maple/runtime/install' && req.method === 'POST') {
+        const installer = this.getMapleRuntimeInstaller();
+        if (!installer.state.active) {
+          // 不阻塞请求：安装是分钟级任务，前端轮询 /maple/state
+          Promise.resolve(installer.start()).catch((e) => console.error('[ModelService] maple runtime install:', e.message));
+        }
+        sendJson(200, mapleState());
+        return;
+      }
+
+      if (pathname === '/maple/runtime/cancel' && req.method === 'POST') {
+        this.getMapleRuntimeInstaller().cancel();
+        sendJson(200, mapleState());
+        return;
+      }
+
+      if (pathname === '/maple/download/start' && req.method === 'POST') {
+        const dl = this.getMapleModelDownloader();
+        if (!dl.state.active) {
+          Promise.resolve(dl.start()).catch((e) => console.error('[ModelService] maple model download:', e.message));
+        }
+        sendJson(200, mapleState());
+        return;
+      }
+
+      if (pathname === '/maple/download/cancel' && req.method === 'POST') {
+        this.getMapleModelDownloader().cancel();
+        sendJson(200, mapleState());
         return;
       }
 

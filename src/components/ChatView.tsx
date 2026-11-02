@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useLayoutEffect, useState } from 'react';
-import { ChatMessage, TurnMetrics } from '../types/chat';
+import { ApiProvider, ChatMessage, TurnMetrics } from '../types/chat';
+import { supportsVision } from '../utils/providerCapabilities';
 import { useI18n } from '../i18n';
 import { useChatFontSize } from '../hooks/useChatFontSize';
 import { useFadeOverlay } from '../hooks/useFadeOverlay';
@@ -36,6 +37,8 @@ interface ChatViewProps {
   maxContext: number;
   enableThinking: boolean;
   setEnableThinking: (val: boolean) => void;
+  /** 当前 provider：思考开关的可点性由 ThinkingToggle 按能力判定 */
+  provider?: ApiProvider;
   modelId: string;
   availableModels: string[];
   onSelectModel: (model: string) => void;
@@ -63,7 +66,6 @@ interface ChatViewProps {
   onDelete?: (messageId: string) => void;
   onShrinkToSpotlight?: () => void;
   isDeepSeek?: boolean;
-  isMference?: boolean;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -80,6 +82,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   maxContext,
   enableThinking,
   setEnableThinking,
+  provider,
   modelId,
   availableModels,
   onSelectModel,
@@ -102,9 +105,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onDelete,
   onShrinkToSpotlight,
   isDeepSeek = false,
-  isMference = false,
 }) => {
   const { t } = useI18n();
+  const visionOk = supportsVision(provider);
 
   /** 窗口/应用整机尺寸拉伸调整：同样接入遮罩 + 宏观刻度复位契约 */
   const [windowResizing, setWindowResizing] = useState(false);
@@ -241,7 +244,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
-    if (isMference) return;
+    if (!visionOk) return;
     if (e.dataTransfer.types.includes('Files')) {
       dragCounterRef.current++;
       setIsDragOver(true);
@@ -250,7 +253,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
-    if (isMference) return;
+    if (!visionOk) return;
     if (e.dataTransfer.types.includes('Files')) {
       e.dataTransfer.dropEffect = 'copy';
       setIsDragOver(true);
@@ -270,7 +273,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     e.preventDefault();
     dragCounterRef.current = 0;
     setIsDragOver(false);
-    if (isMference) return;
+    if (!visionOk) return;
 
     const droppedFiles = Array.from(e.dataTransfer.files).filter(isImageFile);
     if (droppedFiles.length > 0) {
@@ -553,6 +556,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             maxContext={maxContext}
             enableThinking={enableThinking}
             setEnableThinking={setEnableThinking}
+            provider={provider}
             visionReady={visionReady}
             hasMessages={messages.length > 0}
             enableWikiSearch={enableWikiSearch}
@@ -560,7 +564,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
             wikiConnected={wikiConnected}
             wikiEnabled={wikiEnabled}
             isDeepSeek={isDeepSeek}
-            isMference={isMference}
           />
         </div>
       </div>

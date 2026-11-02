@@ -113,6 +113,14 @@ body {
   user-select: text !important;
 }
 
+/* mermaid 渲染出的 SVG 自带 inline max-width（useMaxWidth 默认开），必须用 !important 才能收敛到卡片宽度内 */
+.mermaid-diagram svg {
+  max-width: 100% !important;
+  height: auto !important;
+  display: block;
+  margin: 0 auto;
+}
+
 /* 块级组件（代码框/表格/Mermaid）的顶部工具栏、KaTeX 隐藏辅助层以及公式渲染层不参与字符级划选，消除锯齿高亮条 */
 .selectable-chat-content [data-copy-ignore="true"],
 .selectable-chat-content [data-copy-ignore="true"] *,

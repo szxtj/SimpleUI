@@ -1148,9 +1148,14 @@ class SessionService {
       });
     }
 
+    // Maple 无视觉能力（见 src/utils/providerCapabilities.ts）：就算前端漏拦
+    // （比如切引擎前草稿里已经贴了图），也在这里按纯文本处理，而不是把 image_url
+    // 发给纯文本引擎让整个回合报错。
+    const visionUnsupported = settings.apiProvider === 'maple';
+
     for (const msg of wireMessages) {
       if (msg.role === 'user') {
-        if (Array.isArray(msg.images) && msg.images.length > 0) {
+        if (Array.isArray(msg.images) && msg.images.length > 0 && !visionUnsupported) {
           const parts = [];
           if (msg.content && msg.content.trim()) {
             parts.push({ type: 'text', text: msg.content.trim() });
@@ -1222,6 +1227,9 @@ class SessionService {
             payload.reasoning_effort = settings.reasoningEffort;
           }
         }
+      } else if (settings.apiProvider === 'maple') {
+        // Maple（deepgrove 版 mlx_lm.server）：chat template 无条件写死 <think>，
+        // 服务端只读已知字段，这里刻意**不发** chat_template_kwargs / reasoning_effort。
       } else if (settings.enableThinking) {
         payload.chat_template_kwargs = { enable_thinking: true };
         if (isMference) {
@@ -1448,8 +1456,13 @@ class SessionService {
             if (!choice || !choice.delta) continue;
             const delta = choice.delta;
 
+            // 思考通道字段名归一化（与 src/services/api.ts 同一份规则）：
+            //   - TTF / Mference：reasoning_content
+            //   - Maple（deepgrove 版 mlx_lm.server）：reasoning
+            const thoughtDelta = delta.reasoning ?? delta.reasoning_content;
+
             let isFirst = false;
-            if (!firstTokenTime && (delta.content || delta.reasoning_content)) {
+            if (!firstTokenTime && (delta.content || thoughtDelta)) {
               firstTokenTime = performance.now();
               isFirst = true;
               const tEnd = Date.now();
@@ -1465,9 +1478,9 @@ class SessionService {
               if (turn) turn.liveTokens = promptBase;
             }
 
-            if (delta.reasoning_content) {
+            if (thoughtDelta) {
               generatedTokensCount++;
-              accumulatedReasoning += delta.reasoning_content;
+              accumulatedReasoning += thoughtDelta;
               isThinking = true;
               thinkingDuration = (performance.now() - thinkingStartTime) / 1000;
               if (generatedTokensCount - lastReportedMilestone >= 20) {
