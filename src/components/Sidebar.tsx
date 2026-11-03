@@ -15,6 +15,7 @@ import {
   PanelLeftClose,
   Loader2,
   PictureInPicture2,
+  Boxes,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -29,6 +30,8 @@ interface SidebarProps {
   onRenameSession: (id: string, newTitle: string) => void;
   onOpenSettings: () => void;
   onOpenServiceManager?: () => void;
+  /** 打开独立的 3D 场景构建窗口（原生 NSPanel；无桥时回退 window.open） */
+  onOpenScene3d?: () => void;
   isOpen: boolean;
   onToggleOpen: () => void;
 }
@@ -43,6 +46,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDeleteSession,
   onRenameSession,
   onOpenSettings,
+  onOpenScene3d,
   isOpen,
   onToggleOpen,
 }) => {
@@ -186,13 +190,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <h1 className="text-xl font-bold tracking-tight text-[#1f2328] dark:text-[#f1f3f7]">
           SimpleUI
         </h1>
-        <button
-          onClick={onOpenSettings}
-          className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
-          title={t('settingsTitle')}
-        >
-          <Settings className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-0.5">
+          {onOpenScene3d && (
+            <button
+              onClick={onOpenScene3d}
+              className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
+              title={t('scene3dWindowTitle')}
+            >
+              <Boxes className="w-4 h-4" />
+            </button>
+          )}
+          <button
+            onClick={onOpenSettings}
+            className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
+            title={t('settingsTitle')}
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* New Chat Button (Qianwen Style: Large rounded card button) */}

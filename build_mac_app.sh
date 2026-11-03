@@ -89,6 +89,7 @@ swiftc -O \
     mac_app/src/VoiceInputManager.swift \
     mac_app/src/VoiceOverlayPanelController.swift \
     mac_app/src/SubtitleOverlayPanelController.swift \
+    mac_app/src/Scene3DPanelController.swift \
     mac_app/src/TranslationConfig.swift \
     mac_app/src/TranslationSpeechManager.swift \
     mac_app/src/TranslationProfileStore.swift \
@@ -246,6 +247,21 @@ PYEOF
   fi
 }
 ensure_llama_runtime
+
+# 3D 场景构建服务专用 llama.cpp 运行时（官方 b12040+，支持 qwen35 架构与 mmproj）。
+# 与字幕翻译的自研 fork（bin/llama）物理隔离：内置 fork 不认识 Qwen3.5 的 GGUF，
+# 两套运行时各自平铺 dylib（rpath=@loader_path），互不影响。
+ensure_llama3d_runtime() {
+  if [ -d "bin/llama3d" ] && [ -x "bin/llama3d/llama-server" ]; then
+    mkdir -p "$RESOURCES_DIR/llama3d"
+    copy_item "bin/llama3d/." "$RESOURCES_DIR/llama3d/"
+    chmod +x "$RESOURCES_DIR/llama3d/llama-server" 2>/dev/null || true
+    echo "  -> 已打包 3D 场景构建运行时 (llama-server qwen35): $(du -sh bin/llama3d | cut -f1)"
+  else
+    echo "  ⚠ 未找到 3D 场景构建运行时：请确认 bin/llama3d 存在"
+  fi
+}
+ensure_llama3d_runtime
 
 # 语音识别与字幕服务共用的 audio.cpp 原生引擎运行时（不随包打包大模型，由面板按需下载）
 ensure_audiocpp_runtime() {
@@ -416,6 +432,17 @@ if [ -d "bin/tts_runtime/python" ]; then
     echo "  -> 已打包自包含 Python 深度学习运行时: $(du -sh "$RESOURCES_DIR/server/tts/python" | cut -f1)"
 else
     echo "  ⚠ 未找到 bin/tts_runtime/python，TTS 将回落到系统 Python（仅开发机可用）"
+fi
+
+# Maple MLX 随包运行时（python 3.12 底座 + mlx-lm deepgrove fork + 原生内核，
+# 由 scripts/build_maple_runtime.sh 从 tts 底座 + Maple venv 预构建，带 .ready 标记）。
+# 内置后 Maple 首次使用不再需要 uv / 联网装依赖 —— 权重仍由用户按需下载。
+if [ -d "bin/maple_runtime" ] && [ -x "bin/maple_runtime/bin/python3" ]; then
+    echo "  · 打包 Maple MLX 随包运行时..."
+    copy_item "bin/maple_runtime" "$RESOURCES_DIR/server/maple-mlx"
+    echo "  -> 已打包 Maple MLX 运行时: $(du -sh "$RESOURCES_DIR/server/maple-mlx" | cut -f1)"
+else
+    echo "  ⚠ 未找到 bin/maple_runtime，Maple 将回落到运行时装配流程（需 uv + 联网）"
 fi
 
 SERVER_DEPS=$(node -e '

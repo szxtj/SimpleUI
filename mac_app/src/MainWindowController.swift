@@ -373,6 +373,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         userContent.add(self, name: "growWindow")
         userContent.add(self, name: "shrinkToSpotlight")
         userContent.add(self, name: "openSessionInSpotlight")
+        userContent.add(self, name: "openScene3D")
         // 语音输入权限桥（设置页「语音识别服务」卡片据此展示/申请三件套权限）
         userContent.add(self, name: "voiceInput")
         userContent.add(self, name: "openExternal")
@@ -540,6 +541,10 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             let isExpanded = (dict?["isExpanded"] as? Bool) ?? true
             // 主窗口保持显示且不切会话：小窗口作为悬浮面板盖在上面，主窗口的滚动位置不动。
             onOpenSessionInSpotlight?(sessionId, isExpanded)
+        } else if message.name == "openScene3D" {
+            DispatchQueue.main.async {
+                (NSApp.delegate as? AppDelegate)?.scene3dPanelController?.showAndFocus()
+            }
         } else if message.name == "voiceInput", let dict = message.body as? [String: Any] {
             handleVoiceInputMessage(dict)
         } else if message.name == "openExternal", let urlString = message.body as? String {

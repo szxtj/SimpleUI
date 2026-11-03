@@ -641,33 +641,37 @@ class OcrService {
   }
 
   resolvePython() {
+    // 只用随包固化的运行时（server/tts/python，OCR 经软链共享）与开发机内置
+    // bin/{ocr,tts}_runtime；不回退系统 PATH / 用户目录下的解释器。
     const candidates = [
-      path.join(__dirname, 'ocr', 'python', 'bin', 'python3'),
-      path.join(__dirname, 'tts', 'python', 'bin', 'python3'),
-      path.join(process.resourcesPath || '', 'ocr', 'python', 'bin', 'python3'),
-      path.join(process.resourcesPath || '', 'tts', 'python', 'bin', 'python3'),
-      path.resolve(__dirname, '..', 'bin', 'ocr_runtime', 'python', 'bin', 'python3'),
-      path.resolve(__dirname, '..', 'bin', 'tts_runtime', 'python', 'bin', 'python3'),
-      path.join(HOME, '.workbuddy', 'binaries', 'python', 'envs', 'default', 'bin', 'python3'),
-    ];
+      process.env.SIMPLEUI_OCR_PYTHON, // 显式钉死（调试用），优先于一切
+      path.join(__dirname, 'ocr', 'python', 'bin', 'python3'), // 打包态软链 → ../tts/python
+      path.join(__dirname, 'tts', 'python', 'bin', 'python3'), // 打包态实体
+      path.resolve(__dirname, '..', 'bin', 'ocr_runtime', 'python', 'bin', 'python3'), // 开发态
+      path.resolve(__dirname, '..', 'bin', 'tts_runtime', 'python', 'bin', 'python3'), // 开发态
+    ].filter(Boolean);
     for (const c of candidates) {
       try {
         if (fs.existsSync(c)) return c;
       } catch {}
     }
-    return 'python3';
+    return null;
   }
 
   runtimeStatus() {
     const python = this.resolvePython();
-    const isFallback = python === 'python3';
+    if (!python) {
+      // 没有可用的内置运行时：明确报缺，不做系统解释器兜底
+      this._runtimeReady = false;
+      return { ready: false, path: null, bundled: false };
+    }
     const now = Date.now();
     // 成功检测后保持有效；如果此前失败，隔 3 秒允许重新探测
     if (this._runtimeReady === true) {
-      return { ready: true, path: python, bundled: !isFallback };
+      return { ready: true, path: python, bundled: true };
     }
     if (this._lastCheckTime && now - this._lastCheckTime < 3000) {
-      return { ready: false, path: python, bundled: !isFallback };
+      return { ready: false, path: python, bundled: true };
     }
     this._lastCheckTime = now;
     let ready = false;
@@ -686,7 +690,7 @@ class OcrService {
     return {
       ready,
       path: python,
-      bundled: !isFallback,
+      bundled: true,
     };
   }
 
@@ -786,6 +790,9 @@ class OcrService {
     }
 
     const runtime = this.runtimeStatus();
+    if (!runtime.ready || !runtime.path) {
+      return { ok: false, error: 'RUNTIME_MISSING' };
+    }
     const python = runtime.path;
     const startedAt = Date.now();
     this.loadError = null;

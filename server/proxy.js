@@ -190,6 +190,7 @@ import { subtitleService } from './subtitle_service.js';
 import { translateService } from './translate_service.js';
 import { ttsService } from './tts_service.js';
 import { ocrService } from './ocr_service.js';
+import { scene3dService } from './scene3d_service.js';
 import { sessionService } from './session_service.js';
 
 // 本进程是否成功抢到端口、从而成为受管服务的管理方。
@@ -296,6 +297,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // 3D 场景构建服务 API（Qwen3.5-4B-3D-Coder · 官方 llama.cpp · 开窗加载/关窗卸载）
+  if (req.url.startsWith('/api/scene3d/')) {
+    scene3dService.handleApi(req, res);
+    return;
+  }
+
   // 本地媒体资源存储 API（上传、按哈希寻址获取、持久化图片库）
   if (req.url.startsWith('/api/media/')) {
     mediaService.handleApi(req, res);
@@ -360,6 +367,8 @@ server.on('listening', () => {
   ttsService.init();
   // 视觉文档识别服务初始化（按需加载）
   ocrService.init();
+  // 3D 场景构建服务初始化（开窗加载 / 关窗卸载，不在启动时拉起模型）
+  scene3dService.init();
 
   // Automatically exit if parent process (e.g. SimpleUI app) terminates
   if (process.ppid && process.ppid > 1) {
@@ -475,6 +484,14 @@ function cleanupAndExit(code = 0) {
       // ignore
     }
   }
+  // 3D 场景构建服务（开窗懒加载，退出时一并终止）
+  if (scene3dService) {
+    try {
+      scene3dService.shutdownSync();
+    } catch (e) {
+      // ignore
+    }
+  }
   process.exit(code);
 }
 
@@ -528,6 +545,13 @@ process.on('exit', () => {
   if (ocrService) {
     try {
       ocrService.shutdownForce();
+    } catch (e) {
+      // ignore
+    }
+  }
+  if (scene3dService) {
+    try {
+      scene3dService.shutdownForce();
     } catch (e) {
       // ignore
     }

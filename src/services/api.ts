@@ -1,4 +1,4 @@
-import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, SubtitleServiceStatus, SubtitleDownloadState, TtsServiceStatus, TtsServiceConfig, TtsDownloadState, OcrServiceStatus, OcrDownloadState, OcrConfig, OcrRecognizeResult, TranslateServiceStatus, TranslateServiceConfigPatch } from '../types/chat';
+import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, SubtitleServiceStatus, SubtitleDownloadState, TtsServiceStatus, TtsServiceConfig, TtsDownloadState, OcrServiceStatus, OcrDownloadState, OcrConfig, OcrRecognizeResult, Scene3dServiceStatus, Scene3dDownloadState, TranslateServiceStatus, TranslateServiceConfigPatch } from '../types/chat';
 import { estimateHistoryTokens, setTokenCalibration, CalibrationProvider } from '../utils/token';
 
 /** 服务端 usage 的实际形状（TTF 会给出 cached / reasoning 明细） */
@@ -1393,6 +1393,96 @@ export class OcrServiceAPI {
       console.error('OcrService recognize failed:', e);
       return { ok: false, error: e?.message || 'REQUEST_FAILED' };
     }
+  }
+}
+
+/**
+ * 3D 场景构建服务 API（Qwen3.5-4B-3D-Coder · GGUF Q4_K_M · 独立 llama.cpp b12040 运行时）。
+ *
+ * 生命周期与 TTS/OCR 一致：3D 独立窗口打开时 ensure（后台拉起）、关闭时 release；
+ * 服务管理面板负责展示模型完备状态、双源下载进度与启停。
+ */
+export class Scene3dServiceAPI {
+  static async getStatus(): Promise<Scene3dServiceStatus | null> {
+    try {
+      const res = await fetch('/api/scene3d/status', { cache: 'no-store' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('Scene3dService getStatus failed:', e);
+    }
+    return null;
+  }
+
+  /** 打开 3D 窗口时调用：模型不全则后台补下载，进程不在则后台拉起，立即返回当前状态 */
+  static async ensure(): Promise<Scene3dServiceStatus | null> {
+    try {
+      const res = await fetch('/api/scene3d/ensure', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('Scene3dService ensure failed:', e);
+    }
+    return null;
+  }
+
+  /** 关闭 3D 窗口时调用：终止进程、卸载模型 */
+  static async release(): Promise<{ ok: boolean; status?: string }> {
+    try {
+      const res = await fetch('/api/scene3d/release', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('Scene3dService release failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async start(): Promise<{ ok: boolean; error?: string; status?: string }> {
+    try {
+      const res = await fetch('/api/scene3d/start', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('Scene3dService start failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async stop(): Promise<{ ok: boolean; status?: string }> {
+    try {
+      const res = await fetch('/api/scene3d/stop', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('Scene3dService stop failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async startDownload(): Promise<{ ok: boolean; downloadState?: Scene3dDownloadState }> {
+    try {
+      const res = await fetch('/api/scene3d/download', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('Scene3dService startDownload failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async cancelDownload(): Promise<{ ok: boolean; downloadState?: Scene3dDownloadState }> {
+    try {
+      const res = await fetch('/api/scene3d/download/cancel', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('Scene3dService cancelDownload failed:', e);
+    }
+    return { ok: false };
+  }
+
+  static async openModelsDir(): Promise<{ ok: boolean; path?: string }> {
+    try {
+      const res = await fetch('/api/scene3d/open-dir', { method: 'POST' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('Scene3dService openModelsDir failed:', e);
+    }
+    return { ok: false };
   }
 }
 

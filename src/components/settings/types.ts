@@ -5,14 +5,15 @@ export type SettingsTabId =
   | 'general'
   | 'chat-models'
   | 'storage'
-  // Service settings (7 items in exact order)
+  // Service settings (8 items in exact order)
   | 'svc-model'
   | 'svc-kb'
   | 'svc-asr'
   | 'svc-tts'
   | 'svc-subtitles'
   | 'svc-translate'
-  | 'svc-ocr';
+  | 'svc-ocr'
+  | 'svc-scene3d';
 
 export interface SettingsTabItem {
   id: SettingsTabId;

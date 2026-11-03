@@ -361,10 +361,18 @@ class TtfService {
    * Maple 的运行时与权重目录是**固定**的（App 托管），与语音输入 / 语音合成 / 实时字幕 /
    * 快速翻译 / 视觉识别五个服务保持同一套约定：用户只需要「安装/下载/启停」，
    * 不提供路径选择。配置里即使残留旧的 mapleModelDir/mapleRuntimeDir 也不采信。
+   *
+   * 运行时随包优先（打包态 Resources/server/maple-mlx，开发态 bin/maple_runtime，
+   * 由 scripts/build_maple_runtime.sh 构建并带 .ready 标记）；两者都不存在时
+   * 才回落用户目录的 venv（旧装配 / 未构建随包运行时的开发机）。
    */
   mapleDirs() {
+    const bundled = [
+      path.resolve(__dirname, 'maple-mlx'),
+      path.resolve(__dirname, '..', 'bin', 'maple_runtime'),
+    ].find((p) => fs.existsSync(path.join(p, 'bin', 'python')));
     return {
-      runtimeDir: DEFAULT_MAPLE_RUNTIME_DIR,
+      runtimeDir: bundled || DEFAULT_MAPLE_RUNTIME_DIR,
       modelDir: DEFAULT_MAPLE_MODEL_DIR,
     };
   }

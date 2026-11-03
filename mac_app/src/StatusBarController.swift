@@ -30,6 +30,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
     private var subtitlesStatusItem: NSMenuItem!
     private var translateStatusItem: NSMenuItem!
     private var ocrStatusItem: NSMenuItem!
+    private var scene3dStatusItem: NSMenuItem!
     private var subtitleMenuItem: NSMenuItem!
     private var translatorMenuItem: NSMenuItem!
     private var pollTimer: Timer?
@@ -92,6 +93,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
     private var lblSubtitlesSvc: String { zh ? "实时字幕" : "Live Subtitles" }
     private var lblTranslateSvc: String { zh ? "快速翻译" : "Quick Translate" }
     private var lblOcr: String { zh ? "视觉图文识别" : "Visual OCR" }
+    private var lblScene3d: String { zh ? "3D 场景构建" : "3D Scene Builder" }
     private var lblReady: String { zh ? "就绪" : "Ready" }
     private var lblOffline: String { zh ? "离线" : "Offline" }
     private var lblStarting: String { zh ? "启动中" : "Starting" }
@@ -120,6 +122,9 @@ class StatusBarController: NSObject, NSMenuDelegate {
     }
     private var tipOcr: String {
         zh ? "按需加载：截图识别时启动，闲置超时自动卸载" : "On demand: starts on capture, unloads after idle timeout"
+    }
+    private var tipScene3d: String {
+        zh ? "按需加载：打开 3D 建模窗口时启动，关窗即卸载" : "On demand: starts when the 3D window opens, unloads on close"
     }
     private var tipTranslator: String { zh ? "唤起或隐藏快捷翻译面板 (⌃Space)" : "Toggle quick translation overlay (⌃Space)" }
     private var tipSubtitles: String { zh ? "开启或关闭实时双语字幕悬浮窗" : "Toggle live bilingual subtitle overlay" }
@@ -178,7 +183,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
         kbStatusItem.toolTip = tipKB
         menu.addItem(kbStatusItem)
 
-        // 以下五项是纯按需服务（没有常驻开关）：只显示状态，不可点击。
+        // 以下六项是纯按需服务（没有常驻开关）：只显示状态，不可点击。
         // 顺序与服务管理面板的卡片顺序一致；autoenablesItems 已关，isEnabled = false 即可稳定置灰。
         asrStatusItem = passiveStatusItem(toolTip: tipAsr)
         menu.addItem(asrStatusItem)
@@ -194,6 +199,9 @@ class StatusBarController: NSObject, NSMenuDelegate {
 
         ocrStatusItem = passiveStatusItem(toolTip: tipOcr)
         menu.addItem(ocrStatusItem)
+
+        scene3dStatusItem = passiveStatusItem(toolTip: tipScene3d)
+        menu.addItem(scene3dStatusItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -262,6 +270,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
             self.subtitlesStatusItem?.toolTip = self.tipSubtitlesSvc
             self.translateStatusItem?.toolTip = self.tipTranslateSvc
             self.ocrStatusItem?.toolTip = self.tipOcr
+            self.scene3dStatusItem?.toolTip = self.tipScene3d
             self.openMainItem?.title = self.lblOpenMain
             self.openSpotlightItem?.title = "\(self.lblOpenSpotlight)  (⌥Space)"
             self.translatorMenuItem?.title = "\(self.lblTranslator)  (⌃Space)"
@@ -652,6 +661,18 @@ class StatusBarController: NSObject, NSMenuDelegate {
             )
             let port = self.portValue(json, "port").map { String($0) }
             self.ocrStatusItem.attributedTitle = self.statusLine(label: self.lblOcr, view: self.view(for: state, port: port))
+        }
+
+        // 3D 场景构建（与 tts / ocr 同构：status + running + model.ready）
+        fetchJSON("/api/scene3d/status") { [weak self] json in
+            guard let self = self else { return }
+            let state = self.state(
+                forStatus: json?["status"] as? String,
+                running: json?["running"] as? Bool ?? false,
+                loaded: (json?["model"] as? [String: Any])?["ready"] as? Bool ?? false
+            )
+            let port = self.portValue(json, "port").map { String($0) }
+            self.scene3dStatusItem.attributedTitle = self.statusLine(label: self.lblScene3d, view: self.view(for: state, port: port))
         }
     }
 

@@ -64,7 +64,11 @@ export interface ChatMessage {
   timestamp: number;
   error?: string;
   citations?: WikiCitation[];   // Offline Wiki citations
+  /** 3D 场景构建（scene3d 会话）：助手完整回复渲染出的自包含 Three.js HTML */
+  scene?: { html: string };
 }
+
+export type SessionKind = 'chat' | 'scene3d';
 
 export interface ChatSession {
   id: string;
@@ -73,6 +77,8 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   contextUsed: number;
+  /** 会话种类：chat = 主对话；scene3d = 3D 场景构建（默认 chat，兼容旧数据） */
+  kind?: SessionKind;
   enableThinking?: boolean;   // Conversation-level independent thinking toggle (default false)
   enableWikiSearch?: boolean; // Conversation-level independent offline wiki toggle (default false)
 }
@@ -627,4 +633,58 @@ export interface OcrRecognizeResult {
   durationMs?: number;
   task?: string;
   error?: string;
+}
+
+/** 3D 场景构建服务：模型目录整体状态 */
+export interface Scene3dModelStatus {
+  key: 'scene3d';
+  name: string;
+  shortName: string;
+  dir: string;
+  ready: boolean;
+  missing: string[];
+  bytes: number;
+  expectedBytes: number;
+  sizeDesc: string;
+  path: string;
+}
+
+/** 3D 场景构建服务：自动双源测速与下载进度状态（与字幕/TTS/OCR 同一套结构） */
+export interface Scene3dDownloadState {
+  active: boolean;
+  phase: 'idle' | 'probing' | 'downloading' | 'cleaning' | 'completed' | 'error' | 'cancelled';
+  targetModel: string | null;
+  currentModelKey: 'scene3d' | null;
+  currentModelName: string;
+  currentFile: string;
+  selectedSource: {
+    id: string;
+    name: string;
+    baseUrl: string;
+    latencyMs: number;
+    speedKbps: number;
+  } | null;
+  downloadedBytes: number;
+  totalBytes: number;
+  progressPercent: number;
+  speedBps: number;
+  etaSeconds: number | null;
+  error: string | null;
+  errorCode?: string | null;
+  updatedAt: number;
+}
+
+/** 3D 场景构建服务整体聚合状态（与 server/scene3d_service.js getStatus 对应） */
+export interface Scene3dServiceStatus {
+  status: 'incomplete' | 'standby' | 'loading' | 'ready';
+  running: boolean;
+  ready: boolean;
+  modelsReady: boolean;
+  runtimeReady: boolean;
+  model: Scene3dModelStatus;
+  runtime: { ready: boolean; path: string; bundled: boolean };
+  params: { temperature: number; top_p: number; top_k: number; repetition_penalty: number };
+  port: number;
+  logFile?: string;
+  download: Scene3dDownloadState;
 }

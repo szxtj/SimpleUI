@@ -91,6 +91,12 @@ html.dark {
   50% { transform: scale(1.035); }
 }
 
+/* 3D 场景构建：分钟级生成期间的流光进度条（配合 Tailwind animate-[scene3dSlide_...]） */
+@keyframes scene3dSlide {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(420%); }
+}
+
 *, ::before, ::after {
   -webkit-tap-highlight-color: transparent;
 }

@@ -118,6 +118,61 @@ export function generateSessionTitle(text, hasImages = false, fallbackTitle = '�
   return fallbackTitle;
 }
 
+// ============================================================================
+// 3D 场景构建（kind=scene3d）会话支持
+// ============================================================================
+
+/** 3D 会话的 kind 归一化：历史数据（无 kind 字段）一律视为普通对话 */
+export function sessionKind(s) {
+  return s?.kind === 'scene3d' ? 'scene3d' : 'chat';
+}
+
+// 模型被系统提示词钉死只引用 cdnjs 的这一个 Three.js URL（训练分布即如此），
+// 因此离线化是**常量字符串替换**，不是正则抽取：URL 对不上就原样保留。
+const SCENE3D_CDN_URL = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.min.js';
+const SCENE3D_LOCAL_URL = '/api/scene3d/vendor/three.module.min.js';
+
+/**
+ * 从模型回复中提取场景 HTML 文档（结构级提取，非语义抽取）。
+ *
+ * 模型的回复通常是「解释散文 + ```html 围栏代码」或「直接以 <!DOCTYPE html> 开头」，
+ * 偶尔散文在前 —— 散文混进 iframe 会渲染成场景上方的杂质文字。提取优先级：
+ *   1. 成对的 ```html 围栏块（任意位置，取最后一个完整围栏 —— 散文可能引用反引号）
+ *   2. 无围栏时，取 <!DOCTYPE html / <html 起、</html> 止的文档范围
+ *   3. 都没有 → 原样返回（纯 HTML 片段的场景）
+ */
+function stripHtmlFence(raw) {
+  if (!raw) return '';
+  const text = String(raw).trim();
+
+  const fenceRe = /```(?:html)?\s*\n([\s\S]*?)\n?```/g;
+  let lastFence = null;
+  let m;
+  while ((m = fenceRe.exec(text)) !== null) {
+    if (m[1] && m[1].trim()) lastFence = m[1].trim();
+  }
+  if (lastFence) return lastFence;
+
+  const docStart = text.search(/<!DOCTYPE html|<html[\s>]/i);
+  if (docStart >= 0) {
+    const docEnd = text.toLowerCase().lastIndexOf('</html>');
+    if (docEnd > docStart) return text.slice(docStart, docEnd + '</html>'.length).trim();
+    return text.slice(docStart).trim();
+  }
+
+  return text;
+}
+
+/**
+ * turn 结束时把模型的文本产物转成可直接放进沙箱 iframe 的场景 HTML：
+ * 剥围栏 + cdnjs→本地常量重写。内容为空返回 null（纯思考无代码的场景）。
+ */
+export function buildSceneHtml(rawContent) {
+  const html = stripHtmlFence(rawContent);
+  if (!html) return null;
+  return html.split(SCENE3D_CDN_URL).join(SCENE3D_LOCAL_URL);
+}
+
 export function deriveSessionTitleFromMessages(messages, fallbackTitle = '新对话') {
   if (!Array.isArray(messages)) return fallbackTitle;
   const firstUser = messages.find((m) => m && m.role === 'user');
@@ -220,11 +275,12 @@ class SessionService {
     return fullCandidate;
   }
 
-  createNewSessionObject(title = '新对话') {
+  createNewSessionObject(title = '新对话', kind = 'chat') {
     const now = Date.now();
     return {
       id: 'session-' + now + '-' + Math.random().toString(36).substring(2, 7),
       title: title || '新对话',
+      kind: sessionKind({ kind }),
       messages: [],
       createdAt: now,
       updatedAt: now,
@@ -541,9 +597,12 @@ class SessionService {
   // Session CRUD & Window Focus Operations
   // ==========================================================================
 
-  getOrCreateEmptySession(title = '新对话', origin = 'MAIN') {
+  getOrCreateEmptySession(title = '新对话', origin = 'MAIN', kind = 'chat') {
+    const normKind = sessionKind({ kind });
+    // 空会话复用必须**同 kind**：普通对话的空会话绝不能被 3D 窗口拿去用（反之亦然），
+    // 否则第一句 3D 提问会发进主窗口的历史列表里。
     const existingEmpty = this.sessions.find(
-      (s) => (!s.messages || s.messages.length === 0) && !this.activeTurns.has(s.id)
+      (s) => (!s.messages || s.messages.length === 0) && sessionKind(s) === normKind && !this.activeTurns.has(s.id)
     );
     if (existingEmpty) {
       if (origin === 'MAIN') {
@@ -554,7 +613,7 @@ class SessionService {
       return { session: existingEmpty, isNew: false };
     }
 
-    const newSession = this.createNewSessionObject(title);
+    const newSession = this.createNewSessionObject(title, normKind);
     this.sessions.unshift(newSession);
     if (origin === 'MAIN' || !this.mainSessionId) {
       this.mainSessionId = newSession.id;
@@ -589,7 +648,7 @@ class SessionService {
     return updated;
   }
 
-  deleteSession(sessionId, defaultTitle = '新对话') {
+  deleteSession(sessionId, defaultTitle = '新对话', kind = 'chat') {
     if (this.activeTurns.has(sessionId)) {
       this.abortTurn(sessionId);
     }
@@ -608,11 +667,17 @@ class SessionService {
 
     this.sessions = this.sessions.filter((s) => s.id !== sessionId);
     if (this.sessions.length === 0) {
-      const fresh = this.createNewSessionObject(defaultTitle);
+      // 补位空会话必须继承被删会话的 kind：3D 窗口删掉最后一个会话后，
+      // 列表里要出现的是 scene3d 空会话，而不是混进一个普通对话。
+      const kindSource = target?.kind === 'scene3d' ? 'scene3d' : kind;
+      const fresh = this.createNewSessionObject(defaultTitle, kindSource);
       this.sessions = [fresh];
       this.mainSessionId = fresh.id;
     } else if (this.mainSessionId === sessionId) {
-      this.mainSessionId = this.sessions[0].id;
+      // 主窗口指针回退必须优先落在普通对话上，绝不能因为列表第一个是 3D 会话
+      // 就把主窗口带到 scene3d 会话里。
+      const chatFallback = this.sessions.find((s) => sessionKind(s) === 'chat');
+      this.mainSessionId = (chatFallback || this.sessions[0]).id;
     }
 
     this.flushSync();
@@ -780,10 +845,13 @@ class SessionService {
     }
 
     const isDeepSeek = settings.apiProvider === 'deepseek';
-    const sessionEnableThinking = targetSession.enableThinking ?? settings.enableThinking ?? false;
-    const sessionEnableWiki = isDeepSeek ? false : (targetSession.enableWikiSearch ?? settings.enableWikiSearch ?? false);
+    // 3D 场景会话：思考恒开（模型按 thinking 轨迹训练）、知识库永不介入
+    const isScene3d = sessionKind(targetSession) === 'scene3d';
+    const sessionEnableThinking = isScene3d ? true : (targetSession.enableThinking ?? settings.enableThinking ?? false);
+    const sessionEnableWiki = isDeepSeek || isScene3d ? false : (targetSession.enableWikiSearch ?? settings.enableWikiSearch ?? false);
     const shouldRunWiki =
       !isDeepSeek &&
+      !isScene3d &&
       wikiService.enabled &&
       sessionEnableWiki &&
       wikiService.isOnline &&
@@ -1601,6 +1669,14 @@ class SessionService {
         : st
     );
 
+    // 3D 场景会话：把文本产物固化为可渲染的场景 HTML（剥围栏 + cdnjs→本地常量重写）。
+    // content 本身保持原样入库（多轮编辑时模型需要看到与训练分布一致的原始 HTML）。
+    const turnSession = this.sessions.find((s) => s.id === sessionId);
+    const sceneHtml =
+      turnSession && sessionKind(turnSession) === 'scene3d'
+        ? buildSceneHtml(accumulatedContent)
+        : null;
+
     let finalMessage = null;
     this.updateMessageInSession(sessionId, assistantMessageId, (m) => {
       finalMessage = {
@@ -1613,6 +1689,7 @@ class SessionService {
         stages: closedStages,
         citations: foundCitations.length > 0 ? foundCitations : m.citations,
         metrics,
+        ...(sceneHtml ? { scene: { html: sceneHtml } } : {}),
       };
       delete finalMessage.stage;
       return finalMessage;
@@ -1708,7 +1785,7 @@ class SessionService {
 
         // 3. Get or Create Empty Session: POST /api/sessions/empty
         if (pathname === '/api/sessions/empty' && req.method === 'POST') {
-          const result = this.getOrCreateEmptySession(body.title || '新对话', body.origin || 'MAIN');
+          const result = this.getOrCreateEmptySession(body.title || '新对话', body.origin || 'MAIN', body.kind || 'chat');
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: true, ...result, mainSessionId: this.mainSessionId }));
           return;
@@ -1809,7 +1886,7 @@ class SessionService {
             return;
           }
           if (req.method === 'DELETE') {
-            const snap = this.deleteSession(sid, body.defaultTitle || '新对话');
+            const snap = this.deleteSession(sid, body.defaultTitle || '新对话', body.kind || 'chat');
             res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ ok: true, ...snap }));
             return;

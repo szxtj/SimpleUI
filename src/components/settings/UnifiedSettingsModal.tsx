@@ -15,6 +15,7 @@ import {
   SubtitleServiceAPI,
   TranslateServiceAPI,
   OcrServiceAPI,
+  Scene3dServiceAPI,
 } from '../../services/api';
 import { AppSettingsPanel } from './AppSettingsPanel';
 import { ServicesPanel } from './ServicesPanel';
@@ -79,10 +80,11 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
   const [subtitlesDot, setSubtitlesDot] = useState<'online' | 'offline' | 'starting' | 'standby'>('offline');
   const [translateDot, setTranslateDot] = useState<'online' | 'offline' | 'starting' | 'standby'>('offline');
   const [ocrDot, setOcrDot] = useState<'online' | 'offline' | 'starting' | 'standby'>('offline');
+  const [scene3dDot, setScene3dDot] = useState<'online' | 'offline' | 'starting' | 'standby'>('offline');
 
   const pollServiceStatuses = useCallback(async () => {
     try {
-      const [kb, model, asr, tts, sub, trans, ocr] = await Promise.all([
+      const [kb, model, asr, tts, sub, trans, ocr, scene3d] = await Promise.all([
         WikiAPI.getStatus().catch(() => null),
         ModelServiceAPI.getStatus().catch(() => null),
         ASRServiceAPI.getStatus().catch(() => null),
@@ -90,6 +92,7 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
         SubtitleServiceAPI.getStatus().catch(() => null),
         TranslateServiceAPI.getStatus().catch(() => null),
         OcrServiceAPI.getStatus().catch(() => null),
+        Scene3dServiceAPI.getStatus().catch(() => null),
       ]);
 
       setKbDot(kb ? deriveServiceState({ status: kb.status }) : 'offline');
@@ -143,6 +146,15 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
               status: ocr.status,
               running: ocr.running,
               loaded: Boolean(ocr.model?.ready),
+            })
+          : 'offline'
+      );
+      setScene3dDot(
+        scene3d
+          ? deriveServiceState({
+              status: scene3d.status,
+              running: scene3d.running,
+              loaded: Boolean(scene3d.model?.ready),
             })
           : 'offline'
       );
@@ -362,6 +374,21 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
             >
               <span className="truncate mr-2">{t('ocrServiceTitle')}</span>
               <span className={`w-2 h-2 rounded-full flex-shrink-0 ${SERVICE_STATE_CARD_DOT_CLASS[ocrDot]}`} />
+            </button>
+
+            {/* 8. 3D 场景构建 */}
+            <button
+              type="button"
+              data-tab-id="svc-scene3d"
+              onClick={() => setActiveTab('svc-scene3d')}
+              className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs transition-colors cursor-pointer text-left ${
+                activeTab === 'svc-scene3d'
+                  ? 'bg-black/5 dark:bg-white/10 text-zinc-900 dark:text-white font-semibold'
+                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]'
+              }`}
+            >
+              <span className="truncate mr-2">{t('scene3dWindowTitle')}</span>
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${SERVICE_STATE_CARD_DOT_CLASS[scene3dDot]}`} />
             </button>
           </div>
         </div>

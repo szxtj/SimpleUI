@@ -30,6 +30,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var voiceOverlayController: VoiceOverlayPanelController!
     private var subtitleOverlayController: SubtitleOverlayPanelController!
     var translationPanelController: TranslationPanelController!
+    var scene3dPanelController: Scene3DPanelController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -44,6 +45,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         subtitleOverlayController = SubtitleOverlayPanelController()
         translationPanelController = TranslationPanelController()
         translationPanelController.preload()
+        scene3dPanelController = Scene3DPanelController()
 
         spotlightController.onOpenMainWindow = { [weak self] in
             // Focus and trigger in-memory session sync without reloading the whole web page
@@ -133,6 +135,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 若字幕窗口正开着，先停止内录并关闭窗口
         subtitleOverlayController?.hide()
+        scene3dPanelController?.hide()
 
         ProcessManager.shared.stopAllServices { [weak self] in
             self?.teardownUI()
@@ -159,6 +162,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         didTeardownUI = true
         translationPanelController?.hide()
         subtitleOverlayController?.hide()
+        scene3dPanelController?.hide()
         statusBarController?.teardown()
         HotKeyManager.shared.unregister()
         VoiceInputManager.shared.uninstall()

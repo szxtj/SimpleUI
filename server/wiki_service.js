@@ -1236,12 +1236,12 @@ class WikiService {
 
   // Find kiwix-serve executable
   findKiwixServeBin() {
+    // 只认确定性的一处：__dirname（server）的上一级。
+    //   打包态 = <App>/Contents/Resources → Resources/bin/kiwix ✓
+    //   开发态 = <project> → project/bin/kiwix ✓
+    // 不做硬编码安装路径与系统 PATH（homebrew /usr/local）兜底。
     const candidates = [
       path.resolve(__dirname, '../bin/kiwix/kiwix-serve'),
-      path.resolve(__dirname, '../../Resources/bin/kiwix/kiwix-serve'),
-      '/Applications/SimpleUI.app/Contents/Resources/bin/kiwix/kiwix-serve',
-      '/opt/homebrew/bin/kiwix-serve',
-      '/usr/local/bin/kiwix-serve',
     ];
     for (const p of candidates) {
       if (fs.existsSync(p)) {

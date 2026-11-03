@@ -785,30 +785,30 @@ class TtsService {
   // ----------------------------- 运行时探测 -----------------------------
 
   resolvePython() {
+    // 只用随包固化的运行时（build_mac_app.sh 打到 server/tts/python）与开发机内置
+    // bin/tts_runtime；绝不回退系统 PATH 的 python3 —— 缺运行时就让 runtimeReady=false
+    // 明确报缺，而不是拉起一个必然缺 mlx 依赖的系统解释器。
     const candidates = [
-      process.env.SIMPLEUI_TTS_PYTHON,
-      path.join(__dirname, 'tts', 'python', 'bin', 'python3'),
-      path.join(process.resourcesPath || '', 'tts', 'python', 'bin', 'python3'),
+      process.env.SIMPLEUI_TTS_PYTHON, // 显式钉死（调试用），优先于一切
+      path.join(__dirname, 'tts', 'python', 'bin', 'python3'), // 打包态：server 的上一级即 Resources
       // 开发态项目内置运行时（与 build_mac_app.sh 打包来源一致）
       path.resolve(__dirname, '..', 'bin', 'tts_runtime', 'python', 'bin', 'python3'),
-      path.join(HOME, '.workbuddy', 'binaries', 'python', 'envs', 'default', 'bin', 'python3'),
     ].filter(Boolean);
     for (const c of candidates) {
       try {
         if (fs.existsSync(c)) return c;
       } catch {}
     }
-    return 'python3';
+    return null;
   }
 
   /** 内置运行环境（可移植 Python + mlx-audio）是否就绪 */
   runtimeStatus() {
     const python = this.resolvePython();
-    const isFallback = python === 'python3';
     return {
-      ready: isFallback ? false : fs.existsSync(python),
+      ready: Boolean(python) && fs.existsSync(python),
       path: python,
-      bundled: !isFallback,
+      bundled: Boolean(python),
     };
   }
 
@@ -900,6 +900,9 @@ class TtsService {
     }
 
     const runtime = this.runtimeStatus();
+    if (!runtime.ready || !runtime.path) {
+      return { ok: false, error: 'RUNTIME_MISSING' };
+    }
     const python = runtime.path;
     const startedAt = Date.now();
     this.loadError = null;

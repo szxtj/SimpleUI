@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { AppSettings, WikiStatusInfo, AsrServiceStatus, AsrEngineId, VoicePermissionStatus, SubtitleServiceStatus, TtsServiceStatus, OcrServiceStatus, OcrConfig, TranslateServiceStatus } from '../../types/chat';
-import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ModelEngine, MapleAssets, ASRServiceAPI, SubtitleServiceAPI, TtsServiceAPI, OcrServiceAPI, TranslateServiceAPI } from '../../services/api';
+import { AppSettings, WikiStatusInfo, AsrServiceStatus, AsrEngineId, VoicePermissionStatus, SubtitleServiceStatus, TtsServiceStatus, OcrServiceStatus, OcrConfig, Scene3dServiceStatus, TranslateServiceStatus } from '../../types/chat';
+import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ModelEngine, MapleAssets, ASRServiceAPI, SubtitleServiceAPI, TtsServiceAPI, OcrServiceAPI, Scene3dServiceAPI, TranslateServiceAPI } from '../../services/api';
 import { resolveLanguage, formatArticleCount, translations, Language, TranslationKeys } from '../../i18n';
 import {
   SERVICE_STATE_CARD_DOT_CLASS,
@@ -9,7 +9,7 @@ import {
   formatServiceStateText,
   ServiceState,
 } from '../../utils/serviceState';
-import { RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen, FileText, Check, Loader2, Volume2, ScanText, Download, Languages, Cpu, Eye, EyeOff, KeyRound } from 'lucide-react';
+import { RotateCcw, BookOpen, Server, ChevronDown, Mic, ShieldCheck, ExternalLink, FolderOpen, FileText, Check, Loader2, Volume2, ScanText, Download, Languages, Cpu, Eye, EyeOff, KeyRound, Boxes } from 'lucide-react';
 
 import { SettingsTabId } from './types';
 // 知识库卡片默认值（默认指向标准内置文件夹 ~/Library/Application Support/SimpleUI/wiki）
@@ -728,6 +728,43 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
     await OcrServiceAPI.openModelsDir();
   };
 
+  // ---- 3D 场景构建服务（Qwen3.5-4B-3D-Coder · GGUF Q4_K_M · 独立 llama.cpp 运行时）----
+  const [scene3dStatus, setScene3dStatus] = useState<Scene3dServiceStatus | null>(null);
+  const [scene3dBusy, setScene3dBusy] = useState(false);
+
+  const refreshScene3dStatus = async () => {
+    const s = await Scene3dServiceAPI.getStatus();
+    if (s) setScene3dStatus(s);
+    return s;
+  };
+
+  // 注意：3D 服务不提供手动启停——生命周期完全由 3D 建模窗口的开关驱动
+  //（开窗 ensure / 关窗 release），卡片只保留下载与目录管理。
+
+  const handleScene3dDownload = async () => {
+    setScene3dBusy(true);
+    try {
+      await Scene3dServiceAPI.startDownload();
+      await refreshScene3dStatus();
+    } finally {
+      setScene3dBusy(false);
+    }
+  };
+
+  const handleScene3dCancelDownload = async () => {
+    setScene3dBusy(true);
+    try {
+      await Scene3dServiceAPI.cancelDownload();
+      await refreshScene3dStatus();
+    } finally {
+      setScene3dBusy(false);
+    }
+  };
+
+  const handleScene3dOpenDir = async () => {
+    await Scene3dServiceAPI.openModelsDir();
+  };
+
   const handleOcrApply = async () => {
     setIsApplyingOcr(true);
     setOcrMsg(null);
@@ -870,6 +907,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
           });
         }
       });
+      refreshScene3dStatus();
       try {
         subtitleEs = new EventSource('/api/subtitles/stream');
         subtitleEs.addEventListener('status', (e: MessageEvent) => {
@@ -890,6 +928,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
         refreshTranslateStatus();
         refreshTtsStatus();
         refreshOcrStatus();
+        refreshScene3dStatus();
         if (logsOpenRef.current) {
           ModelServiceAPI.getLogs(200, selectedEngineRef.current).then((d) => setLogLines(d?.lines ?? null));
         }
@@ -4204,6 +4243,257 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
             </div>
 
             {cardResetButton(handleOcrCardReset)}
+          </div>
+      )}
+      {activeTab === 'svc-scene3d' && (
+          <div className="p-5 rounded-2xl bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5 space-y-4 shadow-xs">
+            {/* 头部：标题 + 引擎徽标 + 运行状态指示 */}
+            <div className="flex items-start justify-between mb-2.5">
+              <div className="flex items-center gap-2 pt-0.5">
+                <Boxes className="w-4 h-4 text-cyan-600 dark:text-cyan-400 flex-shrink-0" />
+                <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
+                  {t('scene3dWindowTitle')}
+                </span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded-md font-mono bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 font-medium">
+                  llama.cpp · GGUF Q4_K_M
+                </span>
+              </div>
+              {(() => {
+                const cardState = scene3dStatus
+                  ? deriveServiceState({
+                      status: scene3dStatus.status,
+                      running: scene3dStatus.running,
+                      loaded: scene3dStatus.model?.ready,
+                    })
+                  : 'offline';
+                return (
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <span
+                        className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                          SERVICE_STATE_CARD_DOT_CLASS[cardState]
+                        }`}
+                      />
+                      <span className={SERVICE_STATE_CARD_TEXT_CLASS[cardState]}>
+                        {formatServiceStateText(cardState, t, scene3dStatus?.port)}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
+                      {scene3dStatus?.download?.active
+                        ? `${t('scene3dDownload')} (${scene3dStatus.download.progressPercent.toFixed(1)}%)`
+                        : scene3dStatus?.status === 'loading'
+                        ? t('statusStarting')
+                        : scene3dStatus?.running
+                        ? t('statusReady')
+                        : scene3dStatus?.model?.ready
+                        ? t('statusStandby')
+                        : t('statusOffline')}
+                    </span>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* 功能定位说明 */}
+            <div className="mb-3 px-2.5 py-2 rounded-lg bg-cyan-500/5 dark:bg-cyan-500/10 border border-cyan-500/20">
+              <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
+                {t('scene3dEmptyTitle')}
+              </div>
+              <div className="text-[10px] text-zinc-500 dark:text-zinc-400 leading-snug">
+                {t('scene3dCardDesc')}
+              </div>
+            </div>
+
+            {/* 内置运行环境与模型状态 */}
+            <div className="space-y-2 mb-3">
+              {/* 内置运行环境 */}
+              <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                      scene3dStatus?.runtimeReady !== false ? 'bg-emerald-500' : 'bg-red-500'
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">
+                      {t('runtimeLabel')}
+                    </div>
+                    <div className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate">
+                      {t('scene3dRuntimeDesc')}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {scene3dStatus?.runtimeReady !== false ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
+                      <Check className="w-3 h-3" />
+                      <span>{t('runtimeBundledReady')}</span>
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-red-500 font-medium">
+                      {t('runtimeMissing')}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* 模型状态 / 下载 */}
+              <div className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                      scene3dStatus?.model?.ready
+                        ? 'bg-emerald-500'
+                        : scene3dStatus?.download?.active
+                        ? 'bg-cyan-500 animate-pulse'
+                        : 'bg-red-500'
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium text-zinc-800 dark:text-zinc-200 truncate">
+                      {scene3dStatus?.model?.name ?? t('scene3dDownload')}
+                    </div>
+                    <div className="text-[10px] text-zinc-400 dark:text-zinc-500 font-mono">
+                      {scene3dStatus?.model?.sizeDesc ?? '—'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {scene3dStatus?.model?.ready ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-medium">
+                      <Check className="w-3 h-3" />
+                      <span>{t('statusReady')}</span>
+                    </span>
+                  ) : scene3dStatus?.download?.active ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 text-[10px] font-medium">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <span>{t('scene3dDownload')}</span>
+                    </span>
+                  ) : (
+                    <>
+                      <span className="text-[10px] text-red-500 font-medium">
+                        {t('statusOffline')}
+                      </span>
+                      {scene3dStatus && !scene3dStatus.download?.active && (
+                        <button
+                          type="button"
+                          disabled={scene3dBusy}
+                          onClick={handleScene3dDownload}
+                          className="px-2 py-0.5 rounded-md bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 text-white text-[10px] font-medium transition-colors cursor-pointer"
+                        >
+                          {t('scene3dDownload')}
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* 自动测速与实时下载进度面板 */}
+            {scene3dStatus?.download?.active && (
+              <div className="mt-3 p-2.5 rounded-lg bg-cyan-500/5 dark:bg-cyan-500/10 border border-cyan-500/20 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0 text-[11px] font-medium text-cyan-700 dark:text-cyan-300">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" />
+                    <span className="truncate">
+                      {scene3dStatus.download.phase === 'probing'
+                        ? t('ocrProbingSource')
+                        : scene3dStatus.download.phase === 'cleaning'
+                        ? t('ocrCleaningCache')
+                        : scene3dStatus.download.currentFile || t('scene3dDownload')}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={scene3dBusy}
+                    onClick={handleScene3dCancelDownload}
+                    className="px-2 py-0.5 rounded-md border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 text-[10px] font-medium transition-colors flex-shrink-0 cursor-pointer"
+                  >
+                    {t('scene3dCancelDownload')}
+                  </button>
+                </div>
+
+                {scene3dStatus.download.selectedSource && (
+                  <div className="text-[10px] text-zinc-500 dark:text-zinc-400 flex items-center justify-between">
+                    <span>
+                      {t('ocrSelectedSourceLabel')}:{' '}
+                      <strong className="font-medium text-zinc-700 dark:text-zinc-200">
+                        {formatSourceName(scene3dStatus.download.selectedSource, t)}
+                      </strong>{' '}
+                      ({scene3dStatus.download.selectedSource.latencyMs}ms)
+                    </span>
+                    <span className="font-mono text-cyan-600 dark:text-cyan-400 font-semibold">
+                      {scene3dStatus.download.progressPercent.toFixed(1)}%
+                    </span>
+                  </div>
+                )}
+
+                <div className="w-full h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-emerald-500 transition-all duration-200"
+                    style={{
+                      width: `${Math.max(
+                        3,
+                        Math.min(100, scene3dStatus.download.progressPercent || 0)
+                      )}%`,
+                    }}
+                  />
+                </div>
+
+                {scene3dStatus.download.phase === 'downloading' && (
+                  <div className="flex items-center justify-between text-[10px] font-mono text-zinc-500 dark:text-zinc-400">
+                    <span>
+                      {(scene3dStatus.download.downloadedBytes / (1024 * 1024)).toFixed(1)} MB /{' '}
+                      {(scene3dStatus.download.totalBytes / (1024 * 1024)).toFixed(1)} MB
+                    </span>
+                    <span>
+                      {(scene3dStatus.download.speedBps / (1024 * 1024)).toFixed(2)} MB/s
+                      {scene3dStatus.download.etaSeconds !== null &&
+                      scene3dStatus.download.etaSeconds > 0
+                        ? ` · ETA ${Math.floor(scene3dStatus.download.etaSeconds / 60)}m${String(
+                            scene3dStatus.download.etaSeconds % 60
+                          ).padStart(2, '0')}s`
+                        : ''}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 下载结果提示 */}
+            {!scene3dStatus?.download?.active &&
+              scene3dStatus?.download?.phase === 'completed' && (
+                <div className="mt-2.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                  {t('ocrDownloadCompleted')}
+                </div>
+              )}
+            {!scene3dStatus?.download?.active &&
+              scene3dStatus?.download?.phase === 'cancelled' && (
+                <div className="mt-2.5 text-[11px] text-amber-600 dark:text-amber-400">
+                  {t('ocrDownloadCancelled')}
+                </div>
+              )}
+            {!scene3dStatus?.download?.active &&
+              scene3dStatus?.download?.phase === 'error' &&
+              scene3dStatus?.download?.error && (
+                <div className="mt-2.5 text-[11px] text-red-500">
+                  {formatDownloadError(scene3dStatus.download.errorCode, scene3dStatus.download.error, t)}
+                </div>
+              )}
+
+            {/* 底部操作栏：只留打开模型目录（启停完全由 3D 建模窗口的开关驱动） */}
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleScene3dOpenDir}
+                className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-zinc-700 dark:text-zinc-200 border border-black/10 dark:border-white/10 text-xs font-medium transition-all active:scale-95 cursor-pointer"
+              >
+                <FolderOpen className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
+                <span>{t('scene3dOpenDir')}</span>
+              </button>
+            </div>
           </div>
       )}
     </div>

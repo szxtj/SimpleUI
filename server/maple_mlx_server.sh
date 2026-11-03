@@ -7,11 +7,12 @@
 #   start / stop / restart / status / logs / help
 #
 # 运行时与权重都由 SimpleUI 托管：
-#   运行时（Python venv，~311MB，按需下载）: $MAPLE_RUNTIME_DIR
-#   权重（2-bit MLX，5.31GB，按需下载）    : $MAPLE_MODEL_DIR
+#   运行时（随包内置，~363MB; Resources/server/maple-mlx）: $MAPLE_RUNTIME_DIR
+#   权重（2-bit MLX，5.31GB，按需下载）                    : $MAPLE_MODEL_DIR
 #
-# 注意：这里的 Python 不是系统 Python，是下载器建好的独立 venv；
-#       mlx-lm 与原生 Maple kernel 由 SimpleUI 内置的 wheel 安装。
+# 注意：这里的 Python 是随包固化的完整运行时（scripts/build_maple_runtime.sh 预构建），
+#       mlx-lm 与原生 Maple kernel 已内置 —— 首次使用无需 uv、无需联网。
+#       仅开发机未构建 bin/maple_runtime 时才回落到下载器现场装配的 venv。
 # ==============================================================================
 
 CONFIG_ENV_FILE="${MAPLE_CONFIG_FILE:-$HOME/Library/Application Support/SimpleUI/maple_mlx.env}"

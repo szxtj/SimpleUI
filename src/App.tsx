@@ -26,6 +26,7 @@ import { SpotlightView } from './components/SpotlightView';
 import { SelectionSpeak } from './components/SelectionSpeak';
 import { VoiceOverlay } from './components/VoiceOverlay';
 import { SubtitleOverlay } from './components/SubtitleOverlay';
+import { Scene3DWindow } from './components/scene3d/Scene3DWindow';
 import { SidePanel } from './components/SidePanel';
 import { StartupOverlay } from './components/StartupOverlay';
 import { I18nProvider, resolveLanguage } from './i18n';
@@ -168,6 +169,9 @@ export const App: React.FC = () => {
     window.location.hash === '#/subtitles' ||
     window.location.search.includes('mode=subtitles');
 
+  // 3D 场景构建独立窗口（原生 Scene3DPanelController 承载的独立窗口）
+  const isScene3dWindow = window.location.hash === '#/scene3d';
+
   useTheme(settings.theme, isSpotlight || isVoiceOverlay || isSubtitleOverlay);
 
   if (isSubtitleOverlay) {
@@ -182,6 +186,14 @@ export const App: React.FC = () => {
     return (
       <I18nProvider preference={settings.language}>
         <VoiceOverlay />
+      </I18nProvider>
+    );
+  }
+
+  if (isScene3dWindow) {
+    return (
+      <I18nProvider preference={settings.language}>
+        <Scene3DWindow />
       </I18nProvider>
     );
   }
@@ -333,6 +345,16 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     beginLayoutTransition('right');
     panel.toggleVisible();
   }, [beginLayoutTransition, panel]);
+
+  /** 打开 3D 场景构建独立窗口：原生桥优先（NSPanel），无桥环境（浏览器验证）回退同窗口 hash 跳转 */
+  const openScene3dWindow = useCallback(() => {
+    const bridge = (window as any).webkit?.messageHandlers?.openScene3D;
+    if (bridge) {
+      bridge.postMessage({});
+      return;
+    }
+    window.location.hash = '#/scene3d';
+  }, []);
 
   /**
    * 窗口几何的唯一出口：**任何**导致左/右栏宽度变化的路径（开合、关掉最后一个标签、
@@ -689,6 +711,7 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
             setSettingsTab('general');
             setIsSettingsOpen(true);
           }}
+          onOpenScene3d={openScene3dWindow}
           isOpen={isSidebarOpen}
           onToggleOpen={toggleLeftSidebar}
         />

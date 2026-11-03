@@ -203,9 +203,10 @@ function isPidAlive(pid) {
  *   3. 用户级标准内置目录: ~/Library/Application Support/SimpleUI/runtime/llama/{bin/llama-server, lib}
  */
 export function resolveLlamaRuntime() {
+  // 只认三处确定性位置：随包（__dirname 推导，任意安装路径都成立）、开发内置、
+  // 用户级标准目录；不做系统 PATH（homebrew /usr/local）与硬编码安装路径兜底。
   const roots = [
     path.resolve(__dirname, '../llama'),
-    '/Applications/SimpleUI.app/Contents/Resources/llama',
     path.resolve(__dirname, '../bin/llama'),
     path.join(userConfigDir, 'runtime', 'llama'),
   ];
@@ -223,22 +224,6 @@ export function resolveLlamaRuntime() {
     }
   }
 
-  const standaloneCandidates = [
-    '/Applications/SimpleUI.app/Contents/Resources/bin/llama-server',
-    '/opt/homebrew/bin/llama-server',
-    '/usr/local/bin/llama-server',
-  ];
-  for (const binPath of standaloneCandidates) {
-    if (fs.existsSync(binPath)) {
-      return {
-        ready: true,
-        binPath,
-        libDir: path.resolve(path.dirname(binPath), '../lib'),
-        bundled: binPath.startsWith('/Applications/SimpleUI.app'),
-      };
-    }
-  }
-
   return {
     ready: false,
     binPath: null,
@@ -248,10 +233,10 @@ export function resolveLlamaRuntime() {
 }
 
 function resolveAudiocppRuntime() {
+  // 同上：随包 / 开发内置 / 用户级目录，三处确定性位置。
   const roots = [
-    path.resolve(__dirname, '../bin/audiocpp'),
     path.resolve(__dirname, '../asr'),
-    '/Applications/SimpleUI.app/Contents/Resources/asr',
+    path.resolve(__dirname, '../bin/audiocpp'),
     path.join(userConfigDir, 'runtime', 'bin', 'audiocpp'),
   ];
   for (const root of roots) {

@@ -12,6 +12,13 @@ import { applyServerSettings, notifySettingsUpdate, syncSettingsFromServer } fro
 
 export type WindowRole = 'MAIN' | 'SPOTLIGHT';
 
+/**
+ * 主窗口 / Spotlight 浮窗只承载普通对话。3D 场景构建（kind === 'scene3d'）的会话
+ * 由 useScene3dStore 在独立窗口中独占消费，这里必须整体排除——否则 3D 会话会混进
+ * 主窗口的会话列表，`mainSessionId` 回退也可能落到 3D 会话上。
+ */
+const isChatSession = (s: ChatSession) => s?.kind !== 'scene3d';
+
 interface ServerSnapshot {
   sessions: ChatSession[];
   mainSessionId: string | null;
@@ -101,23 +108,24 @@ export function useSessionStore(
         applyServerSettings(snap.settings);
         notifySettingsUpdate();
       }
-      sessionsRef.current = snap.sessions;
-      setSessions(snap.sessions);
+      const visibleSessions = snap.sessions.filter(isChatSession);
+      sessionsRef.current = visibleSessions;
+      setSessions(visibleSessions);
       setGeneratingSessionIds(snap.generatingSessionIds || []);
       setLiveStreamingTokens(snap.liveStreamingTokens || {});
 
       if (role === 'MAIN') {
         const nextMainId =
-          snap.mainSessionId && snap.sessions.some((s) => s.id === snap.mainSessionId)
+          snap.mainSessionId && visibleSessions.some((s) => s.id === snap.mainSessionId)
             ? snap.mainSessionId
-            : snap.sessions[0]?.id || null;
+            : visibleSessions[0]?.id || null;
         currentSessionIdRef.current = nextMainId;
         setCurrentSessionId(nextMainId);
       } else {
         // SPOTLIGHT 仅在当前指向的会话不存在时回退到空会话，绝不被 mainSessionId 强行带跑
         const curId = currentSessionIdRef.current;
-        if (!curId || !snap.sessions.some((s) => s.id === curId)) {
-          const empty = snap.sessions.find((s) => !s.messages || s.messages.length === 0);
+        if (!curId || !visibleSessions.some((s) => s.id === curId)) {
+          const empty = visibleSessions.find((s) => !s.messages || s.messages.length === 0);
           const nextId = empty ? empty.id : null;
           currentSessionIdRef.current = nextId;
           setCurrentSessionId(nextId);
@@ -211,6 +219,8 @@ export function useSessionStore(
             moveToTop?: boolean;
           } = JSON.parse(e.data);
           if (!data?.session) return;
+          // 3D 会话由 useScene3dStore 独占消费，这里直接忽略
+          if (!isChatSession(data.session)) return;
 
           const prev = sessionsRef.current;
           const idx = prev.findIndex((s) => s.id === data.session.id);
@@ -240,21 +250,22 @@ export function useSessionStore(
           } = JSON.parse(e.data);
           if (!data || !Array.isArray(data.sessions)) return;
 
-          sessionsRef.current = data.sessions;
+          const visibleDeleted = data.sessions.filter(isChatSession);
+          sessionsRef.current = visibleDeleted;
           flushSessionsCommitNow();
           setGeneratingSessionIds((prev) => prev.filter((id) => id !== data.sessionId));
 
           if (role === 'MAIN') {
-            if (data.mainSessionId) {
+            if (data.mainSessionId && visibleDeleted.some((s) => s.id === data.mainSessionId)) {
               currentSessionIdRef.current = data.mainSessionId;
               setCurrentSessionId(data.mainSessionId);
             } else if (currentSessionIdRef.current === data.sessionId) {
-              const nextId = data.sessions[0]?.id || null;
+              const nextId = visibleDeleted[0]?.id || null;
               currentSessionIdRef.current = nextId;
               setCurrentSessionId(nextId);
             }
           } else if (currentSessionIdRef.current === data.sessionId) {
-            const empty = data.sessions.find((s) => !s.messages || s.messages.length === 0);
+            const empty = visibleDeleted.find((s) => !s.messages || s.messages.length === 0);
             const nextId = empty ? empty.id : null;
             currentSessionIdRef.current = nextId;
             setCurrentSessionId(nextId);

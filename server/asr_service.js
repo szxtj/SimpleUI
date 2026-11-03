@@ -179,7 +179,6 @@ function resolvePython() {
   const candidates = [
     process.env.SIMPLEUI_ASR_PYTHON,
     path.join(__dirname, 'tts', 'python', 'bin', 'python3'),
-    path.join(process.resourcesPath || '', 'tts', 'python', 'bin', 'python3'),
     path.resolve(__dirname, '..', 'bin', 'tts_runtime', 'python', 'bin', 'python3'),
   ];
   for (const p of candidates) {
@@ -307,8 +306,8 @@ class AsrService {
     const projectDir = resolveDir(this.config.projectDir, DEFAULT_ASR_CONFIG.projectDir);
     candidates.push(path.join(projectDir, 'build/bin', BINARY_BASENAME));
     candidates.push(path.join(projectDir, 'bin', BINARY_BASENAME));
-    candidates.push('/opt/homebrew/bin/' + BINARY_BASENAME);
-    candidates.push('/usr/local/bin/' + BINARY_BASENAME);
+    // 不做系统 PATH（/opt/homebrew、/usr/local）兜底：随包运行时缺失就明确报缺，
+    // 避免静默用到一个版本不匹配的系统 audiocpp_server。
     for (const p of candidates) {
       try {
         if (p && fs.existsSync(p) && fs.statSync(p).isFile()) return p;
