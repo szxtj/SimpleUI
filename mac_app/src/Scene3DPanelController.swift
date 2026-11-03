@@ -15,7 +15,63 @@ final class Scene3DWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
-final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate {
+/// 开放式顶栏的拖拽层：与主窗口同一套做法 —— 窗口内容伸到标题栏下方（`.fullSizeContentView`），
+/// 顶部 52pt 由本视图接管，可拖动整窗、双击切换标准尺寸。
+///
+/// `hitTest` 有两处必须穿透：
+///   1. 左侧 78pt —— 红绿黄三个按钮画在标题栏里，被遮住就点不到了；
+///   2. 全屏预览打开后最右侧那组工具按钮（重载/复制/关闭）—— 预览层贴着窗口顶边画，
+///      它的按钮就落在本视图里，不放行就是「点了没反应」。
+/// （WKWebView 会吞掉鼠标事件，光靠 `isMovableByWindowBackground` 拖不动窗口。）
+final class Scene3DTitleBarDragView: NSView {
+    private static let trafficLightZone: CGFloat = 78.0
+    /// 预览顶栏右侧工具组让出的宽度（三个 32pt 圆钮 + 间距 + 内边距，留足余量）
+    private static let previewToolbarZone: CGFloat = 200.0
+
+    /// 由页面通过 `scene3dChrome` 桥同步：全屏预览是否打开（页面切换时也会同步）
+    var previewOverlayActive = false
+
+    private var dragging = false
+    private var initialMouseLocation = NSPoint.zero
+    private var initialWindowOrigin = NSPoint.zero
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // point 是 superview 坐标系
+        guard frame.contains(point) else { return nil }
+        let localPoint = convert(point, from: superview)
+        if localPoint.x < Self.trafficLightZone { return nil }
+        if previewOverlayActive && localPoint.x >= bounds.width - Self.previewToolbarZone { return nil }
+        return self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let win = window else { return }
+        if event.clickCount >= 2 {
+            win.zoom(nil)
+            return
+        }
+        dragging = true
+        initialMouseLocation = NSEvent.mouseLocation
+        initialWindowOrigin = win.frame.origin
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard dragging, let win = window else { return }
+        let mouse = NSEvent.mouseLocation
+        win.setFrameOrigin(NSPoint(
+            x: initialWindowOrigin.x + (mouse.x - initialMouseLocation.x),
+            y: initialWindowOrigin.y + (mouse.y - initialMouseLocation.y)
+        ))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragging = false
+    }
+
+    override var mouseDownCanMoveWindow: Bool { true }
+}
+
+final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     private static let defaultWidth: CGFloat = 1180
     private static let defaultHeight: CGFloat = 760
     private static let minWidth: CGFloat = 860
@@ -23,6 +79,7 @@ final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDele
 
     private var panel: Scene3DWindow?
     private var webView: WKWebView?
+    private var dragView: Scene3DTitleBarDragView?
     private var webReady = false
     /// 关窗卸载的核对批次号：每次开/关窗自增，旧的核对链看到编号变了就自行放弃，
     /// 避免「关 → 立刻开」时上一次的补发 release 把刚拉起来的新进程杀掉。
@@ -62,11 +119,17 @@ final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDele
     private func makePanel() -> Scene3DWindow {
         let p = Scene3DWindow(
             contentRect: NSRect(x: 0, y: 0, width: Self.defaultWidth, height: Self.defaultHeight),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            // `.fullSizeContentView`：内容一直画到窗口顶边，标题栏透明 —— 与主窗口同一套「开放式」外观
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         p.title = AppLocale.isZh ? "3D 场景构建" : "3D Scene Builder"
+        p.titleVisibility = .hidden
+        p.titlebarAppearsTransparent = true
+        p.isMovableByWindowBackground = true
+        // 底色与页面根节点一致（#131417 / #fafafa），避免首帧/露边时闪白
+        p.backgroundColor = Self.windowBackgroundColor()
         p.minSize = NSSize(width: Self.minWidth, height: Self.minHeight)
         p.isReleasedWhenClosed = false
         p.isRestorable = false
@@ -76,10 +139,46 @@ final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDele
 
         let config = WKWebViewConfiguration()
         _ = makeWebView(in: p, config: config)
+        installDragArea(in: p)
         return p
     }
 
+    private static func windowBackgroundColor() -> NSColor {
+        let isDark: Bool = {
+            if let stored = UserDefaults.standard.object(forKey: "simpleui_is_dark") as? Bool {
+                return stored
+            }
+            if let match = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) {
+                return match == .darkAqua
+            }
+            return false
+        }()
+        return isDark
+            ? NSColor(red: 19/255.0, green: 20/255.0, blue: 23/255.0, alpha: 1.0)
+            : NSColor(red: 250/255.0, green: 250/255.0, blue: 250/255.0, alpha: 1.0)
+    }
+
+    /// 顶部 52pt 拖拽带（与前端两个列头的 52px 等高，保证盖住的都是非交互区域）
+    private func installDragArea(in panel: Scene3DWindow) {
+        guard let contentView = panel.contentView else { return }
+        let drag = Scene3DTitleBarDragView()
+        drag.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(drag, positioned: .above, relativeTo: webView)
+        NSLayoutConstraint.activate([
+            drag.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            drag.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            drag.topAnchor.constraint(equalTo: contentView.topAnchor),
+            drag.heightAnchor.constraint(equalToConstant: 52.0)
+        ])
+        dragView = drag
+    }
+
     private func makeWebView(in panel: Scene3DWindow, config: WKWebViewConfiguration) -> WKWebView {
+        // 页面把「全屏预览是否打开」告诉原生：预览层贴顶画，拖拽层要给它右侧的按钮放行
+        let userContent = WKUserContentController()
+        userContent.add(self, name: "scene3dChrome")
+        config.userContentController = userContent
+
         let wv = WKWebView(frame: panel.contentView?.bounds ?? .zero, configuration: config)
         wv.autoresizingMask = [.width, .height]
         wv.navigationDelegate = self
@@ -218,6 +317,25 @@ final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDele
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             self?.loadContent()
+        }
+    }
+
+    // MARK: - WKScriptMessageHandler
+
+    /// `{ preview: Bool }`：全屏预览开着时，窗口顶部 52pt 已被预览顶栏占满，
+    /// 拖拽层必须把最右侧那组工具按钮让出来，否则按钮全被拖拽层吃掉（点了没反应）。
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "scene3dChrome",
+              let dict = message.body as? [String: Any],
+              let preview = dict["preview"] as? Bool else { return }
+        let apply: () -> Void = { [weak self] in
+            guard let self = self else { return }
+            self.dragView?.previewOverlayActive = preview
+        }
+        if Thread.isMainThread {
+            apply()
+        } else {
+            DispatchQueue.main.async(execute: apply)
         }
     }
 

@@ -42,11 +42,14 @@ const SceneSessionList: React.FC<{
   const { t } = useI18n();
   return (
     <div className="w-[240px] flex-shrink-0 h-full flex flex-col border-r border-black/5 dark:border-white/5 bg-[#f1f3f6] dark:bg-[#1a1b1f] select-none">
-      <div className="h-[52px] flex items-center px-4 flex-shrink-0">
-        <div className="flex items-center gap-2 text-[#1f2328] dark:text-[#f1f3f7]">
-          <Boxes className="w-4 h-4 text-zinc-500 dark:text-zinc-400" />
-          <span className="text-sm font-semibold">{t('scene3dWindowTitle')}</span>
-        </div>
+      {/* 开放式窗口（原生 titlebar 隐藏、内容伸到窗口顶边）：顶部 52px 是与原生拖拽带等高的
+          留白带，左侧 78px 让给原生红绿黄三个按钮；品牌行落在红绿灯下方，
+          与主界面 Sidebar 的品牌标题同一套排布。 */}
+      <div className="h-[52px] flex-shrink-0" aria-hidden="true" />
+
+      <div className="px-4 pt-1 pb-3 flex items-center gap-2 text-[#1f2328] dark:text-[#f1f3f7]">
+        <Boxes className="w-4 h-4 text-zinc-500 dark:text-zinc-400" />
+        <span className="text-sm font-semibold truncate">{t('scene3dWindowTitle')}</span>
       </div>
 
       <div className="px-3 pb-2">
@@ -107,6 +110,20 @@ const SceneCard: React.FC<{
   const [copied, setCopied] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
 
+  // 全屏预览盖住整个窗口（含原生拖拽带）：把状态告诉原生，
+  // 让拖拽层把顶栏右侧那组工具按钮放行，否则按钮全被吃掉、点了没反应。
+  useEffect(() => {
+    const post = (preview: boolean) => {
+      try {
+        (window as any).webkit?.messageHandlers?.scene3dChrome?.postMessage({ preview });
+      } catch {
+        /* 浏览器里没有原生桥，忽略 */
+      }
+    };
+    post(fullscreen);
+    return () => post(false);
+  }, [fullscreen]);
+
   const copyCode = async () => {
     try {
       await navigator.clipboard.writeText(html);
@@ -129,31 +146,37 @@ const SceneCard: React.FC<{
 
   if (fullscreen) {
     return (
-      <div className="fixed inset-0 z-50 bg-black">
-        {iframe}
-        <div className="absolute top-3 right-3 flex items-center gap-2">
-          <button
-            onClick={() => setReloadKey((k) => k + 1)}
-            className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white backdrop-blur transition-colors"
-            title={t('scene3dReloadScene')}
-          >
-            <RotateCw className="w-4 h-4" />
-          </button>
-          <button
-            onClick={copyCode}
-            className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white backdrop-blur transition-colors"
-            title={t('scene3dCopyHtml')}
-          >
-            {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-          </button>
-          <button
-            onClick={() => setFullscreen(false)}
-            className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white backdrop-blur transition-colors"
-            title={t('scene3dClosePreview')}
-          >
-            <X className="w-4 h-4" />
-          </button>
+      <div className="fixed inset-0 z-50 bg-black flex flex-col">
+        {/* 顶部 52px 预留条：与窗口开放式顶栏等高。
+            左 78px 让给原生红绿灯，右侧是本覆盖层的工具按钮，中间留空可拖动窗口；
+            场景 HTML 从这条带**下方**开始渲染 —— 它自带的标题/控件不会再被窗口顶栏压住。 */}
+        <div className="h-[52px] flex-shrink-0 flex items-center justify-between px-3 bg-black/80 backdrop-blur-md border-b border-white/10 select-none">
+          <div className="w-[78px] h-full flex-shrink-0" />
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setReloadKey((k) => k + 1)}
+              className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white backdrop-blur transition-colors"
+              title={t('scene3dReloadScene')}
+            >
+              <RotateCw className="w-4 h-4" />
+            </button>
+            <button
+              onClick={copyCode}
+              className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white backdrop-blur transition-colors"
+              title={t('scene3dCopyHtml')}
+            >
+              {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+            </button>
+            <button
+              onClick={() => setFullscreen(false)}
+              className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white backdrop-blur transition-colors"
+              title={t('scene3dClosePreview')}
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
+        <div className="flex-1 min-h-0">{iframe}</div>
       </div>
     );
   }
