@@ -15,7 +15,7 @@ final class Scene3DWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
-final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDelegate {
+final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate {
     private static let defaultWidth: CGFloat = 1180
     private static let defaultHeight: CGFloat = 760
     private static let minWidth: CGFloat = 860
@@ -83,6 +83,8 @@ final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDele
         let wv = WKWebView(frame: panel.contentView?.bounds ?? .zero, configuration: config)
         wv.autoresizingMask = [.width, .height]
         wv.navigationDelegate = self
+        // 没有它，网页里 <input type="file"> 的 click() 会静默无响应（+/附件按钮失效）
+        wv.uiDelegate = self
         panel.contentView?.addSubview(wv)
         webView = wv
         return wv
@@ -216,6 +218,21 @@ final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDele
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             self?.loadContent()
+        }
+    }
+
+    // MARK: - WKUIDelegate
+
+    /// 网页 <input type="file">（3D 窗口输入框的附件按钮）弹出系统文件选择面板。
+    /// 与 MainWindowController 同一套实现；不实现此方法时 input.click() 静默无响应。
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+        let openPanel = NSOpenPanel()
+        openPanel.canChooseFiles = true
+        openPanel.canChooseDirectories = false
+        openPanel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        openPanel.allowedContentTypes = [.image]
+        openPanel.beginSheetModal(for: webView.window!) { response in
+            completionHandler(response == .OK ? openPanel.urls : nil)
         }
     }
 }
