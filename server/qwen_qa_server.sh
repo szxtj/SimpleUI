@@ -154,6 +154,15 @@ start() {
         fi
         if probe; then
             echo ""
+            # Metal/graph 预热：这份 mlx-lm 没有暴露 --compile，kernel 是懒编译的，
+            # 启动后第一条真实消息要多付 ~2.4s 的编译开销（实测 2.37s）。
+            # 这里在后台发一条 1 token 的迷你请求，把 prefill/decode 两条路径的
+            # kernel 先编译好 —— 冷请求的代价就不落在用户第一条消息上。
+            # （失败不阻塞启动：预热只是省时间，不是服务可用的前提）
+            curl -s --noproxy '*' -m 60 -o /dev/null \
+                -X POST "http://127.0.0.1:$PORT/v1/chat/completions" \
+                -H 'Content-Type: application/json' \
+                -d '{"model":"default_model","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false}' &
             echo "✅ 服务启动成功！"
             echo "📍 API Base URL: http://127.0.0.1:$PORT/v1"
             echo "📄 运行日志: $LOG_FILE"
