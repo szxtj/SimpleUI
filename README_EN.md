@@ -76,10 +76,11 @@ Node.js proxy (127.0.0.1:31235)
 | Index-Translate subtitle translation | `1249` | Specialized NMT (subtitle pipeline stage 3, runs parallel to Quick Translate 1248) |
 | Quick Translate on-device engine | `1248` | `⌃Space` fast selection translation (llama-server standalone instance, 4096 context, unloads on idle) |
 | Base models | `1235` / `1241` / `1242` / `1243` | TTF / Mference / Maple MLX / Qwen 3.5 9B / other OpenAI-compatible services |
-| MLX runtime (shared by Maple / Qwen) | `—` | Dedicated Python venv (~363 MB), bundled with the app; both engines share one copy, never downloaded twice |
+| Maple MLX runtime | `—` | Dedicated Python venv (~363 MB), bundled with the app |
+| Qwen 3.5 9B runtime | `—` | Bundled TTS/OCR Python (mlx-vlm 0.7.9, ~821 MB), shared with Voice Synthesis / OCR; supports image input |
 | DeepSeek API | Cloud | Official API: chat, reasoning, and Quick Translate Detail mode |
 
-> Base-model repositories and weights are not distributed with this project; users provide them. Speech input, TTS, OCR, subtitle, and Quick Translate models can all be downloaded with one-click concurrent speed testing and resumable transfers under the in-app Service Manager. Identical resources are reused automatically instead of downloading twice: R2T2 and Index-Translate weights are shared between subtitles, speech input and Quick Translate, and Maple and Qwen 3.5 9B share one MLX Python runtime. The two speech-input engines still download independently.
+> Base-model repositories and weights are not distributed with this project; users provide them. Speech input, TTS, OCR, subtitle, and Quick Translate models can all be downloaded with one-click concurrent speed testing and resumable transfers under the in-app Service Manager. Identical resources are reused automatically instead of downloading twice: R2T2 and Index-Translate weights are shared between subtitles, speech input and Quick Translate, and Qwen 3.5 9B shares its runtime (mlx-vlm) with Voice Synthesis / OCR. The two speech-input engines still download independently.
 
 ---
 
@@ -128,7 +129,7 @@ Query
 - The Service Manager provides start/stop, status, parameter tuning, logs, and model-directory browsing; switching local base engines releases VRAM mutually (the four engines are pairwise exclusive).
 - Local upstream projects and weights must be prepared by the user: [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) / [Mference](https://github.com/NeelM0906/Mference). Maple MLX downloads its runtime and weights from inside the app. DeepSeek only needs an API key in Settings.
 - **Sampling parameters for all four local engines (temperature / top-p / top-k / min-p / repetition penalty / presence penalty) live in Settings → Chat Model**; the Service Manager only handles process-level parameters. Max completion tokens are always 50% of the context window. Maple's defaults follow the official/community recommendations (temp 1.0, top-p 0.95, top-k 40, min-p 0.05, repetition penalty 1.15); Qwen 3.5 9B uses the official "instruct / non-thinking, general tasks" set (temp 0.7, top-p 0.8, top-k 20, min-p 0, presence 1.5, repetition 1.0).
-- **Qwen 3.5 9B is a non-reasoning-by-default general Q&A engine**: weights are `mlx-community/Qwen3.5-9B-4bit` (~5.95 GB across 11 files) and reuse Maple's MLX runtime, so the app bundle grows by zero bytes. Its **thinking toggle lives in the composer**, sent per message via `chat_template_kwargs`: off answers directly, on reasons first. The runtime is text-only mlx-lm with no vision tower loaded, so image input is not supported.
+- **Qwen 3.5 9B is a non-reasoning-by-default general Q&A engine with image input**: weights are `mlx-community/Qwen3.5-9B-4bit` (~5.95 GB across 11 files, including the full vision tower), served through the bundled TTS/OCR Python **mlx-vlm** runtime (shared with Voice Synthesis / OCR, so the app bundle grows by zero bytes) behind an OpenAI-compatible API. Its **thinking toggle lives in the composer**, sent per message via `enable_thinking`: off answers directly, on reasons first.
 - Maple's Flash head defaults to **off**: the flag must match the shipped weights — enabling it on the released 2-bit weights causes token-level corruption in the output. Correctness over speed.
 - Note: DeepSeek mode automatically disables the knowledge-base entry; Offline Wiki RAG targets the local-model path.
 
@@ -280,7 +281,7 @@ Builds the Swift native shell, frontend assets, and bundled runtimes, then insta
 
 ### Models and knowledge base
 
-- Base models: prepare TTF / Mference repositories and weights yourself; Maple MLX weights (~5.31 GB) and Qwen 3.5 9B weights (~5.95 GB) are one-click downloads in Service Manager → Base Model Service, and both reuse the MLX runtime bundled with the app (~363 MB) instead of installing their own. You can also connect another OpenAI-compatible service, or configure a DeepSeek API key in Settings.
+- Base models: prepare TTF / Mference repositories and weights yourself; Maple MLX weights (~5.31 GB) and Qwen 3.5 9B weights (~5.95 GB, with the vision tower) are one-click downloads in Service Manager → Base Model Service. All runtimes ship with the app (Maple uses mlx-lm; Qwen 3.5 9B uses the mlx-vlm runtime shared with Voice Synthesis / OCR), so nothing extra to install. You can also connect another OpenAI-compatible service, or configure a DeepSeek API key in Settings.
 - Speech input models: the default Qwen3-ASR-0.6B-8bit (~964 MB, MLX) downloads from "Service Manager → Speech Input"; switching to Confucius4-R2T2 Q8_0 (~2.31 GB) reuses the subtitle service's existing weights without duplicate downloads or storage.
 - Voice synthesis model: Download Qwen3-TTS 1.7B (~2.51 GB) via one-click speed-tested download under Service Manager → Voice Synthesis. The speech codec is byte-identical to the previous release, so integrity checks reuse it.
 - Visual OCR model: Download PaddleOCR-VL 1.6 (~1.02 GB) via one-click speed-tested download under Service Manager → Visual OCR.

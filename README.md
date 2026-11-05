@@ -76,10 +76,11 @@ Node.js 代理（127.0.0.1:31235）
 | Index-Translate 字幕翻译 | `1249` | 专精神经机器翻译（字幕流水线第 3 级，与快速翻译 1248 并行独立运行） |
 | 快速翻译端侧引擎 | `1248` | `⌃Space` 快速划选翻译（llama-server 独立实例，4096 上下文，闲置超时自动卸载） |
 | 基础模型 | `1235` / `1241` / `1242` / `1243` | TTF / Mference / Maple MLX / Qwen 3.5 9B / 兼容 OpenAI 的推理服务 |
-| MLX 运行时（Maple / Qwen 共用） | `—` | 独立 Python venv（约 363 MB），随 App 分发；两个引擎共用同一份，不重复下载 |
+| Maple MLX 运行时 | `—` | 独立 Python venv（约 363 MB），随 App 分发 |
+| Qwen 3.5 9B 运行时 | `—` | 随包 TTS/OCR Python（mlx-vlm 0.7.9，约 821 MB），与语音合成/OCR 共用，支持图片输入 |
 | DeepSeek API | 云端 | 官方 API：对话、推理与快捷翻译详解模式 |
 
-> 基础模型本体与权重不随本仓库分发，需要用户自行准备；语音输入、TTS、OCR、字幕与快速翻译模型均可在应用内「服务管理」面板一键并发自动测速下载与断点续传。同款资源系统自动复用、不重复下载：R2T2 与 Index-Translate 权重在字幕与语音输入/快速翻译之间共享，Maple 与 Qwen 3.5 9B 共用同一份 MLX Python 运行时；语音输入的两个引擎各自独立下载、互不覆盖。
+> 基础模型本体与权重不随本仓库分发，需要用户自行准备；语音输入、TTS、OCR、字幕与快速翻译模型均可在应用内「服务管理」面板一键并发自动测速下载与断点续传。同款资源系统自动复用、不重复下载：R2T2 与 Index-Translate 权重在字幕与语音输入/快速翻译之间共享；Qwen 3.5 9B 的运行时与语音合成/OCR 共用（mlx-vlm）；语音输入的两个引擎各自独立下载、互不覆盖。
 
 ---
 
@@ -128,7 +129,7 @@ SimpleUI 使用本地 Kiwix ZIM 构建端到端离线知识库。核心原则是
 - 服务管理面板提供启停、状态、参数调优、日志与模型目录浏览；切换本地基础引擎时执行显存互斥释放（四个引擎两两互斥）。
 - 本地上游项目与模型权重需自行准备，详见 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) / [Mference](https://github.com/NeelM0906/Mference)；Maple MLX 的运行时与权重由 App 托管下载；DeepSeek 只需在设置中填写 API Key。
 - **四个本地引擎的采样参数（温度 / top-p / top-k / min-p / 重复惩罚 / 存在惩罚）统一在「设置 → 对话模型」里调整**，服务管理面板只管进程参数；最大生成长度恒为上下文的 50%。Maple 各默认值取官方/社区推荐（temp 1.0、top-p 0.95、top-k 40、min-p 0.05、重复惩罚 1.15）；Qwen 3.5 9B 取官方 README 的「非思考·通用任务」一组（temp 0.7、top-p 0.8、top-k 20、min-p 0、presence 1.5、repetition 1.0）。
-- **Qwen 3.5 9B 是「默认不推理」的通用问答引擎**：权重为 mlx-community/Qwen3.5-9B-4bit（约 5.95 GB，11 个文件），复用 Maple 那份 MLX 运行时，App 体积零增长；**思考开关在对话框底部**，按每条消息下发 `chat_template_kwargs`，关闭时直接给答案、开启时先推理再回答。运行时是纯文本 mlx-lm，视觉塔未加载，因此不支持图片输入。
+- **Qwen 3.5 9B 是「默认不推理」的通用问答引擎，支持图片输入**：权重为 mlx-community/Qwen3.5-9B-4bit（约 5.95 GB，11 个文件，含完整视觉塔），经随包 TTS/OCR Python 的 **mlx-vlm** 服务（与语音合成/OCR 共用运行时，App 体积零增长）提供 OpenAI 兼容接口；**思考开关在对话框底部**，按每条消息下发 `enable_thinking`，关闭时直接给答案、开启时先推理再回答。
 - Maple 的 Flash head 默认**关闭**：该开关需与权重配套，对当前发布的 2-bit 权重开启会导致输出异常（token 级抄写错误），宁慢勿错。
 - 说明：DeepSeek 模式会自动关闭知识库入口；离线维基 RAG 面向本地模型链路。
 
@@ -279,7 +280,7 @@ npm run dev
 
 ### 模型与知识库
 
-- 基础模型：自行准备 TTF / Mference 本体与权重；Maple MLX 的权重（约 5.31 GB）与 Qwen 3.5 9B 的权重（约 5.95 GB）都在「服务管理 → 基础模型服务」里一键下载，两者共用随 App 分发的 MLX 运行时（约 363 MB），不需要各自再装一份；也可连接其它 OpenAI 兼容服务，或在设置中直接配置 DeepSeek API Key。
+- 基础模型：自行准备 TTF / Mference 本体与权重；Maple MLX 的权重（约 5.31 GB）与 Qwen 3.5 9B 的权重（约 5.95 GB，含视觉塔）都在「服务管理 → 基础模型服务」里一键下载；运行时全部随 App 分发（Maple 用 mlx-lm，Qwen 3.5 9B 用与语音合成/OCR 共用的 mlx-vlm），不需要额外安装；也可连接其它 OpenAI 兼容服务，或在设置中直接配置 DeepSeek API Key。
 - 语音输入模型：默认 Qwen3-ASR-0.6B-8bit（约 964 MB，MLX）在「服务管理 → 语音输入服务」下载；切到 Confucius4-R2T2 Q8_0（约 2.31 GB）时可直接复用字幕服务那份静态权重文件，无需重复下载或多占磁盘。
 - 语音合成模型：在「服务管理 → 语音合成服务」一键测速下载 Qwen3-TTS 1.7B 模型（约 2.51 GB；语音 codec 与旧版字节相同，会被完整性校验直接复用）。
 - 视觉 OCR 模型：在「服务管理 → 视觉图文识别服务」一键测速下载 PaddleOCR-VL 1.6 模型（约 1.02 GB）。

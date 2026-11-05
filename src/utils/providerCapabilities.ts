@@ -23,15 +23,14 @@ export function isThinkingForced(provider?: ApiProvider): boolean {
  * 引擎元数据 vision:false），不支持 image_url；此前该判断以 `isMference` 布尔
  * 散落在三个界面里，现集中到这里，加新引擎时改这一处。
  *
- * Qwen 3.5 9B 底座本身是多模态，但我们的运行时是 **mlx-lm（纯文本）**，
- * 视觉塔根本没被加载，所以按「不支持」处理 —— 传 image_url 进去只会报错或静默丢图。
- * 将来若改用 mlx-vlm 起服务，把这里去掉即可。
+ * Qwen 3.5 9B 底座是多模态，2026-11-05 起引擎改用 **mlx-vlm server**（随包
+ * TTS/OCR Python，0.7.9 自带 qwen3_5 实现），视觉塔随权重加载，**支持图片输入**，
+ * 因此不在本 Set 里。
  *
- * Mference 同理：ttf_service 的引擎元数据里 vision 硬编码 false（gturbo 运行时
- * 未挂 mmproj），此前只有主窗口对它做了「切过去清空已贴图」的特判、浮窗没有，
- * 导致两边行为不一致 —— 现在统一收口到这一个 Set。
+ * Mference 不支持：ttf_service 的引擎元数据里 vision 硬编码 false（gturbo 运行时
+ * 未挂 mmproj）。两个窗口都用本函数判定，行为天然一致。
  */
-const VISION_UNSUPPORTED = new Set<ApiProvider>(['maple', 'mference', 'qwen-qa']);
+const VISION_UNSUPPORTED = new Set<ApiProvider>(['maple', 'mference']);
 
 export function supportsVision(provider?: ApiProvider): boolean {
   return provider ? !VISION_UNSUPPORTED.has(provider) : true;

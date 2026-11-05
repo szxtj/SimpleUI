@@ -13,8 +13,8 @@
 //   - Mference: mference_server.sh -> .build/release/MferenceServer (默认端口 1241)
 //   - Maple MLX: maple_mlx_server.sh -> 独立 Python venv 里的 mlx_lm.server (默认端口 1242)
 //     运行时与权重都由本模块托管（见 maple_download.js），首次使用需在设置面板下载。
-//   - Qwen 3.5 9B: qwen_qa_server.sh -> 复用 Maple 那份 Python 的 mlx_lm server (默认端口 1243)
-//     定位「高速通用问答、默认不推理」；只托管权重（见 qwen_qa_download.js），运行时随包。
+//   - Qwen 3.5 9B: qwen_qa_server.sh -> 随包 TTS/OCR Python 的 mlx_vlm server
+//     (默认端口 1243，含视觉塔，支持图片输入)；只托管权重（见 qwen_qa_download.js）。
 
 import { spawn, execSync } from 'child_process';
 import fs from 'fs';
@@ -444,7 +444,13 @@ class TtfService {
    * 只有权重单独放 models/qwen35-9b-mlx。所以这里只需要一个 modelDir。
    */
   qwenQaDirs() {
-    const { runtimeDir } = this.mapleDirs();
+    // Qwen 3.5 9B 用 mlx-vlm 起服务（带视觉塔，支持图片输入），
+    // 运行时就是 TTS/OCR 共用的那份 Python —— 与 Maple 的 mlx-lm 运行时是两份不同的东西。
+    const candidates = [
+      path.join(__dirname, 'tts', 'python'),                                  // 打包态
+      path.resolve(__dirname, '..', 'bin', 'tts_runtime', 'python'),          // 开发态
+    ];
+    const runtimeDir = candidates.find((d) => fs.existsSync(path.join(d, 'bin', 'python3'))) || candidates[0];
     return { runtimeDir, modelDir: DEFAULT_QWEN_QA_MODEL_DIR };
   }
 
@@ -510,8 +516,8 @@ class TtfService {
       const { runtimeDir, modelDir } = this.qwenQaDirs();
       return {
         QWEN_QA_PORT: String(this.config.qwenQaPort || 1243),
-        // 复用 Maple 的 Python：脚本里按 QWEN_QA_PYTHON 优先取，取不到再退回随包路径
-        QWEN_QA_PYTHON: path.join(runtimeDir, 'bin', 'python'),
+        // TTS/OCR 共用的 Python（带 mlx-vlm）：脚本里按 QWEN_QA_PYTHON 优先取
+        QWEN_QA_PYTHON: path.join(runtimeDir, 'bin', 'python3'),
         QWEN_QA_MODEL_DIR: modelDir,
         QWEN_QA_MAX_TOKENS: String(this.config.qwenQaMaxTokens || 4096),
         QWEN_QA_PROMPT_CACHE_SIZE: String(this.config.qwenQaPromptCacheSize || 2),
@@ -681,21 +687,23 @@ class TtfService {
 
     const { runtimeDir: qwenQaRuntimeDir, modelDir: qwenQaModelDir } = this.qwenQaDirs();
     // 运行时就是 Maple 的那份：它的 ready() 同时决定 Qwen 问答引擎能不能启动
-    const qwenQaRuntimeReady = this.getMapleRuntimeInstaller().ready();
     const qwenQaDownload = this.getQwenQaModelDownloader();
     const qwenQaModelReady = qwenQaDownload.ready();
+    const qwenQaPython = path.join(qwenQaRuntimeDir, 'bin', 'python3');
     const qwenQaChecks = {
-      repo: qwenQaRuntimeReady,
-      binary: fs.existsSync(path.join(qwenQaRuntimeDir, 'bin', 'python')),
+      // 运行时随包分发（TTS/OCR 共用），存在即可用
+      repo: fs.existsSync(qwenQaPython),
+      binary: fs.existsSync(qwenQaPython),
       model: qwenQaModelReady,
-      vision: false,
+      // mlx-vlm 会加载 Qwen3.5 的视觉塔，支持图片输入
+      vision: true,
     };
     const qwenQaPort = Number(this.config.qwenQaPort) || 1243;
     const qwenQaAssets = {
       runtime: {
-        ready: qwenQaRuntimeReady,
+        ready: qwenQaChecks.repo && qwenQaChecks.binary,
         dir: qwenQaRuntimeDir,
-        // 运行时与 Maple 共用，这里只回读就绪态，不重复算体积
+        // 运行时随包分发（与 TTS/OCR 共用），这里只回读就绪态，不重复算体积
         shared: true,
       },
       model: {

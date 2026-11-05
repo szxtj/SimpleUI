@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 
 # ==============================================================================
-# 📖 Qwen 3.5 9B 问答引擎运行时脚本（mlx-lm OpenAI 兼容服务）
+# 📖 Qwen 3.5 9B 问答引擎运行时脚本（mlx-vlm OpenAI 兼容服务 · 支持图片输入）
 #
 # 与 ttf_server.sh / mference_server.sh / maple_mlx_server.sh 同一套「受管服务」约定：
 #   start / stop / restart / status / logs / help
 #
-# 定位：基础模型服务的第 4 个选项 —— **高速、通用问答、默认不推理**。
-#   - 权重：mlx-community/Qwen3.5-9B-4bit（5.95GB，按需下载，见 qwen_qa_download.js）
-#   - 运行时：**复用 Maple 那套随包 Python**（mlx 0.32 / mlx-lm 0.31.3，自带 qwen3_5 实现），
-#     不再单独背一份 300MB+ 的运行时。找不到运行时说明打包缺件，直接报错而不是静默兜底。
+# 定位：基础模型服务的第 4 个选项 —— **通用问答 + 图片理解，默认不推理**。
+#   - 权重：mlx-community/Qwen3.5-9B-4bit（5.95GB，含完整视觉塔，按需下载，
+#     见 qwen_qa_download.js）
+#   - 运行时：**随包的 TTS/OCR Python**（mlx-vlm 0.7.9，自带 qwen3_5 实现），
+#     与语音合成 / OCR 共用同一份，不单独背运行时。找不到说明打包缺件，直接报错。
+#   - 为什么不是 mlx-lm：mlx-lm 是纯文本，Qwen3.5 的视觉塔不会被加载；
+#     mlx-vlm 才会把 vision_tower 挂上（实测 image_url 请求返回正确描述）。
 #   - 与其它三个引擎严格互斥（由 ttf_service.js 的 ALL_ENGINES 遍历负责）。
 # ==============================================================================
 
@@ -24,46 +27,37 @@ SUPPORT_DIR="$HOME/Library/Application Support/SimpleUI"
 # 1. 监听端口（1243：与 TTF 1235 / Mference 1241 / Maple 1242 / ASR 1236 / 字幕 1249-1250 错开）
 PORT="${QWEN_QA_PORT:-1243}"
 
-# 2. 运行时（复用 Maple 的 Python）与权重目录
-RUNTIME_DIR="${QWEN_QA_RUNTIME_DIR:-$SUPPORT_DIR/runtimes/maple-mlx}"
+# 2. 运行时（TTS/OCR 共用的那份 Python，带 mlx-vlm）与权重目录
+RUNTIME_DIR="${QWEN_QA_RUNTIME_DIR:-}"
 MODEL_DIR="${QWEN_QA_MODEL_DIR:-$SUPPORT_DIR/models/qwen35-9b-mlx}"
 
-# 运行时探测顺序：环境变量 → 随包 → 开发态 bin/
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 运行时探测顺序：环境变量 → 随包 tts/python → 开发态 bin/tts_runtime
+# 注意：必须是带 mlx-vlm 的那份（tts/ocr 共用），Maple 的 mlx-lm 运行时跑不了它
 PYTHON="${QWEN_QA_PYTHON:-}"
 if [ -z "$PYTHON" ] || [ ! -x "$PYTHON" ]; then
     for candidate in \
-        "$RUNTIME_DIR/bin/python" \
-        "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/maple-mlx/bin/python" \
-        "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../bin/maple_runtime/bin/python"
+        "$SCRIPT_DIR/tts/python/bin/python3" \
+        "$SCRIPT_DIR/../bin/tts_runtime/python/bin/python3"
     do
         if [ -n "$candidate" ] && [ -x "$candidate" ]; then
             PYTHON="$candidate"
+            RUNTIME_DIR="$(dirname "$(dirname "$candidate")")"
             break
         fi
     done
 fi
 
-# 3. 生成与采样默认值
-#    服务级只是兜底：App 每次请求都会带自己的 max_tokens / 采样参数
+# 3. 生成默认值
+#    服务级只是兜底：App 每次请求都会带自己的 max_tokens / 采样参数 /
+#    enable_thinking（mlx-vlm 的 server 支持请求级思考开关，按会话状态下发）
 MAX_TOKENS="${QWEN_QA_MAX_TOKENS:-4096}"
-TEMPERATURE="${QWEN_QA_TEMPERATURE:-0.7}"
-TOP_P="${QWEN_QA_TOP_P:-0.8}"
-TOP_K="${QWEN_QA_TOP_K:-20}"
-MIN_P="${QWEN_QA_MIN_P:-0}"
-
-# 4. 性能/内存项
-#    prompt cache 默认只留 2 份：16GB 机器上 9B 的 KV 缓存才是内存大头
-PROMPT_CACHE_SIZE="${QWEN_QA_PROMPT_CACHE_SIZE:-2}"
-PREFILL_STEP_SIZE="${QWEN_QA_PREFILL_STEP_SIZE:-2048}"
-
-# 5. 思考开关：这是「问答」引擎，默认关推理；需要时可开
 THINKING="${QWEN_QA_THINKING:-off}"
-CHAT_TEMPLATE_ARGS='{"enable_thinking":false}'
-[ "$THINKING" = "on" ] && CHAT_TEMPLATE_ARGS='{"enable_thinking":true}'
 
 LOG_FILE="${QWEN_QA_LOG_FILE:-$HOME/Library/Logs/qwen-qa.log}"
 PID_FILE="/tmp/qwen_qa_server.pid"
-PROJECT_URL="https://github.com/ml-explore/mlx-lm"
+PROJECT_URL="https://github.com/Blaizzy/mlx-vlm"
 MODEL_REPO="mlx-community/Qwen3.5-9B-4bit"
 
 # ==============================================================================
@@ -118,25 +112,16 @@ start() {
 
     echo "🚀 正在后台启动 Qwen 3.5 9B 问答服务..."
     echo "   ├─ 端口: $PORT"
-    echo "   ├─ 运行时: $(dirname "$(dirname "$PYTHON")")"
-    echo "   ├─ 模型: $MODEL_DIR"
+    echo "   ├─ 运行时: $RUNTIME_DIR（mlx-vlm，与 TTS/OCR 共用）"
+    echo "   ├─ 模型: $MODEL_DIR（含视觉塔，支持图片输入）"
     echo "   ├─ 最大生成: $MAX_TOKENS tokens"
-    echo "   ├─ 采样: temp=$TEMPERATURE top_p=$TOP_P top_k=$TOP_K min_p=$MIN_P"
-    echo "   └─ 思考模式: $THINKING（$CHAT_TEMPLATE_ARGS）"
+    echo "   └─ 思考模式: $THINKING（可被每条消息的 enable_thinking 覆盖）"
 
-    nohup "$PYTHON" -m mlx_lm server \
+    nohup "$PYTHON" -m mlx_vlm.server \
         --model "$MODEL_DIR" \
         --host 127.0.0.1 \
         --port "$PORT" \
-        --trust-remote-code \
-        --chat-template-args "$CHAT_TEMPLATE_ARGS" \
         --max-tokens "$MAX_TOKENS" \
-        --temp "$TEMPERATURE" \
-        --top-p "$TOP_P" \
-        --top-k "$TOP_K" \
-        --min-p "$MIN_P" \
-        --prompt-cache-size "$PROMPT_CACHE_SIZE" \
-        --prefill-step-size "$PREFILL_STEP_SIZE" \
         --log-level INFO > "$LOG_FILE" 2>&1 &
 
     local pid=$!
@@ -159,10 +144,10 @@ start() {
             # 这里在后台发一条 1 token 的迷你请求，把 prefill/decode 两条路径的
             # kernel 先编译好 —— 冷请求的代价就不落在用户第一条消息上。
             # （失败不阻塞启动：预热只是省时间，不是服务可用的前提）
-            curl -s --noproxy '*' -m 60 -o /dev/null \
+            curl -s --noproxy '*' -m 90 -o /dev/null \
                 -X POST "http://127.0.0.1:$PORT/v1/chat/completions" \
                 -H 'Content-Type: application/json' \
-                -d '{"model":"default_model","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false}' &
+                -d "{\"model\":\"$MODEL_DIR\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"stream\":false,\"enable_thinking\":false}" &
             echo "✅ 服务启动成功！"
             echo "📍 API Base URL: http://127.0.0.1:$PORT/v1"
             echo "📄 运行日志: $LOG_FILE"
@@ -208,10 +193,10 @@ stop() {
     fi
 
     rm -f "$PID_FILE"
-    # 兜底：只清理「命令行里同时含 mlx_lm + 本引擎端口」的残留进程，
+    # 兜底：只清理「命令行里同时含 mlx_vlm.server + 本引擎端口」的残留进程，
     # 绝不用裸 pkill -x python（会误伤 Maple 或用户自己的 Python 进程）。
     local residual
-    residual=$(pgrep -f "mlx_lm(\.server)? server.*--port $PORT" 2>/dev/null | head -1)
+    residual=$(pgrep -f "mlx_vlm\.server.*--port $PORT" 2>/dev/null | head -1)
     if [ -n "$residual" ]; then
         echo "🛑 清理残留进程 (PID: $residual)..."
         kill -9 "$residual" 2>/dev/null
@@ -242,14 +227,14 @@ Qwen 3.5 9B 问答引擎（MLX）
 
 用法: $(basename "$0") {start|stop|restart|status|logs [行数]|help}
 
-  start    后台启动 mlx_lm server（默认端口 $PORT）
+  start    后台启动 mlx_vlm server（默认端口 $PORT，支持图片输入）
   stop     停止服务（先 SIGTERM，20s 未退再 SIGKILL）
   restart  重启
   status   运行状态 + 健康检查
   logs     查看运行日志
 
-模型: $MODEL_REPO
-运行时: 复用 Maple 的 Python（mlx-lm），无需单独安装
+模型: $MODEL_REPO（含视觉塔，支持图片输入）
+运行时: 随包 TTS/OCR Python（mlx-vlm 0.7.9），与语音合成/OCR 共用
 项目: $PROJECT_URL
 EOF
         ;;

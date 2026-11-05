@@ -1216,13 +1216,12 @@ class SessionService {
       });
     }
 
-    // maple / mference / qwen-qa 无视觉能力（与 src/utils/providerCapabilities.ts
-    // 的 VISION_UNSUPPORTED 同一份名单）：就算前端漏拦（比如切引擎前草稿里已经
-    // 贴了图），也在这里按纯文本处理，而不是把 image_url 发给纯文本引擎让整个回合报错。
+    // maple / mference 无视觉能力（与 src/utils/providerCapabilities.ts 的
+    // VISION_UNSUPPORTED 同一份名单；qwen-qa 已改用 mlx-vlm，视觉塔在跑，支持图片）：
+    // 就算前端漏拦（比如切引擎前草稿里已经贴了图），也在这里按纯文本处理，
+    // 而不是把 image_url 发给纯文本引擎让整个回合报错。
     const visionUnsupported =
-      settings.apiProvider === 'maple' ||
-      settings.apiProvider === 'mference' ||
-      settings.apiProvider === 'qwen-qa';
+      settings.apiProvider === 'maple' || settings.apiProvider === 'mference';
 
     for (const msg of wireMessages) {
       if (msg.role === 'user') {
@@ -1274,13 +1273,18 @@ class SessionService {
         payload.stop = settings.stopStrings;
       }
     } else {
-      // mlx 系引擎（Maple / Qwen 3.5 9B）在收到「不是当前加载模型」的 model 串时，
-      // 会把它当 Hugging Face repo id 去解析：带空格直接 404。
-      // 它们是单模型服务，modelId 只是界面标签，线上协议字段固定用 default_model。
-      const isMlxEngine =
-        settings.apiProvider === 'maple' || settings.apiProvider === 'qwen-qa';
+      // mlx 系引擎在收到「不是当前加载模型」的 model 串时，会把它当
+      // Hugging Face repo id 去解析：带空格直接 404。
+      //   - Maple：单模型服务，固定 default_model
+      //   - Qwen 3.5 9B（mlx_vlm server）：请求里的 model 就是加载凭据，
+      //     必须发权重绝对路径（ttf_service 状态里的 modelPath）
+      const isMlxEngine = settings.apiProvider === 'maple';
+      let wireModel = settings.modelId || 'gemma-4-26b-a4b-it';
+      if (settings.apiProvider === 'qwen-qa') {
+        wireModel = ttfService?.qwenQaDirs?.()?.modelDir || wireModel;
+      }
       payload = {
-        model: isMlxEngine ? 'default_model' : settings.modelId || 'gemma-4-26b-a4b-it',
+        model: isMlxEngine ? 'default_model' : wireModel,
         messages: formattedMessages,
         stream: true,
         stream_options: { include_usage: true },
@@ -1304,10 +1308,9 @@ class SessionService {
           }
         }
       } else if (settings.apiProvider === 'qwen-qa') {
-        // Qwen 3.5 9B：思考开关在对话框上，按会话状态映射到 chat template。
-        // mlx_lm.server 用请求里的 chat_template_kwargs 覆盖启动参数默认值；
-        // 它不认识 reasoning_effort，这里刻意不发。
-        payload.chat_template_kwargs = { enable_thinking: settings.enableThinking === true };
+        // Qwen 3.5 9B（mlx_vlm server）：思考开关在对话框上，按会话状态
+        // 通过请求级 enable_thinking 下发；它不认识 reasoning_effort，这里刻意不发。
+        payload.enable_thinking = settings.enableThinking === true;
       } else if (settings.apiProvider === 'maple') {
         // Maple（deepgrove 版 mlx_lm.server）：chat template 无条件写死 <think>，
         // 服务端只读已知字段，这里刻意**不发** chat_template_kwargs / reasoning_effort。
