@@ -26,8 +26,12 @@ export function isThinkingForced(provider?: ApiProvider): boolean {
  * Qwen 3.5 9B 底座本身是多模态，但我们的运行时是 **mlx-lm（纯文本）**，
  * 视觉塔根本没被加载，所以按「不支持」处理 —— 传 image_url 进去只会报错或静默丢图。
  * 将来若改用 mlx-vlm 起服务，把这里去掉即可。
+ *
+ * Mference 同理：ttf_service 的引擎元数据里 vision 硬编码 false（gturbo 运行时
+ * 未挂 mmproj），此前只有主窗口对它做了「切过去清空已贴图」的特判、浮窗没有，
+ * 导致两边行为不一致 —— 现在统一收口到这一个 Set。
  */
-const VISION_UNSUPPORTED = new Set<ApiProvider>(['maple', 'qwen-qa']);
+const VISION_UNSUPPORTED = new Set<ApiProvider>(['maple', 'mference', 'qwen-qa']);
 
 export function supportsVision(provider?: ApiProvider): boolean {
   return provider ? !VISION_UNSUPPORTED.has(provider) : true;

@@ -18,6 +18,7 @@ import {
   buildTranslatorGatewayPayload,
 } from './services/storage';
 import { TurboFieldfareAPI, WikiAPI } from './services/api';
+import { supportsVision } from './utils/providerCapabilities';
 import {
   buildSessionSettings,
   getActiveContextMessages,
@@ -557,9 +558,10 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
   const currentLiveTokens = currentSessionId ? liveStreamingTokens[currentSessionId] : undefined;
   const usedTokens = (isGenerating && currentLiveTokens !== undefined) ? currentLiveTokens : persistentHistoryTokens;
 
-  // Clear unsendable image attachments if Mference is selected
+  // 切到不支持视觉的引擎时清空已贴图（与浮窗 Spotlight 同一判定源：
+  // supportsVision —— maple / mference / qwen-qa），避免把 image_url 发给纯文本引擎
   useEffect(() => {
-    if (settings.apiProvider === 'mference' && images.length > 0) {
+    if (!supportsVision(settings.apiProvider) && images.length > 0) {
       setImages([]);
     }
   }, [settings.apiProvider, images]);

@@ -1216,10 +1216,13 @@ class SessionService {
       });
     }
 
-    // Maple 无视觉能力（见 src/utils/providerCapabilities.ts）：就算前端漏拦
-    // （比如切引擎前草稿里已经贴了图），也在这里按纯文本处理，而不是把 image_url
-    // 发给纯文本引擎让整个回合报错。
-    const visionUnsupported = settings.apiProvider === 'maple';
+    // maple / mference / qwen-qa 无视觉能力（与 src/utils/providerCapabilities.ts
+    // 的 VISION_UNSUPPORTED 同一份名单）：就算前端漏拦（比如切引擎前草稿里已经
+    // 贴了图），也在这里按纯文本处理，而不是把 image_url 发给纯文本引擎让整个回合报错。
+    const visionUnsupported =
+      settings.apiProvider === 'maple' ||
+      settings.apiProvider === 'mference' ||
+      settings.apiProvider === 'qwen-qa';
 
     for (const msg of wireMessages) {
       if (msg.role === 'user') {
