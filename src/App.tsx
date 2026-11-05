@@ -76,15 +76,16 @@ export const App: React.FC = () => {
 
   // 快捷翻译：原生悬浮窗固定走本机网关（服务端按 mode 决定用字幕翻译小模型还是 DeepSeek/基础模型）。
   // 模型、密钥、采样参数全部由「服务控制面板 → 快速翻译服务」管理，前端不再下发任何模型配置。
+  // 「复制文本快速翻译」开关变化也要立即同步原生侧（默认关闭）。
   useEffect(() => {
     try {
       (window as any).webkit?.messageHandlers?.setTranslatorConfig?.postMessage(
-        buildTranslatorGatewayPayload()
+        buildTranslatorGatewayPayload(settings.translatorClipboardQuickTranslate === true)
       );
     } catch {
       // non-macOS or test environment without native bridge
     }
-  }, []);
+  }, [settings.translatorClipboardQuickTranslate]);
 
   useEffect(() => {
     const refreshSettings = () => {

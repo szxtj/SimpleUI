@@ -91,6 +91,7 @@ swiftc -O \
     mac_app/src/SubtitleOverlayPanelController.swift \
     mac_app/src/Scene3DPanelController.swift \
     mac_app/src/TranslationConfig.swift \
+    mac_app/src/TranslationClipboard.swift \
     mac_app/src/TranslationSpeechManager.swift \
     mac_app/src/TranslationProfileStore.swift \
     mac_app/src/TranslationService.swift \

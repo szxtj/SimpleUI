@@ -518,6 +518,9 @@ export const translations = {
     settingsModelCard: '对话模型设置',
     settingsTranslatorCard: '快捷翻译设置',
     translatorGlobalShortcutTip: '全局快捷键：⌃Space (Control + Space)，随时唤起/隐藏悬浮翻译面板',
+    translatorClipboardQuickTitle: '复制文本快速翻译',
+    translatorClipboardQuickTip: '开启后，复制普通文字再唤起翻译框会自动代入并翻译。只接受剪贴板首项为纯文本；图片、文件、富文本等一律忽略，并保留上一次的翻译内容。',
+    translatorClipboardQuickDefaultOff: '默认: 关闭',
 
     // 快速翻译服务（服务控制面板独立卡片）
     translateServiceTitle: '快速翻译服务',
@@ -1391,6 +1394,9 @@ export const translations = {
     settingsModelCard: 'Chat Model Settings',
     settingsTranslatorCard: 'Quick Translate Settings',
     translatorGlobalShortcutTip: 'Global Hotkey: ⌃Space (Control + Space) to toggle the translation panel anywhere',
+    translatorClipboardQuickTitle: 'Clipboard Quick Translate',
+    translatorClipboardQuickTip: 'When on, copying plain text and then invoking the panel fills it in and translates automatically. Only a plain-text first clipboard item is accepted; images, files and rich text are ignored and the previous translation is kept.',
+    translatorClipboardQuickDefaultOff: 'Default: Off',
 
     // Quick translate service (standalone card in the service panel)
     translateServiceTitle: 'Quick Translate Service',

@@ -9,6 +9,8 @@ public final class TranslationPanelController: NSObject {
 
     private let viewModel: TranslationViewModel
     private var panel: TranslationSpotlightPanel?
+    /// 已消费过的剪贴板版本号：同一份复制内容只自动翻译一次，避免每次呼出重译同一个词。
+    private var lastHandledClipboardChangeCount: Int = -1
 
     public init(viewModel: TranslationViewModel? = nil) {
         if let vm = viewModel {
@@ -103,7 +105,8 @@ public final class TranslationPanelController: NSObject {
         URLSession.shared.dataTask(with: req).resume()
     }
 
-    private func performShow() {
+    /// - Parameter applyClipboardQuickTranslate: 划选翻译 `present()` 自带原文，不能让剪贴板快译覆盖它。
+    private func performShow(applyClipboardQuickTranslate: Bool = true) {
         // 调出翻译窗口时，在后台立即触发快速翻译模型按需预热
         warmupService()
 
@@ -112,6 +115,12 @@ public final class TranslationPanelController: NSObject {
 
         MainActor.assumeIsolated {
             viewModel.refreshLocaleAndSettings()
+            // 每次呼出都回到快速模式：包括普通呼出、划选翻译与剪贴板自动翻译，
+            // 不保留上次窗口里选的「详解」。
+            viewModel.selectedMode = .quick
+            if applyClipboardQuickTranslate {
+                self.loadClipboardForQuickTranslate()
+            }
         }
 
         // 每次重新打开均强制全屏居中归位
@@ -121,6 +130,47 @@ public final class TranslationPanelController: NSObject {
         p.makeKeyAndOrderFront(nil)
         p.orderFrontRegardless()
         focusInput()
+    }
+
+    /// 「复制文本快速翻译」：设置里默认关闭；开启后采纳**首项是普通文字**的剪贴板内容
+    /// （`TranslationClipboard` 负责筛选）。
+    ///
+    /// 关键约定：只要开关关闭、剪贴板不合格、是同一份剪贴板、或这段文字已经翻译过，
+    /// 就**完全不碰 viewModel** —— 输入框与结果区原样保留上一次翻译的内容，绝不置空，
+    /// 也绝不因为反复呼出窗口而把同一个词重复送去翻译。
+    /// 只有「用户复制了新内容」（剪贴板 changeCount 变化）才会重新代入并翻译。
+    @MainActor
+    private func loadClipboardForQuickTranslate() {
+        guard UserDefaults.standard.bool(
+            forKey: TranslationClipboard.quickTranslateEnabledKey
+        ) else { return }
+
+        guard let snapshot = TranslationClipboard.plainTextSnapshot(from: NSPasteboard.general) else {
+            return
+        }
+
+        // 1) 同一份剪贴板写入只消费一次：复制一次后反复呼出窗口不重译。
+        guard snapshot.changeCount != lastHandledClipboardChangeCount else { return }
+
+        let currentInput = viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousOutput = viewModel.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 2) 这段文字已经在翻译中 / 已经有译文：即使重新复制了同一段也不重复发起请求。
+        let alreadyTranslated = snapshot.text == currentInput
+            && (viewModel.isLoading || !previousOutput.isEmpty)
+
+        // 3) 底部「复制」按钮会把译文写回剪贴板；不能把译文当成新的待译原文反向翻译。
+        let isSelfCopiedResult = !previousOutput.isEmpty && snapshot.text == previousOutput
+
+        if alreadyTranslated || isSelfCopiedResult {
+            lastHandledClipboardChangeCount = snapshot.changeCount
+            return
+        }
+
+        lastHandledClipboardChangeCount = snapshot.changeCount
+        // 模式由 performShow 统一置为 .quick，这里只代入原文并立即翻译。
+        viewModel.loadSelectionText(snapshot.text, mode: viewModel.selectedMode)
+        viewModel.startTranslation()
     }
 
     /// 从划选浮标一键呼出：代入纯文本、切换模式，并可直接开始翻译。
@@ -141,7 +191,9 @@ public final class TranslationPanelController: NSObject {
         MainActor.assumeIsolated {
             viewModel.loadSelectionText(trimmed, mode: mode)
         }
-        performShow()
+        // 划选翻译自带原文；把当前剪贴板标记为已消费，避免下次呼出被旧剪贴板覆盖。
+        lastHandledClipboardChangeCount = NSPasteboard.general.changeCount
+        performShow(applyClipboardQuickTranslate: false)
 
         if autoTranslate {
             MainActor.assumeIsolated {

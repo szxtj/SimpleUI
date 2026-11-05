@@ -162,9 +162,11 @@ export const DEFAULT_DEEPSEEK_CONFIG: DeepSeekProviderConfig = {
  */
 export const TRANSLATOR_GATEWAY_ENDPOINT = 'http://127.0.0.1:31235/api/translate/v1';
 
-export function buildTranslatorGatewayPayload() {
+export function buildTranslatorGatewayPayload(clipboardQuickTranslate: boolean = false) {
   return {
     baseLang: 'zh',
+    // 原生悬浮窗读取剪贴板的开关；缺省 false，即功能默认关闭。
+    clipboardQuickTranslate,
     activeProvider: 'gateway',
     apiProvider: 'gateway',
     activeEndpoint: TRANSLATOR_GATEWAY_ENDPOINT,
@@ -208,6 +210,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   enableWikiSearch: false, // Default OFF
   customWikiDir: '',
   spotlightResetMinutes: 15, // Default 15 minutes
+  translatorClipboardQuickTranslate: false, // 复制文本快速翻译：Default OFF
 };
 
 let memoryCachedSettings: AppSettings | null = null;
@@ -632,6 +635,8 @@ export function normalizeSettingsObject(parsed: any, fallbackApiKey: string = ''
     customWikiDir: parsed?.customWikiDir || '',
     spotlightResetMinutes:
       parsed?.spotlightResetMinutes !== undefined ? Number(parsed.spotlightResetMinutes) : 15,
+    // 严格布尔：旧配置或非布尔脏值一律视为关闭。
+    translatorClipboardQuickTranslate: parsed?.translatorClipboardQuickTranslate === true,
   };
 }
 

@@ -197,6 +197,13 @@ public final class TranslationProfileStore: ObservableObject {
         if let effort = dict["activeReasoningEffort"] as? String {
             defaults.set(effort, forKey: "simpleui_translator_reasoning_effort")
         }
+        // 「复制文本快速翻译」开关：默认关闭。只有前端确实下发该键时才写入，
+        // 避免旧版 / 其它页面回传的精简配置把用户已开启的开关悄悄重置。
+        if let enabled = dict["clipboardQuickTranslate"] as? Bool {
+            defaults.set(enabled, forKey: TranslationClipboard.quickTranslateEnabledKey)
+        } else if let enabledNumber = dict["clipboardQuickTranslate"] as? NSNumber {
+            defaults.set(enabledNumber.boolValue, forKey: TranslationClipboard.quickTranslateEnabledKey)
+        }
         if let data = try? JSONSerialization.data(withJSONObject: dict) {
             defaults.set(data, forKey: "simpleui_translator_settings_raw")
         }

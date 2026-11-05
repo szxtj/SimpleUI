@@ -427,6 +427,8 @@ export interface ServicesPanelProps {
     ocr?: ServiceState;
     scene3d?: ServiceState;
   }) => void;
+  /** 应用级开关（如「复制文本快速翻译」）直接落盘到 AppSettings */
+  onSave?: (settings: AppSettings) => void;
 }
 
 export const ServicesPanel: React.FC<ServicesPanelProps> = ({
@@ -434,6 +436,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
   settings,
   isOpen,
   onStatusChange,
+  onSave,
 }) => {
   // 语言取已保存的设置（本界面不提供语言切换）
   const activeLang: Language = useMemo(
@@ -645,6 +648,9 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
       idleUnloadMin: 30,
     });
     setTranslateMsg(null);
+    // 「复制文本快速翻译」是即时生效开关（点一下即落盘并下发原生），没有独立「保存」按钮，
+    // 只重置 translateForm 会把它漏掉。恢复默认必须同步关掉，默认值 = false。
+    onSave?.({ ...settings, translatorClipboardQuickTranslate: false });
   };
 
   const handleTranslateDownload = async () => {
@@ -3686,6 +3692,50 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                     <kbd className="flex-shrink-0 px-2 py-1 rounded-md border border-black/10 dark:border-white/15 bg-white dark:bg-[#202127] text-[10px] font-mono text-zinc-700 dark:text-zinc-200 whitespace-nowrap shadow-sm">
                       {t('translateHotkeyTrigger')}
                     </kbd>
+                  </div>
+
+                  {/* 复制文本快速翻译（默认关闭；与划选翻译互相独立） */}
+                  <div className="flex items-center justify-between gap-3 mb-3 px-2.5 py-2 rounded-lg bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
+                          {t('translatorClipboardQuickTitle')}
+                        </span>
+                        {!settings.translatorClipboardQuickTranslate && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 whitespace-nowrap">
+                            {t('translatorClipboardQuickDefaultOff')}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-zinc-500 dark:text-zinc-400 leading-snug">
+                        {t('translatorClipboardQuickTip')}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={settings.translatorClipboardQuickTranslate === true}
+                      onClick={() =>
+                        onSave?.({
+                          ...settings,
+                          translatorClipboardQuickTranslate:
+                            !(settings.translatorClipboardQuickTranslate === true),
+                        })
+                      }
+                      className={`relative w-10 h-[22px] rounded-full transition-colors flex-shrink-0 cursor-pointer focus:outline-none ${
+                        settings.translatorClipboardQuickTranslate === true
+                          ? 'bg-indigo-600'
+                          : 'bg-zinc-300 dark:bg-zinc-600'
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] rounded-full bg-white shadow transition-transform duration-200 ${
+                          settings.translatorClipboardQuickTranslate === true
+                            ? 'translate-x-[18px]'
+                            : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
                   </div>
 
                   {/* 内置运行环境与模型状态 */}

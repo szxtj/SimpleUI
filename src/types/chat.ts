@@ -310,6 +310,8 @@ export interface AppSettings {
   enableWikiSearch?: boolean;   // Offline Wiki RAG switch (📚)
   customWikiDir?: string;       // Custom ZIM storage directory
   spotlightResetMinutes?: number; // Spotlight idle auto-reset duration in minutes (0 = never, default 15)
+  /** 复制文本快速翻译：唤起翻译框时自动代入剪贴板里的普通文字并翻译（默认关闭）。 */
+  translatorClipboardQuickTranslate?: boolean;
 }
 
 export interface ServerHealthInfo {

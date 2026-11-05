@@ -412,6 +412,7 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
                 settings={settings}
                 isOpen={isOpen}
                 onStatusChange={handleServiceStatusUpdate}
+                onSave={onSave}
               />
             </div>
           </div>
