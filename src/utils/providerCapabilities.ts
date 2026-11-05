@@ -22,8 +22,12 @@ export function isThinkingForced(provider?: ApiProvider): boolean {
  * 视觉（图片输入）支持。Maple 是纯文本 MoE（config.json 无 vision tower，
  * 引擎元数据 vision:false），不支持 image_url；此前该判断以 `isMference` 布尔
  * 散落在三个界面里，现集中到这里，加新引擎时改这一处。
+ *
+ * Qwen 3.5 9B 底座本身是多模态，但我们的运行时是 **mlx-lm（纯文本）**，
+ * 视觉塔根本没被加载，所以按「不支持」处理 —— 传 image_url 进去只会报错或静默丢图。
+ * 将来若改用 mlx-vlm 起服务，把这里去掉即可。
  */
-const VISION_UNSUPPORTED = new Set<ApiProvider>(['maple']);
+const VISION_UNSUPPORTED = new Set<ApiProvider>(['maple', 'qwen-qa']);
 
 export function supportsVision(provider?: ApiProvider): boolean {
   return provider ? !VISION_UNSUPPORTED.has(provider) : true;

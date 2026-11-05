@@ -8,6 +8,7 @@ import {
   TtfProviderConfig,
   MferenceProviderConfig,
   MapleProviderConfig,
+  QwenQaProviderConfig,
   CustomProviderConfig,
 } from '../types/chat';
 
@@ -83,6 +84,33 @@ export const DEFAULT_MAPLE_CONFIG: MapleProviderConfig = {
   systemPrompt: '',
 };
 
+/**
+ * Qwen 3.5 9B 问答引擎（mlx_lm.server，默认端口 1243）。
+ *
+ * 与 Maple 的差别只在「思考默认关」与采样默认值：这是通用问答引擎，不追求推理链，
+ * 所以 maxTokens 不需要为隐藏思考预留（4096 就是可见答案）。
+ */
+export const DEFAULT_QWEN_QA_CONFIG: QwenQaProviderConfig = {
+  apiPort: 1243,
+  apiBaseUrl: '',
+  // mlx_lm.server 的 /v1/models 只回权重目录路径，且**不校验**请求里的 model 字段，
+  // 所以这里直接用可读名字：它只是给界面看的标签，不会影响推理。
+  modelId: 'Qwen 3.5 9B',
+  maxContext: 16384,
+  maxTokens: 4096,
+  // 官方 README「Instruct / 非思考模式 · 通用任务」推荐值（2026-11 核实）：
+  // temperature=0.7, top_p=0.8, top_k=20, min_p=0.0, presence_penalty=1.5, repetition_penalty=1.0
+  temperature: 0.7,
+  topP: 0.8,
+  topK: 20,
+  minP: 0,
+  presencePenalty: 1.5,
+  repetitionPenalty: 1.0,
+  seed: undefined,
+  stopStrings: [],
+  systemPrompt: '',
+};
+
 /** 自定义 (Custom / OpenAI 兼容) 极简默认独立配置 */
 export const DEFAULT_CUSTOM_CONFIG: CustomProviderConfig = {
   apiPort: 11434, // Ollama 默认
@@ -152,6 +180,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ttfConfig: { ...DEFAULT_TTF_CONFIG },
   mferenceConfig: { ...DEFAULT_MFERENCE_CONFIG },
   mapleConfig: { ...DEFAULT_MAPLE_CONFIG },
+  qwenQaConfig: { ...DEFAULT_QWEN_QA_CONFIG },
   customConfig: { ...DEFAULT_CUSTOM_CONFIG },
   localConfig: { ...DEFAULT_LOCAL_CONFIG },
   deepseekConfig: { ...DEFAULT_DEEPSEEK_CONFIG },
@@ -201,9 +230,15 @@ export function normalizeSettingsObject(parsed: any, fallbackApiKey: string = ''
   // 确定 provider
   let provider: ApiProvider = parsed?.apiProvider || 'ttf';
   if (provider === 'local') provider = 'ttf';
-  if (!['ttf', 'mference', 'maple', 'custom', 'deepseek'].includes(provider)) {
+  if (!['ttf', 'mference', 'maple', 'qwen-qa', 'custom', 'deepseek'].includes(provider)) {
     provider = 'ttf';
   }
+
+  // 历史事故自愈（2026-11）：第 4 引擎刚上线时 saveSettings 的白名单漏了 'qwen-qa'，
+  // 「选了 Qwen 3.5 9B」会被降级成 ttf，并把它的 1243 端口与 default_model 一起写进 TTF 配置。
+  // 1243 是 Qwen 独占端口、TTF 永远是 1235 —— 据此识别，把配置原地纠正回来。
+  const repairedFromQwen = provider === 'ttf' && Number(parsed?.ttfConfig?.apiPort) === 1243;
+  if (repairedFromQwen) provider = 'qwen-qa';
 
   // 1. TTF 配置 (优先读取 ttfConfig，平滑兼容旧 localConfig)
   const rawTtf = parsed?.ttfConfig || parsed?.localConfig || {};
@@ -241,6 +276,14 @@ export function normalizeSettingsObject(parsed: any, fallbackApiKey: string = ''
     systemPrompt:
       rawTtf.systemPrompt !== undefined ? rawTtf.systemPrompt : DEFAULT_TTF_CONFIG.systemPrompt,
   };
+
+  // 上面识别出的污染：把 TTF 的端口/模型名恢复默认，避免切回 TTF 时打到 Qwen 的 1243
+  if (repairedFromQwen) {
+    ttfConfig.apiPort = DEFAULT_TTF_CONFIG.apiPort;
+    if (!ttfConfig.modelId || ttfConfig.modelId === 'default_model' || ttfConfig.modelId.startsWith('/')) {
+      ttfConfig.modelId = DEFAULT_TTF_CONFIG.modelId;
+    }
+  }
 
   // 2. Mference 配置
   const rawMference = parsed?.mferenceConfig || {};
@@ -328,6 +371,56 @@ export function normalizeSettingsObject(parsed: any, fallbackApiKey: string = ''
       rawMaple.systemPrompt !== undefined
         ? rawMaple.systemPrompt
         : DEFAULT_MAPLE_CONFIG.systemPrompt,
+  };
+
+  // 2.5 Qwen 3.5 9B（问答引擎，运行时复用 Maple）
+  const rawQwen = parsed?.qwenQaConfig || {};
+  const qwenMaxContext = Number(
+    rawQwen.maxContext ||
+      (provider === 'qwen-qa' ? parsed.maxContext : undefined) ||
+      DEFAULT_QWEN_QA_CONFIG.maxContext
+  );
+  // 旧版本/自动探测可能把 'default_model' 或权重目录写进 modelId —— 一律归一回可读名字，
+  // 否则模型选择器里会显示一长串绝对路径。目录形式只对 mlx_lm 来说是「model id」。
+  const qwenModelId = (() => {
+    const raw = String(
+      rawQwen.modelId || (provider === 'qwen-qa' ? parsed.modelId : '') || ''
+    ).trim();
+    if (!raw || raw === 'default_model' || raw.startsWith('/')) return DEFAULT_QWEN_QA_CONFIG.modelId;
+    return raw;
+  })();
+  const qwenQaConfig: QwenQaProviderConfig = {
+    ...DEFAULT_QWEN_QA_CONFIG,
+    ...rawQwen,
+    apiPort:
+      rawQwen.apiPort ||
+      (provider === 'qwen-qa' && parsed.apiPort ? parsed.apiPort : DEFAULT_QWEN_QA_CONFIG.apiPort),
+    apiBaseUrl: rawQwen.apiBaseUrl ?? DEFAULT_QWEN_QA_CONFIG.apiBaseUrl,
+    modelId: qwenModelId,
+    maxContext: qwenMaxContext,
+    // 与其它引擎一致：maxTokens 恒为上下文的 50%
+    maxTokens: Math.floor(qwenMaxContext / 2),
+    temperature:
+      rawQwen.temperature !== undefined
+        ? Number(rawQwen.temperature)
+        : DEFAULT_QWEN_QA_CONFIG.temperature,
+    topP: rawQwen.topP !== undefined ? Number(rawQwen.topP) : DEFAULT_QWEN_QA_CONFIG.topP,
+    topK: rawQwen.topK !== undefined ? Number(rawQwen.topK) : DEFAULT_QWEN_QA_CONFIG.topK,
+    minP: rawQwen.minP !== undefined ? Number(rawQwen.minP) : DEFAULT_QWEN_QA_CONFIG.minP,
+    presencePenalty:
+      rawQwen.presencePenalty !== undefined
+        ? Number(rawQwen.presencePenalty)
+        : DEFAULT_QWEN_QA_CONFIG.presencePenalty,
+    repetitionPenalty:
+      rawQwen.repetitionPenalty !== undefined
+        ? Number(rawQwen.repetitionPenalty)
+        : DEFAULT_QWEN_QA_CONFIG.repetitionPenalty,
+    seed: rawQwen.seed !== undefined ? Number(rawQwen.seed) : undefined,
+    stopStrings: Array.isArray(rawQwen.stopStrings) ? rawQwen.stopStrings : [],
+    systemPrompt:
+      rawQwen.systemPrompt !== undefined
+        ? rawQwen.systemPrompt
+        : DEFAULT_QWEN_QA_CONFIG.systemPrompt,
   };
 
   // 3. Custom 配置
@@ -453,6 +546,23 @@ export function normalizeSettingsObject(parsed: any, fallbackApiKey: string = ''
     activeSeed = mapleConfig.seed;
     activeStopStrings = mapleConfig.stopStrings || [];
     activeSystemPrompt = mapleConfig.systemPrompt;
+  } else if (provider === 'qwen-qa') {
+    activePort = qwenQaConfig.apiPort;
+    activeBaseUrl = qwenQaConfig.apiBaseUrl || '';
+    activeModel = qwenQaConfig.modelId;
+    activeMaxContext = qwenQaConfig.maxContext;
+    activeMaxTokens = qwenQaConfig.maxTokens;
+    activeTemp = qwenQaConfig.temperature;
+    activeTopP = qwenQaConfig.topP;
+    activeTopK = qwenQaConfig.topK;
+    activeMinP = qwenQaConfig.minP;
+    activePresencePenalty = qwenQaConfig.presencePenalty;
+    activeRepPenalty = qwenQaConfig.repetitionPenalty;
+    // 与 Maple 同理：mlx_lm.server 不接受 reasoning_effort
+    activeReasoning = 'default';
+    activeSeed = qwenQaConfig.seed;
+    activeStopStrings = qwenQaConfig.stopStrings || [];
+    activeSystemPrompt = qwenQaConfig.systemPrompt;
   } else if (provider === 'custom') {
     activePort = customConfig.apiPort;
     activeBaseUrl = customConfig.apiBaseUrl || '';
@@ -489,6 +599,7 @@ export function normalizeSettingsObject(parsed: any, fallbackApiKey: string = ''
     ttfConfig,
     mferenceConfig,
     mapleConfig,
+    qwenQaConfig,
     customConfig,
     deepseekConfig,
     localConfig: ttfConfig as any,
@@ -597,7 +708,7 @@ export function saveSettings(settings: AppSettings): void {
     // 这份白名单必须与 normalizeSettingsObject 里的保持一致：
     // 少一个 'maple' 就会出现「Chat Model 选了 Maple，保存后被打回 ttf，
     // 同时把 Maple 的端口/模型写进 TTF 配置」——之前那串污染就是这个原因。
-    if (!['ttf', 'mference', 'maple', 'custom', 'deepseek'].includes(provider)) {
+    if (!['ttf', 'mference', 'maple', 'qwen-qa', 'custom', 'deepseek'].includes(provider)) {
       provider = 'ttf';
     }
 
@@ -637,6 +748,13 @@ export function saveSettings(settings: AppSettings): void {
       ...DEFAULT_MAPLE_CONFIG,
       ...existingMaple,
       ...(settings.mapleConfig || {}),
+    };
+
+    const existingQwen = existing.qwenQaConfig || {};
+    const qwenQaConfig: QwenQaProviderConfig = {
+      ...DEFAULT_QWEN_QA_CONFIG,
+      ...existingQwen,
+      ...(settings.qwenQaConfig || {}),
     };
 
     const customConfig: CustomProviderConfig = {
@@ -706,6 +824,23 @@ export function saveSettings(settings: AppSettings): void {
       if (settings.seed !== undefined) mapleConfig.seed = settings.seed;
       if (Array.isArray(settings.stopStrings)) mapleConfig.stopStrings = settings.stopStrings;
       if (settings.systemPrompt !== undefined) mapleConfig.systemPrompt = settings.systemPrompt;
+    } else if (provider === 'qwen-qa') {
+      if (settings.apiPort !== undefined) qwenQaConfig.apiPort = settings.apiPort;
+      if (settings.apiBaseUrl !== undefined) qwenQaConfig.apiBaseUrl = settings.apiBaseUrl;
+      if (settings.modelId !== undefined) qwenQaConfig.modelId = settings.modelId;
+      if (settings.maxContext !== undefined) {
+        qwenQaConfig.maxContext = settings.maxContext;
+        qwenQaConfig.maxTokens = Math.floor(settings.maxContext / 2);
+      }
+      if (settings.temperature !== undefined) qwenQaConfig.temperature = settings.temperature;
+      if (settings.topP !== undefined) qwenQaConfig.topP = settings.topP;
+      if (settings.topK !== undefined) qwenQaConfig.topK = settings.topK;
+      if (settings.minP !== undefined) qwenQaConfig.minP = settings.minP;
+      if (settings.presencePenalty !== undefined) qwenQaConfig.presencePenalty = settings.presencePenalty;
+      if (settings.repetitionPenalty !== undefined) qwenQaConfig.repetitionPenalty = settings.repetitionPenalty;
+      if (settings.seed !== undefined) qwenQaConfig.seed = settings.seed;
+      if (Array.isArray(settings.stopStrings)) qwenQaConfig.stopStrings = settings.stopStrings;
+      if (settings.systemPrompt !== undefined) qwenQaConfig.systemPrompt = settings.systemPrompt;
     } else if (provider === 'custom') {
       if (settings.apiPort !== undefined) customConfig.apiPort = settings.apiPort;
       if (settings.apiBaseUrl !== undefined) customConfig.apiBaseUrl = settings.apiBaseUrl;
@@ -735,6 +870,7 @@ export function saveSettings(settings: AppSettings): void {
       ttfConfig,
       mferenceConfig,
       mapleConfig,
+      qwenQaConfig,
       customConfig,
       deepseekConfig,
       deepseekApiKey: effectiveApiKey,

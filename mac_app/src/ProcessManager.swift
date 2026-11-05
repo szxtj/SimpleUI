@@ -127,7 +127,9 @@ class ProcessManager {
         pkill -f "ocr_server.py" 2>/dev/null || true
         pkill -x "TurboFieldfareServer" 2>/dev/null || true
         pkill -x "MferenceServer" 2>/dev/null || true
-        pkill -f "mlx_lm\\.server" 2>/dev/null || true
+        // Maple 用 `-m mlx_lm.server`，Qwen 3.5 9B 用 `-m mlx_lm server`（空格形式），
+        // 一条正则同时覆盖两者，避免退出后残留一个 6GB 的模型进程
+        pkill -f "mlx_lm[. ]server" 2>/dev/null || true
         pkill -x "kiwix-serve" 2>/dev/null || true
         pkill -f "server/proxy.js" 2>/dev/null || true
         lsof -ti:\(port) | xargs kill -9 2>/dev/null || true

@@ -327,11 +327,12 @@ class StatusBarController: NSObject, NSMenuDelegate {
         let next = !modelActive
         modelActive = next
         let engine = modelEngine
-        // 三个引擎各有独立的 *Enabled 旗；只写总开关不会改这些旗，状态会立刻弹回
+        // 四个引擎各有独立的 *Enabled 旗；只写总开关不会改这些旗，状态会立刻弹回
         let enabledKey: String
         switch engine {
         case "mference": enabledKey = "mferenceEnabled"
         case "maple-mlx": enabledKey = "mapleEnabled"
+        case "qwen-qa": enabledKey = "qwenQaEnabled"
         default: enabledKey = "ttfEnabled"
         }
         let config: [String: Any] = [

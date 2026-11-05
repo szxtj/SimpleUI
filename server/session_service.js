@@ -1271,8 +1271,13 @@ class SessionService {
         payload.stop = settings.stopStrings;
       }
     } else {
+      // mlx 系引擎（Maple / Qwen 3.5 9B）在收到「不是当前加载模型」的 model 串时，
+      // 会把它当 Hugging Face repo id 去解析：带空格直接 404。
+      // 它们是单模型服务，modelId 只是界面标签，线上协议字段固定用 default_model。
+      const isMlxEngine =
+        settings.apiProvider === 'maple' || settings.apiProvider === 'qwen-qa';
       payload = {
-        model: settings.modelId || 'gemma-4-26b-a4b-it',
+        model: isMlxEngine ? 'default_model' : settings.modelId || 'gemma-4-26b-a4b-it',
         messages: formattedMessages,
         stream: true,
         stream_options: { include_usage: true },
@@ -1295,6 +1300,11 @@ class SessionService {
             payload.reasoning_effort = settings.reasoningEffort;
           }
         }
+      } else if (settings.apiProvider === 'qwen-qa') {
+        // Qwen 3.5 9B：思考开关在对话框上，按会话状态映射到 chat template。
+        // mlx_lm.server 用请求里的 chat_template_kwargs 覆盖启动参数默认值；
+        // 它不认识 reasoning_effort，这里刻意不发。
+        payload.chat_template_kwargs = { enable_thinking: settings.enableThinking === true };
       } else if (settings.apiProvider === 'maple') {
         // Maple（deepgrove 版 mlx_lm.server）：chat template 无条件写死 <think>，
         // 服务端只读已知字段，这里刻意**不发** chat_template_kwargs / reasoning_effort。

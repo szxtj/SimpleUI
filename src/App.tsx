@@ -442,9 +442,13 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
         // Maple 的 /v1/models 返回权重目录路径，不能进模型列表 → 对账跳过。
         // 但列表要**重置**成它唯一的模型名，否则会残留上一个 provider 的模型
         // （实测：切到 Maple 后下拉里还挂着 gemma-4-26b-a4b-it）。
-        if (settings.apiProvider === 'maple') {
+        // Maple / Qwen 3.5 9B 都是 mlx_lm.server：/v1/models 只回**权重目录路径**，
+        // 直接进下拉会变成一长串绝对路径。列表钉成唯一一条，名字取配置里的 modelId。
+        if (settings.apiProvider === 'maple' || settings.apiProvider === 'qwen-qa') {
+          const only =
+            (settings.apiProvider === 'qwen-qa' ? settings.modelId : '') || 'default_model';
           setAvailableModels((prev) =>
-            prev.length === 1 && prev[0] === 'default_model' ? prev : ['default_model']
+            prev.length === 1 && prev[0] === only ? prev : [only]
           );
           return;
         }
@@ -593,7 +597,8 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     setImages([]);
 
     const isDeepSeek = settings.apiProvider === 'deepseek';
-    // Maple 的 chat template 恒开 <think>，思考开关对它无效，这里直接按开处理
+    // Maple 的 chat template 恒开 <think>，思考开关对它无效，这里直接按开处理；
+    // Qwen 3.5 9B 则相反：开关就在对话框上，按会话状态下发。
     const sessionEnableThinking =
       settings.apiProvider === 'maple' ? true : (currentSession?.enableThinking ?? false);
     const sessionEnableWiki = isDeepSeek ? false : (currentSession?.enableWikiSearch ?? false);
@@ -735,6 +740,7 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
           setEnableThinking={(val) => {
             if (!currentSessionId) return;
             if (settings.apiProvider === 'maple') return; // 锁定：Maple 无法关闭思考
+            // Qwen 3.5 9B 允许切换：请求层会把它写进 chat_template_kwargs
             updateSessionMeta(currentSessionId, { enableThinking: val });
           }}
           provider={settings.apiProvider}

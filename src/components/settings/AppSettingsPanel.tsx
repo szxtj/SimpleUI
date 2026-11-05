@@ -6,6 +6,7 @@ import {
   TtfProviderConfig,
   MferenceProviderConfig,
   MapleProviderConfig,
+  QwenQaProviderConfig,
   CustomProviderConfig,
 } from '../../types/chat';
 import {
@@ -14,12 +15,12 @@ import {
   DEFAULT_TTF_CONFIG,
   DEFAULT_MFERENCE_CONFIG,
   DEFAULT_MAPLE_CONFIG,
+  DEFAULT_QWEN_QA_CONFIG,
   DEFAULT_CUSTOM_CONFIG,
 } from '../../services/storage';
 import { resolveLanguage, translations, Language, TranslationKeys } from '../../i18n';
 import {
   RotateCcw,
-  Check,
   AppWindow,
   SlidersHorizontal,
   ChevronDown,
@@ -29,6 +30,8 @@ import {
   Terminal,
   HardDrive,
   FolderOpen,
+  BookOpen,
+  Brain,
   Trash2,
 } from 'lucide-react';
 import { getMediaStats, openMediaDir, triggerMediaGC, MediaStorageStats } from '../../services/mediaCleanup';
@@ -77,6 +80,13 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
     ...DEFAULT_MAPLE_CONFIG,
     ...(settings?.mapleConfig || {}),
   }));
+
+  const [qwenQaConfig, setQwenQaConfig] = useState<QwenQaProviderConfig>(() => ({
+    ...DEFAULT_QWEN_QA_CONFIG,
+    ...(settings?.qwenQaConfig || {}),
+  }));
+
+  const [qwenQaStopInput, setQwenQaStopInput] = useState('');
 
   const [customConfig, setCustomConfig] = useState<CustomProviderConfig>(() => ({
     ...DEFAULT_CUSTOM_CONFIG,
@@ -138,6 +148,8 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
     setTtfConfig({ ...DEFAULT_TTF_CONFIG, ...(settings.ttfConfig || settings.localConfig || {}) });
     setMferenceConfig({ ...DEFAULT_MFERENCE_CONFIG, ...(settings.mferenceConfig || {}) });
     setMapleConfig({ ...DEFAULT_MAPLE_CONFIG, ...(settings.mapleConfig || {}) });
+    setQwenQaConfig({ ...DEFAULT_QWEN_QA_CONFIG, ...(settings.qwenQaConfig || {}) });
+    setQwenQaStopInput(((settings.qwenQaConfig || DEFAULT_QWEN_QA_CONFIG).stopStrings || []).join(', '));
     setCustomConfig({ ...DEFAULT_CUSTOM_CONFIG, ...(settings.customConfig || {}) });
     setDeepseekConfig((prev) => ({ ...DEFAULT_DEEPSEEK_CONFIG, ...(settings.deepseekConfig || {}), apiKey: prev.apiKey || settings.deepseekConfig?.apiKey || '' }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -216,6 +228,9 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
       setMferenceStopInput((DEFAULT_MFERENCE_CONFIG.stopStrings || []).join(', '));
     } else if (apiProvider === 'maple') {
       setMapleConfig({ ...DEFAULT_MAPLE_CONFIG });
+    } else if (apiProvider === 'qwen-qa') {
+      setQwenQaConfig({ ...DEFAULT_QWEN_QA_CONFIG });
+      setQwenQaStopInput('');
     } else if (apiProvider === 'custom') {
       setCustomConfig({ ...DEFAULT_CUSTOM_CONFIG });
     } else if (apiProvider === 'deepseek') {
@@ -261,6 +276,13 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
     };
     const finalMaple: MapleProviderConfig = {
       ...mapleConfig,
+    };
+    const finalQwenQa: QwenQaProviderConfig = {
+      ...qwenQaConfig,
+      stopStrings: qwenQaStopInput
+        .split(',')
+        .map((v) => v.trim())
+        .filter(Boolean),
     };
     const finalCustom: CustomProviderConfig = {
       ...customConfig,
@@ -323,6 +345,23 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
       activeSeed = finalMaple.seed;
       activeStopStrings = finalMaple.stopStrings || [];
       activeSystemPrompt = finalMaple.systemPrompt;
+    } else if (apiProvider === 'qwen-qa') {
+      activePort = finalQwenQa.apiPort;
+      activeBaseUrl = finalQwenQa.apiBaseUrl || '';
+      activeModel = finalQwenQa.modelId;
+      activeMaxContext = finalQwenQa.maxContext;
+      activeMaxTokens = finalQwenQa.maxTokens;
+      activeTemp = finalQwenQa.temperature;
+      activeTopP = finalQwenQa.topP;
+      activeTopK = finalQwenQa.topK;
+      activeMinP = finalQwenQa.minP;
+      activePresencePenalty = finalQwenQa.presencePenalty;
+      activeRepPenalty = finalQwenQa.repetitionPenalty;
+      // 与 Maple 同理：mlx_lm.server 不接受 reasoning_effort，思考开关由服务端控制
+      activeReasoning = 'default';
+      activeSeed = finalQwenQa.seed;
+      activeStopStrings = finalQwenQa.stopStrings || [];
+      activeSystemPrompt = finalQwenQa.systemPrompt;
     } else if (apiProvider === 'custom') {
       activePort = finalCustom.apiPort;
       activeBaseUrl = finalCustom.apiBaseUrl || '';
@@ -361,6 +400,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
       ttfConfig: finalTtf,
       mferenceConfig: finalMference,
       mapleConfig: finalMaple,
+      qwenQaConfig: finalQwenQa,
       customConfig: finalCustom,
       deepseekConfig: finalDs,
       localConfig: finalTtf as any,
@@ -392,17 +432,12 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
       {/* 1. 常规与外观 (General & Appearance) */}
       {activeTab === 'general' && (
         <div className="space-y-4">
-          <div>
-            <h2 className="text-xl font-bold tracking-tight text-[#1f2328] dark:text-[#f1f3f7]">
-              {t('tabGeneral')}
-            </h2>
-          </div>
 
-          <div className="p-4 rounded-2xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c] space-y-4 shadow-xs">
-            <div className="flex items-center gap-2 pb-2 border-b border-black/5 dark:border-white/5">
+          <div className="p-5 rounded-2xl bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5 space-y-4 shadow-xs">
+            <div className="flex items-center gap-2 mb-1">
               <AppWindow className="w-4 h-4 text-blue-600 dark:text-blue-400" />
               <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
-                {t('settingsAppCard')}
+                {t('tabGeneral')}
               </span>
             </div>
 
@@ -458,17 +493,14 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
               </p>
             </div>
 
-            <div className="pt-2 flex items-center justify-between border-t border-black/5 dark:border-white/5">
-              {cardResetButton(handleAppCardReset)}
-              <button
-                type="button"
-                onClick={handleSave}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs bg-blue-600 hover:bg-blue-500 text-white font-medium shadow-xs transition-colors cursor-pointer"
-              >
-                <Check className="w-3.5 h-3.5" />
-                <span>{t('saveSettings')}</span>
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={handleSave}
+              className="mt-1 w-full px-2 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white text-xs font-medium transition-all cursor-pointer"
+            >
+              {t('saveSettings')}
+            </button>
+            {cardResetButton(handleAppCardReset)}
           </div>
         </div>
       )}
@@ -476,20 +508,12 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
       {/* 2. 聊天模型接入 (Chat Models) */}
       {activeTab === 'chat-models' && (
         <div className="space-y-4">
-          <div>
-            <h2 className="text-xl font-bold tracking-tight text-[#1f2328] dark:text-[#f1f3f7]">
-              {t('tabChatModel')}
-            </h2>
-            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-              {t('settingsModelCard')} · {t('apiProviderLabel')}
-            </p>
-          </div>
 
-          <div className="p-4 rounded-2xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c] space-y-4 shadow-xs">
-            <div className="flex items-center gap-2 pb-2 border-b border-black/5 dark:border-white/5">
+          <div className="p-5 rounded-2xl bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5 space-y-4 shadow-xs">
+            <div className="flex items-center gap-2 mb-1">
               <SlidersHorizontal className="w-4 h-4 text-amber-600 dark:text-amber-400" />
               <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
-                {t('settingsModelCard')}
+                {t('tabChatModel')}
               </span>
             </div>
 
@@ -498,7 +522,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
               <label className="block font-medium mb-2 text-zinc-600 dark:text-[#9aa0ac]">
                 {t('apiProviderLabel')}
               </label>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
                 <button
                   type="button"
                   onClick={() => setApiProvider('ttf')}
@@ -534,6 +558,18 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                 >
                   <SlidersHorizontal className="w-3.5 h-3.5" />
                   <span className="whitespace-nowrap">{t('providerMapleShort')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setApiProvider('qwen-qa')}
+                  className={`flex items-center justify-center gap-2 py-2 px-3 rounded-xl border text-xs font-medium transition-all cursor-pointer ${
+                    apiProvider === 'qwen-qa'
+                      ? 'bg-amber-500/10 border-amber-500/40 text-amber-700 dark:text-amber-400 font-semibold shadow-xs'
+                      : 'bg-white dark:bg-[#202127] border-black/10 dark:border-[#343740] text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
+                  }`}
+                >
+                  <BookOpen className="w-3.5 h-3.5" />
+                  <span className="whitespace-nowrap">{t('providerQwenQaShort')}</span>
                 </button>
                 <button
                   type="button"
@@ -896,7 +932,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
-                      {t('servicePortLabel')}
+                      {t('svcPortLabel')}
                     </label>
                     <select
                       value={[11434, 8000, 8080, 1234, 5000].includes(customConfig.apiPort) ? customConfig.apiPort : 'custom'}
@@ -1064,7 +1100,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
-                      {t('servicePortLabel')}
+                      {t('svcPortLabel')}
                     </label>
                     <input
                       type="number"
@@ -1300,7 +1336,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
-                      {t('servicePortLabel')}
+                      {t('svcPortLabel')}
                     </label>
                     <input
                       type="number"
@@ -1454,6 +1490,217 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
               </div>
             )}
 
+            {/* Qwen 3.5 9B（问答引擎）：默认参数取官方 README 的「非思考模式·通用任务」那一组
+                temperature=0.7 / top_p=0.8 / top_k=20 / min_p=0 / presence_penalty=1.5 / repetition=1.0 */}
+            {apiProvider === 'qwen-qa' && (
+              <div className="space-y-3 pt-2 border-t border-black/5 dark:border-white/5">
+                <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-800 dark:text-blue-300 text-[11px] flex items-start gap-2">
+                  <Brain className="w-4 h-4 flex-shrink-0 text-blue-600 dark:text-blue-400 mt-px" />
+                  <span>{t('qwenQaThinkingInComposer')}</span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('svcPortLabel')}
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="65535"
+                      value={qwenQaConfig.apiPort ?? 1243}
+                      onChange={(e) => setQwenQaConfig({ ...qwenQaConfig, apiPort: Number(e.target.value) || 1243 })}
+                      placeholder="1243"
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('customBaseUrlLabel')}
+                    </label>
+                    <input
+                      type="text"
+                      value={qwenQaConfig.apiBaseUrl ?? ''}
+                      onChange={(e) => setQwenQaConfig({ ...qwenQaConfig, apiBaseUrl: e.target.value })}
+                      placeholder="http://127.0.0.1:1243"
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('modelLabel')}
+                    </label>
+                    <input
+                      type="text"
+                      value={qwenQaConfig.modelId ?? 'Qwen 3.5 9B'}
+                      onChange={(e) => setQwenQaConfig({ ...qwenQaConfig, modelId: e.target.value })}
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                    <div className="mt-1 text-[10px] text-zinc-400 dark:text-zinc-500">
+                      {t('qwenQaModelIdHint')}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('maxContextLabel')}
+                    </label>
+                    <select
+                      value={qwenQaConfig.maxContext ?? 16384}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        // maxTokens 恒为上下文的 50%（与 TTF / Mference / Maple 同一规则）
+                        setQwenQaConfig({ ...qwenQaConfig, maxContext: val, maxTokens: Math.floor(val / 2) });
+                      }}
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none cursor-pointer"
+                    >
+                      <option value={8192}>8,192 (8K)</option>
+                      <option value={16384}>{t('contextOption16kDefault')}</option>
+                      <option value={32768}>32,768 (32K)</option>
+                      <option value={65536}>65,536 (64K)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('systemPromptLabel')}
+                    </label>
+                    <input
+                      type="text"
+                      value={qwenQaConfig.systemPrompt ?? ''}
+                      onChange={(e) => setQwenQaConfig({ ...qwenQaConfig, systemPrompt: e.target.value })}
+                      placeholder={t('systemPromptPlaceholderQwenQa')}
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('seedLabel')}
+                    </label>
+                    <input
+                      type="number"
+                      value={qwenQaConfig.seed ?? ''}
+                      onChange={(e) =>
+                        setQwenQaConfig({
+                          ...qwenQaConfig,
+                          seed: e.target.value ? Number(e.target.value) : undefined,
+                        })
+                      }
+                      placeholder={t('seedPlaceholder')}
+                      className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('temperatureLabel')}: <span className="font-mono text-amber-500 dark:text-amber-400">{qwenQaConfig.temperature ?? 0.7}</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="2"
+                      step="0.05"
+                      value={qwenQaConfig.temperature ?? 0.7}
+                      onChange={(e) => setQwenQaConfig({ ...qwenQaConfig, temperature: Number(e.target.value) })}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('topPLabel')}: <span className="font-mono text-amber-500 dark:text-amber-400">{qwenQaConfig.topP ?? 0.8}</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="1"
+                      step="0.01"
+                      value={qwenQaConfig.topP ?? 0.8}
+                      onChange={(e) => setQwenQaConfig({ ...qwenQaConfig, topP: Number(e.target.value) })}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('topKLabel')}: <span className="font-mono text-amber-500 dark:text-amber-400">{qwenQaConfig.topK ?? 20}</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="1"
+                      value={qwenQaConfig.topK ?? 20}
+                      onChange={(e) => setQwenQaConfig({ ...qwenQaConfig, topK: Number(e.target.value) })}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('minPLabel')}: <span className="font-mono text-amber-500 dark:text-amber-400">{qwenQaConfig.minP ?? 0}</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={qwenQaConfig.minP ?? 0}
+                      onChange={(e) => setQwenQaConfig({ ...qwenQaConfig, minP: Number(e.target.value) })}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('presencePenaltyLabel')}: <span className="font-mono text-amber-500 dark:text-amber-400">{qwenQaConfig.presencePenalty ?? 1.5}</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="2"
+                      step="0.1"
+                      value={qwenQaConfig.presencePenalty ?? 1.5}
+                      onChange={(e) => setQwenQaConfig({ ...qwenQaConfig, presencePenalty: Number(e.target.value) })}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                      {t('repetitionPenaltyLabel')}: <span className="font-mono text-amber-500 dark:text-amber-400">{qwenQaConfig.repetitionPenalty ?? 1.0}</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="1"
+                      max="2"
+                      step="0.05"
+                      value={qwenQaConfig.repetitionPenalty ?? 1.0}
+                      onChange={(e) => setQwenQaConfig({ ...qwenQaConfig, repetitionPenalty: Number(e.target.value) })}
+                      className="w-full accent-amber-500 cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
+                    {t('stopLabel')}
+                  </label>
+                  <input
+                    type="text"
+                    value={qwenQaStopInput}
+                    onChange={(e) => setQwenQaStopInput(e.target.value)}
+                    placeholder={t('stopPlaceholder')}
+                    className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-[#343740] rounded-xl px-3 py-2 text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none font-mono"
+                  />
+                </div>
+              </div>
+            )}
+
             {apiProvider === 'mference' && (
               <div className="space-y-3 pt-2 border-t border-black/5 dark:border-white/5">
                 <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-[11px] flex items-center gap-2">
@@ -1464,7 +1711,7 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="block font-medium mb-1 text-zinc-600 dark:text-[#9aa0ac]">
-                      {t('servicePortLabel')}
+                      {t('svcPortLabel')}
                     </label>
                     <input
                       type="number"
@@ -1736,17 +1983,14 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
               </div>
             )}
 
-            <div className="pt-2 flex items-center justify-between border-t border-black/5 dark:border-white/5">
-              {cardResetButton(handleModelCardReset)}
-              <button
-                type="button"
-                onClick={handleSave}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs bg-blue-600 hover:bg-blue-500 text-white font-medium shadow-xs transition-colors cursor-pointer"
-              >
-                <Check className="w-3.5 h-3.5" />
-                <span>{t('saveSettings')}</span>
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={handleSave}
+              className="mt-1 w-full px-2 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white text-xs font-medium transition-all cursor-pointer"
+            >
+              {t('saveSettings')}
+            </button>
+            {cardResetButton(handleModelCardReset)}
           </div>
         </div>
       )}
@@ -1754,17 +1998,12 @@ export const AppSettingsPanel: React.FC<AppSettingsPanelProps> = ({
       {/* 3. 存储与空间 (Storage & Media) */}
       {activeTab === 'storage' && (
         <div className="space-y-4">
-          <div>
-            <h2 className="text-xl font-bold tracking-tight text-[#1f2328] dark:text-[#f1f3f7]">
-              {t('tabStorage')}
-            </h2>
-          </div>
 
-          <div className="p-4 rounded-2xl border border-black/10 dark:border-[#343740] bg-[#f8f9fb] dark:bg-[#18191c] space-y-4 shadow-xs">
-            <div className="flex items-center gap-2 pb-2 border-b border-black/5 dark:border-white/5">
+          <div className="p-5 rounded-2xl bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5 space-y-4 shadow-xs">
+            <div className="flex items-center gap-2 mb-1">
               <HardDrive className="w-4 h-4 text-zinc-600 dark:text-zinc-400" />
               <span className="font-semibold text-xs text-[#1f2328] dark:text-[#f1f3f7]">
-                {t('mediaStorageTitle')}
+                {t('tabStorage')}
               </span>
             </div>
 

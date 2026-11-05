@@ -83,7 +83,7 @@ export interface ChatSession {
   enableWikiSearch?: boolean; // Conversation-level independent offline wiki toggle (default false)
 }
 
-export type ApiProvider = 'ttf' | 'mference' | 'maple' | 'custom' | 'deepseek' | 'local';
+export type ApiProvider = 'ttf' | 'mference' | 'maple' | 'qwen-qa' | 'custom' | 'deepseek' | 'local';
 
 /** 本地引擎独立设置 (兼容保留) */
 export interface LocalProviderConfig {
@@ -153,6 +153,29 @@ export interface MapleProviderConfig {
   temperature: number;          // 默认 0.8
   topP: number;                 // 默认 0.95
   topK?: number;                // 默认 40
+  minP?: number;                // 默认 0
+  presencePenalty?: number;
+  repetitionPenalty?: number;
+  seed?: number;
+  stopStrings?: string[];
+  systemPrompt: string;
+}
+
+/**
+ * Qwen 3.5 9B 问答引擎（默认端口 1243，运行时与 Maple 共用 mlx-lm）。
+ *
+ * 定位是「高速、知识面广、默认不推理」：思考开关在服务管理面板（QWEN_QA_THINKING），
+ * 所以这里和 Maple 一样不放 reasoningEffort —— 请求层不下发该字段。
+ */
+export interface QwenQaProviderConfig {
+  apiPort: number;              // 默认 1243
+  apiBaseUrl?: string;
+  modelId: string;              // mlx_lm.server 固定回 "default_model"
+  maxContext: number;           // 默认 16384
+  maxTokens: number;            // 默认 4096（关思考，不需要额外预算）
+  temperature: number;          // 默认 0.7
+  topP: number;                 // 默认 0.8
+  topK?: number;                // 默认 20
   minP?: number;                // 默认 0
   presencePenalty?: number;
   repetitionPenalty?: number;
@@ -253,10 +276,11 @@ export interface TranslateServiceConfigPatch {
 export interface AppSettings {
   apiProvider?: ApiProvider;    // 'ttf' | 'mference' | 'custom' | 'deepseek' | 'local'
 
-  // 四套独立存储的模型配置
+  // 五套独立存储的模型配置
   ttfConfig?: TtfProviderConfig;
   mferenceConfig?: MferenceProviderConfig;
   mapleConfig?: MapleProviderConfig;
+  qwenQaConfig?: QwenQaProviderConfig;
   customConfig?: CustomProviderConfig;
   localConfig?: LocalProviderConfig;
   deepseekConfig?: DeepSeekProviderConfig;

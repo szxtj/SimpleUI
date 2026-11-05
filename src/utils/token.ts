@@ -7,7 +7,7 @@ import { ChatMessage } from '../types/chat';
  * - Non-CJK characters (English words, numbers, punctuation) are ~3.8 - 4 characters per token.
  * - Delimiters / message framing boilerplate: ~4 tokens per message.
  */
-export type CalibrationProvider = 'ttf' | 'mference' | 'maple' | 'custom' | 'deepseek' | 'local';
+export type CalibrationProvider = 'ttf' | 'mference' | 'maple' | 'qwen-qa' | 'custom' | 'deepseek' | 'local';
 
 /**
  * 会话级校准系数（按 Provider 独立隔离存储，避免本地模型与 DeepSeek 分词器相互污染）。
@@ -19,6 +19,7 @@ const calibrationFactors: Record<CalibrationProvider, number> = {
   ttf: 1.0,
   mference: 1.0,
   maple: 1.0,
+  'qwen-qa': 1.0,
   custom: 1.0,
   local: 1.0,
   deepseek: 1.0,

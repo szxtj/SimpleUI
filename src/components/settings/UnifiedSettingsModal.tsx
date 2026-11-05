@@ -177,6 +177,7 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
       subtitles?: ServiceState;
       translate?: ServiceState;
       ocr?: ServiceState;
+      scene3d?: ServiceState;
     }) => {
       if (statuses.kb) setKbDot(statuses.kb);
       if (statuses.model) setModelDot(statuses.model);
@@ -185,6 +186,7 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
       if (statuses.subtitles) setSubtitlesDot(statuses.subtitles);
       if (statuses.translate) setTranslateDot(statuses.translate);
       if (statuses.ocr) setOcrDot(statuses.ocr);
+      if (statuses.scene3d) setScene3dDot(statuses.scene3d);
     },
     []
   );

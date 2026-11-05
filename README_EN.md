@@ -13,7 +13,7 @@
   React 19 · TypeScript · Vite · Tailwind CSS · KaTeX · Pyodide · Swift / WebKit · Apple Silicon
 </p>
 
-SimpleUI is deeply tuned for [TurboFieldfare](https://github.com/drumih/turbo-fieldfare), supports [Mference](https://github.com/NeelM0906/Mference) and the [DeepSeek official API](https://api-docs.deepseek.com/), and connects to Ollama, vLLM, llama.cpp server, LM Studio, and other services through OpenAI-compatible APIs.
+SimpleUI is deeply tuned for [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) and ships three app-managed local engines (Mference, Maple MLX and Qwen 3.5 9B). It supports the [DeepSeek official API](https://api-docs.deepseek.com/) and connects to Ollama, vLLM, llama.cpp server, LM Studio, and other services through OpenAI-compatible APIs.
 
 ---
 
@@ -32,7 +32,7 @@ SimpleUI is deeply tuned for [TurboFieldfare](https://github.com/drumih/turbo-fi
 ## Highlights
 
 - **Local-first**: inference, knowledge retrieval, speech recognition, speech synthesis, OCR, subtitles, and translation all run on-device — no need to install or configure Python yourself, no vector database, and no cloud API.
-- **Model integration services**: unified management for base models, dual-engine speech input (Qwen3-ASR / Confucius4-R2T2), Qwen3-TTS speech synthesis, PaddleOCR-VL visual OCR, R2T2 streaming captions, Index-Translate standalone on-device translation, and CoreML segmentation models; features a unified Service Manager with concurrent speed-tested downloads, resumable transfers, shared model weights, and on-demand lifecycle control.
+- **Model integration services**: unified management for four base-model engines (TTF / Mference / Maple MLX / Qwen 3.5 9B), dual-engine speech input (Qwen3-ASR / Confucius4-R2T2), Qwen3-TTS speech synthesis, PaddleOCR-VL visual OCR, R2T2 streaming captions, Index-Translate standalone on-device translation, and CoreML segmentation models; features a unified Service Manager with concurrent speed-tested downloads, resumable transfers, shared weights and runtimes (Maple and Qwen 3.5 9B share a single MLX runtime), and on-demand lifecycle control.
 - **Visual OCR (Screen Capture to Markdown)**: Global hotkey `⌘⇧2` captures any screen region and uses on-device PaddleOCR-VL to extract structured Markdown (paragraphs, headings, tables, LaTeX formulas) directly into the clipboard; runs strictly on demand and unloads on idle timeout to reclaim VRAM.
 - **DeepSeek API integration**: independent Base URL / API key / model / context / temperature / top_p / reasoning effort / stop strings / system prompt; requests go directly to the official endpoint, with cache-friendly context trimming.
 - **Offline Wiki RAG**: Kiwix ZIM + multi-channel retrieval + direct raw-text injection; no summarization, no rewriting, no mechanical truncation, with clickable citations.
@@ -52,7 +52,7 @@ React frontend / Swift native windows
         ▼
 Node.js proxy (127.0.0.1:31235)
         │
-        ├── Base model service (TTF :1235 / Mference :1241 / Maple MLX :1242 / OpenAI-compatible)
+        ├── Base model service (TTF :1235 / Mference :1241 / Maple MLX :1242 / Qwen 3.5 9B :1243 / OpenAI-compatible)
         ├── DeepSeek official API (cloud)
         ├── Offline Wiki RAG (Kiwix :31236 + local ZIM)
         ├── Speech input (Qwen3-ASR-0.6B MLX / R2T2 audio.cpp · :1236 · on-demand)
@@ -75,11 +75,11 @@ Node.js proxy (127.0.0.1:31235)
 | R2T2 subtitle ASR | `1250` | Append-only streaming recognition with native punctuation (subtitle pipeline stage 1) |
 | Index-Translate subtitle translation | `1249` | Specialized NMT (subtitle pipeline stage 3, runs parallel to Quick Translate 1248) |
 | Quick Translate on-device engine | `1248` | `⌃Space` fast selection translation (llama-server standalone instance, 4096 context, unloads on idle) |
-| Base models | `1235` / `1241` / `1242` | TTF / Mference / Maple MLX / other OpenAI-compatible services |
-| Maple MLX runtime | `—` | Dedicated Python venv (~311 MB), one-click download in Service Manager |
+| Base models | `1235` / `1241` / `1242` / `1243` | TTF / Mference / Maple MLX / Qwen 3.5 9B / other OpenAI-compatible services |
+| MLX runtime (shared by Maple / Qwen) | `—` | Dedicated Python venv (~363 MB), bundled with the app; both engines share one copy, never downloaded twice |
 | DeepSeek API | Cloud | Official API: chat, reasoning, and Quick Translate Detail mode |
 
-> Base-model repositories and weights are not distributed with this project; users provide them. Speech input, TTS, OCR, subtitle, and Quick Translate models can all be downloaded with one-click concurrent speed testing and resumable transfers under the in-app Service Manager. Identical weight files (R2T2 / Index-Translate) are automatically shared without duplicate downloads or disk usage; the two speech-input engines download independently.
+> Base-model repositories and weights are not distributed with this project; users provide them. Speech input, TTS, OCR, subtitle, and Quick Translate models can all be downloaded with one-click concurrent speed testing and resumable transfers under the in-app Service Manager. Identical resources are reused automatically instead of downloading twice: R2T2 and Index-Translate weights are shared between subtitles, speech input and Quick Translate, and Maple and Qwen 3.5 9B share one MLX Python runtime. The two speech-input engines still download independently.
 
 ---
 
@@ -120,14 +120,15 @@ Query
 
 ### Base Models and DeepSeek API
 
-- Deeply tuned for local **TurboFieldfare** (default port `1235`); **Mference** (default port `1241`) and **Maple MLX** (default port `1242`) are also supported.
+- Deeply tuned for local **TurboFieldfare** (default port `1235`); **Mference** (default port `1241`), **Maple MLX** (default port `1242`) and **Qwen 3.5 9B** (default port `1243`) are also supported. The four engines are pairwise exclusive: switching releases the VRAM held by the previous one.
 - **Maple MLX uses the official [mlx-lm](https://github.com/deepgrove-ai/mlx-lm-deepgrove) runtime** to load Maple Preview 20B-A1B (`deepgrove/maple-preview-2bit-mlx`). Both the runtime dependencies (~311 MB) and the weights (5.31 GB) are one-click downloads in Service Manager; only the mlx-lm and Maple native-kernel wheels (~0.5 MB) are bundled, so no large files ship with the app. As with the voice / TTS / subtitle / translate / OCR services, **the runtime and weights paths are app-managed and fixed** (`Application Support/SimpleUI/{runtimes,models}/maple-*`); there is no path picker.
 - **The DeepSeek official API is a first-class provider**: configure Base URL, API key, model, context window, temperature, top_p, reasoning effort, stop strings, and system prompt independently. Requests go directly to `api.deepseek.com`, not through a local inference process.
 - DeepSeek mode trims context in batches to the 70% watermark to preserve prompt-cache hits and avoid repeated prefill.
 - Connects to Ollama, vLLM, llama.cpp server, LM Studio, and other services via OpenAI-compatible APIs.
-- The Service Manager provides start/stop, status, parameter tuning, logs, and model-directory browsing; switching local base engines releases VRAM mutually (the three engines are pairwise exclusive).
+- The Service Manager provides start/stop, status, parameter tuning, logs, and model-directory browsing; switching local base engines releases VRAM mutually (the four engines are pairwise exclusive).
 - Local upstream projects and weights must be prepared by the user: [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) / [Mference](https://github.com/NeelM0906/Mference). Maple MLX downloads its runtime and weights from inside the app. DeepSeek only needs an API key in Settings.
-- **Sampling parameters for all three local engines (temperature / top-p / top-k / min-p / repetition penalty) live in Settings → Chat Model**; the Service Manager only handles process-level parameters. Max completion tokens are always 50% of the context window. Maple's defaults follow the official/community recommendations (temp 1.0, top-p 0.95, top-k 40, min-p 0.05, repetition penalty 1.15).
+- **Sampling parameters for all four local engines (temperature / top-p / top-k / min-p / repetition penalty / presence penalty) live in Settings → Chat Model**; the Service Manager only handles process-level parameters. Max completion tokens are always 50% of the context window. Maple's defaults follow the official/community recommendations (temp 1.0, top-p 0.95, top-k 40, min-p 0.05, repetition penalty 1.15); Qwen 3.5 9B uses the official "instruct / non-thinking, general tasks" set (temp 0.7, top-p 0.8, top-k 20, min-p 0, presence 1.5, repetition 1.0).
+- **Qwen 3.5 9B is a non-reasoning-by-default general Q&A engine**: weights are `mlx-community/Qwen3.5-9B-4bit` (~5.95 GB across 11 files) and reuse Maple's MLX runtime, so the app bundle grows by zero bytes. Its **thinking toggle lives in the composer**, sent per message via `chat_template_kwargs`: off answers directly, on reasons first. The runtime is text-only mlx-lm with no vision tower loaded, so image input is not supported.
 - Maple's Flash head defaults to **off**: the flag must match the shipped weights — enabling it on the released 2-bit weights causes token-level corruption in the output. Correctness over speed.
 - Note: DeepSeek mode automatically disables the knowledge-base entry; Offline Wiki RAG targets the local-model path.
 
@@ -249,7 +250,7 @@ Word-compatible formula/table serialization lives in `src/utils/selectionToMarkd
 
 - Node.js ≥ 18
 - macOS 15+ (for the native app build)
-- Optional: a local base-model service (TTF / Mference / Maple MLX / Ollama / vLLM / llama.cpp / LM Studio)
+- Optional: a local base-model service (TTF / Mference / Maple MLX / Qwen 3.5 9B / Ollama / vLLM / llama.cpp / LM Studio)
 - Optional: a DeepSeek API key (cloud chat/translation)
 - Optional: a local Kiwix ZIM file (offline wiki)
 
@@ -279,7 +280,7 @@ Builds the Swift native shell, frontend assets, and bundled runtimes, then insta
 
 ### Models and knowledge base
 
-- Base models: prepare TTF / Mference repositories and weights yourself; Maple MLX downloads its runtime (~311 MB) and weights (~5.31 GB) from Service Manager → Base Model Service → Maple MLX; connect another OpenAI-compatible service, or configure a DeepSeek API key in Settings.
+- Base models: prepare TTF / Mference repositories and weights yourself; Maple MLX weights (~5.31 GB) and Qwen 3.5 9B weights (~5.95 GB) are one-click downloads in Service Manager → Base Model Service, and both reuse the MLX runtime bundled with the app (~363 MB) instead of installing their own. You can also connect another OpenAI-compatible service, or configure a DeepSeek API key in Settings.
 - Speech input models: the default Qwen3-ASR-0.6B-8bit (~964 MB, MLX) downloads from "Service Manager → Speech Input"; switching to Confucius4-R2T2 Q8_0 (~2.31 GB) reuses the subtitle service's existing weights without duplicate downloads or storage.
 - Voice synthesis model: Download Qwen3-TTS 1.7B (~2.51 GB) via one-click speed-tested download under Service Manager → Voice Synthesis. The speech codec is byte-identical to the previous release, so integrity checks reuse it.
 - Visual OCR model: Download PaddleOCR-VL 1.6 (~1.02 GB) via one-click speed-tested download under Service Manager → Visual OCR.
@@ -304,6 +305,8 @@ SimpleUI/
 │   ├── asr_service.js    Speech input service (`:1236` · dual engine: Qwen3-ASR / R2T2)
 │   ├── asr/              Qwen3-ASR Python wrapper (mlx-audio, reuses the tts/python runtime)
 │   ├── asr_model_download.js  Qwen3-ASR weight downloader (dual-source probe + resume)
+│   ├── qwen_qa_server.sh  Qwen 3.5 9B engine launcher (mlx-lm `:1243`, reuses the Maple runtime)
+│   ├── qwen_qa_download.js  Qwen 3.5 9B weight downloader (HF manifest + resume)
 │   ├── wiki_service.js   Kiwix offline encyclopedia service (`:31236`)
 │   ├── ocr/              Python MLX-VLM OCR engine
 │   ├── tts/              Python MLX-Audio TTS engine

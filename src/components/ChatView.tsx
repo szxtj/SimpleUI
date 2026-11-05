@@ -109,6 +109,23 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const { t } = useI18n();
   const visionOk = supportsVision(provider);
 
+  /**
+   * 模型标识展示名。
+   *
+   * mlx_lm.server（Maple / Qwen 3.5 9B）的 `/v1/models` 只回**权重目录绝对路径**，
+   * 历史上这个路径还被写进过配置，于是顶部选择器会出现
+   * `/Users/xxx/Library/Application Support/...` 这种一长串。
+   * 这里只对「占位值或路径」做替换，用户自己起的名字原样保留。
+   */
+  const displayModelName = (id?: string) => {
+    if (!id) return id;
+    const isPlaceholder = id === 'default_model' || id.startsWith('/');
+    if (!isPlaceholder) return id;
+    if (provider === 'qwen-qa') return t('modelEngineQwenQa');
+    if (provider === 'maple') return t('modelEngineMaple');
+    return id;
+  };
+
   /** 窗口/应用整机尺寸拉伸调整：同样接入遮罩 + 宏观刻度复位契约 */
   const [windowResizing, setWindowResizing] = useState(false);
   const windowResizeTimerRef = useRef<number | null>(null);
@@ -364,8 +381,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
               onClick={() => setShowModelMenu(!showModelMenu)}
               className="flex items-center gap-1.5 px-2.5 cq-md:px-3 py-1.5 rounded-xl text-sm font-semibold text-[#1f2328] dark:text-[#f1f3f7] hover:bg-black/5 dark:hover:bg-white/5 transition-colors max-w-full"
             >
-              <span className="truncate max-w-[130px] cq-lg:max-w-[220px]" title={modelId || 'gemma-4-26b-a4b-it'}>
-                {modelId || 'gemma-4-26b-a4b-it'}
+              <span
+                className="truncate max-w-[130px] cq-lg:max-w-[220px]"
+                title={displayModelName(modelId || 'gemma-4-26b-a4b-it')}
+              >
+                {displayModelName(modelId || 'gemma-4-26b-a4b-it')}
               </span>
               <ChevronDown className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" />
             </button>
@@ -388,7 +408,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       m === modelId ? 'text-blue-600 dark:text-blue-400 font-medium' : 'text-zinc-700 dark:text-zinc-300'
                     }`}
                   >
-                    <span className="truncate">{m}</span>
+                    <span className="truncate">{displayModelName(m)}</span>
                     {m === modelId && <Check className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />}
                   </button>
                 ))}

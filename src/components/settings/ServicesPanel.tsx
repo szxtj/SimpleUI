@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { AppSettings, WikiStatusInfo, AsrServiceStatus, AsrEngineId, VoicePermissionStatus, SubtitleServiceStatus, TtsServiceStatus, OcrServiceStatus, OcrConfig, Scene3dServiceStatus, TranslateServiceStatus } from '../../types/chat';
-import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ModelEngine, MapleAssets, ASRServiceAPI, SubtitleServiceAPI, TtsServiceAPI, OcrServiceAPI, Scene3dServiceAPI, TranslateServiceAPI } from '../../services/api';
+import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ModelEngine, MapleAssets, QwenQaAssets, ASRServiceAPI, SubtitleServiceAPI, TtsServiceAPI, OcrServiceAPI, Scene3dServiceAPI, TranslateServiceAPI } from '../../services/api';
 import { resolveLanguage, formatArticleCount, translations, Language, TranslationKeys } from '../../i18n';
 import {
   SERVICE_STATE_CARD_DOT_CLASS,
@@ -55,11 +55,21 @@ const SVC_CARD_DEFAULTS_MAPLE: Partial<ModelServiceConfig> = {
   idleAutoResetMinutes: 30,
 };
 
+// Qwen 3.5 9B 问答引擎：运行时复用 Maple 那份 Python，只有权重需要下载
+const SVC_CARD_DEFAULTS_QWEN_QA: Partial<ModelServiceConfig> = {
+  qwenQaPort: 1243,
+  qwenQaMaxTokens: 4096,
+  qwenQaPromptCacheSize: 2,
+  qwenQaThinking: false,
+  idleAutoResetMinutes: 30,
+};
+
 /** 引擎的中立展示名（与后端 ENGINE_METADATA 的 name 一致） */
 const ENGINE_DISPLAY_NAME: Record<ModelEngine, string> = {
   'turbo-fieldfare': 'TurboFieldfare',
   mference: 'Mference',
   'maple-mlx': 'Maple MLX',
+  'qwen-qa': 'Qwen 3.5 9B',
 };
 
 // 语音合成服务卡片默认值（与后端 tts_service.js DEFAULT_CONFIG 保持一致）
@@ -276,6 +286,38 @@ const IdleTimeoutSelector: React.FC<{
  * violet→emerald 渐变进度条与 MB/s、失败显示红色错误行。抽成组件是因为
  * 运行时和权重的交互完全对称，复制两份会立刻出现文案漂移。
  */
+/**
+ * 只读的资源行：与 MapleAssetRow 同一套排版（标题 + 副标题 + 右侧状态），
+ * 但没有下载/安装动作 —— 用于「与其它引擎共用、App 随包分发」的运行时，
+ * 避免出现一行挤在一起的细条，和上下两个资源卡风格不统一。
+ */
+const SharedAssetRow: React.FC<{
+  title: string;
+  subtitle: string;
+  ready: boolean;
+  readyText: string;
+  missingText: string;
+}> = ({ title, subtitle, ready, readyText, missingText }) => (
+  <div className="rounded-lg border border-black/10 dark:border-white/10 bg-[#f6f8fa] dark:bg-[#18191c] px-2.5 py-2">
+    <div className="flex items-start justify-between gap-2">
+      <div className="min-w-0">
+        <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200 truncate">{title}</div>
+        <div className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate">{subtitle}</div>
+      </div>
+      {ready ? (
+        <span className="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium flex-shrink-0">
+          <Check className="w-3 h-3" />
+          {readyText}
+        </span>
+      ) : (
+        <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium flex-shrink-0">
+          {missingText}
+        </span>
+      )}
+    </div>
+  </div>
+);
+
 const MapleAssetRow: React.FC<{
   title: string;
   subtitle: string;
@@ -383,6 +425,7 @@ export interface ServicesPanelProps {
     subtitles?: ServiceState;
     translate?: ServiceState;
     ocr?: ServiceState;
+    scene3d?: ServiceState;
   }) => void;
 }
 
@@ -982,7 +1025,13 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
     setSvcBusy(`toggle-${engine}`);
     try {
       const enabledKey =
-        engine === 'mference' ? 'mferenceEnabled' : engine === 'maple-mlx' ? 'mapleEnabled' : 'ttfEnabled';
+        engine === 'mference'
+          ? 'mferenceEnabled'
+          : engine === 'maple-mlx'
+          ? 'mapleEnabled'
+          : engine === 'qwen-qa'
+          ? 'qwenQaEnabled'
+          : 'ttfEnabled';
       await ModelServiceAPI.updateConfig(
         { [enabledKey]: next, engine: next ? engine : selectedEngine } as Partial<ModelServiceConfig>,
         false
@@ -999,7 +1048,33 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
 
   const isMference = selectedEngine === 'mference';
   const isMaple = selectedEngine === 'maple-mlx';
-  const mapleAssets: MapleAssets | undefined = svcStatus?.maple?.assets;
+  const isQwenQa = selectedEngine === 'qwen-qa';
+  const mapleAssets = svcStatus?.maple?.assets as MapleAssets | undefined;
+
+  // ---- Qwen 3.5 9B：只有权重下载（运行时复用 Maple） ----
+  const [qwenQaBusy, setQwenQaBusy] = useState<string | null>(null);
+  const qwenQaAssets = svcStatus?.qwenQa?.assets as QwenQaAssets | undefined;
+  const qwenQaDownloadState = qwenQaAssets?.model.downloadState;
+
+  const handleQwenQaDownloadModel = async () => {
+    setQwenQaBusy('model');
+    try {
+      await ModelServiceAPI.downloadQwenQaModel();
+      await refreshSvcStatus();
+    } finally {
+      setQwenQaBusy(null);
+    }
+  };
+
+  const handleQwenQaCancelModel = async () => {
+    setQwenQaBusy('model-cancel');
+    try {
+      await ModelServiceAPI.cancelQwenQaModel();
+      await refreshSvcStatus();
+    } finally {
+      setQwenQaBusy(null);
+    }
+  };
 
   const handleMapleInstallRuntime = async () => {
     setMapleBusy('runtime');
@@ -1111,6 +1186,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
         port: Number(svcForm.port) || 1235,
         mferencePort: Number(svcForm.mferencePort) || 1241,
         maplePort: Number(svcForm.maplePort) || 1242,
+        qwenQaPort: Number(svcForm.qwenQaPort) || 1243,
       };
 
       // 目录留空 = 「不改」，绝不能拿默认值兜底：
@@ -1265,6 +1341,11 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
       setSvcForm((prev) => ({
         ...prev,
         ...SVC_CARD_DEFAULTS_MAPLE,
+      }));
+    } else if (isQwenQa) {
+      setSvcForm((prev) => ({
+        ...prev,
+        ...SVC_CARD_DEFAULTS_QWEN_QA,
       }));
     } else if (selectedEngine === 'mference') {
       setSvcForm((prev) => ({
@@ -1426,6 +1507,16 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
         })
       : 'offline';
 
+    // 3D 场景构建：生命周期由 3D 窗口驱动（开窗 ensure / 关窗 release），
+    // 侧栏状态灯要跟着它走，否则永远停在首屏那次的 offline。
+    const scene3dState = scene3dStatus
+      ? deriveServiceState({
+          status: scene3dStatus.status,
+          running: scene3dStatus.running,
+          loaded: Boolean(scene3dStatus.model?.ready),
+        })
+      : 'offline';
+
     onStatusChange({
       model: modelState,
       kb: kbState,
@@ -1434,8 +1525,19 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
       subtitles: subState,
       translate: transState,
       ocr: ocrState,
+      scene3d: scene3dState,
     });
-  }, [svcStatus, wikiStatus, asrStatus, ttsStatus, subtitleStatus, translateStatus, ocrStatus, onStatusChange]);
+  }, [
+    svcStatus,
+    wikiStatus,
+    asrStatus,
+    ttsStatus,
+    subtitleStatus,
+    translateStatus,
+    ocrStatus,
+    scene3dStatus,
+    onStatusChange,
+  ]);
 
 
   const currentEngineStatus = svcStatus
@@ -1443,6 +1545,8 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
       ? svcStatus.mference
       : isMaple
       ? svcStatus.maple ?? null
+      : isQwenQa
+      ? svcStatus.qwenQa ?? null
       : svcStatus.ttf
     : null;
   const isCurrentEngineActive =
@@ -1522,7 +1626,8 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
               <label className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-1.5">
                 {t('modelEngineLabel')}
               </label>
-              <div className="grid grid-cols-3 gap-2 p-1 bg-black/5 dark:bg-white/5 rounded-xl border border-black/5 dark:border-white/5">
+              {/* 四个引擎：2×2 网格。三列会挤成 3+1 两行，名字被截断（TurboFieldfare (Gem…） */}
+              <div className="grid grid-cols-2 gap-2 p-1 bg-black/5 dark:bg-white/5 rounded-xl border border-black/5 dark:border-white/5">
                 <button
                   type="button"
                   onClick={() => handleSwitchEngine('turbo-fieldfare')}
@@ -1586,6 +1691,27 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                     {svcStatus?.maple?.port ? `:${svcStatus.maple.port}` : ''}
                   </span>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => handleSwitchEngine('qwen-qa')}
+                  className={`py-1.5 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-between cursor-pointer gap-2 ${
+                    selectedEngine === 'qwen-qa'
+                      ? 'bg-white dark:bg-[#202127] text-amber-700 dark:text-amber-400 shadow-sm font-semibold'
+                      : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                        SERVICE_STATE_CARD_DOT_CLASS[deriveServiceState({ status: svcStatus?.qwenQa?.status })]
+                      }`}
+                    />
+                    <span className="truncate" title={t('modelEngineQwenQa')}>{t('modelEngineQwenQa')}</span>
+                  </div>
+                  <span className="text-[10px] font-mono opacity-60 flex-shrink-0 ml-1">
+                    {svcStatus?.qwenQa?.port ? `:${svcStatus.qwenQa.port}` : ''}
+                  </span>
+                </button>
               </div>
             </div>
 
@@ -1600,6 +1726,8 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                 <div className="font-medium text-zinc-700 dark:text-zinc-200">
                   {isMaple
                     ? t('mapleServiceAutoStart')
+                    : isQwenQa
+                    ? t('qwenQaServiceAutoStart')
                     : isMference
                     ? t('mferenceServiceAutoStart')
                     : t('ttfServiceAutoStart')}
@@ -1607,6 +1735,8 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                 <div className="text-[10px] text-zinc-500 dark:text-zinc-400">
                   {isMaple
                     ? t('mapleServiceAutoStartDesc')
+                    : isQwenQa
+                    ? t('qwenQaServiceAutoStartDesc')
                     : isMference
                     ? t('mferenceServiceAutoStartDesc')
                     : t('ttfServiceAutoStartDesc')}
@@ -1634,7 +1764,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
 
             {/* 本体项目目录（仅 TTF / Mference：上游仓库由用户自备、可放任意位置）
                 Maple 与语音/合成/字幕/翻译/视觉识别一致 —— 运行时与权重都由 App 托管、路径固定 */}
-            {!isMaple && (
+            {!isMaple && !isQwenQa && (
               <>
               <label className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-1">
                 {t('modelServicePathLabel')}
@@ -1687,6 +1817,8 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                 value={
                   isMaple
                     ? (svcForm.maplePort ?? 1242)
+                    : isQwenQa
+                    ? (svcForm.qwenQaPort ?? 1243)
                     : isMference
                     ? (svcForm.mferencePort ?? 1241)
                     : (svcForm.port ?? 1235)
@@ -1695,6 +1827,8 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                   const val = Number(e.target.value);
                   if (isMaple) {
                     setSvcForm({ ...svcForm, maplePort: val || 1242 });
+                  } else if (isQwenQa) {
+                    setSvcForm({ ...svcForm, qwenQaPort: val || 1243 });
                   } else if (isMference) {
                     setSvcForm({ ...svcForm, mferencePort: val || 1241 });
                   } else {
@@ -1773,6 +1907,80 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                   <span className="font-mono">{mapleAssets?.model.dir || '—'}</span>
                 </div>
               </div>
+            ) : isQwenQa ? (
+              <div className="mt-1 space-y-2">
+                {/* 运行时与 Maple 共用一份 Python，不重复下载 —— 用与权重卡同款的两行卡片 */}
+                <SharedAssetRow
+                  title={t('mapleRuntimeTitle')}
+                  subtitle={t('qwenQaSharedRuntime')}
+                  ready={Boolean(qwenQaAssets?.runtime.ready)}
+                  readyText={t('mapleReady')}
+                  missingText={t('qwenQaRuntimeMissing')}
+                />
+
+                <MapleAssetRow
+                  title={t('qwenQaModelTitle')}
+                  subtitle={t('qwenQaModelDesc')}
+                  ready={Boolean(qwenQaAssets?.model.ready)}
+                  readyText={t('mapleReady')}
+                  progressText={
+                    qwenQaDownloadState?.active
+                      ? qwenQaDownloadState.phase === 'listing'
+                        ? t('qwenQaPhaseListing')
+                        : t('maplePhaseDownloading')
+                      : ''
+                  }
+                  percent={qwenQaDownloadState?.progressPercent || 0}
+                  active={Boolean(qwenQaDownloadState?.active)}
+                  bytesLine={
+                    qwenQaDownloadState?.active || qwenQaDownloadState?.phase === 'done'
+                      ? `${((qwenQaDownloadState?.downloadedBytes || 0) / 1048576).toFixed(0)} MB / ${(
+                          (qwenQaDownloadState?.totalBytes || 0) / 1048576
+                        ).toFixed(0)} MB`
+                      : ''
+                  }
+                  speedLine={
+                    qwenQaDownloadState?.speedBps
+                      ? `${(qwenQaDownloadState.speedBps / 1048576).toFixed(2)} MB/s${
+                          qwenQaDownloadState.etaSeconds
+                            ? ` · ETA ${Math.floor(qwenQaDownloadState.etaSeconds / 60)}m${String(
+                                qwenQaDownloadState.etaSeconds % 60
+                              ).padStart(2, '0')}s`
+                            : ''
+                        }`
+                      : ''
+                  }
+                  error={qwenQaDownloadState?.error || null}
+                  startLabel={t('mapleDownloadBtn')}
+                  cancelLabel={t('mapleCancelBtn')}
+                  busy={qwenQaBusy !== null}
+                  onStart={handleQwenQaDownloadModel}
+                  onCancel={handleQwenQaCancelModel}
+                />
+
+                {/* 运行时参数：只留与显存/内存相关的一项。
+                    思考开关与采样参数都在「对话模型 → Qwen 3.5 9B」里，避免两处各有一份。 */}
+                <div>
+                  <label className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                    {t('qwenQaPromptCache')}
+                  </label>
+                  <select
+                    value={svcForm.qwenQaPromptCacheSize ?? 2}
+                    onChange={(e) => setSvcForm({ ...svcForm, qwenQaPromptCacheSize: Number(e.target.value) })}
+                    className="w-full bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-[#1f2328] dark:text-[#f1f3f7] focus:outline-none focus:border-amber-500 cursor-pointer"
+                  >
+                    {[1, 2, 4, 8].map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="text-[10px] text-zinc-500 dark:text-zinc-400 break-all">
+                  {t('qwenQaModelDirLabel')}:{' '}
+                  <span className="font-mono">{qwenQaAssets?.model.dir || '—'}</span>
+                </div>
+              </div>
             ) : (
               currentEngineStatus &&
               (!currentEngineStatus.checks.repo ||
@@ -1809,9 +2017,13 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
 
             {/* 运行参数区 */}
             <div className="mt-3">
-              <div className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-1.5">
-                {t('modelServiceParamsTitle')}
-              </div>
+              {/* Qwen 3.5 9B 没有进程级旋钮（上下文/采样都在「对话模型」里），标题与参数区一并隐藏，
+                  但下面的「保存并应用」按钮保留，否则改端口/prompt 缓存就没法保存了 */}
+              {selectedEngine !== 'qwen-qa' && (
+                <div className="text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-1.5">
+                  {t('modelServiceParamsTitle')}
+                </div>
+              )}
 
               {isMaple ? (
                 /* Maple MLX 进程参数。采样（温度/top-p/top-k/min-p/重复惩罚）是请求级的，
@@ -1864,25 +2076,15 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                       ))}
                     </select>
                   </div>
-                  <div>
-                    <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">
-                      {t('svcIdleResetLabel')}
-                    </label>
-                    <select
-                      value={svcForm.idleAutoResetMinutes ?? 30}
-                      onChange={(e) => setSvcForm({ ...svcForm, idleAutoResetMinutes: Number(e.target.value) })}
-                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
-                    >
-                      <option value={0}>{t('svcIdleResetDisabled')}</option>
-                      {[5, 10, 15, 30, 60, 120].map((v) => (
-                        <option key={v} value={v}>
-                          {v} {t('svcMinutesUnit')}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
 
                 </div>
+
+              ) : selectedEngine === 'qwen-qa' ? (
+                /* Qwen 3.5 9B 没有任何进程级运行参数：
+                   上下文 / 采样都在「对话模型」里，资源只有权重下载与 prompt 缓存（已在上面）。
+                   这里必须显式返回 null —— 否则会掉进下面的 TurboFieldfare 分支，
+                   冒出「专家槽 / Vision residency」这些对它毫无意义的字段。 */
+                null
               ) : selectedEngine === 'mference' ? (
                 /* Mference 运行参数 */
                 <div className="grid grid-cols-2 gap-2.5">
@@ -1964,19 +2166,6 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                       <option value={4}>{t('svcQueueDefault')}</option>
                       <option value={8}>8</option>
                       <option value={16}>16</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcIdleResetLabel')}</label>
-                    <select
-                      value={svcForm.idleAutoResetMinutes ?? 30}
-                      onChange={(e) => setSvcForm({ ...svcForm, idleAutoResetMinutes: Number(e.target.value) })}
-                      className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
-                    >
-                      <option value={0}>{t('svcIdleResetDisabled')}</option>
-                      {[5, 10, 15, 30, 60, 120].map((v) => (
-                        <option key={v} value={v}>{v} {t('svcMinutesUnit')}</option>
-                      ))}
                     </select>
                   </div>
                 </div>
@@ -2091,19 +2280,6 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                         <option value="bounded">bounded</option>
                         <option value="default">default</option>
                         <option value="off">off</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-[10px] text-zinc-500 dark:text-zinc-400 mb-1">{t('svcIdleResetLabel')}</label>
-                      <select
-                        value={svcForm.idleAutoResetMinutes ?? 30}
-                        onChange={(e) => setSvcForm({ ...svcForm, idleAutoResetMinutes: Number(e.target.value) })}
-                        className="w-full bg-[#f6f8fa] dark:bg-[#18191c] border border-black/10 dark:border-[#343740] rounded-lg px-2 py-1.5 text-xs text-[#1f2328] dark:text-[#e2e5eb] focus:border-amber-500 focus:outline-none"
-                      >
-                        <option value={0}>{t('svcIdleResetDisabled')}</option>
-                        {[5, 10, 15, 30, 60, 120].map((v) => (
-                          <option key={v} value={v}>{v} {t('svcMinutesUnit')}</option>
-                        ))}
                       </select>
                     </div>
                   </div>

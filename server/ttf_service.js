@@ -13,6 +13,8 @@
 //   - Mference: mference_server.sh -> .build/release/MferenceServer (默认端口 1241)
 //   - Maple MLX: maple_mlx_server.sh -> 独立 Python venv 里的 mlx_lm.server (默认端口 1242)
 //     运行时与权重都由本模块托管（见 maple_download.js），首次使用需在设置面板下载。
+//   - Qwen 3.5 9B: qwen_qa_server.sh -> 复用 Maple 那份 Python 的 mlx_lm server (默认端口 1243)
+//     定位「高速通用问答、默认不推理」；只托管权重（见 qwen_qa_download.js），运行时随包。
 
 import { spawn, execSync } from 'child_process';
 import fs from 'fs';
@@ -22,6 +24,7 @@ import http from 'http';
 import { fileURLToPath } from 'url';
 import { startWatchdog } from './watchdog.js';
 import { MapleModelDownloader, MapleRuntimeInstaller } from './maple_download.js';
+import { QwenQaModelDownloader } from './qwen_qa_download.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -69,10 +72,21 @@ export const ENGINE_METADATA = {
     projectUrl: 'https://github.com/deepgrove-ai/mlx-lm-deepgrove',
     scriptBasename: 'maple_mlx_server.sh',
   },
+  'qwen-qa': {
+    name: 'Qwen 3.5 9B',
+    modelName: 'Qwen 3.5 9B (4-bit MLX)',
+    defaultPort: 1243,
+    // 与 Maple 共用同一个 Python（运行时随包分发），看门狗只按命令行校验
+    binaryBasename: 'mlx_lm.server',
+    pidFile: '/tmp/qwen_qa_server.pid',
+    logFile: path.join(HOME, 'Library', 'Logs', 'qwen-qa.log'),
+    projectUrl: 'https://github.com/ml-explore/mlx-lm',
+    scriptBasename: 'qwen_qa_server.sh',
+  },
 };
 
 /** 全部受管引擎（顺序即界面顺序） */
-export const ALL_ENGINES = ['turbo-fieldfare', 'mference', 'maple-mlx'];
+export const ALL_ENGINES = ['turbo-fieldfare', 'mference', 'maple-mlx', 'qwen-qa'];
 
 const defaultMferenceDir = path.join(HOME, 'Mference');
 
@@ -80,13 +94,16 @@ const defaultMferenceDir = path.join(HOME, 'Mference');
 export const SUPPORT_DIR = path.join(userConfigDir);
 export const DEFAULT_MAPLE_RUNTIME_DIR = path.join(SUPPORT_DIR, 'runtimes', 'maple-mlx');
 export const DEFAULT_MAPLE_MODEL_DIR = path.join(SUPPORT_DIR, 'models', 'maple-preview-2bit-mlx');
+// Qwen 3.5 9B：运行时复用 Maple 的 Python，只单独托管权重
+export const DEFAULT_QWEN_QA_MODEL_DIR = path.join(SUPPORT_DIR, 'models', 'qwen35-9b-mlx');
 
 export const DEFAULT_MODEL_CONFIG = {
   enabled: false,
-  engine: 'turbo-fieldfare', // 'turbo-fieldfare' | 'mference' | 'maple-mlx'
+  engine: 'turbo-fieldfare', // 'turbo-fieldfare' | 'mference' | 'maple-mlx' | 'qwen-qa'
   ttfEnabled: false,
   mferenceEnabled: false,
   mapleEnabled: false,
+  qwenQaEnabled: false,
 
   // 1. TurboFieldfare 配置参数
   projectDir: path.join(HOME, 'turbo-fieldfare'),
@@ -118,8 +135,16 @@ export const DEFAULT_MODEL_CONFIG = {
   maplePrefillStepSize: 2048,
   mapleFlashHead: false,
 
+  // 4. Qwen 3.5 9B 配置参数（问答引擎：默认不推理、上下文压低以便 16GB 机器可用）
+  qwenQaPort: 1243,
+  qwenQaMaxTokens: 4096,
+  qwenQaPromptCacheSize: 2,
+  qwenQaThinking: false,
+
   // 闲置自动重置
-  idleAutoResetMinutes: 30,
+  // 基础模型服务是「手动开启 + 保持常驻」的模型：不再做闲置自动退出（用户明确要求）。
+  // 保留字段是为了兼容历史配置，实际恒为 0。
+  idleAutoResetMinutes: 0,
 };
 
 // 合法取值域
@@ -144,6 +169,9 @@ const ENUMS = {
   // Maple MLX（mlx_lm.server 只接受生成参数，没有上下文/专家槽概念）
   maplePromptCacheSize: [1, 2, 4, 8, 16],
   maplePrefillStepSize: [512, 1024, 2048, 4096],
+  // Qwen 3.5 9B（同样走 mlx_lm.server；上下文由模型自身决定，这里只管生成与缓存）
+  qwenQaMaxTokens: [1024, 2048, 4096, 8192],
+  qwenQaPromptCacheSize: [1, 2, 4, 8],
 };
 
 function loadStoredConfig() {
@@ -151,7 +179,8 @@ function loadStoredConfig() {
     if (fs.existsSync(CONFIG_FILE)) {
       const data = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
       if (data && typeof data === 'object') {
-        return { ...DEFAULT_MODEL_CONFIG, ...data };
+        // 基础模型服务不做闲置自动退出：旧配置里残留的 30 分钟一律归零
+        return { ...DEFAULT_MODEL_CONFIG, ...data, idleAutoResetMinutes: 0 };
       }
     }
   } catch (e) {
@@ -185,6 +214,7 @@ function sanitizeConfig(partial) {
   if (partial.ttfEnabled !== undefined) out.ttfEnabled = partial.ttfEnabled === true || partial.ttfEnabled === 'true';
   if (partial.mferenceEnabled !== undefined) out.mferenceEnabled = partial.mferenceEnabled === true || partial.mferenceEnabled === 'true';
   if (partial.mapleEnabled !== undefined) out.mapleEnabled = partial.mapleEnabled === true || partial.mapleEnabled === 'true';
+  if (partial.qwenQaEnabled !== undefined) out.qwenQaEnabled = partial.qwenQaEnabled === true || partial.qwenQaEnabled === 'true';
   if (partial.engine !== undefined && ENUMS.engine.includes(partial.engine)) {
     out.engine = partial.engine;
   }
@@ -260,6 +290,21 @@ function sanitizeConfig(partial) {
       if (ENUMS[key].includes(v)) out[key] = v;
     }
   }
+
+  // Qwen 3.5 9B：权重目录同样由 App 托管，只开放端口与两个内存相关项
+  if (partial.qwenQaPort !== undefined) {
+    const port = Number(partial.qwenQaPort);
+    if (Number.isInteger(port) && port >= 1024 && port <= 65535) out.qwenQaPort = port;
+  }
+  for (const key of ['qwenQaMaxTokens', 'qwenQaPromptCacheSize']) {
+    if (partial[key] !== undefined) {
+      const v = Number(partial[key]);
+      if (ENUMS[key].includes(v)) out[key] = v;
+    }
+  }
+  if (partial.qwenQaThinking !== undefined) {
+    out.qwenQaThinking = partial.qwenQaThinking === true || partial.qwenQaThinking === 'true';
+  }
   if (partial.mapleTemperature !== undefined) {
     const v = Number(partial.mapleTemperature);
     if (Number.isFinite(v) && v >= 0 && v <= 2) out.mapleTemperature = v;
@@ -285,10 +330,8 @@ function sanitizeConfig(partial) {
   }
 
   // 闲置重置
-  if (partial.idleAutoResetMinutes !== undefined) {
-    const v = Number(partial.idleAutoResetMinutes);
-    if (Number.isInteger(v) && v >= 0 && v <= 360) out.idleAutoResetMinutes = v;
-  }
+  // idleAutoResetMinutes 已废弃：基础模型服务只由用户手动开关，不做定时退出。
+  // 这里刻意忽略外部写入，避免旧配置/旧前端把计时器又打开。
 
   return out;
 }
@@ -333,6 +376,8 @@ class TtfService {
     // Maple MLX：运行时安装与权重下载（首次使用需要按需下载）
     this.mapleModelDownloader = null;
     this.mapleRuntimeInstaller = null;
+    // Qwen 3.5 9B：运行时复用 Maple 的 Python，只有权重需要下载
+    this.qwenQaModelDownloader = null;
   }
 
   getActiveEngine() {
@@ -348,6 +393,7 @@ class TtfService {
   engineEnabledKey(engine) {
     if (engine === 'mference') return 'mferenceEnabled';
     if (engine === 'maple-mlx') return 'mapleEnabled';
+    if (engine === 'qwen-qa') return 'qwenQaEnabled';
     return 'ttfEnabled';
   }
 
@@ -391,6 +437,23 @@ class TtfService {
       this.mapleRuntimeInstaller = new MapleRuntimeInstaller(runtimeDir);
     }
     return this.mapleRuntimeInstaller;
+  }
+
+  /**
+   * Qwen 3.5 9B 的目录：**运行时就是 Maple 那一份**（mlx-lm 已内置 qwen3_5），
+   * 只有权重单独放 models/qwen35-9b-mlx。所以这里只需要一个 modelDir。
+   */
+  qwenQaDirs() {
+    const { runtimeDir } = this.mapleDirs();
+    return { runtimeDir, modelDir: DEFAULT_QWEN_QA_MODEL_DIR };
+  }
+
+  getQwenQaModelDownloader() {
+    const { modelDir } = this.qwenQaDirs();
+    if (!this.qwenQaModelDownloader || this.qwenQaModelDownloader.modelDir !== modelDir) {
+      this.qwenQaModelDownloader = new QwenQaModelDownloader(modelDir);
+    }
+    return this.qwenQaModelDownloader;
   }
 
   getActiveMeta() {
@@ -443,6 +506,19 @@ class TtfService {
       };
     }
 
+    if (engine === 'qwen-qa') {
+      const { runtimeDir, modelDir } = this.qwenQaDirs();
+      return {
+        QWEN_QA_PORT: String(this.config.qwenQaPort || 1243),
+        // 复用 Maple 的 Python：脚本里按 QWEN_QA_PYTHON 优先取，取不到再退回随包路径
+        QWEN_QA_PYTHON: path.join(runtimeDir, 'bin', 'python'),
+        QWEN_QA_MODEL_DIR: modelDir,
+        QWEN_QA_MAX_TOKENS: String(this.config.qwenQaMaxTokens || 4096),
+        QWEN_QA_PROMPT_CACHE_SIZE: String(this.config.qwenQaPromptCacheSize || 2),
+        QWEN_QA_THINKING: this.config.qwenQaThinking === true ? 'on' : 'off',
+      };
+    }
+
     const projectDir = resolveProjectDir(this.config.projectDir, DEFAULT_MODEL_CONFIG.projectDir);
     return {
       TURBO_FIELDFARE_DIR: projectDir,
@@ -465,10 +541,11 @@ class TtfService {
     // 所有配置已统一收敛至 ~/Library/Application Support/SimpleUI/model_config.json
   }
 
-  /** 任一引擎的监听端口（三引擎唯一端口映射来源） */
+  /** 任一引擎的监听端口（四引擎唯一端口映射来源） */
   portForEngine(engine) {
     if (engine === 'mference') return Number(this.config.mferencePort) || 1241;
     if (engine === 'maple-mlx') return Number(this.config.maplePort) || 1242;
+    if (engine === 'qwen-qa') return Number(this.config.qwenQaPort) || 1243;
     return Number(this.config.port) || 1235;
   }
 
@@ -589,6 +666,47 @@ class TtfService {
       },
     };
 
+    // 4. 独立探测 Qwen 3.5 9B（问答引擎）
+    const qwenQaPid = this.readPid('qwen-qa');
+    const qwenQaAlive = isPidAlive(qwenQaPid);
+    const qwenQaHealthy = qwenQaAlive ? await this.checkHealth('qwen-qa') : false;
+    let qwenQaStatus = 'stopped';
+    if (this.pendingOp && this.pendingOpEngine === 'qwen-qa') {
+      qwenQaStatus = this.pendingOp;
+    } else if (qwenQaAlive && qwenQaHealthy) {
+      qwenQaStatus = 'running';
+    } else if (qwenQaAlive) {
+      qwenQaStatus = 'loading';
+    }
+
+    const { runtimeDir: qwenQaRuntimeDir, modelDir: qwenQaModelDir } = this.qwenQaDirs();
+    // 运行时就是 Maple 的那份：它的 ready() 同时决定 Qwen 问答引擎能不能启动
+    const qwenQaRuntimeReady = this.getMapleRuntimeInstaller().ready();
+    const qwenQaDownload = this.getQwenQaModelDownloader();
+    const qwenQaModelReady = qwenQaDownload.ready();
+    const qwenQaChecks = {
+      repo: qwenQaRuntimeReady,
+      binary: fs.existsSync(path.join(qwenQaRuntimeDir, 'bin', 'python')),
+      model: qwenQaModelReady,
+      vision: false,
+    };
+    const qwenQaPort = Number(this.config.qwenQaPort) || 1243;
+    const qwenQaAssets = {
+      runtime: {
+        ready: qwenQaRuntimeReady,
+        dir: qwenQaRuntimeDir,
+        // 运行时与 Maple 共用，这里只回读就绪态，不重复算体积
+        shared: true,
+      },
+      model: {
+        ready: qwenQaModelReady,
+        dir: qwenQaModelDir,
+        presentBytes: qwenQaDownload.presentBytes(),
+        totalBytes: qwenQaDownload.state.totalBytes,
+        downloadState: qwenQaDownload.status(),
+      },
+    };
+
     // 当前活跃引擎：谁在跑就是谁；都没跑则回落到配置里的选择
     const runningEngine = ttfAlive
       ? 'turbo-fieldfare'
@@ -596,6 +714,8 @@ class TtfService {
       ? 'mference'
       : mapleAlive
       ? 'maple-mlx'
+      : qwenQaAlive
+      ? 'qwen-qa'
       : null;
     const activeEngine = runningEngine || this.getActiveEngine();
 
@@ -634,6 +754,18 @@ class TtfService {
         projectUrl: ENGINE_METADATA['maple-mlx'].projectUrl,
         assets: mapleAssets,
       },
+      'qwen-qa': {
+        engine: 'qwen-qa',
+        status: qwenQaStatus,
+        port: qwenQaPort,
+        pid: qwenQaAlive ? qwenQaPid : null,
+        enabled: Boolean(this.config.qwenQaEnabled),
+        checks: qwenQaChecks,
+        projectDir: qwenQaRuntimeDir,
+        modelPath: qwenQaModelDir,
+        projectUrl: ENGINE_METADATA['qwen-qa'].projectUrl,
+        assets: qwenQaAssets,
+      },
     };
 
     const current = byEngine[activeEngine];
@@ -650,10 +782,11 @@ class TtfService {
       checks: current.checks,
       enabled: current.enabled,
 
-      // 独立三服务数据（彻底独立，前端各取所需）
+      // 独立四服务数据（彻底独立，前端各取所需）
       ttf: byEngine['turbo-fieldfare'],
       mference: byEngine.mference,
       maple: byEngine['maple-mlx'],
+      qwenQa: byEngine['qwen-qa'],
 
       lastActionAt: this.lastActionAt || undefined,
       lastActionLog: this.lastActionLog || undefined,
@@ -722,7 +855,7 @@ class TtfService {
     let terminalCount = 0;
     let latestTerminalAt = null;
 
-    if (engine === 'maple-mlx') {
+    if (engine === 'maple-mlx' || engine === 'qwen-qa') {
       // mlx_lm.server 用的是 Python http.server 日志：请求在**响应结束时**才落一行
       // `127.0.0.1 - - [02/Nov/2026 16:17:35] "POST /v1/chat/completions HTTP/1.1" 200 -`
       // 所以「有这行 = 已完成」，不像 TTF/Mference 那样有 accepted/completed 两段。
@@ -929,7 +1062,8 @@ class TtfService {
       clean.enabled !== undefined &&
       clean.ttfEnabled === undefined &&
       clean.mferenceEnabled === undefined &&
-      clean.mapleEnabled === undefined
+      clean.mapleEnabled === undefined &&
+      clean.qwenQaEnabled === undefined
     ) {
       clean[this.engineEnabledKey(this.getActiveEngine())] = clean.enabled;
     }
@@ -1018,6 +1152,10 @@ class TtfService {
           // 绝不裸杀 python（会误伤用户自己的脚本）。
           const port = Number(this.config.maplePort) || 1242;
           execSync(`pkill -f "mlx_lm\\.server.*--port ${port}"`, { stdio: 'ignore' });
+        } else if (engine === 'qwen-qa') {
+          // 同上；Qwen 问答引擎用的是 `-m mlx_lm server` 形式，命令行里没有 ".server"
+          const port = Number(this.config.qwenQaPort) || 1243;
+          execSync(`pkill -f "mlx_lm server.*--port ${port}"`, { stdio: 'ignore' });
         } else {
           // 兜底双保险：若仍有同名孤儿进程残留，按二进制全名精确清理
           execSync(`pkill -x "${bin}"`, { stdio: 'ignore' });
@@ -1191,6 +1329,47 @@ class TtfService {
       if (pathname === '/maple/download/cancel' && req.method === 'POST') {
         this.getMapleModelDownloader().cancel();
         sendJson(200, mapleState());
+        return;
+      }
+
+      // ---------------- Qwen 3.5 9B（问答引擎）托管资源 ----------------
+      // 运行时与 Maple 共用，所以这里没有 runtime/install 端点，只有权重下载。
+      const qwenQaState = () => {
+        const model = this.getQwenQaModelDownloader();
+        const { runtimeDir, modelDir } = this.qwenQaDirs();
+        return {
+          runtime: {
+            ready: this.getMapleRuntimeInstaller().ready(),
+            dir: runtimeDir,
+            shared: true,
+          },
+          model: {
+            ready: model.ready(),
+            dir: modelDir,
+            presentBytes: model.presentBytes(),
+            totalBytes: model.state.totalBytes,
+            state: model.status(),
+          },
+        };
+      };
+
+      if (pathname === '/qwen-qa/state' && req.method === 'GET') {
+        sendJson(200, qwenQaState());
+        return;
+      }
+
+      if (pathname === '/qwen-qa/download/start' && req.method === 'POST') {
+        const dl = this.getQwenQaModelDownloader();
+        if (!dl.state.active) {
+          Promise.resolve(dl.start()).catch((e) => console.error('[ModelService] qwen-qa model download:', e.message));
+        }
+        sendJson(200, qwenQaState());
+        return;
+      }
+
+      if (pathname === '/qwen-qa/download/cancel' && req.method === 'POST') {
+        this.getQwenQaModelDownloader().cancel();
+        sendJson(200, qwenQaState());
         return;
       }
 

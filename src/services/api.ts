@@ -312,8 +312,14 @@ export class TurboFieldfareAPI {
         payload.stop = settings.stopStrings;
       }
     } else {
+      // mlx_lm.server（Maple / Qwen 3.5 9B）在收到「不是当前加载模型」的 model 串时，
+      // 会把它当成 Hugging Face repo id 去解析：带空格或中文会直接
+      // 400 "Repo id must use alphanumeric chars..." / 404。
+      // 这两个引擎的 modelId 只是界面标签（单模型服务），请求统一发 default_model。
+      const isMlxEngine =
+        settings.apiProvider === 'maple' || settings.apiProvider === 'qwen-qa';
       payload = {
-        model: settings.modelId || 'gemma-4-26b-a4b-it',
+        model: isMlxEngine ? 'default_model' : settings.modelId || 'gemma-4-26b-a4b-it',
         messages: wireMessages,
         stream: true,
         stream_options: { include_usage: true },
@@ -333,6 +339,11 @@ export class TurboFieldfareAPI {
       if (settings.apiProvider === 'maple') {
         // Maple（mlx_lm.server）：chat template 恒开 <think>，不接受 reasoning_effort /
         // chat_template_kwargs；思考预算由 max_tokens 承担，这里什么都不加。
+      } else if (settings.apiProvider === 'qwen-qa') {
+        // Qwen 3.5 9B：思考开关在对话框上，直接映射到 chat template。
+        // mlx_lm.server 会用请求里的 chat_template_kwargs 覆盖启动参数的默认值，
+        // 所以这里必须**显式**下发，否则总是落到服务端默认（关）。
+        payload.chat_template_kwargs = { enable_thinking: settings.enableThinking === true };
       } else if (settings.apiProvider === 'custom') {
         if (settings.enableThinking) {
           payload.chat_template_kwargs = { enable_thinking: true };
@@ -771,7 +782,7 @@ export class WikiAPI {
   }
 }
 
-export type ModelEngine = 'turbo-fieldfare' | 'mference' | 'maple-mlx';
+export type ModelEngine = 'turbo-fieldfare' | 'mference' | 'maple-mlx' | 'qwen-qa';
 
 /** 下载/安装任务状态（与 asr/tts 下载器同名字段，便于复用同一套进度条 UI） */
 export interface AssetTaskState {
@@ -807,6 +818,23 @@ export interface MapleAssets {
   };
 }
 
+/** Qwen 3.5 9B 托管资源状态（运行时复用 Maple，只有权重） */
+export interface QwenQaAssets {
+  runtime: {
+    ready: boolean;
+    dir: string;
+    /** 与 Maple 共用同一份 Python 运行时 */
+    shared: boolean;
+  };
+  model: {
+    ready: boolean;
+    dir: string;
+    presentBytes: number;
+    totalBytes: number;
+    downloadState: AssetTaskState;
+  };
+}
+
 export interface SingleEngineStatus {
   engine: ModelEngine;
   status: 'running' | 'loading' | 'stopped' | 'starting' | 'stopping' | 'restart';
@@ -817,8 +845,8 @@ export interface SingleEngineStatus {
   projectDir: string;
   modelPath: string;
   projectUrl: string;
-  /** 仅 Maple MLX：运行时与权重的下载进度 */
-  assets?: MapleAssets;
+  /** Maple MLX / Qwen 3.5 9B：托管资源的下载进度（两者结构略有差异） */
+  assets?: MapleAssets | QwenQaAssets;
 }
 
 /** 模型服务聚合状态：与后端 ttf_service.js getStatus 对应 */
@@ -842,6 +870,8 @@ export interface ModelServiceStatus {
   mference: SingleEngineStatus;
   /** Maple MLX（运行时 + 权重按需下载） */
   maple?: SingleEngineStatus;
+  /** Qwen 3.5 9B 问答引擎（运行时复用 Maple，只有权重按需下载） */
+  qwenQa?: SingleEngineStatus;
 }
 
 /** 模型服务运行配置：与后端 model_config.json 对应 */
@@ -881,6 +911,13 @@ export interface ModelServiceConfig {
   maplePromptCacheSize?: number;
   maplePrefillStepSize?: number;
   mapleFlashHead?: boolean;
+
+  // Qwen 3.5 9B（问答引擎：默认不推理，运行时复用 Maple 的 Python）
+  qwenQaEnabled?: boolean;
+  qwenQaPort?: number;
+  qwenQaMaxTokens?: number;
+  qwenQaPromptCacheSize?: number;
+  qwenQaThinking?: boolean;
 
   // 极低负载闲置保护
   idleAutoResetMinutes: number;
@@ -994,6 +1031,38 @@ export class ModelServiceAPI {
       if (res.ok) return await res.json();
     } catch (e) {
       console.error('ModelService maple action failed:', e);
+    }
+    return null;
+  }
+
+  // ------------------- Qwen 3.5 9B（问答引擎）托管资源 -------------------
+  // 运行时与 Maple 共用，只托管权重；没有 runtime/install 端点。
+
+  static async getQwenQaState(): Promise<QwenQaAssets | null> {
+    try {
+      const res = await fetch('/api/model/qwen-qa/state');
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('ModelService getQwenQaState failed:', e);
+    }
+    return null;
+  }
+
+  /** 下载 / 取消 Qwen 3.5 9B 权重（约 5.95GB） */
+  static async downloadQwenQaModel(): Promise<QwenQaAssets | null> {
+    return this.postQwenQa('/api/model/qwen-qa/download/start');
+  }
+
+  static async cancelQwenQaModel(): Promise<QwenQaAssets | null> {
+    return this.postQwenQa('/api/model/qwen-qa/download/cancel');
+  }
+
+  private static async postQwenQa(url: string): Promise<QwenQaAssets | null> {
+    try {
+      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('ModelService qwen-qa action failed:', e);
     }
     return null;
   }

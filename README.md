@@ -13,7 +13,7 @@
   React 19 · TypeScript · Vite · Tailwind CSS · KaTeX · Pyodide · Swift / WebKit · Apple Silicon
 </p>
 
-SimpleUI 为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 深度适配，支持 [Mference](https://github.com/NeelM0906/Mference) 与 [DeepSeek 官方 API](https://api-docs.deepseek.com/)，并通过 OpenAI 兼容接口连接 Ollama、vLLM、llama.cpp server、LM Studio 等推理服务。
+SimpleUI 为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 深度适配，内置 Mference、Maple MLX 与 Qwen 3.5 9B 三个由 App 托管的本地引擎，支持 [DeepSeek 官方 API](https://api-docs.deepseek.com/)，并通过 OpenAI 兼容接口连接 Ollama、vLLM、llama.cpp server、LM Studio 等推理服务。
 
 ---
 
@@ -32,7 +32,7 @@ SimpleUI 为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 深度�
 ## 核心亮点
 
 - **本地优先**：模型推理、知识库、语音识别、语音合成、OCR 识图、字幕和翻译都在本机完成；无需自行安装或配置 Python 环境、向量数据库或云端 API。
-- **模型集成服务**：统一托管基础模型、Qwen3-ASR / Confucius4-R2T2 双引擎语音输入、Qwen3-TTS 语音合成、PaddleOCR-VL 视觉文档识别、R2T2 流式字幕、Index-Translate 独立端侧快速翻译与 CoreML 断句模型；提供统一服务控制面板，支持全模型并发测速下载、模型断点续传、同款模型权重共享与进程按需启闭。
+- **模型集成服务**：统一托管四个基础模型引擎（TTF / Mference / Maple MLX / Qwen 3.5 9B）、Qwen3-ASR / Confucius4-R2T2 双引擎语音输入、Qwen3-TTS 语音合成、PaddleOCR-VL 视觉文档识别、R2T2 流式字幕、Index-Translate 独立端侧快速翻译与 CoreML 断句模型；提供统一服务控制面板，支持全模型并发测速下载、模型断点续传、同款权重与运行时共享（Maple 与 Qwen 3.5 9B 共用一份 MLX 运行时）与进程按需启闭。
 - **视觉图文识别（OCR 提取 Markdown）**：快捷键 `⌘⇧2` 框选屏幕任意区域，由端侧多模态模型 PaddleOCR-VL 自动提取结构化 Markdown（段落、表格、LaTeX 公式、图表）存入剪贴板；纯按需运行，闲置超时自动释放显存。
 - **DeepSeek API 深度适配**：官方 Base URL / API Key / 模型 / 上下文 / 温度 / top_p / 推理强度 / 停止串 / 系统提示词独立配置，直接请求官方接口，并针对缓存命中做上下文修剪。
 - **离线维基 RAG**：Kiwix ZIM + 多通道检索 + 原文直注；不摘要、不改写、不机械截断，答案带可点击引用。
@@ -52,7 +52,7 @@ React 前端 / Swift 原生窗口
         ▼
 Node.js 代理（127.0.0.1:31235）
         │
-        ├── 基础模型服务（TTF :1235 / Mference :1241 / Maple MLX :1242 / OpenAI 兼容）
+        ├── 基础模型服务（TTF :1235 / Mference :1241 / Maple MLX :1242 / Qwen 3.5 9B :1243 / OpenAI 兼容）
         ├── DeepSeek 官方 API（云端）
         ├── 离线维基 RAG（Kiwix :31236 + 本地 ZIM）
         ├── 语音输入（Qwen3-ASR-0.6B MLX / R2T2 audio.cpp · :1236 · 按需）
@@ -75,11 +75,11 @@ Node.js 代理（127.0.0.1:31235）
 | R2T2 字幕识别 | `1250` | 追加式流式识别，原生标点（字幕流水线第 1 级） |
 | Index-Translate 字幕翻译 | `1249` | 专精神经机器翻译（字幕流水线第 3 级，与快速翻译 1248 并行独立运行） |
 | 快速翻译端侧引擎 | `1248` | `⌃Space` 快速划选翻译（llama-server 独立实例，4096 上下文，闲置超时自动卸载） |
-| 基础模型 | `1235` / `1241` / `1242` | TTF / Mference / Maple MLX / 兼容 OpenAI 的推理服务 |
-| Maple MLX 运行时 | `—` | 独立 Python venv（约 311 MB），首次使用在设置面板一键下载 |
+| 基础模型 | `1235` / `1241` / `1242` / `1243` | TTF / Mference / Maple MLX / Qwen 3.5 9B / 兼容 OpenAI 的推理服务 |
+| MLX 运行时（Maple / Qwen 共用） | `—` | 独立 Python venv（约 363 MB），随 App 分发；两个引擎共用同一份，不重复下载 |
 | DeepSeek API | 云端 | 官方 API：对话、推理与快捷翻译详解模式 |
 
-> 基础模型本体与权重不随本仓库分发，需要用户自行准备；语音输入、TTS、OCR、字幕与快速翻译模型均可在应用内「服务管理」面板一键并发自动测速下载与断点续传。同款权重文件（R2T2 / Index-Translate）系统自动复用，不重复下载；语音输入的两个引擎各自独立下载、互不覆盖。
+> 基础模型本体与权重不随本仓库分发，需要用户自行准备；语音输入、TTS、OCR、字幕与快速翻译模型均可在应用内「服务管理」面板一键并发自动测速下载与断点续传。同款资源系统自动复用、不重复下载：R2T2 与 Index-Translate 权重在字幕与语音输入/快速翻译之间共享，Maple 与 Qwen 3.5 9B 共用同一份 MLX Python 运行时；语音输入的两个引擎各自独立下载、互不覆盖。
 
 ---
 
@@ -120,14 +120,15 @@ SimpleUI 使用本地 Kiwix ZIM 构建端到端离线知识库。核心原则是
 
 ### 基础模型与 DeepSeek API
 
-- 本地深度适配 **TurboFieldfare**（默认端口 `1235`），同时支持 **Mference**（默认端口 `1241`）与 **Maple MLX**（默认端口 `1242`）。
+- 本地深度适配 **TurboFieldfare**（默认端口 `1235`），同时支持 **Mference**（默认端口 `1241`）、**Maple MLX**（默认端口 `1242`）与 **Qwen 3.5 9B**（默认端口 `1243`）。四个引擎两两互斥，切换时自动释放上一个引擎占用的显存。
 - **Maple MLX 走官方 [mlx-lm](https://github.com/deepgrove-ai/mlx-lm-deepgrove) 运行时**：载入 Maple Preview 20B-A1B（deepgrove/maple-preview-2bit-mlx）；运行时依赖（约 311 MB）与权重（5.31 GB）都在「服务管理 → 基础模型服务」里一键下载，内置的只有 mlx-lm 与 Maple 原生内核两个 wheel（约 0.5 MB），因此不随包分发大文件。与语音/合成/字幕/翻译/视觉识别一致，**运行时与权重路径由 App 托管且固定，不提供路径选择**（`Application Support/SimpleUI/{runtimes,models}/maple-*`）。
 - **DeepSeek 官方 API 是一等 Provider**：独立配置 Base URL、API Key、模型、上下文窗口、温度、top_p、推理强度、停止串与系统提示词；请求直接发往 `api.deepseek.com`，不经过本地推理进程。
 - DeepSeek 模式针对官方缓存行为做上下文修剪（批量修剪到 70% 水位），减少缓存失效与重复 prefill。
 - 通过 OpenAI 兼容接口连接 Ollama、vLLM、llama.cpp server、LM Studio 等。
-- 服务管理面板提供启停、状态、参数调优、日志与模型目录浏览；切换本地基础引擎时执行显存互斥释放（三个引擎两两互斥）。
+- 服务管理面板提供启停、状态、参数调优、日志与模型目录浏览；切换本地基础引擎时执行显存互斥释放（四个引擎两两互斥）。
 - 本地上游项目与模型权重需自行准备，详见 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) / [Mference](https://github.com/NeelM0906/Mference)；Maple MLX 的运行时与权重由 App 托管下载；DeepSeek 只需在设置中填写 API Key。
-- **三个本地引擎的采样参数（温度 / top-p / top-k / min-p / 重复惩罚）统一在「设置 → 对话模型」里调整**，服务管理面板只管进程参数；最大生成长度恒为上下文的 50%。Maple 各默认值取官方/社区推荐（temp 1.0、top-p 0.95、top-k 40、min-p 0.05、重复惩罚 1.15）。
+- **四个本地引擎的采样参数（温度 / top-p / top-k / min-p / 重复惩罚 / 存在惩罚）统一在「设置 → 对话模型」里调整**，服务管理面板只管进程参数；最大生成长度恒为上下文的 50%。Maple 各默认值取官方/社区推荐（temp 1.0、top-p 0.95、top-k 40、min-p 0.05、重复惩罚 1.15）；Qwen 3.5 9B 取官方 README 的「非思考·通用任务」一组（temp 0.7、top-p 0.8、top-k 20、min-p 0、presence 1.5、repetition 1.0）。
+- **Qwen 3.5 9B 是「默认不推理」的通用问答引擎**：权重为 mlx-community/Qwen3.5-9B-4bit（约 5.95 GB，11 个文件），复用 Maple 那份 MLX 运行时，App 体积零增长；**思考开关在对话框底部**，按每条消息下发 `chat_template_kwargs`，关闭时直接给答案、开启时先推理再回答。运行时是纯文本 mlx-lm，视觉塔未加载，因此不支持图片输入。
 - Maple 的 Flash head 默认**关闭**：该开关需与权重配套，对当前发布的 2-bit 权重开启会导致输出异常（token 级抄写错误），宁慢勿错。
 - 说明：DeepSeek 模式会自动关闭知识库入口；离线维基 RAG 面向本地模型链路。
 
@@ -248,7 +249,7 @@ SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传
 
 - Node.js ≥ 18
 - macOS 15+（构建原生 App）
-- 可选：本地基础模型服务（TTF / Mference / Maple MLX / Ollama / vLLM / llama.cpp / LM Studio）
+- 可选：本地基础模型服务（TTF / Mference / Maple MLX / Qwen 3.5 9B / Ollama / vLLM / llama.cpp / LM Studio）
 - 可选：DeepSeek API Key（云端对话/翻译）
 - 可选：本地 Kiwix ZIM 文件（离线维基）
 
@@ -278,7 +279,7 @@ npm run dev
 
 ### 模型与知识库
 
-- 基础模型：自行准备 TTF / Mference 本体与权重；Maple MLX 的运行时与权重在「服务管理 → 基础模型服务 → Maple MLX」一键下载（运行时约 311 MB、权重约 5.31 GB）；也可连接其它 OpenAI 兼容服务，或在设置中直接配置 DeepSeek API Key。
+- 基础模型：自行准备 TTF / Mference 本体与权重；Maple MLX 的权重（约 5.31 GB）与 Qwen 3.5 9B 的权重（约 5.95 GB）都在「服务管理 → 基础模型服务」里一键下载，两者共用随 App 分发的 MLX 运行时（约 363 MB），不需要各自再装一份；也可连接其它 OpenAI 兼容服务，或在设置中直接配置 DeepSeek API Key。
 - 语音输入模型：默认 Qwen3-ASR-0.6B-8bit（约 964 MB，MLX）在「服务管理 → 语音输入服务」下载；切到 Confucius4-R2T2 Q8_0（约 2.31 GB）时可直接复用字幕服务那份静态权重文件，无需重复下载或多占磁盘。
 - 语音合成模型：在「服务管理 → 语音合成服务」一键测速下载 Qwen3-TTS 1.7B 模型（约 2.51 GB；语音 codec 与旧版字节相同，会被完整性校验直接复用）。
 - 视觉 OCR 模型：在「服务管理 → 视觉图文识别服务」一键测速下载 PaddleOCR-VL 1.6 模型（约 1.02 GB）。
@@ -303,6 +304,8 @@ SimpleUI/
 │   ├── asr_service.js    语音输入托管服务（:1236 · 双引擎：Qwen3-ASR / R2T2）
 │   ├── asr/              Qwen3-ASR 的 Python 包装服务（mlx-audio，复用 tts/python 运行时）
 │   ├── asr_model_download.js  Qwen3-ASR 权重下载器（双源测速 + 断点续传）
+│   ├── qwen_qa_server.sh  Qwen 3.5 9B 引擎启动脚本（mlx-lm :1243，复用 Maple 运行时）
+│   ├── qwen_qa_download.js  Qwen 3.5 9B 权重下载器（HF 清单 + 断点续传）
 │   ├── wiki_service.js   Kiwix 离线维基服务（:31236）
 │   ├── ocr/              Python MLX-VLM OCR 推理服务
 │   ├── tts/              Python MLX-Audio TTS 推理服务
