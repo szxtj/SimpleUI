@@ -40,7 +40,8 @@ SimpleUI 为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 深度�
 - **长对话虚拟化与刻度定位**：采用基于几何测量的虚拟窗口化渲染（20 轮内原生全量挂载，长会话动态预算挂载），彻底消除长对话卡顿掉帧；右侧配备轮次定位轨（Turn Rail），支持悬停预览与一键直达跳转。
 - **实时双语字幕**：SOTA SaT 断句、R2T2 流式识别、Index-Translate 整句翻译，原文实时、译文按句追加。
 - **强大前端与科学计算**：Markdown / KaTeX / Mermaid，代码块支持一键收起与复制代码；内置 **Pyodide Python 科学计算沙盒**，免配置环境在浏览器沙盒内一键运行代码，源码与运行结果双层独立折叠；公式块可复制为 Word / WPS 原生公式，表格可保留格式粘贴到 Word。
-- **原生 macOS**：主窗口 + Spotlight 浮窗 + 快捷翻译 + 字幕悬浮窗 + 全屏截图 OCR，支持中英文界面与深浅色主题。
+- **独立工作窗口**：**3D 场景构建**（一句话生成自包含 Three.js 网页，开窗加载模型、关窗释放显存）与 **Markdown 编辑器**（编辑 / 分栏 / 浏览三态，直接读写磁盘 `.md`，预览用与对话区**同一个**渲染组件）。
+- **原生 macOS**：主窗口 + Spotlight 浮窗 + 快捷翻译 + 字幕悬浮窗 + 3D 场景构建 + Markdown 编辑器 + 全屏截图 OCR；三个窗口共用同一套尺寸遮罩与动画缩放；支持中英文界面与深浅色主题。
 
 ---
 
@@ -62,6 +63,7 @@ Node.js 代理（127.0.0.1:31235）
         │     ├── R2T2 Q8_0 流式识别（:1250 · Metal）
         │     ├── SaT-3L-sm CoreML 断句（ANE / CPU）
         │     └── Index-Translate-2B Q4_K_M（:1249 · Metal）
+        ├── 3D 场景构建（Qwen3.5-4B-3D-Coder · llama.cpp :1257 · 开窗加载 / 关窗卸载）
         └── 快捷翻译（独立原生悬浮窗 · :1248 端侧小模型 / 云端 DeepSeek）
 ```
 
@@ -75,6 +77,7 @@ Node.js 代理（127.0.0.1:31235）
 | R2T2 字幕识别 | `1250` | 追加式流式识别，原生标点（字幕流水线第 1 级） |
 | Index-Translate 字幕翻译 | `1249` | 专精神经机器翻译（字幕流水线第 3 级，与快速翻译 1248 并行独立运行） |
 | 快速翻译端侧引擎 | `1248` | `⌃Space` 快速划选翻译（llama-server 独立实例，4096 上下文，闲置超时自动卸载） |
+| 3D 场景构建 | `1257` | 侧栏入口打开独立窗口，端侧模型生成自包含 Three.js 网页；开窗加载、关窗即卸载 |
 | 基础模型 | `1235` / `1241` / `1242` / `1243` | TTF / Mference / Maple MLX / Qwen 3.5 9B / 兼容 OpenAI 的推理服务 |
 | Maple MLX 运行时 | `—` | 独立 Python venv（约 363 MB），随 App 分发 |
 | Qwen 3.5 9B 运行时 | `—` | 随包 TTS/OCR Python（mlx-vlm 0.7.9，约 821 MB），与语音合成/OCR 共用，支持图片输入 |
@@ -222,6 +225,11 @@ SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传
 - **高清图片查看器**：多图画廊导航、滚轮与双击平滑缩放、拖拽平移、原图尺寸统计，支持一键复制图片、本地保存以及直接唤起 macOS 系统预览（Preview.app）。
 - **生命周期保护**：用户发送的图片采用内容寻址（SHA-256）落盘，生命周期严格绑定至消息轮次与会话删除，历史长会话切换自动平滑定位至最后一条消息。
 - **富文本渲染**：Markdown、KaTeX 公式、Mermaid 图、表格、代码块、图片缩放预览、思考折叠。
+- **独立窗口**：
+  - **Markdown 编辑器**：编辑 / 分栏 / 浏览三态；通过原生面板直接打开与保存磁盘 `.md`，未保存内容在关窗与退出前都会被拦下；编辑区支持 `⌘S` / `⌘O` / `⌘B` / `⌘I` / `⌘K` 与 Tab 缩进。
+  - **3D 场景构建**：模型输出自包含 Three.js 网页，支持全屏预览、重新加载与复制场景代码；开窗加载模型、关窗即释放显存。
+  - **渲染同源**：编辑器预览区渲染的就是对话区那一个 `MarkdownRenderer`（KaTeX / Mermaid / 表格 / 代码运行 / 划选浮标 / 公式复制按钮全部一致），不是另一套简化实现。
+- **窗口尺寸遮罩与缩放**：主窗口、3D 场景构建、Markdown 编辑器共用 `WindowResizeChrome` —— 拖动边框时冻结 WebView 并显示居中「宽 × 高」遮罩（逐帧重排 10 次 → 0 次，松手后只排版一次），双击标题栏 / 绿色按钮走同一套动画缩放，缩放态拖动标题栏会先还原尺寸再续拖。
 - **内置 Python 科学计算沙盒**：
   - **免本地环境**：基于 WebAssembly 技术的 Pyodide 解释器在独立的 Web Worker 中全离线沙盒运行，随前端资源随包打包，无需本机安装 Python、pip 或任何虚拟环境。
   - **一键即时运行**：Python 代码块顶栏集成「运行」按钮，支持标准输出（`stdout`）、末尾表达式结果（`Out:`）与运行时异常完整追踪（Traceback）。
@@ -240,7 +248,7 @@ SimpleUI 的实时字幕完全在 Apple Silicon 本地运行：**音频不上传
 
 - **原生体验**：主窗口、Spotlight 浮窗、快捷翻译、字幕悬浮窗、语音胶囊；全局快捷键与深浅色主题。
 - **双语界面**：中英文文案同步，字幕/服务面板/错误提示均支持中英文。
-- **上下文可视化**：实时上下文圆环、阶段阶梯、性能页脚与跨窗口流同步。
+- **上下文可视化**：实时上下文圆环、阶段阶梯、逐条性能指标（预填充 / 生成 tok/s）与跨窗口流同步。
 
 ---
 
@@ -295,11 +303,12 @@ npm run dev
 
 ```text
 SimpleUI/
-├── src/                  React 前端（聊天、Markdown/KaTeX、知识库、字幕、OCR、统一服务管理面板）
+├── src/                  React 前端（聊天、Markdown/KaTeX、Markdown 编辑器、3D 场景构建、知识库、字幕、OCR、统一服务管理面板）
 ├── server/               Node 代理与受管服务
 │   ├── proxy.js          HTTP/SSE 入口与多层进程看门狗（:31235）
 │   ├── translate_service.js Index-Translate-2B 独立端侧快速翻译托管服务（:1248）
 │   ├── ocr_service.js    PaddleOCR-VL 托管服务（:1238）
+│   ├── scene3d_service.js 3D 场景构建托管服务（:1257 · 开窗加载 / 关窗卸载）
 │   ├── tts_service.js    Qwen3-TTS 托管服务（:1237）
 │   ├── subtitle_service.js 实时字幕流水线服务（ASR :1250 / 翻译 :1249）
 │   ├── asr_service.js    语音输入托管服务（:1236 · 双引擎：Qwen3-ASR / R2T2）
@@ -311,7 +320,7 @@ SimpleUI/
 │   ├── ocr/              Python MLX-VLM OCR 推理服务
 │   ├── tts/              Python MLX-Audio TTS 推理服务
 │   └── subtitles/        字幕 helper / 断句 / 翻译模块
-├── mac_app/              Swift 原生应用（主窗口、Spotlight、快捷翻译、字幕悬浮窗、框选截图、语音胶囊、多层安全退出清理）
+├── mac_app/              Swift 原生应用（主窗口、Spotlight、快捷翻译、字幕悬浮窗、3D 场景构建、Markdown 编辑器、框选截图、语音胶囊、窗口尺寸遮罩、多层安全退出清理）
 ├── bin/                  Kiwix / audio.cpp / llama.cpp / 字幕 helper
 ├── scripts/              构建、同步与测试脚本
 └── build_mac_app.sh      macOS App 构建与安装

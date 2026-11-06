@@ -31,6 +31,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var subtitleOverlayController: SubtitleOverlayPanelController!
     var translationPanelController: TranslationPanelController!
     var scene3dPanelController: Scene3DPanelController!
+    var markdownEditorController: MarkdownEditorPanelController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -46,6 +47,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         translationPanelController = TranslationPanelController()
         translationPanelController.preload()
         scene3dPanelController = Scene3DPanelController()
+        // Markdown 编辑器：无后台服务，窗口骨架与 3D 窗口一致，按需打开
+        markdownEditorController = MarkdownEditorPanelController()
 
         spotlightController.onOpenMainWindow = { [weak self] in
             // Focus and trigger in-memory session sync without reloading the whole web page
@@ -131,6 +134,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// 不会留下「App 没了但服务还在跑」的窗口。
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if isTerminating { return .terminateLater }
+
+        // 编辑器里有未保存内容时先拦一下 —— 退出是唯一会无声丢掉用户输入的操作
+        if !(markdownEditorController?.confirmQuitWithUnsavedChanges() ?? true) {
+            return .terminateCancel
+        }
+
         isTerminating = true
 
         // 若字幕窗口正开着，先停止内录并关闭窗口
@@ -163,6 +172,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         translationPanelController?.hide()
         subtitleOverlayController?.hide()
         scene3dPanelController?.hide()
+        markdownEditorController?.hide()
         statusBarController?.teardown()
         HotKeyManager.shared.unregister()
         VoiceInputManager.shared.uninstall()

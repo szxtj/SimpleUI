@@ -30,8 +30,11 @@ final class Scene3DTitleBarDragView: NSView {
 
     /// 由页面通过 `scene3dChrome` 桥同步：全屏预览是否打开（页面切换时也会同步）
     var previewOverlayActive = false
+    /// 双击缩放 / 缩放态拖拽还原（与主窗口同一份实现，见 WindowResizeChrome）
+    weak var resizeChrome: WindowResizeChrome?
 
     private var dragging = false
+    private var pendingUnzoom = false
     private var initialMouseLocation = NSPoint.zero
     private var initialWindowOrigin = NSPoint.zero
 
@@ -47,17 +50,31 @@ final class Scene3DTitleBarDragView: NSView {
     override func mouseDown(with event: NSEvent) {
         guard let win = window else { return }
         if event.clickCount >= 2 {
-            win.zoom(nil)
+            // 与主窗口一致：走带遮罩的自定义缩放，而不是系统的 performZoom
+            resizeChrome?.toggleZoomAnimated()
             return
         }
         dragging = true
         initialMouseLocation = NSEvent.mouseLocation
         initialWindowOrigin = win.frame.origin
+        pendingUnzoom = resizeChrome?.isZoomed ?? false
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard dragging, let win = window else { return }
         let mouse = NSEvent.mouseLocation
+
+        // 缩放态下首次实际拖动：先还原到原尺寸再无缝续拖（macOS 习惯）
+        if pendingUnzoom {
+            guard let restore = resizeChrome?.unzoomForTitleBarDrag(at: mouse, start: initialMouseLocation) else {
+                return
+            }
+            initialMouseLocation = mouse
+            initialWindowOrigin = restore.origin
+            pendingUnzoom = false
+            return
+        }
+
         win.setFrameOrigin(NSPoint(
             x: initialWindowOrigin.x + (mouse.x - initialMouseLocation.x),
             y: initialWindowOrigin.y + (mouse.y - initialMouseLocation.y)
@@ -66,6 +83,7 @@ final class Scene3DTitleBarDragView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         dragging = false
+        pendingUnzoom = false
     }
 
     override var mouseDownCanMoveWindow: Bool { true }
@@ -80,6 +98,8 @@ final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDele
     private var panel: Scene3DWindow?
     private var webView: WKWebView?
     private var dragView: Scene3DTitleBarDragView?
+    /// 尺寸遮罩 + 双击缩放（与主窗口、Markdown 编辑器窗口共用，见 WindowResizeChrome）
+    private var resizeChrome: WindowResizeChrome?
     private var webReady = false
     /// 关窗卸载的核对批次号：每次开/关窗自增，旧的核对链看到编号变了就自行放弃，
     /// 避免「关 → 立刻开」时上一次的补发 release 把刚拉起来的新进程杀掉。
@@ -140,6 +160,9 @@ final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDele
         let config = WKWebViewConfiguration()
         _ = makeWebView(in: p, config: config)
         installDragArea(in: p)
+        // 实时拉伸遮罩 / 双击缩放 / 拖拽还原，整套与主窗口同一份实现
+        resizeChrome = WindowResizeChrome(window: p, webView: webView!, above: dragView)
+        dragView?.resizeChrome = resizeChrome
         return p
     }
 
@@ -300,6 +323,23 @@ final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDele
     }
 
     // MARK: - NSWindowDelegate
+
+    func windowWillStartLiveResize(_ notification: Notification) {
+        resizeChrome?.windowWillStartLiveResize()
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        resizeChrome?.windowDidResize()
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        resizeChrome?.windowDidEndLiveResize()
+    }
+
+    /// 绿色交通灯：走与双击一致的动画缩放（返回 false 阻止系统 performZoom）
+    func windowShouldZoom(_ window: NSWindow, toFrame newFrame: NSRect) -> Bool {
+        resizeChrome?.handleWindowShouldZoom() ?? false
+    }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         // 关闭 = 隐藏 + 卸载模型（WebView 常驻，重开免冷加载）

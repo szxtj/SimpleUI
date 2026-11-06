@@ -28,6 +28,7 @@ import { SelectionSpeak } from './components/SelectionSpeak';
 import { VoiceOverlay } from './components/VoiceOverlay';
 import { SubtitleOverlay } from './components/SubtitleOverlay';
 import { Scene3DWindow } from './components/scene3d/Scene3DWindow';
+import { MarkdownEditorWindow } from './components/markdown/MarkdownEditorWindow';
 import { SidePanel } from './components/SidePanel';
 import { StartupOverlay } from './components/StartupOverlay';
 import { I18nProvider, resolveLanguage } from './i18n';
@@ -174,6 +175,9 @@ export const App: React.FC = () => {
   // 3D 场景构建独立窗口（原生 Scene3DPanelController 承载的独立窗口）
   const isScene3dWindow = window.location.hash === '#/scene3d';
 
+  // Markdown 编辑器独立窗口（原生 MarkdownEditorPanelController 承载的独立窗口）
+  const isMarkdownWindow = window.location.hash === '#/markdown';
+
   useTheme(settings.theme, isSpotlight || isVoiceOverlay || isSubtitleOverlay);
 
   if (isSubtitleOverlay) {
@@ -196,6 +200,14 @@ export const App: React.FC = () => {
     return (
       <I18nProvider preference={settings.language}>
         <Scene3DWindow />
+      </I18nProvider>
+    );
+  }
+
+  if (isMarkdownWindow) {
+    return (
+      <I18nProvider preference={settings.language}>
+        <MarkdownEditorWindow />
       </I18nProvider>
     );
   }
@@ -356,6 +368,16 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
       return;
     }
     window.location.hash = '#/scene3d';
+  }, []);
+
+  /** 打开 Markdown 编辑器独立窗口：有原生桥走桥，无桥环境（浏览器验证）退 hash 路由 */
+  const openMarkdownEditorWindow = useCallback(() => {
+    const bridge = (window as any).webkit?.messageHandlers?.openMarkdownEditor;
+    if (bridge) {
+      bridge.postMessage({});
+      return;
+    }
+    window.location.hash = '#/markdown';
   }, []);
 
   /**
@@ -720,6 +742,7 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
             setIsSettingsOpen(true);
           }}
           onOpenScene3d={openScene3dWindow}
+          onOpenMarkdownEditor={openMarkdownEditorWindow}
           isOpen={isSidebarOpen}
           onToggleOpen={toggleLeftSidebar}
         />

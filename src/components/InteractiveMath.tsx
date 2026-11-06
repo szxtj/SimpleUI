@@ -6,6 +6,7 @@ import {
   extractOmmlForWord,
   combineMathMlsForWord,
 } from '../utils/selectionToMarkdown';
+import { getVisibleBounds, pickVerticalPlacement } from '../utils/floatingPanel';
 
 interface FormulaEntry {
   id: string;
@@ -367,97 +368,91 @@ export const InteractiveMath: React.FC<InteractiveMathProps> = React.memo(
       };
     }, []);
 
-    // Calculate smart popover placement for inline math
-    useEffect(() => {
-      if (showToolbar && containerRef.current && !display) {
-        const rect = containerRef.current.getBoundingClientRect();
-        if (rect.top < 65) {
-          setPopoverPlacement('bottom');
-        } else {
-          setPopoverPlacement('top');
-        }
+    /** 当前可用区（工具条显示期间有效），供 measureToolbar 复用 */
+    const boundsRef = useRef<ReturnType<typeof getVisibleBounds> | null>(null);
+
+    /** 量一次并夹紧 / 换边。可被「每次渲染后」与「滚动 / resize」两条路径调用，必须幂等。 */
+    const measureToolbar = useCallback(() => {
+      const host = containerRef.current;
+      const bounds = boundsRef.current;
+      if (!host || !bounds) return;
+      const el = host.querySelector('[data-math-toolbar]') as HTMLElement | null;
+      if (!el) return;
+
+      const hostRect = host.getBoundingClientRect();
+      const barRect = el.getBoundingClientRect();
+      const width = barRect.width;
+      // 容器比工具条还窄的极端情况：至少保证左侧（贴近容器左缘）可见
+      const rightLimit = bounds.right - bounds.left < width ? bounds.left + width : bounds.right;
+      const naturalLeft = hostRect.left + hostRect.width / 2 - width / 2;
+      const naturalRight = naturalLeft + width;
+      let shift = 0;
+      if (naturalLeft < bounds.left) {
+        shift = bounds.left - naturalLeft;
+      } else if (naturalRight > rightLimit) {
+        shift = rightLimit - naturalRight;
       }
-    }, [showToolbar, display]);
+      setPopoverShift((prev) => (Math.abs(prev - shift) < 0.5 ? prev : shift));
+
+      // 上方放不下（贴住裁剪容器顶边或原生拖拽带）就翻到公式下方
+      const placement = pickVerticalPlacement(hostRect, barRect.height, bounds);
+      setPopoverPlacement((prev) => (prev === placement ? prev : placement));
+    }, []);
 
     /**
-     * 内联工具条的**水平夹紧**：只在会越出「可见区」时补偏移。
+     * 内联工具条的**边界夹紧 + 垂直翻转**：只在会越出「可见区」时补偏移 / 换边。
      *
-     * 为什么需要：工具条用 `left:50% + translateX(-50%)` 锚在公式中心，没有任何夹紧。
-     * 可见区**不是视口**——主窗口的对话列是 `.chat-scroller`（`overflow-x-hidden`，左侧还有 260px 侧栏），
-     * 浮窗是同一个 `.chat-scroller`。公式贴着内容左缘时，工具条会伸进侧栏那条被裁掉的区域
-     * （大窗口截图的左半截就是这么没的）；贴右缘时又会超出窗口。
+     * 可见区的定义与划选浮标**同一份实现**（`utils/floatingPanel`）：
+     * 视口 ∩ 最近裁剪祖先的 padding box ∩ 窗口顶部原生 chrome。
      *
-     * 所以统一规则：**可见区 = 视口 ∩ 最近的裁剪祖先的 padding box**，两个窗口同一份逻辑。
+     * 为什么不能只看视口：主窗口对话列是 `.chat-scroller`（`overflow-x-hidden`，左侧还有 260px 侧栏），
+     * Markdown 编辑器窗口的预览区在分栏时只占右半边、顶部还有 52px 原生拖拽带。
+     * 公式贴着内容左/右缘时工具条会伸进被裁掉的一侧；贴顶时向上弹会被容器顶边切掉。
      *
      * 约束：
      *  - 用**自然几何**（公式中心 ± 半宽）算，与当前已应用的偏移无关，重复测量不会累加；
-     *  - 不越界时 shift 恒为 0 → 渲染与改前逐像素相同；
+     *  - 不越界时 shift 恒为 0、placement 恒为 top → 渲染与改前逐像素相同；
      *  - 裁剪祖先只在开启时找一次（滚动时它的 rect 不变），滚动/尺寸变化只重量位置；
      *  - 工具条关闭即解绑全部监听/观察器。
      */
     useLayoutEffect(() => {
       if (!showToolbar || display || !containerRef.current) {
+        boundsRef.current = null;
         setPopoverShift((prev) => (prev === 0 ? prev : 0));
         return;
       }
       const host = containerRef.current;
-      const margin = 8;
-
-      /** 可见区：视口 ∩ 最近裁剪祖先（没有裁剪祖先就只看视口） */
-      const computeBounds = () => {
-        let left = margin;
-        let right = document.documentElement.clientWidth - margin;
-        let clipNode: HTMLElement | null = null;
-        for (let node = host.parentElement; node && node !== document.body; node = node.parentElement) {
-          const cs = getComputedStyle(node);
-          if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') {
-            clipNode = node;
-            const r = node.getBoundingClientRect();
-            left = Math.max(left, r.left + margin);
-            right = Math.min(right, r.right - margin);
-            break;
-          }
-        }
-        return { left, right, clipNode };
-      };
-
-      let bounds = computeBounds();
-
-      const measure = () => {
-        const el = host.querySelector('[data-math-toolbar]') as HTMLElement | null;
-        if (!el) return;
-        const hostRect = host.getBoundingClientRect();
-        const width = el.getBoundingClientRect().width;
-        // 容器比工具条还窄的极端情况：至少保证左侧（贴近容器左缘）可见
-        const rightLimit = bounds.right - bounds.left < width ? bounds.left + width : bounds.right;
-        const naturalLeft = hostRect.left + hostRect.width / 2 - width / 2;
-        const naturalRight = naturalLeft + width;
-        let shift = 0;
-        if (naturalLeft < bounds.left) {
-          shift = bounds.left - naturalLeft;
-        } else if (naturalRight > rightLimit) {
-          shift = rightLimit - naturalRight;
-        }
-        setPopoverShift((prev) => (Math.abs(prev - shift) < 0.5 ? prev : shift));
-      };
 
       const refreshBounds = () => {
-        bounds = computeBounds();
-        measure();
+        boundsRef.current = getVisibleBounds(host);
+        measureToolbar();
       };
 
-      measure();
+      boundsRef.current = getVisibleBounds(host);
+      measureToolbar();
       window.addEventListener('resize', refreshBounds);
-      window.addEventListener('scroll', measure, true);
-      // 侧栏拖动 / 面板开合会让裁剪容器变宽变窄，没有 resize 事件，用观察器补
+      window.addEventListener('scroll', measureToolbar, true);
+      // 侧栏拖动 / 面板开合 / 分栏比例变化会让裁剪容器变宽变窄，没有 resize 事件，用观察器补
       const ro = new ResizeObserver(refreshBounds);
-      ro.observe(bounds.clipNode ?? document.documentElement);
+      ro.observe(boundsRef.current.clipNode ?? document.documentElement);
       return () => {
         window.removeEventListener('resize', refreshBounds);
-        window.removeEventListener('scroll', measure, true);
+        window.removeEventListener('scroll', measureToolbar, true);
         ro.disconnect();
       };
-    }, [showToolbar, display, copiedType, selectedCount]);
+    }, [showToolbar, display, copiedType, selectedCount, measureToolbar]);
+
+    /**
+     * 每次渲染补量一次。
+     *
+     * 理由：公式在**选中状态下**被内容变化挪了位置（编辑器里改上方的文字最典型），
+     * React 会复用同一个组件实例、`showToolbar` 也没变，上面那个带依赖的 effect 不会重跑，
+     * 工具条就会停在旧的「上/下」判定上 —— 贴顶时仍然向上弹，被滚动容器整条裁掉。
+     * 这里无依赖跑一次即可自愈；`measureToolbar` 的两个 setState 都带相等判断，不会死循环。
+     */
+    useLayoutEffect(() => {
+      if (showToolbar && !display) measureToolbar();
+    });
 
     const handleClick = (e: React.MouseEvent) => {
       e.stopPropagation();

@@ -16,6 +16,7 @@ import {
   Loader2,
   PictureInPicture2,
   Boxes,
+  PenLine,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -32,6 +33,8 @@ interface SidebarProps {
   onOpenServiceManager?: () => void;
   /** 打开独立的 3D 场景构建窗口（原生 NSPanel；无桥时回退 window.open） */
   onOpenScene3d?: () => void;
+  /** 打开独立的 Markdown 编辑器窗口（原生 NSPanel；无桥时回退 hash 路由） */
+  onOpenMarkdownEditor?: () => void;
   isOpen: boolean;
   onToggleOpen: () => void;
 }
@@ -47,6 +50,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onRenameSession,
   onOpenSettings,
   onOpenScene3d,
+  onOpenMarkdownEditor,
   isOpen,
   onToggleOpen,
 }) => {
@@ -191,6 +195,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
           SimpleUI
         </h1>
         <div className="flex items-center gap-0.5">
+          {onOpenMarkdownEditor && (
+            <button
+              onClick={onOpenMarkdownEditor}
+              className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
+              title={t('mdEditorWindowTitle')}
+            >
+              <PenLine className="w-4 h-4" />
+            </button>
+          )}
           {onOpenScene3d && (
             <button
               onClick={onOpenScene3d}

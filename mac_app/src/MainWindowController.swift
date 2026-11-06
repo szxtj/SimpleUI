@@ -145,178 +145,20 @@ class TitleBarDragView: NSView {
     }
 }
 
-/// 窗口缩放时的全屏纯色尺寸指示遮罩（极速覆盖并冻结底层 WebKit 逐帧排版，彻底消除卡顿）
-class ResizeOverlayView: NSView {
-    private let pillView = NSView()
-    private let dimensionLabel = NSTextField(labelWithString: "")
-    private var fadeWorkItem: DispatchWorkItem?
-    private var appIsDark: Bool?
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        autoresizingMask = [.width, .height]
-        isHidden = true
-        alphaValue = 0
-
-        pillView.wantsLayer = true
-        pillView.translatesAutoresizingMaskIntoConstraints = false
-        pillView.layer?.cornerRadius = 19.0
-        pillView.layer?.masksToBounds = false
-        addSubview(pillView)
-
-        dimensionLabel.isBezeled = false
-        dimensionLabel.drawsBackground = false
-        dimensionLabel.isEditable = false
-        dimensionLabel.isSelectable = false
-        dimensionLabel.alignment = .center
-        dimensionLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 18, weight: .semibold)
-        dimensionLabel.translatesAutoresizingMaskIntoConstraints = false
-        pillView.addSubview(dimensionLabel)
-
-        NSLayoutConstraint.activate([
-            pillView.centerXAnchor.constraint(equalTo: centerXAnchor),
-            pillView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            pillView.heightAnchor.constraint(equalToConstant: 38),
-
-            dimensionLabel.leadingAnchor.constraint(equalTo: pillView.leadingAnchor, constant: 20),
-            dimensionLabel.trailingAnchor.constraint(equalTo: pillView.trailingAnchor, constant: -20),
-            dimensionLabel.centerYAnchor.constraint(equalTo: pillView.centerYAnchor)
-        ])
-
-        if let stored = UserDefaults.standard.object(forKey: "simpleui_is_dark") as? Bool {
-            self.appIsDark = stored
-        }
-        applyTheme()
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    // 关键：返回 nil 绝不拦截底层边框缩放/光标追踪/拖拽事件
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        return nil
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        if appIsDark == nil {
-            applyTheme()
-        }
-    }
-
-    func setIsDarkMode(_ isDark: Bool) {
-        self.appIsDark = isDark
-        applyTheme()
-    }
-
-    private var isDarkMode: Bool {
-        if let custom = appIsDark {
-            return custom
-        }
-        if let match = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) {
-            return match == .darkAqua
-        }
-        return effectiveAppearance.name.rawValue.contains("Dark")
-    }
-
-    func update(size: NSSize) {
-        let w = Int(round(size.width))
-        let h = Int(round(size.height))
-        dimensionLabel.stringValue = "\(w) × \(h)"
-    }
-
-    private func applyTheme() {
-        let dark = isDarkMode
-        // 底色与主窗口 WebKit 背景完全保持一致（Light: #f8f9fb / Dark: #18191c）
-        layer?.backgroundColor = dark
-            ? NSColor(red: 24/255.0, green: 25/255.0, blue: 28/255.0, alpha: 1.0).cgColor
-            : NSColor(red: 248/255.0, green: 249/255.0, blue: 251/255.0, alpha: 1.0).cgColor
-
-        // 胶囊卡片（Pill Container）
-        pillView.layer?.backgroundColor = dark
-            ? NSColor(red: 34/255.0, green: 36/255.0, blue: 42/255.0, alpha: 0.95).cgColor
-            : NSColor(red: 255/255.0, green: 255/255.0, blue: 255/255.0, alpha: 0.96).cgColor
-
-        pillView.layer?.borderWidth = 1.0
-        pillView.layer?.borderColor = dark
-            ? NSColor(white: 1.0, alpha: 0.12).cgColor
-            : NSColor(white: 0.0, alpha: 0.08).cgColor
-
-        pillView.layer?.shadowColor = NSColor.black.cgColor
-        pillView.layer?.shadowOpacity = dark ? 0.35 : 0.08
-        pillView.layer?.shadowOffset = CGSize(width: 0, height: -2)
-        pillView.layer?.shadowRadius = dark ? 10.0 : 8.0
-
-        dimensionLabel.textColor = dark
-            ? NSColor(red: 241/255.0, green: 243/255.0, blue: 247/255.0, alpha: 1.0)
-            : NSColor(red: 31/255.0, green: 35/255.0, blue: 40/255.0, alpha: 1.0)
-    }
-
-    func showInstant(size: NSSize) {
-        fadeWorkItem?.cancel()
-        fadeWorkItem = nil
-        update(size: size)
-        applyTheme()
-        alphaValue = 1.0
-        isHidden = false
-    }
-
-    func showAnimated(size: NSSize, duration: TimeInterval = 0.10) {
-        fadeWorkItem?.cancel()
-        fadeWorkItem = nil
-        update(size: size)
-        applyTheme()
-        isHidden = false
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = duration
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            animator().alphaValue = 1.0
-        }
-    }
-
-    func hideAnimated(delay: TimeInterval = 0.08, duration: TimeInterval = 0.27, completion: (() -> Void)? = nil) {
-        fadeWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self = self else { return }
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = duration
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                self.animator().alphaValue = 0.0
-            }, completionHandler: {
-                if self.alphaValue == 0.0 {
-                    self.isHidden = true
-                }
-                completion?()
-            })
-        }
-        fadeWorkItem = work
-        if delay > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-        } else {
-            work.perform()
-        }
-    }
-}
-
 class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     private var webView: WKWebView!
     private var dragView: TitleBarDragView!
-    private var resizeOverlayView: ResizeOverlayView!
+    /// 窗口尺寸遮罩 + 双击缩放（与 3D 窗口、Markdown 编辑器窗口共用，见 WindowResizeChrome）
+    private var resizeChrome: WindowResizeChrome!
     var onShrinkToSpotlight: ((String?, Bool) -> Void)?
     /** 会话列表右键「用小窗口打开」：只唤出小窗口，主窗口保持原会话与原滚动位置 */
     var onOpenSessionInSpotlight: ((String?, Bool) -> Void)?
-    /** 双击缩放前的原帧（自定义 zoom 态，替代 performZoom，见 toggleZoomAnimated 注释） */
-    private var preZoomFrame: NSRect?
-    /** 双击缩放的任务句柄 */
-    private var zoomWorkItem: DispatchWorkItem?
     /** 用户在全屏下点了关闭：先退全屏，退完再隐藏窗口（避免全屏 Space 残留黑屏） */
     private var pendingCloseAfterFullscreenExit = false
     /** 用户在全屏下点了「缩小至小窗口」：先退全屏，退完再隐藏主窗口并唤出悬浮窗（否则全屏 Space 会留下大黑屏） */
     private var pendingShrinkAfterFullscreenExit: (sessionId: String?, isExpanded: Bool)?
-    /** 标识是否正在执行受管的帧切换动画，防止重复触发 windowDidResize 遮罩 */
-    private var isInternalFrameChange = false
+    /** Markdown 内容原生桥（与浮窗、编辑器窗口共用同一份实现，见 MarkdownContentBridge） */
+    private var markdownBridge: MarkdownContentBridge?
 
     init() {
         let width: CGFloat = 1180
@@ -374,6 +216,8 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         userContent.add(self, name: "shrinkToSpotlight")
         userContent.add(self, name: "openSessionInSpotlight")
         userContent.add(self, name: "openScene3D")
+        // Markdown 编辑器独立窗口（原生 MarkdownEditorPanelController）
+        userContent.add(self, name: "openMarkdownEditor")
         // 语音输入权限桥（设置页「语音识别服务」卡片据此展示/申请三件套权限）
         userContent.add(self, name: "voiceInput")
         userContent.add(self, name: "openExternal")
@@ -382,12 +226,9 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         userContent.add(self, name: "setAppLanguage")
         userContent.add(self, name: "setAppTheme")
         userContent.add(self, name: "setTranslatorConfig")
-        userContent.add(self, name: "translateSelection")
-        userContent.add(self, name: "copyWordEquation")
-        userContent.add(self, name: "copyRichData")
-        userContent.add(self, name: "openTableInWord")
-        userContent.add(self, name: "openImageInPreview")
-        userContent.add(self, name: "saveImage")
+        // Markdown 内容相关的原生能力（复制富文本/公式、表格导出 Word、图片预览保存、划选翻译）
+        // 与浮窗、Markdown 编辑器窗口**共用同一份实现**
+        markdownBridge = MarkdownContentBridge.attach(to: userContent, hostWindow: window)
         config.userContentController = userContent
 
         // 权限状态在系统设置里被改动后，主动回推给页面刷新
@@ -431,10 +272,9 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
     }
 
     private func setupResizeOverlay() {
-        guard let win = window, let contentView = win.contentView else { return }
-
-        resizeOverlayView = ResizeOverlayView(frame: contentView.bounds)
-        contentView.addSubview(resizeOverlayView, positioned: .above, relativeTo: dragView)
+        guard let win = window else { return }
+        // 尺寸遮罩 + 双击缩放交给共用组件；3D 窗口与 Markdown 编辑器窗口用的是同一份实现
+        resizeChrome = WindowResizeChrome(window: win, webView: webView, above: dragView)
     }
 
     func updateWindowMinSize(isSidebarOpen: Bool) {
@@ -545,6 +385,10 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             DispatchQueue.main.async {
                 (NSApp.delegate as? AppDelegate)?.scene3dPanelController?.showAndFocus()
             }
+        } else if message.name == "openMarkdownEditor" {
+            DispatchQueue.main.async {
+                (NSApp.delegate as? AppDelegate)?.markdownEditorController?.showAndFocus()
+            }
         } else if message.name == "voiceInput", let dict = message.body as? [String: Any] {
             handleVoiceInputMessage(dict)
         } else if message.name == "openExternal", let urlString = message.body as? String {
@@ -567,7 +411,7 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         } else if message.name == "setAppTheme", let dict = message.body as? [String: Any] {
             let isDark = (dict["isDark"] as? Bool) ?? false
             UserDefaults.standard.set(isDark, forKey: "simpleui_is_dark")
-            resizeOverlayView.setIsDarkMode(isDark)
+            resizeChrome?.setIsDarkMode(isDark)
             let winBg = isDark
                 ? NSColor(red: 24/255.0, green: 25/255.0, blue: 28/255.0, alpha: 1.0)
                 : NSColor(red: 248/255.0, green: 249/255.0, blue: 251/255.0, alpha: 1.0)
@@ -576,55 +420,6 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             DispatchQueue.main.async {
                 TranslationProfileStore.shared.updateFromWebDict(dict)
                 (NSApp.delegate as? AppDelegate)?.translationPanelController?.refreshLocaleAndSettings()
-            }
-        } else if message.name == "translateSelection", let dict = message.body as? [String: Any] {
-            let text = (dict["text"] as? String) ?? ""
-            let trimmed = String(
-                text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(4000)
-            )
-            guard !trimmed.isEmpty else { return }
-            DispatchQueue.main.async {
-                (NSApp.delegate as? AppDelegate)?.translationPanelController?.present(
-                    text: trimmed, mode: .quick, autoTranslate: true)
-            }
-        } else if message.name == "copyWordEquation", let dict = message.body as? [String: Any] {
-            let mathml = dict["mathml"] as? String ?? ""
-            DispatchQueue.main.async {
-                let pb = NSPasteboard.general
-                pb.clearContents()
-                // Claude 黄金法则：只写唯一的纯文本 MathML，绝不放任何 HTML/RTF，让 Word 内容嗅探直接命中公式转换！
-                pb.setString(mathml, forType: .string)
-            }
-        } else if message.name == "copyRichData", let dict = message.body as? [String: Any] {
-            let html = dict["html"] as? String ?? ""
-            let plainText = dict["plainText"] as? String ?? ""
-            DispatchQueue.main.async {
-                let pb = NSPasteboard.general
-                pb.clearContents()
-                if !html.isEmpty {
-                    pb.setString(html, forType: .html)
-                }
-                if !plainText.isEmpty {
-                    pb.setString(plainText, forType: .string)
-                }
-            }
-        } else if message.name == "openTableInWord", let dict = message.body as? [String: Any] {
-            if let docXml = dict["documentXml"] as? String {
-                DispatchQueue.global(qos: .userInitiated).async {
-                    MainWindowController.createAndOpenDocx(documentXml: docXml)
-                }
-            }
-        } else if message.name == "openImageInPreview", let dict = message.body as? [String: Any] {
-            if let urlString = dict["url"] as? String {
-                DispatchQueue.global(qos: .userInitiated).async {
-                    MainWindowController.openImageInSystemPreview(urlString: urlString)
-                }
-            }
-        } else if message.name == "saveImage", let dict = message.body as? [String: Any] {
-            if let urlString = dict["url"] as? String {
-                DispatchQueue.main.async {
-                    self.showSaveImagePanel(urlString: urlString)
-                }
             }
         }
     }
@@ -781,68 +576,6 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             DispatchQueue.main.async {
                 NSWorkspace.shared.open(url)
             }
-        }
-    }
-
-    /// 弹出原生系统保存对话框（NSSavePanel），由用户指定保存路径将图片写到本地磁盘
-    public func showSaveImagePanel(urlString: String) {
-        guard let win = window else { return }
-        let savePanel = NSSavePanel()
-        let isZh = AppLocale.isZh
-        savePanel.title = isZh ? "保存图片" : "Save Image"
-        savePanel.prompt = isZh ? "保存" : "Save"
-        savePanel.canCreateDirectories = true
-
-        let timestamp = Int(Date().timeIntervalSince1970)
-        var defaultExt = "png"
-        var imageData: Data? = nil
-
-        if urlString.contains("/api/media/") {
-            let filename = urlString.components(separatedBy: "/api/media/").last?
-                .components(separatedBy: "?").first?
-                .components(separatedBy: "#").first ?? ""
-            if !filename.isEmpty {
-                let home = FileManager.default.homeDirectoryForCurrentUser
-                let mediaFile = home.appendingPathComponent("Library/Application Support/SimpleUI/media", isDirectory: true)
-                    .appendingPathComponent(filename)
-                let ext = mediaFile.pathExtension
-                if !ext.isEmpty { defaultExt = ext }
-                imageData = try? Data(contentsOf: mediaFile)
-            }
-        } else if urlString.hasPrefix("data:image/") {
-            let parts = urlString.components(separatedBy: ",")
-            if parts.count >= 2 {
-                let header = parts[0].lowercased()
-                if header.contains("jpeg") || header.contains("jpg") {
-                    defaultExt = "jpg"
-                } else if header.contains("webp") {
-                    defaultExt = "webp"
-                } else if header.contains("gif") {
-                    defaultExt = "gif"
-                }
-                imageData = Data(base64Encoded: parts[1], options: .ignoreUnknownCharacters)
-            }
-        } else if let url = URL(string: urlString) {
-            let ext = url.pathExtension
-            if !ext.isEmpty { defaultExt = ext }
-            imageData = try? Data(contentsOf: url)
-        }
-
-        savePanel.nameFieldStringValue = "SimpleUI_\(timestamp).\(defaultExt)"
-        if let type = UTType(filenameExtension: defaultExt) {
-            savePanel.allowedContentTypes = [type]
-        }
-
-        let handleResponse: (NSApplication.ModalResponse) -> Void = { response in
-            if response == .OK, let destinationURL = savePanel.url, let data = imageData {
-                try? data.write(to: destinationURL)
-            }
-        }
-
-        if win.attachedSheet != nil {
-            savePanel.begin { response in handleResponse(response) }
-        } else {
-            savePanel.beginSheetModal(for: win) { response in handleResponse(response) }
         }
     }
 
@@ -1047,36 +780,17 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         }
     }
 
-    // MARK: - 实时窗口拉伸缩放（Live Resize）性能保护
+    // MARK: - 窗口尺寸遮罩（实现在 WindowResizeChrome，与 3D / 编辑器窗口共用）
     func windowWillStartLiveResize(_ notification: Notification) {
-        guard let win = window else { return }
-        // 1. 暂时剥离 webView 的自适应 autoresizingMask，避免中间 60~120 次鼠标移动事件逐帧触发 WebKit 频繁重排
-        webView.autoresizingMask = []
-        // 2. 快速淡入纯色尺寸遮罩
-        resizeOverlayView.showAnimated(size: win.frame.size, duration: 0.10)
+        resizeChrome?.windowWillStartLiveResize()
     }
 
     func windowDidResize(_ notification: Notification) {
-        guard let win = window, let contentView = win.contentView else { return }
-        if win.inLiveResize {
-            resizeOverlayView.update(size: win.frame.size)
-        } else if resizeOverlayView.isHidden && !isInternalFrameChange {
-            // 只要有主窗口尺寸变化的情况就加遮罩（例如系统分屏/Magnet/Rectangle/显示器切换等触发的尺寸跳变）
-            webView.autoresizingMask = []
-            resizeOverlayView.showInstant(size: win.frame.size)
-            webView.frame = contentView.bounds
-            webView.autoresizingMask = [.width, .height]
-            resizeOverlayView.hideAnimated(delay: 0.08, duration: 0.24)
-        }
+        resizeChrome?.windowDidResize()
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
-        guard let win = window, let contentView = win.contentView else { return }
-        // 1. 将 webView 一次性设置为最终尺寸并恢复自适应，整个拖拽过程仅触发 1 次最终排版
-        webView.frame = contentView.bounds
-        webView.autoresizingMask = [.width, .height]
-        // 2. 等待 WebKit 单次重排绘制完成后，平滑淡出遮罩（留存时间延长 50%，充分掩盖重排过程）
-        resizeOverlayView.hideAnimated(delay: 0.08, duration: 0.27)
+        resizeChrome?.windowDidEndLiveResize()
     }
 
     // 响应原生交通灯绿色缩放按钮，对齐自定义极速遮罩过渡行为
@@ -1085,18 +799,10 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         return false
     }
 
-    /// 最大化时按住顶栏拖拽还原（或任何非交互式尺寸跳变）：瞬间拉起全遮罩并冻结 WebKit 逐帧重排，重排就绪后淡出
+    /// 最大化时按住顶栏拖拽还原（或任何非交互式尺寸跳变）：
+    /// 瞬间拉起全遮罩并冻结 WebKit 逐帧重排，重排就绪后淡出（拖拽视图直接调用）
     func unzoomAndDragWithOverlay(targetFrame: NSRect) {
-        guard let win = window, let contentView = win.contentView else { return }
-        webView.autoresizingMask = []
-        resizeOverlayView.showInstant(size: targetFrame.size)
-        isInternalFrameChange = true
-        win.setFrame(targetFrame, display: false)
-        isInternalFrameChange = false
-        webView.frame = contentView.bounds
-        webView.autoresizingMask = [.width, .height]
-        // 留存时间与双击一致：0.08s 纯色遮盖排版 + 0.24s 平滑淡出
-        resizeOverlayView.hideAnimated(delay: 0.08, duration: 0.24)
+        resizeChrome?.applyFrameWithOverlay(targetFrame)
     }
 
     /// 展开/收起侧边栏时的窗口伸缩：中部对话列在屏幕上保持原宽度。
@@ -1136,8 +842,8 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         target.size.width = max(target.size.width, win.minSize.width)
         guard target.size.width > 100 else { return }
 
-        isInternalFrameChange = true
-        let done: () -> Void = { [weak self] in self?.isInternalFrameChange = false }
+        resizeChrome?.beginInternalFrameChange()
+        let done: () -> Void = { [weak self] in self?.resizeChrome?.endInternalFrameChange() }
 
         if abs(target.size.width - base.size.width) < 0.5 && abs(target.origin.x - base.origin.x) < 0.5 {
             // 已被屏幕/最小宽度卡住：只把基准帧应用回去（缩放态还原）
@@ -1155,58 +861,24 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         }, completionHandler: done)
     }
 
-    // MARK: - 双击缩放（极速遮罩过渡）
+    // MARK: - 双击缩放（实现在 WindowResizeChrome）
+
     /// 中断进行中的缩放任务
     func cancelZoomAnimation() {
-        zoomWorkItem?.cancel()
-        zoomWorkItem = nil
+        resizeChrome?.cancelZoomAnimation()
     }
 
     /// 是否处于自定义缩放态（双击放大后、尚未还原）
-    var isZoomed: Bool { preZoomFrame != nil }
+    var isZoomed: Bool { resizeChrome?.isZoomed ?? false }
 
     /// 取走记忆的原尺寸（拖动还原用）；取走即清空，避免重复还原到过期帧
     func consumePreZoomFrame() -> NSRect? {
-        defer { preZoomFrame = nil }
-        return preZoomFrame
+        resizeChrome?.consumePreZoomFrame()
     }
 
     func toggleZoomAnimated() {
-        guard let win = window, let screen = win.screen ?? NSScreen.main else { return }
-        // 原生全屏态下不做自定义缩放（全屏有自己的进出场动画）
-        guard !win.styleMask.contains(.fullScreen) else { return }
-
-        cancelZoomAnimation()
-
-        let startFrame = win.frame
-        let targetFrame: NSRect
-        if let restore = preZoomFrame {
-            // 已是缩放态 → 回到双击前的原尺寸
-            targetFrame = restore
-            preZoomFrame = nil
-        } else {
-            preZoomFrame = startFrame
-            targetFrame = screen.visibleFrame
-        }
-        guard startFrame != targetFrame else { return }
-
-        // 策略 1：极速遮罩过渡（留存时间延长 50%，彻底覆盖窗口放大/还原过程中的重排卡顿）
-        webView.autoresizingMask = []
-        resizeOverlayView.showAnimated(size: targetFrame.size, duration: 0.12)
-
-        let work = DispatchWorkItem { [weak self] in
-            guard let self = self, let win = self.window, let contentView = win.contentView else { return }
-            self.isInternalFrameChange = true
-            win.setFrame(targetFrame, display: false)
-            self.isInternalFrameChange = false
-            self.webView.frame = contentView.bounds
-            self.webView.autoresizingMask = [.width, .height]
-            self.resizeOverlayView.hideAnimated(delay: 0.08, duration: 0.24)
-        }
-        zoomWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+        resizeChrome?.toggleZoomAnimated()
     }
-
 
     // MARK: - WKUIDelegate (External Links)
     // WKWebView silently ignores `target="_blank"` navigations unless this delegate

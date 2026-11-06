@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Check, Copy, Languages, Volume2, Square } from 'lucide-react';
 import { useI18n } from '../i18n';
 import { primeSystemVoices, speakSystemTts, stopSystemTts } from '../utils/systemTts';
+import { getVisibleBounds, placeNearAnchor } from '../utils/floatingPanel';
 
 /**
  * 划选浮标：选区旁提供「翻译」「朗读」与「复制」按钮。
@@ -158,9 +159,11 @@ export function SelectionSpeak() {
         : TOOLBAR_WIDTH_EN
       : TOOLBAR_WIDTH_READONLY;
     const height = TOOLBAR_HEIGHT;
-    const x = Math.min(Math.max(8, rect.right - width), window.innerWidth - width - 8);
-    const above = rect.top - height - 6;
-    const y = above > 8 ? above : Math.min(rect.bottom + 6, window.innerHeight - height - 8);
+    // 可见区 = 视口 − 顶部原生 chrome。浮标是 fixed + portal，不会被容器裁剪，
+    // 所以不走 clip:'nearest'（对话区思考框那种 192px 高的小裁剪盒会把浮标挤没）。
+    // 公式工具条与这里共用同一份边界/摆放实现（utils/floatingPanel）。
+    const bounds = getVisibleBounds(null, { clip: 'none' });
+    const { x, y } = placeNearAnchor(rect, { width, height }, bounds, { gap: 6, align: 'right' });
     textRef.current = raw;
     translateTextRef.current = extractPlainText(range);
     setCopied(false);

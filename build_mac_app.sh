@@ -90,6 +90,9 @@ swiftc -O \
     mac_app/src/VoiceOverlayPanelController.swift \
     mac_app/src/SubtitleOverlayPanelController.swift \
     mac_app/src/Scene3DPanelController.swift \
+    mac_app/src/MarkdownEditorPanelController.swift \
+    mac_app/src/MarkdownContentBridge.swift \
+    mac_app/src/WindowResizeChrome.swift \
     mac_app/src/TranslationConfig.swift \
     mac_app/src/TranslationClipboard.swift \
     mac_app/src/TranslationSpeechManager.swift \

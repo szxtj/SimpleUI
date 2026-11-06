@@ -40,7 +40,8 @@ SimpleUI is deeply tuned for [TurboFieldfare](https://github.com/drumih/turbo-fi
 - **Virtualized turn window & Turn Rail**: measured virtual window rendering (native mounting for ≤20 turns, dynamic budget for long chats) eliminating scroll lag; sidebar Turn Rail with hover preview and one-click jump navigation.
 - **Real-time bilingual subtitles**: SOTA SaT sentence segmentation, R2T2 streaming ASR, and Index-Translate sentence translation; source text streams live while translations are appended per sentence.
 - **Strong frontend & scientific computing**: Markdown / KaTeX / Mermaid, one-click code-block collapse/copy; built-in **Pyodide Python scientific computing sandbox** running client-side with zero local environment setup, two independent collapsible layers for source and execution output; formulas copyable as native Word/WPS equations, and tables retain formatting when pasted into Word.
-- **Native macOS**: main window, Spotlight panel, quick translate, subtitle overlay, full-screen OCR capture, and voice capsule; Chinese/English UI with light/dark themes.
+- **Standalone windows**: a **3D Scene Builder** (one sentence becomes a self-contained Three.js page; the model loads on open and releases VRAM on close) and a **Markdown Editor** (edit / split / read, reads and writes real `.md` files, previews with the *same* renderer component the chat uses).
+- **Native macOS**: main window, Spotlight panel, quick translate, subtitle overlay, 3D scene builder, Markdown editor, full-screen OCR capture, and voice capsule; one shared resize overlay and animated zoom across windows; Chinese/English UI with light/dark themes.
 
 ---
 
@@ -62,6 +63,7 @@ Node.js proxy (127.0.0.1:31235)
         │     ├── R2T2 Q8_0 streaming ASR (:1250 · Metal)
         │     ├── SaT-3L-sm CoreML segmentation (ANE / CPU)
         │     └── Index-Translate-2B Q4_K_M (:1249 · Metal)
+        ├── 3D scene builder (Qwen3.5-4B-3D-Coder · llama.cpp :1257 · loads on open, unloads on close)
         └── Quick Translate (separate native floating panel · :1248 on-device model / cloud DeepSeek)
 ```
 
@@ -75,6 +77,7 @@ Node.js proxy (127.0.0.1:31235)
 | R2T2 subtitle ASR | `1250` | Append-only streaming recognition with native punctuation (subtitle pipeline stage 1) |
 | Index-Translate subtitle translation | `1249` | Specialized NMT (subtitle pipeline stage 3, runs parallel to Quick Translate 1248) |
 | Quick Translate on-device engine | `1248` | `⌃Space` fast selection translation (llama-server standalone instance, 4096 context, unloads on idle) |
+| 3D scene builder | `1257` | Opens a standalone window from the sidebar; generates a self-contained Three.js page; loads on open and unloads on close |
 | Base models | `1235` / `1241` / `1242` / `1243` | TTF / Mference / Maple MLX / Qwen 3.5 9B / other OpenAI-compatible services |
 | Maple MLX runtime | `—` | Dedicated Python venv (~363 MB), bundled with the app |
 | Qwen 3.5 9B runtime | `—` | Bundled TTS/OCR Python (mlx-vlm 0.7.9, ~821 MB), shared with Voice Synthesis / OCR; supports image input |
@@ -223,6 +226,11 @@ How it works:
 - **High-res image viewer**: multi-image gallery navigation, smooth wheel/double-click zooming, drag-to-pan, original dimensions display, one-click copy, local download, and direct macOS Preview integration.
 - **Robust media lifecycle**: user images use content-addressed (SHA-256) disk storage strictly bound to explicit turn/session deletion; opening historical sessions automatically and smoothly scrolls to the latest turn.
 - **Rich rendering**: Markdown, KaTeX formulas, Mermaid diagrams, tables, code blocks, image preview, and collapsible thinking.
+- **Standalone windows**:
+  - **Markdown editor**: edit / split / read modes; opens and saves `.md` files through native panels, and blocks window close or app quit when there is unsaved content; the editor supports `⌘S` / `⌘O` / `⌘B` / `⌘I` / `⌘K` and Tab indentation.
+  - **3D scene builder**: the model emits a self-contained Three.js page with full-screen preview, reload, and copy-scene-code; the model loads when the window opens and is released when it closes.
+  - **One renderer, two surfaces**: the editor preview renders the very same `MarkdownRenderer` used by chat (KaTeX / Mermaid / tables / Python code execution / selection toolbar / formula copy buttons) — not a simplified re-implementation.
+- **Window resize overlay & zoom**: the main window, 3D builder, and Markdown editor share `WindowResizeChrome` — dragging an edge freezes the WebView and shows a centered `W × H` overlay (per-frame relayout: 10 → 0, one final layout on mouse-up); double-clicking the title bar or the green button runs the same animated zoom, and dragging a zoomed window restores its previous size first.
 - **Built-in Python scientific computing sandbox**:
   - **Zero local setup**: Powered by Pyodide (WebAssembly) running inside an isolated Web Worker sandbox — entirely client-side and offline, bundled with frontend assets without requiring Python, pip, or virtual environments on macOS.
   - **One-click instant execution**: Python code blocks feature an integrated "Run" button with full support for standard output (`stdout`), final expression evaluation (`Out:`), and error traceback display.
@@ -241,7 +249,7 @@ Word-compatible formula/table serialization lives in `src/utils/selectionToMarkd
 
 - **Native experience**: main window, Spotlight panel, Quick Translate, subtitle overlay, and voice capsule; global hotkeys and light/dark themes.
 - **Bilingual UI**: Chinese/English strings stay in sync, including subtitles, service panels, and error messages.
-- **Context visualization**: live context ring, stage ladder, performance footer, and cross-window stream sync.
+- **Context visualization**: live context ring, stage ladder, per-turn metrics (prefill / decode tok/s), and cross-window stream sync.
 
 ---
 
@@ -296,11 +304,12 @@ Builds the Swift native shell, frontend assets, and bundled runtimes, then insta
 
 ```text
 SimpleUI/
-├── src/                  React frontend (chat, Markdown/KaTeX, wiki, subtitles, OCR, unified Service Manager)
+├── src/                  React frontend (chat, Markdown/KaTeX, Markdown editor, 3D scene builder, wiki, subtitles, OCR, unified Service Manager)
 ├── server/               Node proxy and managed services
 │   ├── proxy.js          HTTP/SSE entry and multi-layer process watchdog (`:31235`)
 │   ├── translate_service.js Index-Translate-2B standalone on-device translation service (`:1248`)
 │   ├── ocr_service.js    PaddleOCR-VL management service (`:1238`)
+│   ├── scene3d_service.js 3D scene builder service (`:1257` · loads on open, unloads on close)
 │   ├── tts_service.js    Qwen3-TTS management service (`:1237`)
 │   ├── subtitle_service.js Subtitle pipeline service (ASR `:1250` / NMT `:1249`)
 │   ├── asr_service.js    Speech input service (`:1236` · dual engine: Qwen3-ASR / R2T2)
@@ -312,7 +321,7 @@ SimpleUI/
 │   ├── ocr/              Python MLX-VLM OCR engine
 │   ├── tts/              Python MLX-Audio TTS engine
 │   └── subtitles/        Subtitle helper / segmentation / translation modules
-├── mac_app/              Swift native app (main window, Spotlight, Quick Translate, subtitle overlay, screen capture, voice capsule, multi-layer safe exit cleanup)
+├── mac_app/              Swift native app (main window, Spotlight, Quick Translate, subtitle overlay, 3D scene builder, Markdown editor, screen capture, voice capsule, window resize overlay, multi-layer safe exit cleanup)
 ├── bin/                  Kiwix / audio.cpp / llama.cpp / subtitle helper
 ├── scripts/              Build, sync, and test scripts
 └── build_mac_app.sh      macOS app build & install

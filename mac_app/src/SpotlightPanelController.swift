@@ -129,6 +129,8 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
     private var webView: WKWebView!
     private var dragView: SpotlightDragView!
     var onOpenMainWindow: (() -> Void)?
+    /** Markdown 内容原生桥（与主窗口、编辑器窗口共用同一份实现，见 MarkdownContentBridge） */
+    private var markdownBridge: MarkdownContentBridge?
 
     // State tracking for window position preservation and reset
     private var isExpanded: Bool = false
@@ -182,12 +184,9 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
         userContent.add(self, name: "resizePanel")
         userContent.add(self, name: "chooseDirectory")
         userContent.add(self, name: "chooseFile")
-        userContent.add(self, name: "openImageInPreview")
-        userContent.add(self, name: "saveImage")
-        userContent.add(self, name: "translateSelection")
-        userContent.add(self, name: "copyWordEquation")
-        userContent.add(self, name: "copyRichData")
-        userContent.add(self, name: "openTableInWord")
+        // Markdown 内容原生桥：主窗口 / 编辑器窗口同一份实现。
+        // hostWindow 传 nil —— 浮窗是浮动面板，保存图片沿用原来的独立面板（不挂 sheet）。
+        markdownBridge = MarkdownContentBridge.attach(to: userContent, hostWindow: nil)
         userContent.add(self, name: "openExternal")
         userContent.add(self, name: "spotlightPageStateChanged")
         config.userContentController = userContent
@@ -469,55 +468,6 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             let callbackKey = dict["callbackKey"] as? String ?? "zim"
             let allowedExtensions = dict["allowedExtensions"] as? [String]
             showFilePicker(currentPath: currentPath, callbackKey: callbackKey, allowedExtensions: allowedExtensions)
-        } else if message.name == "openImageInPreview", let dict = message.body as? [String: Any] {
-            if let urlString = dict["url"] as? String {
-                DispatchQueue.global(qos: .userInitiated).async {
-                    MainWindowController.openImageInSystemPreview(urlString: urlString)
-                }
-            }
-        } else if message.name == "saveImage", let dict = message.body as? [String: Any] {
-            if let urlString = dict["url"] as? String {
-                DispatchQueue.main.async {
-                    self.showSaveImagePanel(urlString: urlString)
-                }
-            }
-        } else if message.name == "translateSelection", let dict = message.body as? [String: Any] {
-            let text = (dict["text"] as? String) ?? ""
-            let trimmed = String(
-                text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(4000)
-            )
-            guard !trimmed.isEmpty else { return }
-            DispatchQueue.main.async {
-                (NSApp.delegate as? AppDelegate)?.translationPanelController?.present(
-                    text: trimmed, mode: .quick, autoTranslate: true)
-            }
-        } else if message.name == "copyWordEquation", let dict = message.body as? [String: Any] {
-            let mathml = dict["mathml"] as? String ?? ""
-            DispatchQueue.main.async {
-                let pb = NSPasteboard.general
-                pb.clearContents()
-                // Claude 黄金法则：只写唯一的纯文本 MathML，绝不放任何 HTML/RTF，让 Word 内容嗅探直接命中公式转换！
-                pb.setString(mathml, forType: .string)
-            }
-        } else if message.name == "copyRichData", let dict = message.body as? [String: Any] {
-            let html = dict["html"] as? String ?? ""
-            let plainText = dict["plainText"] as? String ?? ""
-            DispatchQueue.main.async {
-                let pb = NSPasteboard.general
-                pb.clearContents()
-                if !html.isEmpty {
-                    pb.setString(html, forType: .html)
-                }
-                if !plainText.isEmpty {
-                    pb.setString(plainText, forType: .string)
-                }
-            }
-        } else if message.name == "openTableInWord", let dict = message.body as? [String: Any] {
-            if let docXml = dict["documentXml"] as? String {
-                DispatchQueue.global(qos: .userInitiated).async {
-                    MainWindowController.createAndOpenDocx(documentXml: docXml)
-                }
-            }
         } else if message.name == "openExternal", let urlString = message.body as? String {
             guard let url = URL(string: urlString),
                   let scheme = url.scheme?.lowercased(),
@@ -527,61 +477,6 @@ class SpotlightPanelController: NSWindowController, WKScriptMessageHandler, WKNa
             let pageKind = dict["page"] as? String ?? "chat"
             let depth = (dict["depth"] as? Int) ?? (dict["depth"] as? NSNumber)?.intValue ?? 0
             dragView?.updatePage(pageKind: pageKind, depth: depth)
-        }
-    }
-
-    /// 弹出原生系统保存对话框（NSSavePanel），由用户指定保存路径将图片写到本地磁盘
-    private func showSaveImagePanel(urlString: String) {
-        let savePanel = NSSavePanel()
-        let isZh = AppLocale.isZh
-        savePanel.title = isZh ? "保存图片" : "Save Image"
-        savePanel.prompt = isZh ? "保存" : "Save"
-        savePanel.canCreateDirectories = true
-
-        let timestamp = Int(Date().timeIntervalSince1970)
-        var defaultExt = "png"
-        var imageData: Data? = nil
-
-        if urlString.contains("/api/media/") {
-            let filename = urlString.components(separatedBy: "/api/media/").last?
-                .components(separatedBy: "?").first?
-                .components(separatedBy: "#").first ?? ""
-            if !filename.isEmpty {
-                let home = FileManager.default.homeDirectoryForCurrentUser
-                let mediaFile = home.appendingPathComponent("Library/Application Support/SimpleUI/media", isDirectory: true)
-                    .appendingPathComponent(filename)
-                let ext = mediaFile.pathExtension
-                if !ext.isEmpty { defaultExt = ext }
-                imageData = try? Data(contentsOf: mediaFile)
-            }
-        } else if urlString.hasPrefix("data:image/") {
-            let parts = urlString.components(separatedBy: ",")
-            if parts.count >= 2 {
-                let header = parts[0].lowercased()
-                if header.contains("jpeg") || header.contains("jpg") {
-                    defaultExt = "jpg"
-                } else if header.contains("webp") {
-                    defaultExt = "webp"
-                } else if header.contains("gif") {
-                    defaultExt = "gif"
-                }
-                imageData = Data(base64Encoded: parts[1], options: .ignoreUnknownCharacters)
-            }
-        } else if let url = URL(string: urlString) {
-            let ext = url.pathExtension
-            if !ext.isEmpty { defaultExt = ext }
-            imageData = try? Data(contentsOf: url)
-        }
-
-        savePanel.nameFieldStringValue = "SimpleUI_\(timestamp).\(defaultExt)"
-        if let type = UTType(filenameExtension: defaultExt) {
-            savePanel.allowedContentTypes = [type]
-        }
-
-        savePanel.begin { response in
-            if response == .OK, let destinationURL = savePanel.url, let data = imageData {
-                try? data.write(to: destinationURL)
-            }
         }
     }
 
