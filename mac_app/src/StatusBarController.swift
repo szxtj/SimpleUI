@@ -5,7 +5,7 @@ import Cocoa
 //  - 单击 / 右键行为一致：statusItem.menu 赋值后两种点击天然打开同一个菜单；
 //  - 菜单内容：七项服务状态（知识库 / 基础模型 / 语音识别 / 语音合成 / 实时字幕 /
 //    快速翻译 / 视觉图文识别，**始终显示**，顺序与服务管理面板的卡片顺序一致）、
-//    打开主界面、打开小窗口、退出并停止所有服务；
+//    打开主界面 / 打开小窗口 / 3D 场景构建 / Markdown 编辑器、退出并停止所有服务；
 //  - 前两项可点击启停（与面板开关等价）；后五项是纯按需服务，没有常驻开关，
 //    故一律渲染成**不可点击**的状态行（isEnabled = false，无 action）；
 //  - 状态文案与服务管理面板每张卡片右上角逐字一致（统一四态）：
@@ -21,6 +21,9 @@ class StatusBarController: NSObject, NSMenuDelegate {
     var onOpenSpotlight: (() -> Void)?
     var onToggleSubtitles: (() -> Void)?
     var onOpenTranslator: (() -> Void)?
+    /// 独立窗口入口（与侧栏的 3D / Markdown 按钮走同一套 controller）
+    var onOpenScene3d: (() -> Void)?
+    var onOpenMarkdownEditor: (() -> Void)?
 
     private var statusItem: NSStatusItem?
     private var kbStatusItem: NSMenuItem!
@@ -80,6 +83,8 @@ class StatusBarController: NSObject, NSMenuDelegate {
 
     private var openMainItem: NSMenuItem?
     private var openSpotlightItem: NSMenuItem?
+    private var scene3dWindowItem: NSMenuItem?
+    private var markdownEditorItem: NSMenuItem?
     private var quitItem: NSMenuItem?
 
     // ----------------------------- 中英文 -----------------------------
@@ -101,10 +106,20 @@ class StatusBarController: NSObject, NSMenuDelegate {
     private var lblStopping: String { zh ? "停止中" : "Stopping" }
     private var lblOpenMain: String { zh ? "打开主界面" : "Open Main Window" }
     private var lblOpenSpotlight: String { zh ? "打开小窗口" : "Open Mini Window" }
+    private var lblOpenScene3d: String { zh ? "3D 场景构建" : "3D Scene Builder" }
+    private var lblOpenMarkdown: String { zh ? "Markdown 编辑器" : "Markdown Editor" }
     private var lblTranslator: String { zh ? "快捷翻译" : "Quick Translate" }
     private var lblSubtitles: String { zh ? "实时双语字幕" : "Live Subtitles" }
     private var lblQuit: String { zh ? "退出并停止所有服务" : "Quit & Stop All Services" }
 
+    private var tipOpenScene3d: String {
+        zh ? "打开独立的 3D 场景构建窗口（打开时加载模型，关闭即释放）"
+           : "Open the standalone 3D Scene Builder window (model loads on open, released on close)"
+    }
+    private var tipOpenMarkdown: String {
+        zh ? "打开独立的 Markdown 编辑器窗口（编辑 / 分栏 / 浏览）"
+           : "Open the standalone Markdown Editor window (edit / split / read)"
+    }
     private var tipKB: String { zh ? "点击开启或关闭知识库服务" : "Click to toggle Knowledge Base service" }
     private var tipSvc: String { zh ? "点击开启或关闭基础模型服务" : "Click to toggle Base Model service" }
     // 以下五项为按需服务，没有常驻开关，只做状态展示
@@ -215,6 +230,18 @@ class StatusBarController: NSObject, NSMenuDelegate {
         openSpotlightItem = openSpotlight
         menu.addItem(openSpotlight)
 
+        let openScene3d = NSMenuItem(title: lblOpenScene3d, action: #selector(openScene3dWindow), keyEquivalent: "")
+        openScene3d.target = self
+        openScene3d.toolTip = tipOpenScene3d
+        scene3dWindowItem = openScene3d
+        menu.addItem(openScene3d)
+
+        let openMarkdown = NSMenuItem(title: lblOpenMarkdown, action: #selector(openMarkdownEditorWindow), keyEquivalent: "")
+        openMarkdown.target = self
+        openMarkdown.toolTip = tipOpenMarkdown
+        markdownEditorItem = openMarkdown
+        menu.addItem(openMarkdown)
+
         let openTranslator = NSMenuItem(title: "\(lblTranslator)  (⌃Space)", action: #selector(openTranslatorWindow), keyEquivalent: "")
         openTranslator.target = self
         openTranslator.toolTip = tipTranslator
@@ -273,6 +300,10 @@ class StatusBarController: NSObject, NSMenuDelegate {
             self.scene3dStatusItem?.toolTip = self.tipScene3d
             self.openMainItem?.title = self.lblOpenMain
             self.openSpotlightItem?.title = "\(self.lblOpenSpotlight)  (⌥Space)"
+            self.scene3dWindowItem?.title = self.lblOpenScene3d
+            self.scene3dWindowItem?.toolTip = self.tipOpenScene3d
+            self.markdownEditorItem?.title = self.lblOpenMarkdown
+            self.markdownEditorItem?.toolTip = self.tipOpenMarkdown
             self.translatorMenuItem?.title = "\(self.lblTranslator)  (⌃Space)"
             self.translatorMenuItem?.toolTip = self.tipTranslator
             self.subtitleMenuItem?.title = self.lblSubtitles
@@ -432,6 +463,15 @@ class StatusBarController: NSObject, NSMenuDelegate {
 
     @objc private func openSpotlightWindow() {
         onOpenSpotlight?()
+    }
+
+    /// 独立窗口：与侧栏按钮、主窗口脚本桥走同一个 controller（重复点会聚焦已有窗口）
+    @objc private func openScene3dWindow() {
+        onOpenScene3d?()
+    }
+
+    @objc private func openMarkdownEditorWindow() {
+        onOpenMarkdownEditor?()
     }
 
     @objc private func openTranslatorWindow() {

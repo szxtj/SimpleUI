@@ -105,6 +105,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarController.onOpenTranslator = { [weak self] in
             self?.translationPanelController.toggle()
         }
+        // 独立窗口入口（与侧栏按钮同一套 controller）
+        statusBarController.onOpenScene3d = { [weak self] in
+            self?.scene3dPanelController.showAndFocus()
+        }
+        statusBarController.onOpenMarkdownEditor = { [weak self] in
+            self?.markdownEditorController.showAndFocus()
+        }
         statusBarController.onToggleSubtitles = { [weak self] in
             self?.subtitleOverlayController.toggle()
         }
