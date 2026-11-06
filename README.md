@@ -24,7 +24,7 @@ SimpleUI 为 [TurboFieldfare](https://github.com/drumih/turbo-fieldfare) 深度�
 </p>
 
 <p align="center">
-  <sub>主界面（截图界面语言为英文）· <a href="docs/assets/main-cn.png">查看原图</a></sub>
+  <sub>主界面（中文浅色 / 英文深色版见 <a href="README_EN.md">README_EN.md</a>）· <a href="docs/assets/main-cn.png">查看原图</a></sub>
 </p>
 
 ---

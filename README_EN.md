@@ -24,7 +24,7 @@ SimpleUI is deeply tuned for [TurboFieldfare](https://github.com/drumih/turbo-fi
 </p>
 
 <p align="center">
-  <sub>Main window · <a href="docs/assets/main-en.png">View full size</a></sub>
+  <sub>Main window (English dark theme; Chinese light theme in <a href="README.md">README.md</a>) · <a href="docs/assets/main-en.png">View full size</a></sub>
 </p>
 
 ---
