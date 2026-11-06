@@ -10,6 +10,10 @@ private enum ResultColors {
     static let codeBackground = NSColor.white.withAlphaComponent(0.08)
     static let inlineCodeBackground = NSColor.white.withAlphaComponent(0.12)
     static let link = NSColor(calibratedRed: 0.42, green: 0.68, blue: 1.0, alpha: 1.0)
+    // 表格：表头 / 斑马纹 / 列分隔线都只用极淡的白色叠加，保持深色面板的一致性。
+    static let tableHeaderBackground = NSColor.white.withAlphaComponent(0.10)
+    static let tableRowBackground = NSColor.white.withAlphaComponent(0.035)
+    static let tableBorder = NSColor.white.withAlphaComponent(0.30)
 }
 
 /// 翻译结果区：用 NSTextView 承载可选中文本，并把当前选区回传给 SwiftUI。
@@ -191,15 +195,22 @@ struct TranslationResultTextView: NSViewRepresentable {
 
         private static let bodyFont = NSFont.systemFont(ofSize: 13)
 
-        /// 只处理最基本的 Markdown：标题、列表、引用、代码块、分割线，
-        /// 以及粗体、斜体、行内代码、删除线和链接。表格和多级标题按普通文本显示。
+        /// 结果区的轻量 Markdown 排版：标题、列表、引用、代码块、分割线、GFM 表格，
+        /// 以及粗体、斜体、行内代码、删除线和链接。多级标题按普通文本显示。
+        ///
+        /// 表格不用 NSTextTable：结果区要求整段可选中、可复制（⌘C）与划选朗读，
+        /// NSTextTable 会把单元格拆成独立文本块，破坏这三条既有行为。
+        /// 这里改成「等宽字体 + 列宽对齐的 Markdown 管道表」：内容仍是合法 Markdown，
+        /// 但列对齐、表头加粗、超长单元格按列宽折行，不再把 `| --- |` 原样糊在屏幕上。
         private static func renderedAttributed(_ markdown: String) -> NSAttributedString {
             let result = NSMutableAttributedString()
             let lines = markdown.components(separatedBy: "\n")
             var codeLines: [String] = []
             var inCodeBlock = false
+            var index = 0
 
-            for line in lines {
+            while index < lines.count {
+                let line = lines[index]
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
 
                 if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
@@ -211,15 +222,25 @@ struct TranslationResultTextView: NSViewRepresentable {
                         inCodeBlock = true
                         codeLines.removeAll()
                     }
+                    index += 1
                     continue
                 }
 
                 if inCodeBlock {
                     codeLines.append(line)
+                    index += 1
+                    continue
+                }
+
+                // 表头行 + 分隔行同时成立才算表格，避免把正文里含竖线的句子误判成表。
+                if let (table, nextIndex) = tableBlock(in: lines, at: index) {
+                    appendTable(table, to: result)
+                    index = nextIndex
                     continue
                 }
 
                 appendLine(line, to: result)
+                index += 1
             }
 
             if inCodeBlock || !codeLines.isEmpty {
@@ -412,6 +433,436 @@ struct TranslationResultTextView: NSViewRepresentable {
                     attributes: [.font: bodyFont, .paragraphStyle: baseParagraph()]
                 )
             )
+        }
+
+        // MARK: - GFM 表格
+        //
+        // 详解模式的「表达推荐 / 简要辨析 / 双语例句」经常被模型输出成 Markdown 表格。
+        // 结果区是 NSTextView，用等宽字体 + 列宽对齐渲染成**仍是合法 Markdown 的纯文本**：
+        // 表头加粗、支持 :--- / :---: / ---: 对齐、超长单元格按列宽折行（不截断），
+        // 因此整段仍可选中、⌘C 复制、划选朗读，行为与原来一致。
+
+        private enum TableAlignment {
+            case left, center, right
+        }
+
+        private struct MarkdownTable {
+            let header: [String]
+            let alignments: [TableAlignment]
+            let rows: [[String]]
+
+            var columnCount: Int {
+                Swift.max(
+                    header.count,
+                    Swift.max(alignments.count, rows.map(\.count).max() ?? 0)
+                )
+            }
+        }
+
+        private static let tableFont = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
+        private static let tableBoldFont = NSFont.monospacedSystemFont(
+            ofSize: 11.5,
+            weight: .semibold
+        )
+
+        /// 结果区可用宽度（窗口 620 - 外层 padding 36 - textContainerInset 24 - 余量 ≈ 540pt）
+        /// 换算成等宽字符数，保证表格不横向溢出、不需要横向滚动。
+        private static func tableWidthBudget() -> Int {
+            let charWidth = (" " as NSString).size(withAttributes: [.font: tableFont]).width
+            guard charWidth > 0 else { return 76 }
+            return Swift.max(32, Int(floor(540 / charWidth)))
+        }
+
+        /// 按未转义、且不在行内代码里的竖线切分；GFM 允许首尾各带一个管道符。
+        private static func tableCells(_ line: String) -> [String]? {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.contains("|") else { return nil }
+
+            let chars = Array(trimmed)
+            var cells: [String] = []
+            var current = ""
+            var inCode = false
+            var index = 0
+
+            while index < chars.count {
+                let ch = chars[index]
+                // 只吞掉转义竖线的反斜杠，其它反斜杠原样保留（例如 Windows 路径）。
+                if ch == "\\", index + 1 < chars.count, chars[index + 1] == "|" {
+                    current.append("|")
+                    index += 2
+                    continue
+                }
+                if ch == "`" {
+                    inCode.toggle()
+                    current.append(ch)
+                    index += 1
+                    continue
+                }
+                if ch == "|" && !inCode {
+                    cells.append(current.trimmingCharacters(in: .whitespaces))
+                    current = ""
+                    index += 1
+                    continue
+                }
+                current.append(ch)
+                index += 1
+            }
+            cells.append(current.trimmingCharacters(in: .whitespaces))
+
+            if cells.first?.isEmpty == true { cells.removeFirst() }
+            if cells.last?.isEmpty == true { cells.removeLast() }
+            return cells.isEmpty ? nil : cells
+        }
+
+        private static func separatorAlignments(_ line: String) -> [TableAlignment]? {
+            guard let cells = tableCells(line), !cells.isEmpty else { return nil }
+            var alignments: [TableAlignment] = []
+            for cell in cells {
+                var body = cell.filter { $0 != " " && $0 != "\t" }
+                guard body.count >= 3 else { return nil }
+                var hasLeftColon = false
+                var hasRightColon = false
+                if body.hasPrefix(":") {
+                    hasLeftColon = true
+                    body.removeFirst()
+                }
+                if body.hasSuffix(":") {
+                    hasRightColon = true
+                    body.removeLast()
+                }
+                guard body.count >= 3, body.allSatisfy({ $0 == "-" }) else { return nil }
+                alignments.append(
+                    hasLeftColon && hasRightColon
+                        ? .center
+                        : (hasRightColon ? .right : .left)
+                )
+            }
+            return alignments
+        }
+
+        private static func tableBlock(in lines: [String], at start: Int)
+            -> (MarkdownTable, Int)?
+        {
+            guard start + 1 < lines.count,
+                let header = tableCells(lines[start]), !header.isEmpty,
+                let alignments = separatorAlignments(lines[start + 1]),
+                alignments.count == header.count
+            else { return nil }
+
+            var rows: [[String]] = []
+            var index = start + 2
+            while index < lines.count {
+                let line = lines[index]
+                if line.trimmingCharacters(in: .whitespaces).isEmpty { break }
+                guard let cells = tableCells(line) else { break }
+                rows.append(cells)
+                index += 1
+            }
+            return (MarkdownTable(header: header, alignments: alignments, rows: rows), index)
+        }
+
+        /// 等宽字体下 CJK / 全角字符占两列，按显示宽度填充空格才能真正对齐。
+        private static func displayWidth(_ text: String) -> Int {
+            var width = 0
+            for scalar in text.unicodeScalars {
+                let value = scalar.value
+                let isWide = (value >= 0x1100 && value <= 0x115F)
+                    || (value >= 0x2E80 && value <= 0xA4CF)
+                    || (value >= 0xAC00 && value <= 0xD7A3)
+                    || (value >= 0xF900 && value <= 0xFAFF)
+                    || (value >= 0xFE10 && value <= 0xFE19)
+                    || (value >= 0xFE30 && value <= 0xFE6F)
+                    || (value >= 0xFF00 && value <= 0xFF60)
+                    || (value >= 0xFFE0 && value <= 0xFFE6)
+                    || (value >= 0x1F300 && value <= 0x1FAFF)
+                    || (value >= 0x20000 && value <= 0x3FFFD)
+                width += isWide ? 2 : 1
+            }
+            return width
+        }
+
+        /// 按显示宽度把单元格折成多段 attributed string：内容完整保留，不截断。
+        /// 英文优先在空格处断行，避免把 `take care of` 拆成 `take car` / `e of`；
+        /// 中文等无空格文本按字符折行。
+        private static func wrapAttributed(_ attr: NSAttributedString, width: Int)
+            -> [NSAttributedString]
+        {
+            guard width > 0 else { return [attr] }
+            let source = attr.string as NSString
+            guard source.length > 0 else { return [attr] }
+
+            func trimEndWhitespace(_ text: NSMutableAttributedString) {
+                while text.length > 0 {
+                    let last = (text.string as NSString).substring(
+                        with: NSRange(location: text.length - 1, length: 1)
+                    )
+                    guard last == " " || last == "\t" else { break }
+                    text.deleteCharacters(in: NSRange(location: text.length - 1, length: 1))
+                }
+            }
+
+            var pieces: [NSAttributedString] = []
+            var current = NSMutableAttributedString()
+            var currentWidth = 0
+            var location = 0
+
+            while location < source.length {
+                let range = source.rangeOfComposedCharacterSequence(at: location)
+                let pieceWidth = displayWidth(source.substring(with: range))
+
+                if currentWidth + pieceWidth > width, current.length > 0 {
+                    // 回溯到最近的空格作为断点；没有空格就整行硬折。
+                    var cut = current.length
+                    let currentString = current.string as NSString
+                    if current.length > 1 {
+                        for index in stride(from: current.length - 1, through: 1, by: -1) {
+                            let ch = currentString.substring(with: NSRange(location: index - 1, length: 1))
+                            if ch == " " || ch == "\t" {
+                                cut = index
+                                break
+                            }
+                        }
+                    }
+
+                    let head = NSMutableAttributedString(
+                        attributedString: current.attributedSubstring(
+                            from: NSRange(location: 0, length: cut)
+                        )
+                    )
+                    trimEndWhitespace(head)
+                    if head.length > 0 { pieces.append(head) }
+
+                    let tail = NSMutableAttributedString(
+                        attributedString: current.attributedSubstring(
+                            from: NSRange(location: cut, length: current.length - cut)
+                        )
+                    )
+                    while tail.length > 0 {
+                        let first = (tail.string as NSString).substring(
+                            with: NSRange(location: 0, length: 1)
+                        )
+                        guard first == " " || first == "\t" else { break }
+                        tail.deleteCharacters(in: NSRange(location: 0, length: 1))
+                    }
+                    current = tail
+                    currentWidth = displayWidth(current.string)
+                }
+
+                current.append(attr.attributedSubstring(from: range))
+                currentWidth += pieceWidth
+                location = NSMaxRange(range)
+            }
+
+            trimEndWhitespace(current)
+            pieces.append(current)
+            return pieces
+        }
+
+        private static func tableParagraph() -> NSMutableParagraphStyle {
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineSpacing = 1
+            paragraph.paragraphSpacing = 0
+            paragraph.headIndent = 0
+            paragraph.firstLineHeadIndent = 0
+            return paragraph
+        }
+
+        private static func tablePlain(_ text: String, color: NSColor)
+            -> NSMutableAttributedString
+        {
+            NSMutableAttributedString(
+                string: text,
+                attributes: [
+                    .font: tableFont,
+                    .foregroundColor: color,
+                    .paragraphStyle: tableParagraph(),
+                ]
+            )
+        }
+
+        private static func tableCellAttributed(_ raw: String, bold: Bool) -> NSAttributedString {
+            inlineAttributed(
+                raw,
+                font: bold ? tableBoldFont : tableFont,
+                paragraph: tableParagraph(),
+                color: ResultColors.text
+            )
+        }
+
+        private static func paddedCell(
+            _ attr: NSAttributedString,
+            width: Int,
+            alignment: TableAlignment
+        ) -> NSMutableAttributedString {
+            let padding = Swift.max(0, width - displayWidth(attr.string))
+            let left: Int
+            let right: Int
+            switch alignment {
+            case .left:
+                left = 0
+                right = padding
+            case .right:
+                left = padding
+                right = 0
+            case .center:
+                left = padding / 2
+                right = padding - left
+            }
+
+            let out = NSMutableAttributedString()
+            if left > 0 {
+                out.append(tablePlain(String(repeating: " ", count: left), color: ResultColors.text))
+            }
+            out.append(attr)
+            if right > 0 {
+                out.append(tablePlain(String(repeating: " ", count: right), color: ResultColors.text))
+            }
+            return out
+        }
+
+        private static func appendTableRow(
+            _ cells: [NSAttributedString],
+            widths: [Int],
+            alignments: [TableAlignment],
+            columns: Int,
+            isHeader: Bool,
+            rowIndex: Int,
+            to result: NSMutableAttributedString
+        ) {
+            let wrapped: [[NSAttributedString]] = (0..<columns).map { column in
+                let attr = column < cells.count
+                    ? cells[column]
+                    : NSAttributedString(string: "")
+                return wrapAttributed(attr, width: widths[column])
+            }
+            let lineCount = Swift.max(1, wrapped.map(\.count).max() ?? 1)
+            let background: NSColor? = isHeader
+                ? ResultColors.tableHeaderBackground
+                : (rowIndex % 2 == 1 ? ResultColors.tableRowBackground : nil)
+
+            for line in 0..<lineCount {
+                let row = NSMutableAttributedString()
+                row.append(tablePlain("| ", color: ResultColors.tableBorder))
+                for column in 0..<columns {
+                    let piece = line < wrapped[column].count
+                        ? wrapped[column][line]
+                        : NSAttributedString(string: "")
+                    row.append(
+                        paddedCell(piece, width: widths[column], alignment: alignments[column])
+                    )
+                    row.append(
+                        tablePlain(
+                            column == columns - 1 ? " |" : " | ",
+                            color: ResultColors.tableBorder
+                        )
+                    )
+                }
+                row.append(tablePlain("\n", color: ResultColors.text))
+                if let background {
+                    row.addAttribute(
+                        .backgroundColor,
+                        value: background,
+                        range: NSRange(location: 0, length: row.length - 1)
+                    )
+                }
+                result.append(row)
+            }
+        }
+
+        private static func appendTableSeparator(
+            widths: [Int],
+            columns: Int,
+            to result: NSMutableAttributedString
+        ) {
+            let row = NSMutableAttributedString()
+            row.append(tablePlain("|", color: ResultColors.tableBorder))
+            for column in 0..<columns {
+                row.append(
+                    tablePlain(
+                        String(repeating: "-", count: widths[column] + 2),
+                        color: ResultColors.tableBorder
+                    )
+                )
+                row.append(tablePlain("|", color: ResultColors.tableBorder))
+            }
+            row.append(tablePlain("\n", color: ResultColors.text))
+            result.append(row)
+        }
+
+        private static func appendTable(_ table: MarkdownTable, to result: NSMutableAttributedString) {
+            let columns = table.columnCount
+            guard columns > 0 else { return }
+            let alignments: [TableAlignment] = (0..<columns).map {
+                $0 < table.alignments.count ? table.alignments[$0] : .left
+            }
+
+            let headerCells = table.header.map { tableCellAttributed($0, bold: true) }
+            let bodyCells = table.rows.map { row in
+                row.map { tableCellAttributed($0, bold: false) }
+            }
+
+            // 列宽：
+            //   1. 先取该列内容的自然宽度，但单个超长单元格不能吃掉整表预算（否则其它列会被压到
+            //      4 字符，把 handle 拆成 hand/le）——给每列一个上限，长文本改用折行解决。
+            //   2. 每列有下限，保证常见短词/中文词组不被硬拆。
+            //   3. 总宽仍超预算时才按比例压缩，并逐格回收最宽列的多余宽度。
+            var natural = Array(repeating: 0, count: columns)
+            for (column, attr) in headerCells.enumerated() where column < columns {
+                natural[column] = Swift.max(natural[column], displayWidth(attr.string))
+            }
+            for row in bodyCells {
+                for (column, attr) in row.enumerated() where column < columns {
+                    natural[column] = Swift.max(natural[column], displayWidth(attr.string))
+                }
+            }
+
+            let budget = Swift.max(columns * 10, tableWidthBudget() - (columns * 3 + 1))
+            let perColumnCap = Swift.max(12, (budget / columns) * 2)
+            let minWidth = Swift.min(12, Swift.max(6, budget / columns))
+            let lowerBound = Swift.min(6, minWidth)
+            var widths = natural.map { Swift.max(minWidth, Swift.min($0, perColumnCap)) }
+            let total = widths.reduce(0, +)
+            if total > budget {
+                widths = widths.map {
+                    Swift.max(
+                        lowerBound,
+                        Int(floor(Double($0) * Double(budget) / Double(total)))
+                    )
+                }
+                while widths.reduce(0, +) > budget,
+                    let widest = widths.indices.max(by: { widths[$0] < widths[$1] }),
+                    widths[widest] > lowerBound
+                {
+                    widths[widest] -= 1
+                }
+            }
+
+            let spacer = NSAttributedString(
+                string: "\n",
+                attributes: [.font: bodyFont, .paragraphStyle: baseParagraph()]
+            )
+            appendTableRow(
+                headerCells,
+                widths: widths,
+                alignments: alignments,
+                columns: columns,
+                isHeader: true,
+                rowIndex: 0,
+                to: result
+            )
+            appendTableSeparator(widths: widths, columns: columns, to: result)
+            for (index, row) in bodyCells.enumerated() {
+                appendTableRow(
+                    row,
+                    widths: widths,
+                    alignments: alignments,
+                    columns: columns,
+                    isHeader: false,
+                    rowIndex: index,
+                    to: result
+                )
+            }
+            result.append(spacer)
         }
 
         private static func inlineAttributed(
