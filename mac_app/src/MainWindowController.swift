@@ -218,6 +218,8 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
         userContent.add(self, name: "openScene3D")
         // Markdown 编辑器独立窗口（原生 MarkdownEditorPanelController）
         userContent.add(self, name: "openMarkdownEditor")
+        // 文件夹快速检索独立窗口（原生 FolderSearchPanelController）
+        userContent.add(self, name: "openFolderSearch")
         // 语音输入权限桥（设置页「语音识别服务」卡片据此展示/申请三件套权限）
         userContent.add(self, name: "voiceInput")
         userContent.add(self, name: "openExternal")
@@ -389,6 +391,12 @@ class MainWindowController: NSWindowController, NSWindowDelegate, WKNavigationDe
             DispatchQueue.main.async {
                 (NSApp.delegate as? AppDelegate)?.markdownEditorController?.showAndFocus()
             }
+        } else if message.name == "openFolderSearch" {
+            DispatchQueue.main.async {
+                (NSApp.delegate as? AppDelegate)?.folderSearchController?.show()
+            }
+
+
         } else if message.name == "voiceInput", let dict = message.body as? [String: Any] {
             handleVoiceInputMessage(dict)
         } else if message.name == "openExternal", let urlString = message.body as? String {

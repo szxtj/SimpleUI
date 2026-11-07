@@ -1555,3 +1555,70 @@ export class Scene3dServiceAPI {
   }
 }
 
+
+/**
+ * 文件夹快速检索服务 API（EmbeddingGemma-2 int8 · ONNX Runtime 随包内置）。
+ *
+ * 与 3D / TTS 同一套生命周期约定：没有常驻进程，模型按需下载、开窗加载、关窗卸载；
+ * 未加载时状态是 standby，设置卡片与状态栏都按这个口径显示。
+ */
+export interface FolderSearchServiceStatus {
+  dir: string;
+  installed: 'none' | 'text' | 'full';
+  installedBytes: number;
+  loaded: boolean;
+  downloading: boolean;
+  progress: { file: string; received: number; total: number; index: number; count: number } | null;
+  status: string;
+  running: boolean;
+  runtimeReady: boolean;
+  model: { ready: boolean; partial: boolean; name: string; sizeDesc: string };
+  download: {
+    active: boolean;
+    progressPercent: number;
+    currentFile: string;
+    downloadedBytes: number;
+    totalBytes: number;
+  };
+}
+
+export class FolderSearchServiceAPI {
+  static async getStatus(): Promise<FolderSearchServiceStatus | null> {
+    try {
+      const res = await fetch('/api/folder_index/model', { cache: 'no-store' });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('FolderSearchService getStatus failed:', e);
+    }
+    return null;
+  }
+
+  /** 手动下载模型（文本 + 视觉两段权重），后台跑，前端轮询 getStatus 看进度 */
+  static async prepare(): Promise<FolderSearchServiceStatus | null> {
+    try {
+      const res = await fetch('/api/folder_index/model/prepare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ needVision: true }),
+      });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('FolderSearchService prepare failed:', e);
+    }
+    return null;
+  }
+
+  /** 预加载模型（开窗时调用；失败不抛，窗口自己会提示） */
+  static async load(): Promise<boolean> {
+    try {
+      const res = await fetch('/api/folder_index/model/load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ needVision: true }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+}

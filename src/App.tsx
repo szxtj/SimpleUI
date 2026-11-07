@@ -29,6 +29,7 @@ import { VoiceOverlay } from './components/VoiceOverlay';
 import { SubtitleOverlay } from './components/SubtitleOverlay';
 import { Scene3DWindow } from './components/scene3d/Scene3DWindow';
 import { MarkdownEditorWindow } from './components/markdown/MarkdownEditorWindow';
+import { FolderSearchWindow } from './components/folderSearch/FolderSearchWindow';
 import { SidePanel } from './components/SidePanel';
 import { StartupOverlay } from './components/StartupOverlay';
 import { I18nProvider, resolveLanguage } from './i18n';
@@ -178,6 +179,10 @@ export const App: React.FC = () => {
   // Markdown 编辑器独立窗口（原生 MarkdownEditorPanelController 承载的独立窗口）
   const isMarkdownWindow = window.location.hash === '#/markdown';
 
+  // 文件夹快速检索独立窗口（原生 FolderSearchPanelController 承载的独立窗口）
+  // 允许带参数（#/folder_search?add=<path>）—— Finder 右键把路径挂在这里
+  const isFolderSearchWindow = window.location.hash.startsWith('#/folder_search');
+
   useTheme(settings.theme, isSpotlight || isVoiceOverlay || isSubtitleOverlay);
 
   if (isSubtitleOverlay) {
@@ -192,6 +197,14 @@ export const App: React.FC = () => {
     return (
       <I18nProvider preference={settings.language}>
         <VoiceOverlay />
+      </I18nProvider>
+    );
+  }
+
+  if (isFolderSearchWindow) {
+    return (
+      <I18nProvider preference={settings.language}>
+        <FolderSearchWindow />
       </I18nProvider>
     );
   }
@@ -368,6 +381,16 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
       return;
     }
     window.location.hash = '#/scene3d';
+  }, []);
+
+  /** 打开文件夹检索独立窗口：有原生桥走桥，无桥环境（浏览器验证）回退 hash 路由 */
+  const openFolderSearchWindow = useCallback(() => {
+    const bridge = (window as any).webkit?.messageHandlers?.openFolderSearch;
+    if (bridge) {
+      bridge.postMessage({});
+      return;
+    }
+    window.location.hash = '#/folder_search';
   }, []);
 
   /** 打开 Markdown 编辑器独立窗口：有原生桥走桥，无桥环境（浏览器验证）退 hash 路由 */
@@ -742,6 +765,7 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
             setIsSettingsOpen(true);
           }}
           onOpenScene3d={openScene3dWindow}
+          onOpenFolderSearch={openFolderSearchWindow}
           onOpenMarkdownEditor={openMarkdownEditorWindow}
           isOpen={isSidebarOpen}
           onToggleOpen={toggleLeftSidebar}

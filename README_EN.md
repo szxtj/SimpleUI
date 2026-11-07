@@ -216,6 +216,15 @@ How it works:
 - Dedicated DeepSeek configuration (API Key / Base URL / Model) is completely isolated from main Model Settings; native floating panels call the local gateway `/api/translate/v1` where the backend selects the appropriate engine based on mode.
 - If the service is unreachable, it retries the connection three times before showing a bilingual error. The old 3-second hard timeout is gone, so longer Detail results can complete normally.
 
+### Folder Quick Search
+
+- Standalone "Folder Search" window: an indexed-folder list on the left (add / remove, pause / resume), a search workbench on the right with list and grid result views.
+- **Hybrid three-way retrieval**: semantic vectors (EmbeddingGemma-2, 768-dim, stored as 256-dim via MRL truncation) + full-text keywords + filename matches, fused with RRF. You can search while indexing is still running.
+- **Fully on-device model**: `onnx-community/embeddinggemma-2-ONNX` int8 (text 314MB + vision 186MB) on the bundled ONNX Runtime, with no extra resident process. The service sits in standby: the model loads when the search window opens and unloads on close. Download it manually under "Service Manager → Folder Search"; weights live in the standard App Support location.
+- **Supported formats**: PDF (page-by-page extraction via PDFKit, page numbers preserved), docx / pptx / xlsx (built-in ZIP parsing, zero third-party dependencies), plain text / Markdown / code / web pages, and standalone images (vision encoder projecting into the same vector space, so a plain sentence like "a cat on the sofa" finds the right photo).
+- **Resumable indexing**: each index is keyed by `sha1(realpath)`; chunks are committed atomically (watermark + rollback of torn records), and closing the window flushes the current batch before stopping. "Paused" is persisted, so reopening never auto-resumes. Indexes live in `~/Library/Application Support/SimpleUI/folder-index/`; removing an index never touches the original files.
+- Recursively reads the whole folder (auto-excluding `.git`, `node_modules`, hidden directories, app bundles, un-downloaded iCloud placeholders and files over 200MB); query latency is ~50–70ms with ~20 chunks/s for text and ~0.4s per image on M4.
+
 ---
 
 ## Frontend

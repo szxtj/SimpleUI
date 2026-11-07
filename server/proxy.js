@@ -191,6 +191,7 @@ import { translateService } from './translate_service.js';
 import { ttsService } from './tts_service.js';
 import { ocrService } from './ocr_service.js';
 import { scene3dService } from './scene3d_service.js';
+import { folderIndexService } from './folder_index_service.js';
 import { sessionService } from './session_service.js';
 
 // 本进程是否成功抢到端口、从而成为受管服务的管理方。
@@ -297,6 +298,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // 文件夹快速检索（EmbeddingGemma-2 端侧嵌入 + 本地索引 · 开窗建索引/关窗停止）
+  if (req.url.startsWith('/api/folder_index/')) {
+    folderIndexService.handleApi(req, res);
+    return;
+  }
+
   // 3D 场景构建服务 API（Qwen3.5-4B-3D-Coder · 官方 llama.cpp · 开窗加载/关窗卸载）
   if (req.url.startsWith('/api/scene3d/')) {
     scene3dService.handleApi(req, res);
@@ -369,6 +376,8 @@ server.on('listening', () => {
   ocrService.init();
   // 3D 场景构建服务初始化（开窗加载 / 关窗卸载，不在启动时拉起模型）
   scene3dService.init();
+  // 文件夹快速检索：只做索引回滚校验，不加载模型
+  folderIndexService.init();
 
   // Automatically exit if parent process (e.g. SimpleUI app) terminates
   if (process.ppid && process.ppid > 1) {

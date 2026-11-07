@@ -26,6 +26,27 @@
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.justinxie.simpleui.url</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>simpleui</string>
+            </array>
+        </dict>
+    </array>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>SimpleUI 需要读取你选择的文件夹，才能为其中的文件建立本地检索索引。</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>SimpleUI 需要读取你选择的文件夹，才能为其中的文件建立本地检索索引。</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>SimpleUI 需要读取你选择的文件夹，才能为其中的文件建立本地检索索引。</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>SimpleUI 需要读取外置磁盘上的文件夹，才能为其中的文件建立本地检索索引。</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>SimpleUI 需要读取网络磁盘上的文件夹，才能为其中的文件建立本地检索索引。</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>SimpleUI 需要使用麦克风，以便长按右侧 Command 键进行语音转文字。</string>
     <key>NSAppTransportSecurity</key>

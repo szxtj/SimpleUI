@@ -32,7 +32,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var translationPanelController: TranslationPanelController!
     var scene3dPanelController: Scene3DPanelController!
     var markdownEditorController: MarkdownEditorPanelController!
+    var folderSearchController: FolderSearchPanelController!
 
+    /// 临时启动追踪：写到 /tmp，便于定位「应用起来但代理没起」这类只能现场复现的问题
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
 
@@ -49,6 +51,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         scene3dPanelController = Scene3DPanelController()
         // Markdown 编辑器：无后台服务，窗口骨架与 3D 窗口一致，按需打开
         markdownEditorController = MarkdownEditorPanelController()
+        folderSearchController = FolderSearchPanelController()
 
         spotlightController.onOpenMainWindow = { [weak self] in
             // Focus and trigger in-memory session sync without reloading the whole web page
@@ -109,6 +112,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarController.onOpenScene3d = { [weak self] in
             self?.scene3dPanelController.showAndFocus()
         }
+        statusBarController.onOpenFolderSearch = { [weak self] in
+            self?.folderSearchController.show()
+        }
         statusBarController.onOpenMarkdownEditor = { [weak self] in
             self?.markdownEditorController.showAndFocus()
         }
@@ -122,8 +128,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag {
-            mainWindowController.showAndFocus()
+        // 冷启动时 LaunchServices 可能在 applicationDidFinishLaunching 之前就投递 reopen，
+        // 此时 mainWindowController 还是 nil —— 强解包会直接 SIGTRAP（实测崩溃栈就在这里）。
+        if !flag, let controller = mainWindowController {
+            controller.showAndFocus()
         }
         return true
     }

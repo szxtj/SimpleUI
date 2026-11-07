@@ -16,6 +16,7 @@ import {
   TranslateServiceAPI,
   OcrServiceAPI,
   Scene3dServiceAPI,
+  FolderSearchServiceAPI,
 } from '../../services/api';
 import { AppSettingsPanel } from './AppSettingsPanel';
 import { ServicesPanel } from './ServicesPanel';
@@ -81,10 +82,11 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
   const [translateDot, setTranslateDot] = useState<'online' | 'offline' | 'starting' | 'standby'>('offline');
   const [ocrDot, setOcrDot] = useState<'online' | 'offline' | 'starting' | 'standby'>('offline');
   const [scene3dDot, setScene3dDot] = useState<'online' | 'offline' | 'starting' | 'standby'>('offline');
+  const [folderSearchDot, setFolderSearchDot] = useState<'online' | 'offline' | 'starting' | 'standby'>('standby');
 
   const pollServiceStatuses = useCallback(async () => {
     try {
-      const [kb, model, asr, tts, sub, trans, ocr, scene3d] = await Promise.all([
+      const [kb, model, asr, tts, sub, trans, ocr, scene3d, folderSearch] = await Promise.all([
         WikiAPI.getStatus().catch(() => null),
         ModelServiceAPI.getStatus().catch(() => null),
         ASRServiceAPI.getStatus().catch(() => null),
@@ -93,6 +95,7 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
         TranslateServiceAPI.getStatus().catch(() => null),
         OcrServiceAPI.getStatus().catch(() => null),
         Scene3dServiceAPI.getStatus().catch(() => null),
+        FolderSearchServiceAPI.getStatus().catch(() => null),
       ]);
 
       setKbDot(kb ? deriveServiceState({ status: kb.status }) : 'offline');
@@ -158,6 +161,16 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
             })
           : 'offline'
       );
+      // 文件夹检索：没有常驻进程，未加载时就是 standby（不是 offline）
+      setFolderSearchDot(
+        folderSearch
+          ? deriveServiceState({
+              status: folderSearch.status,
+              running: folderSearch.running,
+              loaded: Boolean(folderSearch.model?.ready),
+            })
+          : 'offline'
+      );
     } catch {}
   }, []);
 
@@ -178,6 +191,7 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
       translate?: ServiceState;
       ocr?: ServiceState;
       scene3d?: ServiceState;
+      folderSearch?: ServiceState;
     }) => {
       if (statuses.kb) setKbDot(statuses.kb);
       if (statuses.model) setModelDot(statuses.model);
@@ -187,6 +201,7 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
       if (statuses.translate) setTranslateDot(statuses.translate);
       if (statuses.ocr) setOcrDot(statuses.ocr);
       if (statuses.scene3d) setScene3dDot(statuses.scene3d);
+      if (statuses.folderSearch) setFolderSearchDot(statuses.folderSearch);
     },
     []
   );
@@ -391,6 +406,21 @@ export const UnifiedSettingsModal: React.FC<UnifiedSettingsModalProps> = ({
             >
               <span className="truncate mr-2">{t('scene3dWindowTitle')}</span>
               <span className={`w-2 h-2 rounded-full flex-shrink-0 ${SERVICE_STATE_CARD_DOT_CLASS[scene3dDot]}`} />
+            </button>
+
+            {/* 9. 文件夹快速检索 */}
+            <button
+              type="button"
+              data-tab-id="svc-folder-search"
+              onClick={() => setActiveTab('svc-folder-search')}
+              className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs transition-colors cursor-pointer text-left ${
+                activeTab === 'svc-folder-search'
+                  ? 'bg-black/5 dark:bg-white/10 text-zinc-900 dark:text-white font-semibold'
+                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]'
+              }`}
+            >
+              <span className="truncate mr-2">{t('folderSearchWindowTitle')}</span>
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${SERVICE_STATE_CARD_DOT_CLASS[folderSearchDot]}`} />
             </button>
           </div>
         </div>

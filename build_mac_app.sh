@@ -91,6 +91,7 @@ swiftc -O \
     mac_app/src/SubtitleOverlayPanelController.swift \
     mac_app/src/Scene3DPanelController.swift \
     mac_app/src/MarkdownEditorPanelController.swift \
+    mac_app/src/FolderSearchPanelController.swift \
     mac_app/src/MarkdownContentBridge.swift \
     mac_app/src/WindowResizeChrome.swift \
     mac_app/src/TranslationConfig.swift \
@@ -117,6 +118,17 @@ swiftc -O \
     -o "bin/subtitle_ml_helper"
 chmod +x "bin/subtitle_ml_helper"
 copy_item "bin/subtitle_ml_helper" "$RESOURCES_DIR/bin/subtitle_ml_helper"
+
+# 编译 PDF 文本抽取 helper（文件夹检索逐页取文，PDFKit 的中文文本层最干净）
+echo "  · 编译 PDF 文本抽取 helper..."
+swiftc -O \
+    -target arm64-apple-macos15.0 \
+    -framework PDFKit \
+    -framework Foundation \
+    mac_app/helper/PdfTextHelper.swift \
+    -o "bin/pdftext"
+chmod +x "bin/pdftext"
+copy_item "bin/pdftext" "$RESOURCES_DIR/bin/pdftext"
 
 # 拷贝资源
 cp mac_app/Resources/Info.plist "$CONTENTS_DIR/Info.plist"
@@ -491,6 +503,10 @@ const walk=(name)=>{
 for (const s of specs) walk(s);
 console.log([...closure].join(" "));
 ')
+# sharp / libvips 是 @huggingface/transformers 的**可选依赖**（用于解码 JPEG/HEIC），
+# 上面的依赖闭包只走 dependencies，抓不到可选项，这里显式补上。
+SERVER_DEPS="$SERVER_DEPS sharp @img/colour @img/sharp-darwin-arm64 @img/sharp-libvips-darwin-arm64"
+
 mkdir -p "$RESOURCES_DIR/node_modules"
 for dep in $SERVER_DEPS; do
     case "$dep" in
@@ -506,6 +522,35 @@ for dep in $SERVER_DEPS; do
 done
 
 echo "  -> 服务端运行时依赖: $SERVER_DEPS"
+
+# ONNX Runtime 的 npm 包自带 5 个平台的二进制（299MB），这里只留 darwin/arm64，
+# 并把重复的 dylib 换成软链（两个 44MB 的文件内容完全相同）。
+ORT_BIN="$RESOURCES_DIR/node_modules/onnxruntime-node/bin"
+if [ -d "$ORT_BIN" ]; then
+  for v in "$ORT_BIN"/napi-*; do
+    for plat in "$v"/*; do
+      for archdir in "$plat"/*; do
+        case "$archdir" in
+          */darwin/arm64) ;;
+          *) safe_remove "$archdir" ;;
+        esac
+      done
+      [ -z "$(ls -A "$plat" 2>/dev/null)" ] && safe_remove "$plat"
+    done
+  done
+  DYLIB_DIR="$ORT_BIN/napi-v6/darwin/arm64"
+  if [ -d "$DYLIB_DIR" ]; then
+    MAIN=$(ls "$DYLIB_DIR"/libonnxruntime.1.*.dylib 2>/dev/null | head -n 1)
+    if [ -n "$MAIN" ]; then
+      rm -f "$DYLIB_DIR/libonnxruntime.1.dylib"
+      ln -sf "$(basename "$MAIN")" "$DYLIB_DIR/libonnxruntime.1.dylib"
+    fi
+  fi
+  echo "  -> 已裁剪 ONNX Runtime 平台二进制: $(du -sh "$RESOURCES_DIR/node_modules/onnxruntime-node" | cut -f1)"
+fi
+
+# Windows/WebAssembly 的 sharp 变体（本机用不到）
+safe_remove "$RESOURCES_DIR/node_modules/@img/sharp-wasm32"
 
 # 4. 代码签名
 echo "[4/4] 正在检测代码签名配置..."

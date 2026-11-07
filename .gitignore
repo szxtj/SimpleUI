@@ -59,3 +59,4 @@ bin/tts_runtime/
 # Maple MLX 随包运行时（由 scripts/build_maple_runtime.sh 预构建，363MB，
 # 与 bin/tts_runtime 同策略不入库；打包时复制进 App）
 bin/maple_runtime/
+/bin/pdftext

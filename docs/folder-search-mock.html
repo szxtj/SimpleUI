@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="theme-dark">
+<head>
+<meta charset="utf-8" />
+<title>文件夹快速检索 · 界面方案对比</title>
+<style>
+  :root{
+    --app:#18191c; --side:#1a1b1f; --card:#202126; --card2:#25262c;
+    --text:#f1f3f7; --sub:#9aa0aa; --line:rgba(255,255,255,.08);
+    --hover:rgba(255,255,255,.06); --sel:#2b2d34; --bubble:#2a2f3a;
+    --accent:#4c8dff; --chip:rgba(255,255,255,.07); --thumb:#2c2e35;
+    --shadow:0 24px 60px rgba(0,0,0,.55);
+  }
+  html.theme-light{
+    --app:#f8f9fb; --side:#f1f3f6; --card:#ffffff; --card2:#ffffff;
+    --text:#1f2328; --sub:#6b7280; --line:rgba(0,0,0,.08);
+    --hover:rgba(0,0,0,.05); --sel:#ffffff; --bubble:#e9eef7;
+    --accent:#2f7bf6; --chip:rgba(0,0,0,.05); --thumb:#e6e8ec;
+    --shadow:0 24px 60px rgba(20,24,40,.18);
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:#0d0e10; font-family:-apple-system,"PingFang SC","Helvetica Neue",sans-serif;
+    color:#e9eaee; padding:26px 0 60px; -webkit-font-smoothing:antialiased;
+  }
+  html.theme-light body{background:#eceef2; color:#1f2328}
+  .stage{width:1020px; margin:0 auto}
+  .tabs{display:flex; gap:8px; align-items:center; margin-bottom:10px}
+  .tab{
+    padding:7px 14px; border-radius:999px; font-size:13px; cursor:pointer;
+    background:rgba(255,255,255,.07); color:#c9ccd3; border:1px solid transparent;
+  }
+  html.theme-light .tab{background:rgba(0,0,0,.06); color:#4b5563}
+  .tab.on{background:#fff; color:#111; border-color:transparent}
+  html.theme-light .tab.on{background:#111; color:#fff}
+  .spacer{flex:1}
+  .theme-btn{
+    padding:7px 14px; border-radius:999px; font-size:13px; cursor:pointer;
+    background:transparent; color:#c9ccd3; border:1px solid rgba(255,255,255,.18);
+  }
+  html.theme-light .theme-btn{color:#4b5563; border-color:rgba(0,0,0,.15)}
+  .caption{font-size:12.5px; color:#8b909a; margin:0 0 14px 2px; line-height:1.55}
+  html.theme-light .caption{color:#6b7280}
+
+  .win{
+    width:1020px; height:660px; border-radius:14px; overflow:hidden;
+    display:flex; box-shadow:var(--shadow); border:1px solid rgba(255,255,255,.10);
+    background:var(--app); color:var(--text); position:relative;
+  }
+  html.theme-light .win{border-color:rgba(0,0,0,.10)}
+
+  .side{
+    width:260px; min-width:260px; background:var(--side); border-right:1px solid var(--line);
+    display:flex; flex-direction:column;
+  }
+  .side-top{height:52px; display:flex; align-items:center; justify-content:space-between; padding:0 12px 0 14px}
+  .lights{display:flex; gap:8px; width:78px}
+  .light{width:12px; height:12px; border-radius:50%}
+  .side-top .ico{
+    width:26px; height:26px; border-radius:8px; display:flex; align-items:center; justify-content:center;
+    color:var(--sub); cursor:pointer
+  }
+  .side-top .ico:hover{background:var(--hover); color:var(--text)}
+  .brand{padding:2px 16px 12px; display:flex; align-items:center; justify-content:space-between}
+  .brand h1{font-size:20px; font-weight:700; letter-spacing:-.02em; margin:0}
+  .add-btn{
+    margin:0 12px 10px; height:38px; border-radius:12px; background:var(--card2);
+    border:1px solid var(--line); display:flex; align-items:center; justify-content:space-between;
+    padding:0 12px; font-size:13px; font-weight:500; cursor:pointer;
+  }
+  .add-btn:hover{background:var(--hover)}
+  .add-btn .l{display:flex; align-items:center; gap:8px}
+  .sec{
+    padding:8px 14px 6px; font-size:11px; letter-spacing:.06em; color:var(--sub);
+    display:flex; justify-content:space-between; align-items:center; text-transform:uppercase
+  }
+  .folders{flex:1; overflow-y:auto; padding:0 8px}
+  .folder{
+    border-radius:12px; padding:9px 10px; display:flex; gap:10px; align-items:flex-start;
+    cursor:pointer; margin-bottom:2px; position:relative;
+  }
+  .folder:hover{background:var(--hover)}
+  .folder.on{background:var(--sel); box-shadow:0 1px 2px rgba(0,0,0,.12)}
+  .folder .ficon{
+    width:28px; height:28px; border-radius:8px; background:var(--chip);
+    display:flex; align-items:center; justify-content:center; flex-shrink:0; color:var(--sub)
+  }
+  .folder.on .ficon{background:rgba(76,141,255,.16); color:var(--accent)}
+  .fmeta{min-width:0; flex:1}
+  .fname{font-size:13px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .fsub{font-size:11px; color:var(--sub); margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .fstate{font-size:10.5px; margin-top:4px; display:flex; align-items:center; gap:5px; color:var(--sub)}
+  .dot{width:5px; height:5px; border-radius:50%; background:#4ade80}
+  .dot.pause{background:#f5a623}
+  .dot.run{background:var(--accent)}
+  .trash{
+    position:absolute; right:8px; top:9px; width:24px; height:24px; border-radius:7px;
+    display:none; align-items:center; justify-content:center; color:var(--sub)
+  }
+  .folder:hover .trash{display:flex}
+  .trash:hover{background:rgba(255,80,80,.15); color:#ff7171}
+  .side-foot{padding:10px 14px; border-top:1px solid var(--line); font-size:10.5px; color:var(--sub); line-height:1.7}
+
+  .main{flex:1; min-width:0; display:flex; flex-direction:column; background:var(--app)}
+  .topbar{
+    height:52px; display:flex; align-items:center; gap:10px; padding:0 14px;
+    border-bottom:1px solid var(--line); backdrop-filter:blur(12px); flex-shrink:0;
+  }
+  .topbar .ttl{font-size:13.5px; font-weight:600}
+  .topbar .meta{font-size:11.5px; color:var(--sub)}
+  .pill{
+    display:inline-flex; align-items:center; gap:6px; height:26px; padding:0 10px;
+    border-radius:999px; font-size:11.5px; background:var(--chip); color:var(--sub)
+  }
+  .ghost{
+    height:28px; padding:0 11px; border-radius:999px; border:1px solid var(--line);
+    background:transparent; color:var(--text); font-size:12px; display:inline-flex;
+    align-items:center; gap:6px; cursor:pointer
+  }
+  .ghost:hover{background:var(--hover)}
+  .ghost.on{background:var(--accent); border-color:transparent; color:#fff}
+  .body{flex:1; overflow-y:auto; padding:16px 18px}
+  .body::-webkit-scrollbar{width:0}
+
+  .composer{
+    margin:0 18px 14px; border-radius:24px; border:1px solid var(--line);
+    background:var(--card2); box-shadow:0 10px 30px rgba(0,0,0,.18);
+    padding:12px 14px 10px; display:flex; align-items:flex-end; gap:10px;
+  }
+  .composer .ph{flex:1; font-size:14.5px; color:var(--sub); padding-bottom:3px}
+  .send{
+    width:30px; height:30px; border-radius:50%; background:var(--accent); color:#fff;
+    display:flex; align-items:center; justify-content:center; flex-shrink:0
+  }
+
+  .q-row{display:flex; justify-content:flex-end; margin:0 0 12px}
+  .q{
+    background:var(--bubble); border-radius:16px 16px 4px 16px; padding:9px 14px;
+    font-size:13.5px; max-width:78%; line-height:1.5;
+  }
+  .ans{margin:0 0 20px}
+  .ans-head{font-size:11.5px; color:var(--sub); margin:0 0 8px 2px; display:flex; align-items:center; gap:8px}
+  .rc{
+    border:1px solid var(--line); background:var(--card); border-radius:14px; overflow:hidden;
+  }
+  .rc + .rc{margin-top:8px}
+  .rc-row{display:flex; gap:11px; padding:11px 13px; align-items:flex-start; cursor:pointer; border-top:1px solid var(--line)}
+  .rc-row:first-child{border-top:none}
+  .rc-row:hover{background:var(--hover)}
+  .thumb{
+    width:38px; height:38px; border-radius:9px; background:var(--thumb); flex-shrink:0;
+    display:flex; align-items:center; justify-content:center; color:var(--sub); font-size:9px; font-weight:600
+  }
+  .rmeta{flex:1; min-width:0}
+  .rname{font-size:13px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .rpath{font-size:11px; color:var(--sub); margin-top:2px}
+  .rsnip{font-size:12px; color:var(--sub); margin-top:5px; line-height:1.55; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
+  .rsnip b{color:var(--text); font-weight:600; background:rgba(76,141,255,.16); border-radius:3px; padding:0 2px}
+  .score{font-size:11px; color:var(--sub); font-variant-numeric:tabular-nums; flex-shrink:0; padding-top:2px}
+  .more{font-size:12px; color:var(--accent); padding:9px 13px; border-top:1px solid var(--line); cursor:pointer}
+
+  .searchbar{
+    margin:14px 18px 10px; height:46px; border-radius:23px; background:var(--card2);
+    border:1px solid var(--line); display:flex; align-items:center; gap:10px; padding:0 8px 0 16px;
+    box-shadow:0 8px 24px rgba(0,0,0,.14); flex-shrink:0;
+  }
+  .searchbar .txt{flex:1; font-size:14px; color:var(--text)}
+  .searchbar .txt .cursor{color:var(--sub)}
+  .score-pill{
+    font-size:11px; padding:2px 7px; border-radius:999px; background:var(--chip);
+    color:var(--sub); font-variant-numeric:tabular-nums
+  }
+  .row{
+    display:flex; gap:12px; padding:12px 13px; border-radius:12px; align-items:flex-start; cursor:pointer;
+    border:1px solid transparent
+  }
+  .row:hover{background:var(--card); border-color:var(--line)}
+  .row + .row{margin-top:2px}
+  .relist{display:flex; flex-direction:column}
+  .progbar{height:3px; border-radius:2px; background:var(--chip); overflow:hidden; margin-top:7px}
+  .progbar i{display:block; height:100%; background:var(--accent); width:82%}
+  .statusbar{
+    display:flex; align-items:center; gap:10px; padding:10px 18px 14px; font-size:11.5px; color:var(--sub)
+  }
+
+  .cards{display:grid; gap:12px}
+  .fcard{border:1px solid var(--line); border-radius:16px; background:var(--card); overflow:hidden}
+  .fcard-h{display:flex; align-items:center; gap:11px; padding:12px 14px}
+  .fcard-h .ficon{width:32px; height:32px; border-radius:9px; background:rgba(76,141,255,.14); color:var(--accent); display:flex; align-items:center; justify-content:center; flex-shrink:0}
+  .fcard-b{border-top:1px solid var(--line); padding:4px 0}
+  .hit{display:flex; gap:10px; padding:9px 14px; font-size:12px; color:var(--sub); line-height:1.55}
+  .hit:hover{background:var(--hover)}
+  .pg{font-size:10.5px; color:var(--sub); background:var(--chip); border-radius:5px; padding:1px 5px; height:18px; flex-shrink:0; margin-top:1px}
+
+  .grid{display:grid; grid-template-columns:repeat(3,1fr); gap:10px}
+  .tile{position:relative; border-radius:12px; overflow:hidden; background:var(--thumb); aspect-ratio:16/10; border:1px solid var(--line)}
+  .tile span.sc{position:absolute; right:7px; bottom:7px; font-size:10.5px; color:#fff; background:rgba(0,0,0,.55); padding:1px 6px; border-radius:6px; font-variant-numeric:tabular-nums}
+  .tile span.nm{position:absolute; left:7px; bottom:7px; font-size:10.5px; color:rgba(255,255,255,.9); text-shadow:0 1px 2px rgba(0,0,0,.6); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:60%}
+  .tile .ph{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--sub); opacity:.55}
+
+  .chips{display:flex; gap:7px; flex-wrap:wrap; padding:0 18px 8px}
+  .chipx{display:inline-flex; align-items:center; gap:6px; height:24px; padding:0 9px; border-radius:999px; background:var(--chip); font-size:11.5px; color:var(--sub)}
+  .chipx i{font-style:normal; opacity:.7}
+
+  .hidden{display:none !important}
+  .v{display:flex; flex-direction:column; flex:1; min-height:0}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="tabs">
+    <div class="tab on" data-v="a">方案 A · 对话式</div>
+    <div class="tab" data-v="b">方案 B · 检索台</div>
+    <div class="tab" data-v="c">方案 C · 文件卡片</div>
+    <div class="spacer"></div>
+    <div class="theme-btn" id="themeBtn">切换浅色</div>
+  </div>
+  <p class="caption" id="cap">方案 A：直接复用对话区与输入框 —— 一次提问 = 一张结果卡，历史留在流里，可继续追问。最省实现，但一次性检索会被聊天流稀释。</p>
+
+  <div class="win">
+    <!-- 左侧：复用主界面 Sidebar 视觉 -->
+    <aside class="side">
+      <div class="side-top">
+        <div class="lights">
+          <div class="light" style="background:#ff5f57"></div>
+          <div class="light" style="background:#febc2e"></div>
+          <div class="light" style="background:#28c840"></div>
+        </div>
+        <div class="ico">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
+        </div>
+      </div>
+      <div class="brand"><h1>文件夹检索</h1></div>
+      <div class="add-btn">
+        <div class="l">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          <span>添加文件夹</span>
+        </div>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" opacity=".5"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      </div>
+      <div class="sec"><span>已索引文件夹</span><span style="text-transform:none">3</span></div>
+      <div class="folders">
+        <div class="folder on">
+          <div class="ficon">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          </div>
+          <div class="fmeta">
+            <div class="fname">七天练习</div>
+            <div class="fsub">408Papers/七天练习</div>
+            <div class="fstate"><span class="dot"></span>已索引 · 7 个文件 · 42 页</div>
+          </div>
+          <div class="trash">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>
+          </div>
+        </div>
+        <div class="folder">
+          <div class="ficon">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          </div>
+          <div class="fmeta">
+            <div class="fname">相册导出 2026</div>
+            <div class="fsub">Pictures/Export</div>
+            <div class="fstate"><span class="dot run"></span>索引中 68% · 212/312 张</div>
+          </div>
+          <div class="trash">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>
+          </div>
+        </div>
+        <div class="folder">
+          <div class="ficon">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          </div>
+          <div class="fmeta">
+            <div class="fname">无纸化笔记</div>
+            <div class="fsub">Documents/Notes</div>
+            <div class="fstate"><span class="dot pause"></span>已暂停 · 1,204 项</div>
+          </div>
+          <div class="trash">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>
+          </div>
+        </div>
+      </div>
+      <div class="side-foot">EmbeddingGemma-2 · 文本 int8 / 视觉 int8<br>全部在本地运行</div>
+    </aside>
+
+    <main class="main">
+      <!-- ================= A 对话式 ================= -->
+      <section class="v" data-panel="a">
+        <div class="topbar">
+          <span class="ttl">七天练习</span>
+          <span class="pill"><span class="dot"></span>索引完成 · 186 块</span>
+          <div class="spacer" style="flex:1"></div>
+          <button class="ghost">暂停</button>
+        </div>
+        <div class="body">
+          <div class="q-row"><div class="q">TLB 那题，虚页号和页内地址是怎么分的</div></div>
+          <div class="ans">
+            <div class="ans-head">找到 3 处相关 · 用时 12ms</div>
+            <div class="rc">
+              <div class="rc-row">
+                <div class="thumb">PDF</div>
+                <div class="rmeta">
+                  <div class="rname">D2_存储层次核心与虚拟内存.pdf</div>
+                  <div class="rpath">第 1 页</div>
+                  <div class="rsnip">虚拟地址 30 位，页大小 4KB；<b>虚页号</b>高位作 TLB 标记，低位作组索引…</div>
+                </div>
+                <div class="score">0.79</div>
+              </div>
+              <div class="rc-row">
+                <div class="thumb">PDF</div>
+                <div class="rmeta">
+                  <div class="rname">D7_模考与母题重做.pdf</div>
+                  <div class="rpath">第 6 页</div>
+                  <div class="rsnip">…页内<b>地址</b>占 12 位，虚页号 18 位，TLB 共 8 组、2 路组相联…</div>
+                </div>
+                <div class="score">0.71</div>
+              </div>
+              <div class="more">查看全部 3 条 →</div>
+            </div>
+          </div>
+          <div class="q-row"><div class="q">那图那一题呢</div></div>
+          <div class="ans">
+            <div class="ans-head">找到 2 处相关 · 用时 9ms</div>
+            <div class="rc">
+              <div class="rc-row">
+                <div class="thumb">PDF</div>
+                <div class="rmeta">
+                  <div class="rname">D5_图.pdf</div>
+                  <div class="rpath">第 1 页</div>
+                  <div class="rsnip">已知含 5 个顶点的图 G，写出<b>邻接矩阵</b> A，求 A² 中 0 行 3 列元素的含义…</div>
+                </div>
+                <div class="score">0.74</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="composer">
+          <div class="ph">搜这个文件夹里的内容…</div>
+          <div class="send">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= B 检索台 ================= -->
+      <section class="v hidden" data-panel="b">
+        <div class="topbar">
+          <span class="ttl">七天练习</span>
+          <span class="meta">结果 42 条</span>
+          <div style="flex:1"></div>
+          <button class="ghost on">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>列表
+          </button>
+          <button class="ghost">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>网格
+          </button>
+        </div>
+        <div class="searchbar">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity=".55"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          <div class="txt">TLB 虚页号和页内地址</div>
+          <div class="send">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+          </div>
+        </div>
+        <div class="body" style="padding:4px 14px 0">
+          <div class="relist">
+            <div class="row">
+              <div class="thumb">PDF</div>
+              <div class="rmeta">
+                <div class="rname">D2_存储层次核心与虚拟内存.pdf</div>
+                <div class="rpath">408Papers / 七天练习 · 第 1 页</div>
+                <div class="rsnip">虚拟地址 30 位，页大小 4KB；<b>虚页号</b>高位作 TLB 标记，低位作组索引…</div>
+              </div>
+              <div class="score-pill">0.79</div>
+            </div>
+            <div class="row">
+              <div class="thumb">PDF</div>
+              <div class="rmeta">
+                <div class="rname">D7_模考与母题重做.pdf</div>
+                <div class="rpath">408Papers / 七天练习 · 第 6 页</div>
+                <div class="rsnip">…页内<b>地址</b>占 12 位，虚页号 18 位，TLB 共 8 组、2 路组相联…</div>
+              </div>
+              <div class="score-pill">0.71</div>
+            </div>
+            <div class="row">
+              <div class="thumb">PDF</div>
+              <div class="rmeta">
+                <div class="rname">D1_存储层次基础.pdf</div>
+                <div class="rpath">408Papers / 七天练习 · 第 3 页</div>
+                <div class="rsnip">主存地址空间 256MB，按字节编址，指令 Cache 与数据 Cache 分离…</div>
+              </div>
+              <div class="score-pill">0.63</div>
+            </div>
+            <div class="row">
+              <div class="thumb">PDF</div>
+              <div class="rmeta">
+                <div class="rname">D3_同步互斥.pdf</div>
+                <div class="rpath">408Papers / 七天练习 · 第 2 页</div>
+                <div class="rsnip">请用信号量的 wait() / signal() 操作描述 A、B、C、D、E 之间的同步关系…</div>
+              </div>
+              <div class="score-pill">0.58</div>
+            </div>
+          </div>
+        </div>
+        <div class="statusbar">
+          <span>已索引 152 / 186 块</span>
+          <div style="flex:1;max-width:180px"><div class="progbar"><i></i></div></div>
+          <span>暂停</span>
+        </div>
+      </section>
+
+      <!-- ================= C 文件卡片 ================= -->
+      <section class="v hidden" data-panel="c">
+        <div class="topbar">
+          <span class="ttl">七天练习</span>
+          <span class="pill">7 个文件 · 42 页 · 186 块</span>
+          <div style="flex:1"></div>
+          <button class="ghost">暂停索引</button>
+        </div>
+        <div class="chips">
+          <span class="chipx">TLB 虚页号 <i>×</i></span>
+          <span class="chipx">邻接矩阵 <i>×</i></span>
+        </div>
+        <div class="searchbar" style="margin-top:4px">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity=".55"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          <div class="txt"><span class="cursor">继续输入，结果会即时收窄…</span></div>
+        </div>
+        <div class="body" style="padding:6px 18px 0">
+          <div class="cards">
+            <div class="fcard">
+              <div class="fcard-h">
+                <div class="ficon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg>
+                </div>
+                <div class="rmeta">
+                  <div class="rname">D2_存储层次核心与虚拟内存.pdf</div>
+                  <div class="rpath">第 1 页 · 命中 0.79</div>
+                </div>
+                <div class="score-pill">最佳 0.79</div>
+              </div>
+              <div class="fcard-b">
+                <div class="hit"><span class="pg">P1</span><span>虚拟地址 30 位，页大小 4KB；<b>虚页号</b>高位作 TLB 标记，低位作组索引…</span></div>
+                
+            </div>
+            <div class="fcard">
+              <div class="fcard-h">
+                <div class="ficon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg>
+                </div>
+                <div class="rmeta">
+                  <div class="rname">D7_模考与母题重做.pdf</div>
+                  <div class="rpath">第 6 页 · 命中 0.71</div>
+                </div>
+                <div class="score-pill">最佳 0.71</div>
+              </div>
+              <div class="fcard-b">
+                <div class="hit"><span class="pg">P6</span><span>…页内<b>地址</b>占 12 位，<b>虚页号</b> 18 位，TLB 共 8 组…</span></div>
+              </div>
+            </div>
+            <div style="margin-top:2px">
+              <div class="ans-head" style="margin:6px 0 8px 2px">同类图片 · 3 张</div>
+              <div class="grid">
+                <div class="tile"><div class="ph">
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M4 18l5-5 4 4 3-3 4 4"/></svg>
+                </div><span class="nm">IMG_2041.HEIC</span><span class="sc">0.72</span></div>
+                <div class="tile"><div class="ph">
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M4 18l5-5 4 4 3-3 4 4"/></svg>
+                </div><span class="nm">IMG_2044.HEIC</span><span class="sc">0.68</span></div>
+                <div class="tile"><div class="ph">
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M4 18l5-5 4 4 3-3 4 4"/></svg>
+                </div><span class="nm">Screenshot.png</span><span class="sc">0.61</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="statusbar">
+          <span>已索引 152 / 186 块</span>
+          <div style="flex:1;max-width:180px"><div class="progbar"><i></i></div></div>
+          <span>12ms</span>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<script>
+  const caps = {
+    a: '方案 A：直接复用对话区与输入框 —— 一次提问 = 一张结果卡，历史留在流里，可继续追问。最省实现，但一次性检索会被聊天流稀释。',
+    b: '方案 B：检索台 —— 顶部胶囊搜索框 + 密集结果行（文件名 / 路径 / 命中片段 / 相似度），底部常驻索引进度。信息密度最高，最像"找东西"。',
+    c: '方案 C：文件卡片 —— 按文件聚合命中（一个文件一张卡，卡内列出命中页），图片自动并入网格。适合"先看是哪份材料"，但单屏条数少。'
+  };
+  const select = (v) => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x.dataset.v === v));
+    document.querySelectorAll('[data-panel]').forEach(p => p.classList.toggle('hidden', p.dataset.panel !== v));
+    document.getElementById('cap').textContent = caps[v];
+  };
+  document.querySelectorAll('.tab').forEach(t => { t.onclick = () => select(t.dataset.v); });
+  const qs = new URLSearchParams(location.search);
+  if (qs.get('v')) select(qs.get('v'));
+  if (qs.get('theme') === 'light') {
+    document.documentElement.classList.add('theme-light');
+    document.documentElement.classList.remove('theme-dark');
+    document.getElementById('themeBtn').textContent = '切换深色';
+  }
+  const btn = document.getElementById('themeBtn');
+  btn.onclick = () => {
+    const html = document.documentElement;
+    const light = html.classList.toggle('theme-light');
+    html.classList.toggle('theme-dark', !light);
+    btn.textContent = light ? '切换深色' : '切换浅色';
+  };
+</script>
+</body>
+</html>

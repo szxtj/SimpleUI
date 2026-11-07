@@ -17,6 +17,7 @@ import {
   PictureInPicture2,
   Boxes,
   PenLine,
+  FolderSearch,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -33,6 +34,8 @@ interface SidebarProps {
   onOpenServiceManager?: () => void;
   /** 打开独立的 3D 场景构建窗口（原生 NSPanel；无桥时回退 window.open） */
   onOpenScene3d?: () => void;
+  /** 打开文件夹快速检索窗口（原生 NSPanel；无桥时回退 hash 路由） */
+  onOpenFolderSearch?: () => void;
   /** 打开独立的 Markdown 编辑器窗口（原生 NSPanel；无桥时回退 hash 路由） */
   onOpenMarkdownEditor?: () => void;
   isOpen: boolean;
@@ -50,6 +53,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onRenameSession,
   onOpenSettings,
   onOpenScene3d,
+  onOpenFolderSearch,
   onOpenMarkdownEditor,
   isOpen,
   onToggleOpen,
@@ -202,6 +206,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
               title={t('mdEditorWindowTitle')}
             >
               <PenLine className="w-4 h-4" />
+            </button>
+          )}
+          {onOpenFolderSearch && (
+            <button
+              onClick={onOpenFolderSearch}
+              className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/5 transition-colors"
+              title={t('folderSearchWindowTitle')}
+            >
+              <FolderSearch className="w-4 h-4" />
             </button>
           )}
           {onOpenScene3d && (

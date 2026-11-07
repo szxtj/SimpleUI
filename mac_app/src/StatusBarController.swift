@@ -23,6 +23,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
     var onOpenTranslator: (() -> Void)?
     /// 独立窗口入口（与侧栏的 3D / Markdown 按钮走同一套 controller）
     var onOpenScene3d: (() -> Void)?
+    var onOpenFolderSearch: (() -> Void)?
     var onOpenMarkdownEditor: (() -> Void)?
 
     private var statusItem: NSStatusItem?
@@ -34,6 +35,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
     private var translateStatusItem: NSMenuItem!
     private var ocrStatusItem: NSMenuItem!
     private var scene3dStatusItem: NSMenuItem!
+    private var folderSearchStatusItem: NSMenuItem!
     private var subtitleMenuItem: NSMenuItem!
     private var translatorMenuItem: NSMenuItem!
     private var pollTimer: Timer?
@@ -84,6 +86,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
     private var openMainItem: NSMenuItem?
     private var openSpotlightItem: NSMenuItem?
     private var scene3dWindowItem: NSMenuItem?
+    private var folderSearchWindowItem: NSMenuItem?
     private var markdownEditorItem: NSMenuItem?
     private var quitItem: NSMenuItem?
 
@@ -99,6 +102,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
     private var lblTranslateSvc: String { zh ? "快速翻译" : "Quick Translate" }
     private var lblOcr: String { zh ? "视觉图文识别" : "Visual OCR" }
     private var lblScene3d: String { zh ? "3D 场景构建" : "3D Scene Builder" }
+    private var lblFolderSearch: String { zh ? "文件夹检索" : "Folder Search" }
     private var lblReady: String { zh ? "就绪" : "Ready" }
     private var lblOffline: String { zh ? "离线" : "Offline" }
     private var lblStarting: String { zh ? "启动中" : "Starting" }
@@ -107,6 +111,7 @@ class StatusBarController: NSObject, NSMenuDelegate {
     private var lblOpenMain: String { zh ? "打开主界面" : "Open Main Window" }
     private var lblOpenSpotlight: String { zh ? "打开小窗口" : "Open Mini Window" }
     private var lblOpenScene3d: String { zh ? "3D 场景构建" : "3D Scene Builder" }
+    private var lblOpenFolderSearch: String { zh ? "文件夹检索" : "Folder Search" }
     private var lblOpenMarkdown: String { zh ? "Markdown 编辑器" : "Markdown Editor" }
     private var lblTranslator: String { zh ? "快捷翻译" : "Quick Translate" }
     private var lblSubtitles: String { zh ? "实时双语字幕" : "Live Subtitles" }
@@ -140,6 +145,13 @@ class StatusBarController: NSObject, NSMenuDelegate {
     }
     private var tipScene3d: String {
         zh ? "按需加载：打开 3D 建模窗口时启动，关窗即卸载" : "On demand: starts when the 3D window opens, unloads on close"
+    }
+    private var tipFolderSearch: String {
+        zh ? "按需加载：打开检索窗口时加载模型，关窗即卸载" : "On demand: loads the model when the search window opens, unloads on close"
+    }
+    private var tipOpenFolderSearch: String {
+        zh ? "打开独立的文件夹快速检索窗口（按内容找文档、按画面找图片）"
+           : "Open the standalone folder search window (find documents by content, images by scene)"
     }
     private var tipTranslator: String { zh ? "唤起或隐藏快捷翻译面板 (⌃Space)" : "Toggle quick translation overlay (⌃Space)" }
     private var tipSubtitles: String { zh ? "开启或关闭实时双语字幕悬浮窗" : "Toggle live bilingual subtitle overlay" }
@@ -218,6 +230,9 @@ class StatusBarController: NSObject, NSMenuDelegate {
         scene3dStatusItem = passiveStatusItem(toolTip: tipScene3d)
         menu.addItem(scene3dStatusItem)
 
+        folderSearchStatusItem = passiveStatusItem(toolTip: tipFolderSearch)
+        menu.addItem(folderSearchStatusItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let openMain = NSMenuItem(title: lblOpenMain, action: #selector(openMainWindow), keyEquivalent: "")
@@ -235,6 +250,12 @@ class StatusBarController: NSObject, NSMenuDelegate {
         openScene3d.toolTip = tipOpenScene3d
         scene3dWindowItem = openScene3d
         menu.addItem(openScene3d)
+
+        let openFolderSearch = NSMenuItem(title: lblOpenFolderSearch, action: #selector(openFolderSearchWindow), keyEquivalent: "")
+        openFolderSearch.target = self
+        openFolderSearch.toolTip = tipOpenFolderSearch
+        folderSearchWindowItem = openFolderSearch
+        menu.addItem(openFolderSearch)
 
         let openMarkdown = NSMenuItem(title: lblOpenMarkdown, action: #selector(openMarkdownEditorWindow), keyEquivalent: "")
         openMarkdown.target = self
@@ -302,6 +323,9 @@ class StatusBarController: NSObject, NSMenuDelegate {
             self.openSpotlightItem?.title = "\(self.lblOpenSpotlight)  (⌥Space)"
             self.scene3dWindowItem?.title = self.lblOpenScene3d
             self.scene3dWindowItem?.toolTip = self.tipOpenScene3d
+            self.folderSearchWindowItem?.title = self.lblOpenFolderSearch
+            self.folderSearchWindowItem?.toolTip = self.tipOpenFolderSearch
+            self.folderSearchStatusItem?.toolTip = self.tipFolderSearch
             self.markdownEditorItem?.title = self.lblOpenMarkdown
             self.markdownEditorItem?.toolTip = self.tipOpenMarkdown
             self.translatorMenuItem?.title = "\(self.lblTranslator)  (⌃Space)"
@@ -468,6 +492,10 @@ class StatusBarController: NSObject, NSMenuDelegate {
     /// 独立窗口：与侧栏按钮、主窗口脚本桥走同一个 controller（重复点会聚焦已有窗口）
     @objc private func openScene3dWindow() {
         onOpenScene3d?()
+    }
+
+    @objc private func openFolderSearchWindow() {
+        onOpenFolderSearch?()
     }
 
     @objc private func openMarkdownEditorWindow() {
@@ -714,6 +742,17 @@ class StatusBarController: NSObject, NSMenuDelegate {
             )
             let port = self.portValue(json, "port").map { String($0) }
             self.scene3dStatusItem.attributedTitle = self.statusLine(label: self.lblScene3d, view: self.view(for: state, port: port))
+        }
+
+        // 文件夹检索（无端口，状态只有 idle / standby / running）
+        fetchJSON("/api/folder_index/model") { [weak self] json in
+            guard let self = self else { return }
+            let state = self.state(
+                forStatus: json?["status"] as? String,
+                running: json?["running"] as? Bool ?? false,
+                loaded: (json?["model"] as? [String: Any])?["ready"] as? Bool ?? false
+            )
+            self.folderSearchStatusItem.attributedTitle = self.statusLine(label: self.lblFolderSearch, view: self.view(for: state, port: nil))
         }
     }
 

@@ -13,7 +13,8 @@ export type SettingsTabId =
   | 'svc-subtitles'
   | 'svc-translate'
   | 'svc-ocr'
-  | 'svc-scene3d';
+  | 'svc-scene3d'
+  | 'svc-folder-search';
 
 export interface SettingsTabItem {
   id: SettingsTabId;
