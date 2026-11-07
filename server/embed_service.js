@@ -44,9 +44,9 @@ const VISION_FILES = [
 
 /** 图片软 token 上限：280 是满配（2520 patch ≈ 2.2s/图），64 是实测速度/质量拐点 */
 const DEFAULT_IMAGE_SOFT_TOKENS = 64;
-/** 闲置卸载（分钟）：0 = 只有退出才卸载。索引完成 / 检索后 60s 无活动即卸载；
- *  工作进程重新拉起 + 加载模型只要 ~1s，不值得为省这 1s 让 500MB 常驻。 */
-const IDLE_UNLOAD_MIN = 1;
+/** 闲置卸载（分钟）：0 = 只有退出才卸载。索引完成 / 检索后 3 分钟无活动即卸载；
+ *  工作进程重新拉起 + 加载模型只要 ~1s。 */
+const IDLE_UNLOAD_MIN = 3;
 /** 单条工作进程请求的超时（冷启动含模型加载也在其中） */
 const WORKER_REQUEST_TIMEOUT_MS = 120_000;
 
