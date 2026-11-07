@@ -143,7 +143,15 @@ export const FolderSearchWindow: React.FC = () => {
 
   // 300ms 防抖
   useEffect(() => {
-    if (!activeId) return;
+    // 没有选中文件夹（列表为空 / 刚删掉最后一个）：必须清空结果，
+    // 否则上一次的命中列表会一直挂在界面上，输入新词也「相当于在旧文件夹里搜」
+    if (!activeId) {
+      setHits([]);
+      setElapsed(0);
+      setSearching(false);
+      searchSeq.current += 1; // 作废在途请求，防止旧结果晚到覆盖空态
+      return;
+    }
     const t = setTimeout(() => runSearch(query, activeId), 300);
     return () => clearTimeout(t);
   }, [query, activeId, runSearch]);
@@ -177,6 +185,13 @@ export const FolderSearchWindow: React.FC = () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id }),
     });
+    // 删的是当前选中文件夹时，把查询与结果一并清掉，避免留下旧文件夹的残影；
+    // 若列表里还有其他文件夹，refresh() 会自动选中第一个，查询原样保留并在那里重搜
+    if (id === activeId) {
+      setQuery('');
+      setHits([]);
+      setElapsed(0);
+    }
     refresh();
   };
   const togglePause = async () => {
