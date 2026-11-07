@@ -75,6 +75,14 @@ class FolderIndexService {
       if (pathname === '/add' && req.method === 'POST') {
         if (!body.path) return sendJson(400, { error: '缺少路径' });
         const item = await folderIndex.addFolder(body.path);
+        // 添加即建索引：必须在 /add 里启动，而不是等页面下一次 /open ——
+        // 否则页面在 /add 后立刻 refresh，看到的还是 0 文件 / running=false，
+        // 轮询不启动，索引在后台默默跑完，界面永远停在 0（实测踩过）。
+        if (!item.paused) {
+          folderIndex.start(item.id, { reason: 'add' }).catch((e) => {
+            console.warn('[FolderIndex] 添加后建索引失败:', e.message);
+          });
+        }
         sendJson(200, { item });
         return;
       }

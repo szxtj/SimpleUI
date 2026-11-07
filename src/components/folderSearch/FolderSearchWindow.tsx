@@ -32,6 +32,7 @@ type IndexItem = {
   running: boolean;
   exists: boolean;
   dim?: number;
+  lastIndexedAt?: number | null;
   progress: { phase: string; done?: number; total?: number; chunks?: number; current?: string; error?: string } | null;
 };
 
@@ -92,9 +93,14 @@ export const FolderSearchWindow: React.FC = () => {
     return () => { delete (window as any).__folderSearchAdded; };
   }, [refresh]);
 
-  // 有索引在跑 / 模型在下载时轮询
+  // 有索引在跑 / 模型在下载 / 刚添加还没扫完（lastIndexedAt 为空）时轮询。
+  // 最后一项是保险：/add 已经会在服务端启动索引，但 refresh 的时机仍可能
+  // 落在 running 置位之前 —— 没有这一支，首轮扫描会整段漏掉。
   useEffect(() => {
-    const busy = items.some((x) => x.running) || !!embed?.downloading;
+    const busy =
+      items.some((x) => x.running) ||
+      !!embed?.downloading ||
+      items.some((x) => x.exists && !x.paused && !x.lastIndexedAt);
     if (!busy) return;
     const id = setInterval(refresh, 800);
     return () => clearInterval(id);
