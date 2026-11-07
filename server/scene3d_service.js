@@ -45,6 +45,7 @@ import { ModelStaging, sweepStaleStaging } from './download_store.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const IDLE_UNLOAD_MIN = 3; // 一次输出结束后，闲置 3 分钟卸载模型（0 = 不自动卸载）
 const HOME = os.homedir();
 
 const USER_DIR = path.join(HOME, 'Library', 'Application Support', 'SimpleUI');
@@ -124,6 +125,10 @@ function clearPid() {
 
 class Scene3dService {
   constructor() {
+    // 生成用计数 + 闲置卸载：消息发出 → beginUse（拉起并阻塞到模型就绪）；
+    // 输出结束（成功/失败/中止）→ endUse → 闲置 3 分钟杀 llama-server
+    this.useCount = 0;
+    this.idleTimer = null;
     this.proc = null;
     this.starting = null;
     this.watchdog = null;
@@ -779,7 +784,64 @@ class Scene3dService {
     return this.getStatus();
   }
 
+  /**
+   * 消息发出时调用（不再开窗即加载）：拉起 llama-server 并阻塞到模型加载完成。
+   * 模型缺失 → 自动补下载并等待（首次使用的消息会等下载，窗口头部有进度）。
+   * 就绪后 useCount++，挂住闲置卸载，直到输出结束 endUse。
+   */
+  async beginUse() {
+    let r = await this.start();
+    if (!r.ok && r.error === 'MODEL_MISSING') {
+      if (!this.download.active) {
+        this.startDownload().catch((err) => {
+          console.warn('[Scene3D] beginUse 自动下载失败:', err.message);
+        });
+      }
+      // 等模型就绪（下载可能长达数分钟；窗口头部 / 设置卡片有实时进度）
+      const deadline = Date.now() + 45 * 60_000;
+      while (!this.modelStatus().ready && Date.now() < deadline) {
+        await new Promise((res) => setTimeout(res, 2000));
+        r = await this.start().catch(() => ({ ok: false, error: 'RETRY' }));
+        if (r.ok) break;
+      }
+      if (!r.ok) r = await this.start();
+      if (!r.ok) throw new Error(r.error || 'MODEL_NOT_READY');
+    } else if (!r.ok) {
+      throw new Error(r.error || 'start failed');
+    }
+    this.useCount++;
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+    return this.getStatus();
+  }
+
+  /** 一次输出结束（成功 / 失败 / 用户中止）后调用：递减在途计数并安排闲置卸载 */
+  endUse() {
+    this.useCount = Math.max(0, this.useCount - 1);
+    this.scheduleIdleUnload();
+  }
+
+  scheduleIdleUnload() {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    if (IDLE_UNLOAD_MIN <= 0) return;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      if (this.useCount > 0) return;              // 仍有在途生成
+      if (this.download.active) { this.scheduleIdleUnload(); return; } // 下载中顺延
+      if (!this.isRunning()) return;
+      console.log(`[Scene3D] 闲置 ${IDLE_UNLOAD_MIN} 分钟，卸载模型并停止服务`);
+      this.stop();
+    }, IDLE_UNLOAD_MIN * 60_000);
+    this.idleTimer.unref?.();
+  }
+
   stop() {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
     const pid = this.proc?.pid || readPid();
     if (isPidAlive(pid)) {
       try {

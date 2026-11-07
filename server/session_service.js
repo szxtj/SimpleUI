@@ -7,6 +7,7 @@ import { performance } from 'perf_hooks';
 import { wikiService, onRagStageChange } from './wiki_service.js';
 import { lookupRequest, noteForwardedRequest, noteChatForward } from './ttf_log.js';
 import { ttfService } from './ttf_service.js';
+import { scene3dService } from './scene3d_service.js';
 import { mediaService } from './media_service.js';
 
 const HOME = os.homedir();
@@ -761,6 +762,11 @@ class SessionService {
       }
       this.activeTurns.delete(sessionId);
     }
+    // 3D 会话：中止也算一次输出结束，进入闲置卸载计时
+    {
+      const s = this.sessions.find((x) => x.id === sessionId);
+      if (s && sessionKind(s) === 'scene3d') scene3dService.endUse();
+    }
 
     const sIdx = this.sessions.findIndex((s) => s.id === sessionId);
     if (sIdx >= 0) {
@@ -1173,6 +1179,7 @@ class SessionService {
     const failTurn = (errMsg) => {
       if (signal.aborted) return;
       this.activeTurns.delete(sessionId);
+      if (isScene3dTurn) scene3dService.endUse();
       const tEnd = Date.now();
       const closedStages = stages.map((st) =>
         st.endedAt === undefined
@@ -1210,6 +1217,22 @@ class SessionService {
         calibrationFactors: this.calibrationFactors,
       });
     };
+
+    // 3D 场景构建：消息发出后才拉起模型（此前是开窗即加载）。
+    // beginUse 阻塞到 llama-server 就绪（模型缺失会先自动补下载）；
+    // 生成结束（成功/失败/中止）时在各个 activeTurns.delete 出口调 endUse，
+    // 3 分钟无后续生成即卸载模型。
+    const isScene3dTurn = sessionKind(this.sessions.find((x) => x.id === sessionId)) === 'scene3d';
+    if (isScene3dTurn) {
+      try {
+        await scene3dService.beginUse();
+      } catch (err) {
+        console.warn('[Session] 3D 模型加载失败:', err.message);
+        scene3dService.endUse();
+        failTurn(`3D 模型加载失败（${err.message}）。可在设置 → 3D 场景构建中查看下载进度。`);
+        return;
+      }
+    }
 
     if (isDeepSeek && !settings.deepseekApiKey?.trim()) {
       failTurn('请在设置中配置 DeepSeek API Key');
@@ -1726,6 +1749,7 @@ class SessionService {
     }
 
     this.activeTurns.delete(sessionId);
+    if (isScene3dTurn) scene3dService.endUse();
     this.flushSync();
 
     this.broadcast('turn-finished', {

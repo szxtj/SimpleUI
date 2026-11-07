@@ -335,9 +335,10 @@ export const Scene3DWindow: React.FC = () => {
   );
   const serviceReady = serviceState === 'online';
 
-  // ---- 服务生命周期：挂载 ensure / 卸载 release，轮询状态 ----
+  // ---- 服务生命周期：开窗不加载模型（standby），只轮询状态；
+  //      消息发出后由服务端 beginUse 按需拉起（阻塞到模型就绪再开始生成）；
+  //      关窗 release 立即卸载 ----
   useEffect(() => {
-    Scene3dServiceAPI.ensure();
     const poll = window.setInterval(() => {
       Scene3dServiceAPI.getStatus().then(setStatus);
     }, 1500);
@@ -347,19 +348,6 @@ export const Scene3DWindow: React.FC = () => {
       Scene3dServiceAPI.release();
     };
   }, []);
-
-  // ---- 新机全流程接缝：ensure 触发时模型往往还没下载，下载完成（incomplete →
-  //      modelsReady）后不会再有人调用 ensure，这里补一次后台拉起，把
-  //      「安装 → 首次下载 → 自动加载」整条链闭合。 ----
-  const modelsReadyRef = useRef<boolean | null>(null);
-  useEffect(() => {
-    const ready = status?.modelsReady ?? null;
-    const prev = modelsReadyRef.current;
-    modelsReadyRef.current = ready;
-    if (prev === false && ready === true) {
-      Scene3dServiceAPI.ensure();
-    }
-  }, [status?.modelsReady]);
 
   // ---- 会话初始化：拉快照 + 兜底建空会话 ----
   useEffect(() => {
@@ -387,15 +375,19 @@ export const Scene3DWindow: React.FC = () => {
     onEnter: () => handleSend(),
   });
 
+  // 模型缺失（未下载）才拦发送；standby / starting 都放行 —— 服务端 beginUse 会按需拉起
+  const modelMissing = status ? status.model?.ready === false : false;
+  const canSend = !modelMissing;
+
   const handleSend = useCallback(() => {
-    if (isGenerating || !serviceReady) return;
+    if (isGenerating || !canSend) return;
     const text = input.trim();
     if (!text && images.length === 0) return;
     stickToBottomRef.current = true;
     setInput('');
     setImages([]);
     sendTurn({ text, images, lang });
-  }, [input, images, isGenerating, serviceReady, sendTurn, lang]);
+  }, [input, images, isGenerating, canSend, sendTurn, lang]);
 
   const handlePaste = async (e: React.ClipboardEvent) => {
     const files = extractImagesFromPaste(e);
@@ -563,13 +555,13 @@ export const Scene3DWindow: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleSend}
-                    disabled={(!input.trim() && images.length === 0) || !serviceReady}
+                    disabled={(!input.trim() && images.length === 0) || !canSend}
                     className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${
-                      (input.trim() || images.length > 0) && serviceReady
+                      (input.trim() || images.length > 0) && canSend
                         ? 'bg-zinc-900 hover:bg-black text-white dark:bg-white dark:hover:bg-zinc-200 dark:text-black shadow-md active:scale-95'
                         : 'bg-zinc-200 text-zinc-400 dark:bg-[#35363d] dark:text-zinc-500 cursor-not-allowed'
                     }`}
-                    title={serviceReady ? t('send') : t('scene3dModelNotReady')}
+                    title={canSend ? t('send') : t('scene3dModelNotReady')}
                   >
                     <ArrowUp className="w-4 h-4 stroke-[2.5]" />
                   </button>
