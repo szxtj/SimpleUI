@@ -41,24 +41,28 @@ const SceneSessionList: React.FC<{
 }> = ({ sessions, currentId, generatingIds, onSelect, onDelete, onNew, newLabel }) => {
   const { t } = useI18n();
   return (
-    <div className="w-[240px] flex-shrink-0 h-full flex flex-col border-r border-black/5 dark:border-white/5 bg-[#f1f3f6] dark:bg-[#1a1b1f] select-none">
+    <div className="w-[260px] min-w-[260px] flex-shrink-0 h-full flex flex-col border-r border-black/5 dark:border-white/5 bg-[#f1f3f6] dark:bg-[#1a1b1f] select-none">
       {/* 开放式窗口（原生 titlebar 隐藏、内容伸到窗口顶边）：顶部 52px 是与原生拖拽带等高的
           留白带，左侧 78px 让给原生红绿黄三个按钮；品牌行落在红绿灯下方，
           与主界面 Sidebar 的品牌标题同一套排布。 */}
       <div className="h-[52px] flex-shrink-0" aria-hidden="true" />
 
-      <div className="px-4 pt-1 pb-3 flex items-center gap-2 text-[#1f2328] dark:text-[#f1f3f7]">
-        <Boxes className="w-4 h-4 text-zinc-500 dark:text-zinc-400" />
-        <span className="text-sm font-semibold truncate">{t('scene3dWindowTitle')}</span>
+      <div className="px-4 pt-1 pb-3">
+        <h1 className="text-xl font-bold tracking-tight text-[#1f2328] dark:text-[#f1f3f7]">
+          {t('scene3dWindowTitle')}
+        </h1>
       </div>
 
       <div className="px-3 pb-2">
         <button
           onClick={onNew}
-          className="w-full flex items-center gap-2 py-2 px-3.5 rounded-xl bg-white hover:bg-[#e8ebf0] dark:bg-[#25262c] dark:hover:bg-[#2d2e35] active:scale-[0.99] text-[#1f2328] dark:text-[#f1f3f7] text-sm font-medium transition-all border border-black/5 dark:border-white/5 shadow-sm"
+          className="w-full flex items-center justify-between py-2.5 px-3.5 rounded-xl bg-white hover:bg-[#e8ebf0] dark:bg-[#25262c] dark:hover:bg-[#2d2e35] active:scale-[0.99] text-[#1f2328] dark:text-[#f1f3f7] text-sm font-medium transition-all border border-black/5 dark:border-white/5 shadow-sm group"
         >
-          <Plus className="w-4 h-4 text-zinc-600 dark:text-zinc-300" />
-          <span>{newLabel}</span>
+          <span className="flex items-center gap-2">
+            <Plus className="w-4 h-4 text-zinc-600 group-hover:text-zinc-900 dark:text-zinc-300 dark:group-hover:text-white transition-colors" />
+            <span>{newLabel}</span>
+          </span>
+          <Boxes className="w-4 h-4 text-zinc-400 group-hover:text-zinc-600 dark:text-zinc-500 dark:group-hover:text-zinc-300 transition-colors" />
         </button>
       </div>
 
@@ -70,10 +74,10 @@ const SceneSessionList: React.FC<{
             <div
               key={s.id}
               onClick={() => onSelect(s.id)}
-              className={`group flex items-center gap-2 px-2.5 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
+              className={`group flex items-center gap-2 px-2.5 py-2 rounded-xl cursor-pointer text-sm transition-colors ${
                 active
-                  ? 'bg-black/[0.06] dark:bg-white/[0.08] text-[#1f2328] dark:text-[#f1f3f7]'
-                  : 'text-zinc-600 hover:bg-black/[0.04] dark:text-zinc-400 dark:hover:bg-white/[0.05] hover:text-zinc-900 dark:hover:text-white'
+                  ? 'bg-white dark:bg-[#2b2d34] shadow-sm text-[#1f2328] dark:text-[#f1f3f7]'
+                  : 'text-zinc-600 hover:bg-black/5 dark:text-zinc-400 dark:hover:bg-white/5 hover:text-zinc-900 dark:hover:text-white'
               }`}
             >
               <span className="flex-1 truncate" title={s.title}>
@@ -422,7 +426,7 @@ export const Scene3DWindow: React.FC = () => {
   const liveTokens = currentSessionId ? liveStreamingTokens[currentSessionId] : undefined;
 
   return (
-    <div className="h-full w-full flex overflow-hidden bg-[#fafafa] dark:bg-[#131417] text-[#1f2328] dark:text-[#f1f3f7]">
+    <div className="h-full w-full flex overflow-hidden bg-[#f8f9fb] dark:bg-[#18191c] text-[#1f2328] dark:text-[#f1f3f7]">
       <SceneSessionList
         sessions={sessions}
         currentId={currentSessionId}
@@ -436,8 +440,8 @@ export const Scene3DWindow: React.FC = () => {
       {/* 主列 */}
       <div className="flex-1 min-w-0 h-full flex flex-col">
         {/* 头部 */}
-        <div className="h-[52px] flex items-center justify-between px-5 flex-shrink-0 select-none">
-          <div className="flex items-center gap-2">
+        <div className="h-[52px] flex items-center justify-between px-4 border-b border-black/5 dark:border-white/5 flex-shrink-0 select-none">
+          <div className="flex items-center gap-2.5">
             <Boxes className="w-4 h-4 text-zinc-500 dark:text-zinc-400" />
             <span className="text-sm font-semibold truncate">
               {currentSession?.title || t('scene3dWindowTitle')}

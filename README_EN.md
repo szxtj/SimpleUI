@@ -40,8 +40,8 @@ SimpleUI is deeply tuned for [TurboFieldfare](https://github.com/drumih/turbo-fi
 - **Virtualized turn window & Turn Rail**: measured virtual window rendering (native mounting for ≤20 turns, dynamic budget for long chats) eliminating scroll lag; sidebar Turn Rail with hover preview and one-click jump navigation.
 - **Real-time bilingual subtitles**: SOTA SaT sentence segmentation, R2T2 streaming ASR, and Index-Translate sentence translation; source text streams live while translations are appended per sentence.
 - **Strong frontend & scientific computing**: Markdown / KaTeX / Mermaid, one-click code-block collapse/copy; built-in **Pyodide Python scientific computing sandbox** running client-side with zero local environment setup, two independent collapsible layers for source and execution output; formulas copyable as native Word/WPS equations, and tables retain formatting when pasted into Word.
-- **Standalone windows**: a **3D Scene Builder** (one sentence becomes a self-contained Three.js page; the model loads on open and releases VRAM on close) and a **Markdown Editor** (edit / split / read, reads and writes real `.md` files, previews with the *same* renderer component the chat uses).
-- **Native macOS**: main window, Spotlight panel, quick translate, subtitle overlay, 3D scene builder, Markdown editor, full-screen OCR capture, and voice capsule; one shared resize overlay and animated zoom across windows; Chinese/English UI with light/dark themes.
+- **Standalone windows**: **Folder Quick Search** (local semantic / image-text retrieval; model loads on open and unloads on close), a **3D Scene Builder** (one sentence becomes a self-contained Three.js page; the model loads on open and releases VRAM on close) and a **Markdown Editor** (edit / split / read, reads and writes real `.md` files, previews with the *same* renderer component the chat uses).
+- **Native macOS**: main window, Spotlight panel, quick translate, subtitle overlay, folder search, 3D scene builder, Markdown editor, full-screen OCR capture, and voice capsule; one shared resize overlay and animated zoom across four identically-styled windows; Chinese/English UI with light/dark themes.
 
 ---
 
@@ -78,6 +78,7 @@ Node.js proxy (127.0.0.1:31235)
 | Index-Translate subtitle translation | `1249` | Specialized NMT (subtitle pipeline stage 3, runs parallel to Quick Translate 1248) |
 | Quick Translate on-device engine | `1248` | `⌃Space` fast selection translation (llama-server standalone instance, 4096 context, unloads on idle) |
 | 3D scene builder | `1257` | Opens a standalone window from the sidebar; generates a self-contained Three.js page; loads on open and unloads on close |
+| Folder search (EmbeddingGemma-2) | `—` (in proxy process) | Standalone window for local semantic / image-text retrieval; model downloaded manually, loads on open and unloads on close |
 | Base models | `1235` / `1241` / `1242` / `1243` | TTF / Mference / Maple MLX / Qwen 3.5 9B / other OpenAI-compatible services |
 | Maple MLX runtime | `—` | Dedicated Python venv (~363 MB), bundled with the app |
 | Qwen 3.5 9B runtime | `—` | Bundled TTS/OCR Python (mlx-vlm 0.7.9, ~821 MB), shared with Voice Synthesis / OCR; supports image input |
@@ -236,10 +237,11 @@ How it works:
 - **Robust media lifecycle**: user images use content-addressed (SHA-256) disk storage strictly bound to explicit turn/session deletion; opening historical sessions automatically and smoothly scrolls to the latest turn.
 - **Rich rendering**: Markdown, KaTeX formulas, Mermaid diagrams, tables, code blocks, image preview, and collapsible thinking.
 - **Standalone windows**:
+  - **Folder quick search**: standalone local semantic / image-text retrieval window (list / grid result views, resumable indexing, pause / resume); the model loads when the window opens and unloads on close.
   - **Markdown editor**: edit / split / read modes; opens and saves `.md` files through native panels, and blocks window close or app quit when there is unsaved content; the editor supports `⌘S` / `⌘O` / `⌘B` / `⌘I` / `⌘K` and Tab indentation.
   - **3D scene builder**: the model emits a self-contained Three.js page with full-screen preview, reload, and copy-scene-code; the model loads when the window opens and is released when it closes.
   - **One renderer, two surfaces**: the editor preview renders the very same `MarkdownRenderer` used by chat (KaTeX / Mermaid / tables / Python code execution / selection toolbar / formula copy buttons) — not a simplified re-implementation.
-- **Window resize overlay & zoom**: the main window, 3D builder, and Markdown editor share `WindowResizeChrome` — dragging an edge freezes the WebView and shows a centered `W × H` overlay (per-frame relayout: 10 → 0, one final layout on mouse-up); double-clicking the title bar or the green button runs the same animated zoom, and dragging a zoomed window restores its previous size first.
+- **Window resize overlay & zoom**: the main window, folder search, 3D builder, and Markdown editor share `WindowResizeChrome` — dragging an edge freezes the WebView and shows a centered `W × H` overlay (per-frame relayout: 10 → 0, one final layout on mouse-up); double-clicking the title bar or the green button runs the same animated zoom, and dragging a zoomed window restores its previous size first.
 - **Built-in Python scientific computing sandbox**:
   - **Zero local setup**: Powered by Pyodide (WebAssembly) running inside an isolated Web Worker sandbox — entirely client-side and offline, bundled with frontend assets without requiring Python, pip, or virtual environments on macOS.
   - **One-click instant execution**: Python code blocks feature an integrated "Run" button with full support for standard output (`stdout`), final expression evaluation (`Out:`), and error traceback display.

@@ -142,7 +142,7 @@ export const translations = {
     asrSelectedSourceLabel: '下载源',
     asrApplyBtn: '保存配置',
 
-    ttsServiceTitle: '语音合成服务',
+    ttsServiceTitle: '语音合成',
     ttsServiceLifecycleHint: '点击模型回复消息底部的朗读按钮，按段落逐段合成后拼成完整音频并落盘；每次生成现场加载模型，完成即卸载',
     ttsApplyBtn: '保存配置',
     ttsApplying: '保存中...',
@@ -192,7 +192,7 @@ export const translations = {
     ttsErrorTooLong: '内容过长，超出单次朗读上限',
     ttsErrorGeneric: '语音生成失败',
     ttsErrorRetry: '点击喇叭按钮重试',
-    ocrServiceTitle: '视觉图文识别服务',
+    ocrServiceTitle: '视觉图文识别',
     ocrServiceLifecycleHint: '快捷键 ⌘⇧2 框选截屏自动提取结构化 Markdown 存入剪贴板；闲置超时释放显存',
     ocrApplyBtn: '保存配置',
     ocrApplying: '保存中...',
@@ -523,7 +523,7 @@ export const translations = {
     translatorClipboardQuickDefaultOff: '默认: 关闭',
 
     // 快速翻译服务（服务控制面板独立卡片）
-    translateServiceTitle: '快速翻译服务',
+    translateServiceTitle: '快速翻译',
     translateEngineTag: '端侧小模型 / DeepSeek',
     translateLifecycleTitle: '划选即译 · 全局悬浮窗',
     translateQuickMode: '快速模式',
@@ -626,7 +626,7 @@ export const translations = {
     removeImage: '移除图片',
     imageAnalysisTitle: '图文分析',
     // 模型服务管理（支持 TurboFieldfare / Mference 双引擎独立托管）
-    modelServiceTitle: '基础模型服务',
+    modelServiceTitle: '基础模型',
     ttfServiceTitle: 'TurboFieldfare 服务 (Gemma 4)',
     mferenceServiceTitle: 'Mference 服务 (Qwen 3.6)',
     modelEngineLabel: '模型引擎',
@@ -737,7 +737,7 @@ export const translations = {
     svcQueueDefault: '4 (默认)',
 
     // 语音输入服务（Confucius4-R2T2 / audio.cpp）
-    asrServiceTitle: '语音输入服务',
+    asrServiceTitle: '语音输入',
     asrServiceLifecycleHint: '系统全局录音转文字，长按右侧 ⌘ 键直接在任意应用光标处输入',
     asrServiceStatusRunning: '就绪于',
     asrServiceStatusStopped: '离线',
@@ -802,7 +802,7 @@ export const translations = {
     subtitleResumeCapture: '继续内录',
     subtitleClose: '关闭字幕',
     subtitleModelsNotReady: '流式字幕模型尚未全部就绪',
-    subtitleRunDownloadScript: '请前往「服务管理 → 实时字幕服务」或点击下方按钮一键测速下载所需模型：',
+    subtitleRunDownloadScript: '请前往「服务管理 → 实时字幕」或点击下方按钮一键测速下载所需模型：',
     subtitleTranslating: '正在极速翻译...',
     subtitleWaitingAudio: '等待系统音频播放中（视频、直播、会议、播客等）...',
     subtitleWaitingAudioEn: '等待系统英文音频播放中（视频、直播、会议、播客等）...',
@@ -829,7 +829,7 @@ export const translations = {
     subtitleFontLarge: '大号字体',
     subtitleExpandView: '展开字幕',
     subtitleCollapseView: '收起字幕',
-    subtitleServiceTitle: '实时字幕服务',
+    subtitleServiceTitle: '实时字幕',
     subtitleServiceLifecycleHint: '在屏幕顶部状态栏菜单中开启双语字幕悬浮窗；关闭窗口后立即终止并释放显存',
     subtitleStatusActive: '运行中 (实时监听翻译)',
     subtitleStatusPaused: '已暂停 (窗口开启中)',
@@ -1073,7 +1073,7 @@ export const translations = {
     asrSelectedSourceLabel: 'Source',
     asrApplyBtn: 'Save Configuration',
 
-    ttsServiceTitle: 'Voice Synthesis Service',
+    ttsServiceTitle: 'Voice Synthesis',
     ttsServiceLifecycleHint: 'Click the read-aloud button at the bottom of a reply; paragraphs are synthesized one by one, joined into a single audio file and saved to disk. The model loads on demand and unloads right after',
     ttsApplyBtn: 'Save Configuration',
     ttsApplying: 'Saving...',
@@ -1123,7 +1123,7 @@ export const translations = {
     ttsErrorTooLong: 'Content is too long for a single read-aloud',
     ttsErrorGeneric: 'Speech generation failed',
     ttsErrorRetry: 'Click the speaker button to retry',
-    ocrServiceTitle: 'Visual OCR Service',
+    ocrServiceTitle: 'Visual OCR',
     ocrServiceLifecycleHint: 'Shortcut ⌘⇧2 captures screen region to structured Markdown in clipboard; unloads after idle timeout',
     ocrApplyBtn: 'Save Configuration',
     ocrApplying: 'Saving...',
@@ -1454,7 +1454,7 @@ export const translations = {
     translatorClipboardQuickDefaultOff: 'Default: Off',
 
     // Quick translate service (standalone card in the service panel)
-    translateServiceTitle: 'Quick Translate Service',
+    translateServiceTitle: 'Quick Translate',
     translateEngineTag: 'On-device / DeepSeek',
     translateLifecycleTitle: 'Select to translate · Global overlay',
     translateQuickMode: 'Quick Mode',
@@ -1557,7 +1557,7 @@ export const translations = {
     removeImage: 'Remove image',
     imageAnalysisTitle: 'Image Analysis',
     // Model service management (TurboFieldfare / Mference dual engine support)
-    modelServiceTitle: 'Base Model Service',
+    modelServiceTitle: 'Base Model',
     ttfServiceTitle: 'TurboFieldfare Service (Gemma 4)',
     mferenceServiceTitle: 'Mference Service (Qwen 3.6)',
     modelEngineLabel: 'Engine',
@@ -1668,7 +1668,7 @@ export const translations = {
     svcQueueDefault: '4 (Default)',
 
     // Voice Input service (Confucius4-R2T2 / audio.cpp)
-    asrServiceTitle: 'Voice Input Service',
+    asrServiceTitle: 'Voice Input',
     asrServiceLifecycleHint: 'System-wide speech-to-text; long-press Right ⌘ to transcribe speech into any active application',
     asrServiceStatusRunning: 'Ready on ',
     asrServiceStatusStopped: 'Offline',
@@ -1733,7 +1733,7 @@ export const translations = {
     subtitleResumeCapture: 'Resume audio capture',
     subtitleClose: 'Close subtitles',
     subtitleModelsNotReady: 'Streaming subtitle models are not all ready',
-    subtitleRunDownloadScript: 'Go to Service Manager → Live Subtitle Service or click below to auto speed-test & download models:',
+    subtitleRunDownloadScript: 'Go to Service Manager → Live Subtitles or click below to auto speed-test & download models:',
     subtitleTranslating: 'Translating...',
     subtitleWaitingAudio: 'Waiting for system audio (videos, streams, meetings, podcasts)...',
     subtitleWaitingAudioEn: 'Waiting for system English audio (videos, streams, meetings, podcasts)...',
@@ -1760,7 +1760,7 @@ export const translations = {
     subtitleFontLarge: 'Large Font',
     subtitleExpandView: 'Expand',
     subtitleCollapseView: 'Collapse',
-    subtitleServiceTitle: 'Live Subtitles Service',
+    subtitleServiceTitle: 'Live Subtitles',
     subtitleServiceLifecycleHint: 'Open live subtitles overlay from macOS menubar menu; instantly terminates and frees VRAM on close',
     subtitleStatusActive: 'Running (Live Listening)',
     subtitleStatusPaused: 'Paused (Window Open)',

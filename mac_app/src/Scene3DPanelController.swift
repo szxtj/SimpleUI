@@ -177,8 +177,8 @@ final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDele
             return false
         }()
         return isDark
-            ? NSColor(red: 19/255.0, green: 20/255.0, blue: 23/255.0, alpha: 1.0)
-            : NSColor(red: 250/255.0, green: 250/255.0, blue: 250/255.0, alpha: 1.0)
+            ? NSColor(red: 24/255.0, green: 25/255.0, blue: 28/255.0, alpha: 1.0)
+            : NSColor(red: 248/255.0, green: 249/255.0, blue: 251/255.0, alpha: 1.0)
     }
 
     /// 顶部 52pt 拖拽带（与前端两个列头的 52px 等高，保证盖住的都是非交互区域）
