@@ -16,10 +16,40 @@ class FolderIndexService {
   constructor() {
     this.windowOpen = false;
     this.activeId = null;
+    this.watchTimer = null; // 窗口打开期间的文件变化检测（纯 stat 扫描，不碰模型）
+  }
+
+  /**
+   * 窗口打开期间的文件变化检测：每 5s 对当前选中文件夹做一次纯 stat 扫描。
+   * start() 内部自带 diff —— 没变化就是空转一圈（只花几十 ms 的 stat），不会碰模型；
+   * 有新增/修改则增量建索引（run 里逐文件对比 mtime/size，只重嵌变化的块）。
+   * 只在窗口打开期间检测：关窗后索引任务本来就停，检测没有意义。
+   */
+  startWatch() {
+    if (this.watchTimer) return;
+    this.watchTimer = setInterval(() => {
+      try {
+        if (!this.windowOpen || !this.activeId) return;
+        const item = folderIndex.list().find((x) => x.id === this.activeId);
+        if (!item || item.paused || !item.exists) return;
+        // isRunning 防重入：正在建索引时本轮直接跳过，跑完的下一轮再看
+        folderIndex.start(item.id, { reason: 'watch' }).catch(() => {});
+      } catch {
+        // 轮询尽力而为
+      }
+    }, 5000);
+  }
+
+  stopWatch() {
+    if (this.watchTimer) {
+      clearInterval(this.watchTimer);
+      this.watchTimer = null;
+    }
   }
 
   /** App 退出链（proxy cleanupAndExit）调用：停建索引任务、落盘元数据。模型随进程退出释放。 */
   shutdownSync() {
+    this.stopWatch();
     try {
       folderIndex.shutdownSync();
     } catch (e) {
@@ -117,7 +147,10 @@ class FolderIndexService {
       if (pathname === '/open' && req.method === 'POST') {
         this.windowOpen = true;
         this.activeId = body.id || null;
-        // 打开窗口不阻塞：模型没装就先不建，前端自己拉下载
+        // 打开窗口不加载模型（standby），只启动变化检测：
+        // 检测是纯文件系统 stat 扫描，与模型完全解耦；有差异才拉模型建索引
+        this.startWatch();
+        // 窗口重开时照常核对一次（内部自带 diff：没变化就是空转一圈）
         if (this.activeId) {
           const item = folderIndex.list().find((x) => x.id === this.activeId);
           if (item && !item.paused) {
@@ -130,6 +163,7 @@ class FolderIndexService {
 
       if (pathname === '/close' && req.method === 'POST') {
         this.windowOpen = false;
+        this.stopWatch();
         const id = body.id || this.activeId;
         if (id) await folderIndex.stop(id);
         await embedService.unload();
