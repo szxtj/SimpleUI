@@ -228,6 +228,25 @@ final class FolderSearchPanelController: NSObject, NSWindowDelegate, WKScriptMes
         notifyClose()
     }
 
+    // MARK: - 缩放遮罩（与主窗口 / 3D / Markdown 同一套 WindowResizeChrome）
+
+    func windowWillStartLiveResize(_ notification: Notification) {
+        resizeChrome?.windowWillStartLiveResize()
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        resizeChrome?.windowDidResize()
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        resizeChrome?.windowDidEndLiveResize()
+    }
+
+    /// 绿色交通灯：走与双击一致的动画缩放（返回 false 阻止系统 performZoom）
+    func windowShouldZoom(_ window: NSWindow, toFrame newFrame: NSRect) -> Bool {
+        resizeChrome?.handleWindowShouldZoom() ?? false
+    }
+
     // MARK: - 页面桥
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {

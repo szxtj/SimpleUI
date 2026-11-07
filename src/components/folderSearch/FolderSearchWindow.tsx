@@ -4,7 +4,6 @@ import {
   FileText, Loader2, AlertCircle, Download,
 } from 'lucide-react';
 import { useI18n } from '../../i18n';
-import { StartupOverlay } from '../StartupOverlay';
 
 /**
  * 文件夹快速检索独立窗口（hash 路由 `#/folder_search`）。
@@ -65,8 +64,6 @@ export const FolderSearchWindow: React.FC = () => {
   const [view, setView] = useState<'list' | 'grid'>('list');
   const [searching, setSearching] = useState(false);
   const [ready, setReady] = useState(false);
-  // 与主界面同一套启动遮罩：探到本地服务端口就绪后淡出
-  const [showStartupOverlay, setShowStartupOverlay] = useState(true);
   const searchSeq = useRef(0);
 
   const active = useMemo(() => items.find((x) => x.id === activeId) || null, [items, activeId]);
@@ -215,9 +212,6 @@ export const FolderSearchWindow: React.FC = () => {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#f8f9fb] dark:bg-[#18191c] text-[#1f2328] dark:text-[#f1f3f7] select-none">
-      {showStartupOverlay && (
-        <StartupOverlay onFinished={() => setShowStartupOverlay(false)} />
-      )}
       {/* ───────── 左：文件夹列表（与主界面 Sidebar 同款） ───────── */}
       <aside className="w-[260px] min-w-[260px] h-full flex flex-col border-r border-black/5 dark:border-white/5 bg-[#f1f3f6] dark:bg-[#1a1b1f]">
         <div className="h-[52px] flex items-center justify-end px-3">
