@@ -359,7 +359,7 @@ export const MarkdownEditorWindow: React.FC = () => {
 
   const previewPane = (
     <div ref={previewRef} className="h-full overflow-y-auto overscroll-y-contain">
-      <div className="mx-auto w-full max-w-[820px] px-8 py-6" style={previewFontStyle}>
+      <div className="mx-auto w-full max-w-[1280px] px-10 py-6" style={previewFontStyle}>
         {deferredText.trim() ? (
           <MarkdownRenderer content={deferredText} />
         ) : (

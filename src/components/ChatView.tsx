@@ -511,7 +511,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <div
               ref={contentRef}
               data-chat-content="true"
-              className="max-w-4xl mx-auto text-sm pb-2 pr-[24px]"
+              className="max-w-[1280px] mx-auto text-sm pb-2 pr-[24px]"
             >
               {topSpacer > 0 && (
                 <div aria-hidden="true" style={{ height: topSpacer }} />
@@ -563,7 +563,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       {/* Input Area (Bottom capsule + Disclaimer) */}
       <div className="relative z-10 w-full px-3 cq-md:px-6 cq-lg:px-8 pb-3 cq-md:pb-4 pt-1 bg-gradient-to-t from-[#f8f9fb] via-[#f8f9fb]/95 to-transparent dark:from-[#18191c] dark:via-[#18191c]/95 dark:to-transparent">
-        <div className="max-w-4xl mx-auto flex flex-col items-center">
+        <div className="max-w-[1280px] mx-auto flex flex-col items-center">
           <ChatInput
             input={input}
             setInput={setInput}
