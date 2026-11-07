@@ -95,13 +95,6 @@ class FolderIndexService {
       if (pathname === '/open' && req.method === 'POST') {
         this.windowOpen = true;
         this.activeId = body.id || null;
-        // 与 3D 建模服务同构：开窗即后台把模型读进内存（loading → running），
-        // 关窗（/close）卸载。模型没下载完时静默跳过——前端自己拉下载。
-        if (embedService.missingFiles(true).length === 0) {
-          embedService.load(true).catch((e) => {
-            console.warn('[FolderIndex] 开窗预载模型失败:', e.message);
-          });
-        }
         // 打开窗口不阻塞：模型没装就先不建，前端自己拉下载
         if (this.activeId) {
           const item = folderIndex.list().find((x) => x.id === this.activeId);

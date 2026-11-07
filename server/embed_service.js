@@ -252,7 +252,6 @@ class EmbedService {
     const text = this.missingFiles(false).length === 0;
     const installed = full ? 'full' : text ? 'text' : 'none';
     const p = this.progress;
-    const loading = !!this.loading;
     const progressPercent = p
       ? Math.min(100, ((p.index - 1) + (p.total ? p.received / p.total : 0)) / Math.max(p.count, 1) * 100)
       : 0;
@@ -264,11 +263,8 @@ class EmbedService {
       downloading: this.downloading,
       progress: p,
       // —— 卡片/状态栏用 ——
-      // idle：模型还没下载；loading：窗口打开后正在把模型读进内存；running：已驻留；
-      // standby：模型已下载但未驻留（窗口没开）。与 3D 建模服务同一套四态语义。
-      status: installed === 'none' ? 'idle' : loading ? 'loading' : this.model ? 'running' : 'standby',
+      status: installed === 'none' ? 'idle' : this.model ? 'running' : 'standby',
       running: !!this.model,
-      loading,
       runtimeReady: true,
       model: {
         ready: installed === 'full',
