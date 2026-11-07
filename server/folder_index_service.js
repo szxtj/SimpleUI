@@ -25,6 +25,11 @@ class FolderIndexService {
     } catch (e) {
       console.warn('[FolderIndex] 退出清理失败:', e.message);
     }
+    try {
+      embedService.shutdownSync();
+    } catch {
+      // 退出路径尽力而为
+    }
   }
 
   init() {
