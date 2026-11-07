@@ -193,6 +193,41 @@ import { ocrService } from './ocr_service.js';
 import { scene3dService } from './scene3d_service.js';
 import { folderIndexService } from './folder_index_service.js';
 import { sessionService } from './session_service.js';
+/**
+ * 受管服务统一退出注册表 —— 三重清理的前两层在这里收敛：
+ *   ① cleanupAndExit（SIGTERM / SIGINT / 远程退出）→ shutdownSync()   温和清理：SIGTERM 子进程、停任务、落盘
+ *   ② process.on('exit')                          → shutdownForce()   最终兜底：SIGKILL 子进程
+ *   ③ 原生层 forceSweepResidualProcesses（ProcessManager.managedPidFiles）→ 按文件里残留 PID 扫尾
+ * 新增受管服务：实现 shutdownSync / shutdownForce 并在本表加一行，三层退出自动覆盖，
+ * 不要再往 cleanupAndExit / exit 钩子里手抄 try/catch。
+ *
+ * 例外说明：嵌入模型（folderIndexService 背后的 EmbeddingGemma-2）没有子进程，
+ * 驻留在本代理进程内存里，随 process.exit 一并释放；它的 shutdownSync 只做
+ * 「停建索引任务 + 落盘元数据」。sessionService 同理是纯数据服务，shutdownSync = 落盘。
+ */
+const MANAGED_SERVICES = [
+  sessionService,
+  wikiService,
+  ttfService,
+  asrService,
+  subtitleService,
+  translateService,
+  ttsService,
+  ocrService,
+  scene3dService,
+  folderIndexService,
+];
+
+/** 按方法名遍历注册表做退出清理；单个服务失败不阻断其余清理 */
+function shutdownManagedServices(method) {
+  for (const svc of MANAGED_SERVICES) {
+    try {
+      svc?.[method]?.();
+    } catch {
+      // 退出路径尽力而为
+    }
+  }
+}
 
 // 本进程是否成功抢到端口、从而成为受管服务的管理方。
 // 见 server.listen 回调与 server.on('error')：失败的重复实例不得清理别人的服务。
@@ -431,85 +466,9 @@ function cleanupAndExit(code = 0) {
   exiting = true;
   // 没抢到端口的实例不是服务的管理方，绝不能去杀别人的服务
   if (!ownsServices) process.exit(code);
-  if (sessionService) {
-    try {
-      sessionService.flushSync();
-    } catch (e) {
-      // ignore
-    }
-  }
-  if (wikiService) {
-    try {
-      wikiService.shutdownSync();
-    } catch (e) {
-      // ignore
-    }
-  }
-  // 模型服务随 SimpleUI 退出一并终止（watchdog 作为 SIGKILL 场景的兜底）
-  if (ttfService) {
-    try {
-      ttfService.shutdownSync();
-    } catch (e) {
-      // ignore
-    }
-  }
-  // 语音识别服务同样随退出一并终止
-  if (asrService) {
-    try {
-      asrService.shutdownSync();
-    } catch (e) {
-      // ignore
-    }
-  }
-  // 实时字幕服务与模型/helper 子进程随退出一并终止
-  if (subtitleService) {
-    try {
-      subtitleService.shutdownSync();
-    } catch (e) {
-      // ignore
-    }
-  }
-  // 快速翻译服务（自己的 1248 进程随退出一并终止，模型文件与字幕服务共用但进程独立）
-  if (translateService) {
-    try {
-      translateService.shutdownSync();
-    } catch (e) {
-      // ignore
-    }
-  }
-  // 文字转语音服务（首次朗读时懒加载，退出时一并终止）
-  if (ttsService) {
-    try {
-      ttsService.shutdownSync();
-    } catch (e) {
-      // ignore
-    }
-  }
-  // 视觉文档识别服务（按需懒加载，退出时一并终止）
-  if (ocrService) {
-    try {
-      ocrService.shutdownSync();
-    } catch (e) {
-      // ignore
-    }
-  }
-  // 3D 场景构建服务（开窗懒加载，退出时一并终止）
-  if (scene3dService) {
-    try {
-      scene3dService.shutdownSync();
-    } catch (e) {
-      // ignore
-    }
-  }
-  // 文件夹检索：嵌入模型驻留在本代理进程内，随 process.exit 一并释放；
-  // 这里只需让建索引任务停手并把元数据落盘（数据安全由索引水位线兜底）
-  if (folderIndexService) {
-    try {
-      folderIndexService.shutdownSync();
-    } catch (e) {
-      // ignore
-    }
-  }
+  // 受管服务统一清理（温和层）：SIGTERM 子进程、停任务、落盘 —— 见 MANAGED_SERVICES 注释
+  // （sessionService 的 shutdownSync 就是同步落盘会话数据）
+  shutdownManagedServices('shutdownSync');
   process.exit(code);
 }
 
@@ -517,61 +476,6 @@ process.on('SIGINT', () => cleanupAndExit(0));
 process.on('SIGTERM', () => cleanupAndExit(0));
 process.on('exit', () => {
   if (!ownsServices) return;
-  if (wikiService) {
-    try {
-      wikiService.shutdownForce();
-    } catch (e) {
-      // ignore
-    }
-  }
-  if (ttfService) {
-    try {
-      ttfService.shutdownForce();
-    } catch (e) {
-      // ignore
-    }
-  }
-  if (asrService) {
-    try {
-      asrService.shutdownForce();
-    } catch (e) {
-      // ignore
-    }
-  }
-  if (subtitleService) {
-    try {
-      subtitleService.shutdownForce();
-    } catch (e) {
-      // ignore
-    }
-  }
-  // 快速翻译（自己的 1248 llama-server）同样随代理退出一起终止
-  if (translateService) {
-    try {
-      translateService.shutdownForce();
-    } catch (e) {
-      // ignore
-    }
-  }
-  if (ttsService) {
-    try {
-      ttsService.shutdownForce();
-    } catch (e) {
-      // ignore
-    }
-  }
-  if (ocrService) {
-    try {
-      ocrService.shutdownForce();
-    } catch (e) {
-      // ignore
-    }
-  }
-  if (scene3dService) {
-    try {
-      scene3dService.shutdownForce();
-    } catch (e) {
-      // ignore
-    }
-  }
+  // 最终兜底（SIGKILL 层）：温和清理后仍有残留的子进程在这里强杀
+  shutdownManagedServices('shutdownForce');
 });

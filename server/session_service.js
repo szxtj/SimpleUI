@@ -509,6 +509,15 @@ class SessionService {
     }
   }
 
+  /**
+   * 统一退出链接口（proxy cleanupAndExit 调用）。
+   * 会话服务没有子进程，「清理」就是同步落盘；与其余服务的 shutdownSync 同名同参，
+   * 让退出注册表可以用同一个循环遍历。
+   */
+  shutdownSync() {
+    this.flushSync();
+  }
+
   flushSync() {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
