@@ -18,6 +18,15 @@ class FolderIndexService {
     this.activeId = null;
   }
 
+  /** App 退出链（proxy cleanupAndExit）调用：停建索引任务、落盘元数据。模型随进程退出释放。 */
+  shutdownSync() {
+    try {
+      folderIndex.shutdownSync();
+    } catch (e) {
+      console.warn('[FolderIndex] 退出清理失败:', e.message);
+    }
+  }
+
   init() {
     // 上次进程被强杀时可能有半条记录，这里把全部索引回滚到水位线（顺带修好磁盘）
     try {

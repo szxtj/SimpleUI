@@ -501,6 +501,15 @@ function cleanupAndExit(code = 0) {
       // ignore
     }
   }
+  // 文件夹检索：嵌入模型驻留在本代理进程内，随 process.exit 一并释放；
+  // 这里只需让建索引任务停手并把元数据落盘（数据安全由索引水位线兜底）
+  if (folderIndexService) {
+    try {
+      folderIndexService.shutdownSync();
+    } catch (e) {
+      // ignore
+    }
+  }
   process.exit(code);
 }
 

@@ -206,6 +206,26 @@ export class FolderIndexManager {
     }
   }
 
+  /**
+   * 进程退出链（SIGTERM → cleanupAndExit）用：同步、不等当前批。
+   * 数据安全由水位线兜底 —— 半条记录在下次 IndexStore.open 时回滚，
+   * 所以这里只负责「让任务停手 + 把元数据落盘」，不阻塞退出。
+   */
+  shutdownSync() {
+    for (const [, job] of this.jobs) {
+      job.stopRequested = true;
+      job.cancel = true;
+    }
+    for (const [, store] of this.stores) {
+      try {
+        store.saveFiles();
+        store.saveMeta();
+      } catch {
+        // 退出路径尽力而为
+      }
+    }
+  }
+
   async stopAll() {
     for (const id of this.jobs.keys()) {
       const job = this.jobs.get(id);
