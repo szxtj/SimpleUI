@@ -4,12 +4,12 @@ import WebKit
 /// 3D 场景构建独立窗口：承载 `http://127.0.0.1:31235/#/scene3d`。
 ///
 /// 生命周期契约（与其它受管服务一致）：
-///   - 打开窗口 → `POST /api/scene3d/ensure`（模型不全后台补下载、进程不在后台拉起，均不阻塞）；
+///   - 打开窗口：不加载模型（standby）；消息发出后由 session_service 的 beginUse 按需拉起，
 ///   - 关闭窗口 → `POST /api/scene3d/release` 终止 llama-server 进程、卸载模型，
 ///     并像字幕面板一样带核对补发（release 丢失时最多重发 3 次）。
 ///
 /// WebView 常驻（orderOut 隐藏而非销毁）：重开窗口免冷加载页面，
-/// 模型的加载/卸载完全由 ensure / release 驱动，与页面是否重新加载无关。
+/// 模型的加载由消息触发的 beginUse 驱动，卸载由 release / 3 分钟闲置计时驱动，与页面是否重新加载无关。
 final class Scene3DWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -127,7 +127,7 @@ final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDele
         if !webReady {
             loadContent()
         }
-        ensureService()
+        // 开窗不加载模型：消息发出后由 session_service 的 beginUse 按需拉起（见 scene3d_service）
 
         if !p.isVisible {
             center(p)
@@ -230,15 +230,6 @@ final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDele
     }
 
     // MARK: - 服务生命周期
-
-    /// 打窗即后台拉起（fire-and-forget，加载进度由前端轮询 /api/scene3d/status 展示）
-    private func ensureService() {
-        guard let url = URL(string: "\(ProcessManager.baseURLString)/api/scene3d/ensure") else { return }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.timeoutInterval = 10
-        URLSession.shared.dataTask(with: req).resume()
-    }
 
     func hide() {
         if Thread.isMainThread {

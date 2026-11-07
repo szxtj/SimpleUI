@@ -26,7 +26,7 @@ import { useImeInput } from '../../hooks/useImeInput';
 /**
  * 3D 场景构建独立窗口（原生 Scene3DPanelController 承载，hash 路由 #/scene3d）。
  *
- * 生命周期契约：挂载时 Scene3dServiceAPI.ensure()（后台拉起/补下载，不阻塞），
+ * 生命周期契约：开窗不加载模型（standby）；消息发出后由服务端 beginUse 按需拉起，
  * 卸载时 release()（关窗即卸载模型）。发送按钮在服务 ready 前禁用。
  */
 
