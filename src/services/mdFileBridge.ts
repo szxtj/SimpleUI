@@ -89,6 +89,17 @@ export const mdFileBridge = {
     return post({ action: 'cancelClose' });
   },
 
+  /**
+   * 顶栏功能项左边界（CSS px）报给原生。
+   *
+   * 原生那层 52pt 拖拽带（MarkdownTitleBarDragView）会吃掉整条带上的鼠标事件；
+   * 顶栏按钮能和红绿灯并排，靠的就是它按这个值在右侧留出一个「洞」。
+   * 不报也不至于点不动 —— 原生有按宽度比例的兜底，但精度差、拖拽区会被压缩。
+   */
+  reportChromeHit(left: number): boolean {
+    return post({ action: 'chromeHit', left });
+  },
+
   /** 覆盖未保存内容前的确认框；无桥环境直接放行 */
   confirmDiscard(): Promise<boolean> {
     if (!bridge()) return Promise.resolve(true);

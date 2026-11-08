@@ -120,7 +120,50 @@ export const MarkdownEditorWindow: React.FC = () => {
     };
   }, []);
 
+  /**
+   * 把顶栏功能区的左边界（CSS px）报给原生。
+   *
+   * 原生那层 52pt 拖拽带盖住整条顶栏并且会吃掉鼠标事件（WKWebView 吞事件，
+   * `isMovableByWindowBackground` 也拖不动窗口），所以「按钮和红绿灯并排」必须靠
+   * 它在右侧挖一个洞 —— 洞从哪开始，只能由页面告诉它。
+   *
+   * 两种变化都要重报：窗口缩放（left 变）、断点切换文字显隐（这一簇的宽度变）。
+   * 前者靠 observer 盯着父容器宽度 + window resize，后者靠 observer 盯着自己。
+   */
+  useEffect(() => {
+    const el = chromeActionsRef.current;
+    if (!el) return;
+    let last = -1;
+    let frame = 0;
+
+    const measure = () => {
+      frame = 0;
+      const left = Math.round(el.getBoundingClientRect().left);
+      if (left <= 0 || Math.abs(left - last) < 2) return;
+      last = left;
+      mdFileBridge.reportChromeHit(left);
+    };
+    const schedule = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(measure);
+    };
+
+    const observer = new ResizeObserver(schedule);
+    observer.observe(el);
+    if (el.parentElement) observer.observe(el.parentElement);
+    window.addEventListener('resize', schedule);
+    schedule();
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', schedule);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, []);
+
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  /** 顶栏功能区（右上角那一簇按钮）—— 用于把它的左边界报给原生拖拽层 */
+  const chromeActionsRef = useRef<HTMLDivElement | null>(null);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -399,47 +442,56 @@ export const MarkdownEditorWindow: React.FC = () => {
 
   return (
     <div className="h-screen w-screen flex flex-col overflow-hidden bg-[#f8f9fb] dark:bg-[#18191c] text-[#1f2328] dark:text-[#e6e8ec]">
-      {/* 开放式顶栏：顶部 52px 全留给原生拖拽带（左侧 78px 是红绿灯），这里只放留白 */}
-      <div className="h-[52px] flex-shrink-0" aria-hidden="true" />
+      {/*
+        顶栏与三个系统窗口按钮（红绿灯）同一行：左侧 78px 让给红绿灯，右侧从「打开」
+        到三态切换全部右对齐 —— 不再单独占一行，内容因此上移 46px。
+        这条带子被原生拖拽层（MarkdownTitleBarDragView）盖住，右侧的鼠标事件靠
+        reportChromeHit 报出的左边界「挖洞」让出来；洞的左边是可拖动区域。
+        所以：不要在功能区左侧再放可点元素 —— 那边点了会变成拖窗口。
+      */}
+      <div className="h-[52px] flex-shrink-0 flex items-center justify-end gap-0.5 pl-[78px] pr-3 border-b border-black/[0.06] dark:border-white/[0.07] select-none [container-type:inline-size]">
+        <div ref={chromeActionsRef} className="flex items-center gap-0.5 min-w-0">
+          <button
+            type="button"
+            data-md-action="open"
+            onClick={() => void handleOpen()}
+            title={t('mdOpenHint')}
+            className="flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs whitespace-nowrap text-zinc-600 dark:text-zinc-300 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-colors"
+          >
+            <FolderOpen className="w-3.5 h-3.5 flex-shrink-0" />
+            <span className="hidden cq-xl:inline">{t('mdOpen')}</span>
+          </button>
+          <button
+            type="button"
+            data-md-action="save"
+            onClick={() => handleSave(false)}
+            title={t('mdSaveHint')}
+            className="flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs whitespace-nowrap text-zinc-600 dark:text-zinc-300 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-colors"
+          >
+            <Save className="w-3.5 h-3.5 flex-shrink-0" />
+            <span className="hidden cq-xl:inline">{t('mdSave')}</span>
+          </button>
+          <button
+            type="button"
+            data-md-action="saveAs"
+            onClick={() => handleSave(true)}
+            title={t('mdSaveAsHint')}
+            className="flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs whitespace-nowrap text-zinc-600 dark:text-zinc-300 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-colors"
+          >
+            <SaveAll className="w-3.5 h-3.5 flex-shrink-0" />
+            <span className="hidden cq-xl:inline">{t('mdSaveAs')}</span>
+          </button>
+        </div>
 
-      {/* 工具条：必须排在 52px 以下，否则按钮会被拖拽层吃掉 */}
-      <div className="h-[46px] flex-shrink-0 flex items-center gap-1 px-3 border-b border-black/[0.06] dark:border-white/[0.07] select-none">
-        <button
-          type="button"
-          data-md-action="open"
-          onClick={() => void handleOpen()}
-          title={t('mdOpenHint')}
-          className="flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs text-zinc-600 dark:text-zinc-300 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-colors"
-        >
-          <FolderOpen className="w-3.5 h-3.5" />
-          <span>{t('mdOpen')}</span>
-        </button>
-        <button
-          type="button"
-          data-md-action="save"
-          onClick={() => handleSave(false)}
-          title={t('mdSaveHint')}
-          className="flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs text-zinc-600 dark:text-zinc-300 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-colors"
-        >
-          <Save className="w-3.5 h-3.5" />
-          <span>{t('mdSave')}</span>
-        </button>
-        <button
-          type="button"
-          data-md-action="saveAs"
-          onClick={() => handleSave(true)}
-          title={t('mdSaveAsHint')}
-          className="flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs text-zinc-600 dark:text-zinc-300 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-colors"
-        >
-          <SaveAll className="w-3.5 h-3.5" />
-          <span>{t('mdSaveAs')}</span>
-        </button>
+        <div className="hidden cq-2xl:block w-px h-4 bg-black/10 dark:bg-white/10 mx-1.5 flex-shrink-0" />
 
-        <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1.5" />
-
-        <div className="flex items-center gap-1.5 min-w-0" title={filePath || undefined}>
+        {/* 文件名 / 说明文字：窄窗优先隐藏（< 864px）；按钮文字留到更窄才收（< 800px） */}
+        <div
+          className="hidden cq-2xl:flex items-center gap-1.5 min-w-0 flex-shrink"
+          title={filePath || undefined}
+        >
           <FileText className="w-3.5 h-3.5 flex-shrink-0 text-zinc-400 dark:text-zinc-500" />
-          <span className="text-xs font-medium truncate max-w-[280px]">{displayName}</span>
+          <span data-md-filename="true" className="text-xs font-medium truncate max-w-[240px]">{displayName}</span>
           {isDirty && (
             <span
               className="w-1.5 h-1.5 rounded-full bg-amber-500 flex-shrink-0"
@@ -448,9 +500,7 @@ export const MarkdownEditorWindow: React.FC = () => {
           )}
         </div>
 
-        <div className="flex-1" />
-
-        <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06]">
+        <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] ml-1 flex-shrink-0">
           {MODES.map(({ id, labelKey, Icon }) => {
             const active = mode === id;
             return (
@@ -460,14 +510,14 @@ export const MarkdownEditorWindow: React.FC = () => {
                 onClick={() => setMode(id)}
                 data-md-mode={id}
                 title={t(labelKey)}
-                className={`flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium transition-colors ${
+                className={`flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium whitespace-nowrap transition-colors ${
                   active
                     ? 'bg-white dark:bg-[#2b2d33] text-zinc-900 dark:text-white shadow-sm'
                     : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200'
                 }`}
               >
-                <Icon className="w-3.5 h-3.5" />
-                <span>{t(labelKey)}</span>
+                <Icon className="w-3.5 h-3.5 flex-shrink-0" />
+                <span className="hidden cq-xl:inline">{t(labelKey)}</span>
               </button>
             );
           })}

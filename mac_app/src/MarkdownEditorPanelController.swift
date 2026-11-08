@@ -18,12 +18,23 @@ final class MarkdownEditorWindow: NSWindow {
 /// 顶部 52pt 拖拽带：与主窗口 / 3D 窗口同一套做法 —— 窗口内容伸到标题栏下方
 /// （`.fullSizeContentView`），顶部这一条由本视图接管，可拖动整窗、双击切换标准尺寸。
 ///
-/// `hitTest` 必须让左侧 78pt 穿透：红绿黄三个按钮画在标题栏里，被遮住就点不到了。
-/// 注意：本窗口顶部 52pt **只放留白，不放任何按钮** —— 拖拽层会吃掉整条带上的鼠标事件，
-/// 工具条必须排在 52pt 以下的第二行（与侧边栏、3D 窗口的排布一致）。
-/// （WKWebView 会吞掉鼠标事件，光靠 `isMovableByWindowBackground` 拖不动窗口。）
+/// `hitTest` 让两块区域穿透：
+/// 1. 左侧 78pt —— 红绿黄三个按钮画在标题栏里，被遮住就点不到了；
+/// 2. 右侧功能区 —— 编辑器的「打开 / 保存 / 另存为 / 三态切换」与红绿灯并排，
+///    左边界由页面通过 `{action:"chromeHit", left}` 实时报上来（见 applyChromeHit），
+///    页面没报时按窗口宽度的比例兜底，保证按钮不会整条被吃掉。
+///
+/// （WKWebView 会吞掉鼠标事件，光靠 `isMovableByWindowBackground` 拖不动窗口，
+/// 所以拖拽只能由这一层接管；反过来，这一层不挖洞，网页按钮就点不动。）
 final class MarkdownTitleBarDragView: NSView {
     private static let trafficLightZone: CGFloat = 78.0
+
+    /// 右侧交互区起点（窗口内容坐标，pt）。nil → 用宽度比例兜底。
+    var interactiveFromLeft: CGFloat?
+
+    /// 兜底比例：还没收到页面上报时，右侧 55% 先让给功能项。
+    /// 宁可拖拽区小一点，也不能让按钮点不动 —— 工具条点不动的观感比拖不动差得多。
+    private static let fallbackInteractiveRatio: CGFloat = 0.55
 
     /// 双击缩放 / 缩放态拖拽还原（与主窗口同一份实现，见 WindowResizeChrome）
     weak var resizeChrome: WindowResizeChrome?
@@ -38,6 +49,9 @@ final class MarkdownTitleBarDragView: NSView {
         guard frame.contains(point) else { return nil }
         let localPoint = convert(point, from: superview)
         if localPoint.x < Self.trafficLightZone { return nil }
+        let holeStart = interactiveFromLeft
+            ?? (bounds.width * (1 - Self.fallbackInteractiveRatio))
+        if localPoint.x >= holeStart { return nil }
         return self
     }
 
@@ -241,6 +255,7 @@ final class MarkdownEditorPanelController: NSObject, NSWindowDelegate, WKNavigat
     ///   `{action:"save", path, content}`                      写回已知路径（无路径时自动转「另存为」）
     ///   `{action:"saveAs", content, suggestedName}`           另存为（NSSavePanel）
     ///   `{action:"state", name, edited, path}`                同步文件名 / 未保存标记 / 代表文件
+    ///   `{action:"chromeHit", left}`                          顶栏功能区左边界（拖拽层据此挖洞）
     ///   `{action:"confirmDiscard"}`                           覆盖未保存内容前的确认
     ///   `{action:"closeNow"}`                                 「保存并关闭」流程收尾
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -260,6 +275,8 @@ final class MarkdownEditorPanelController: NSObject, NSWindowDelegate, WKNavigat
                 )
             case "state":
                 self.applyDocumentState(dict)
+            case "chromeHit":
+                self.applyChromeHit(dict)
             case "confirmDiscard":
                 self.confirmDiscard()
             case "cancelClose":
@@ -293,6 +310,16 @@ final class MarkdownEditorPanelController: NSObject, NSWindowDelegate, WKNavigat
         } else {
             DispatchQueue.main.async(execute: apply)
         }
+    }
+
+    /// 顶栏功能区的左边界（页面按 CSS px＝pt 上报）：拖拽层从这里往右让出鼠标事件。
+    /// 夹在红绿灯右侧 40pt 之后，防止异常值把整条带子都让出去、窗口变成拖不动。
+    private func applyChromeHit(_ dict: [String: Any]) {
+        guard let raw = dict["left"] as? Double else { return }
+        let left = CGFloat(raw)
+        guard left > 0, let win = panel else { return }
+        let clamped = min(max(left - 6, 118), win.frame.width)
+        dragView?.interactiveFromLeft = clamped
     }
 
     private func applyDocumentState(_ dict: [String: Any]) {

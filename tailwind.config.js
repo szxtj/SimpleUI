@@ -63,6 +63,10 @@ export default {
       addVariant('cq-md', '@container (min-width: 30rem)');
       // >= 640px column: desktop-grade paddings
       addVariant('cq-lg', '@container (min-width: 40rem)');
+      // Markdown 编辑器顶栏（窗口本身 720px 起，所以这两档只服务它）：
+      // >= 800px 才放按钮文字，>= 864px 才放文件名 —— 再窄就先丢描述文字，避免换行/挤压
+      addVariant('cq-xl', '@container (min-width: 50rem)');
+      addVariant('cq-2xl', '@container (min-width: 54rem)');
     }),
   ],
 }

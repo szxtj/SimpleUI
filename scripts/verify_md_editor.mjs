@@ -2,7 +2,7 @@
  * Markdown 编辑器窗口回归验证（无头浏览器 + CDP）。
  *
  * 覆盖：
- *  A. 默认三态布局与顶栏留白（52px 拖拽带 + 独立工具条）
+ *  A. 默认三态布局与顶栏（52px 与红绿灯同一行、功能项右对齐）
  *  B. 渲染一致性：公式 / 表格 / Mermaid / 代码块 / 中文加粗（与对话区共用 MarkdownRenderer）
  *  C. 三态切换：编辑 / 分栏 / 浏览
  *  D. 打开文件（伪造原生回传）→ 文件名、内容、未保存标记
@@ -10,6 +10,7 @@
  *  F. 「保存并关闭」链路：__mdRequestSaveClose → save → closeNow
  *  G. 原生状态同步：{action:'state', name, edited, path}
  *  H. 主界面入口按钮位置：Markdown 在 3D 左侧、3D 在设置左侧
+ *  I. 顶栏窄窗：先丢文件名、再丢按钮文字，且绝不换行
  *
  * 用法：先 `npx vite build`，再 `npx vite preview --port 4173 --strictPort`，
  *       BASE=http://127.0.0.1:4173 node scripts/verify_md_editor.mjs
@@ -196,10 +197,10 @@ const L = JSON.parse(layout);
 check('默认分栏：编辑器与预览同时存在', L.hasTextarea === true);
 check('三态按钮齐备（edit/split/preview）', L.modes.join(',') === 'edit,split,preview', L.modes.join(','));
 check('默认激活「分栏」', L.active === 'split', L.active);
-check('顶部 52px 留白带（原生拖拽区）', Math.round(L.bandHeight) === 52, `${L.bandHeight}px`);
+check('顶栏 52px（与红绿灯同一行）', Math.round(L.bandHeight) === 52, `${L.bandHeight}px`);
 check(
-  '工具条排在留白带之下（不被拖拽层吃掉）',
-  Math.round(L.toolbarTop) === 52,
+  '功能项就在顶栏里（不再单独占一行）',
+  Math.round(L.toolbarTop) === 0,
   `top=${L.toolbarTop}`
 );
 check(
@@ -529,6 +530,71 @@ await ev(`document.querySelector('[data-md-mode="preview"]').click()`);
 await sleep(500);
 shot = await send('Page.captureScreenshot', { format: 'png' });
 await import('node:fs').then((fs) => fs.writeFileSync('/tmp/md-editor-preview.png', Buffer.from(shot.data, 'base64')));
+
+// ---------------------------------------------------------------- I. 顶栏窄窗
+const chromeProbe = `(() => {
+  const band = document.querySelector('[data-md-action="open"]').closest('.h-screen').firstElementChild;
+  const openBtn = document.querySelector('[data-md-action="open"]');
+  const fileLabel = openBtn.querySelector('span');
+  const modeLabel = document.querySelector('[data-md-mode="edit"] span');
+  const nameEl = document.querySelector('[data-md-filename]');
+  const br = band.getBoundingClientRect();
+  const ob = openBtn.getBoundingClientRect();
+  return JSON.stringify({
+    bandTop: Math.round(br.top), bandH: Math.round(br.height),
+    openLeft: Math.round(ob.left), btnW: Math.round(ob.width), btnH: Math.round(ob.height),
+    innerW: window.innerWidth,
+    fileLabelShown: !!fileLabel && fileLabel.getClientRects().length > 0,
+    modeLabelShown: !!modeLabel && modeLabel.getClientRects().length > 0,
+    nameShown: !!nameEl && nameEl.getClientRects().length > 0,
+  });
+})()`;
+
+await send('Emulation.setDeviceMetricsOverride', { width: 1160, height: 760, deviceScaleFactor: 1, mobile: false });
+await sleep(700);
+const wideChrome = JSON.parse(await ev(chromeProbe));
+check('顶栏贴顶：上方没有空白带', wideChrome.bandTop === 0, wideChrome.bandTop);
+check('顶栏高度仍为 52px', wideChrome.bandH === 52, wideChrome.bandH);
+check(
+  '功能项整体靠右（给红绿灯与拖拽留出左侧）',
+  wideChrome.openLeft > wideChrome.innerW * 0.35,
+  `${wideChrome.openLeft} / ${wideChrome.innerW}`
+);
+check('宽窗：按钮文字与文件名都在', wideChrome.fileLabelShown && wideChrome.modeLabelShown && wideChrome.nameShown, wideChrome);
+const shotWide = await send('Page.captureScreenshot', { format: 'png' });
+await import('node:fs').then((fs) => fs.writeFileSync('/tmp/md-chrome-wide.png', Buffer.from(shotWide.data, 'base64')));
+
+await send('Emulation.setDeviceMetricsOverride', { width: 760, height: 700, deviceScaleFactor: 1, mobile: false });
+await sleep(800);
+const narrowChrome = JSON.parse(await ev(chromeProbe));
+check('窄窗：文件名先隐藏', narrowChrome.nameShown === false, narrowChrome.nameShown);
+check(
+  '窄窗：按钮文字隐藏、只剩图标',
+  narrowChrome.fileLabelShown === false && narrowChrome.modeLabelShown === false,
+  narrowChrome
+);
+check(
+  '窄窗：按钮不换行（高度仍是 32、宽度收到图标宽）',
+  narrowChrome.btnH === 32 && narrowChrome.btnW < 60,
+  `${narrowChrome.btnW}x${narrowChrome.btnH}`
+);
+const narrowClick = await ev(`(() => {
+  document.querySelector('[data-md-mode="edit"]').click();
+  return true;
+})()`);
+await sleep(400);
+const narrowMode = await ev(`JSON.stringify({
+  hasTa: !!document.querySelector('[data-md-editor]'),
+  hasPreview: !!document.querySelector('.markdown-body'),
+  active: document.querySelector('[data-md-mode].shadow-sm')?.dataset.mdMode,
+})`);
+const NM = JSON.parse(narrowMode);
+check('窄窗：三态切换仍可点（切到编辑只剩编辑区）', narrowClick && NM.hasTa && !NM.hasPreview && NM.active === 'edit', NM);
+const shotNarrow = await send('Page.captureScreenshot', { format: 'png' });
+await import('node:fs').then((fs) => fs.writeFileSync('/tmp/md-chrome-narrow.png', Buffer.from(shotNarrow.data, 'base64')));
+
+await send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 820, deviceScaleFactor: 1, mobile: false });
+await sleep(500);
 
 // ---------------------------------------------------------------- 报错检查
 const errs = await ev(`JSON.stringify(window.__mdErrors || [])`);
