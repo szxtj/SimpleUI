@@ -879,15 +879,15 @@ export async function callMainModel(
         temperature,
         max_tokens: maxTokens,
         ...(seed !== null ? { seed } : {}),
-        ...(llamaSpecific
-          ? {
+        ...(!llamaSpecific
+          ? { thinking: { type: 'disabled' } } // DeepSeek V3.2：规划任务显式关思考（64 token 预算装不下 CoT）
+          : {
               top_p: 0.95,
               top_k: 64,
               repetition_penalty: 1.0,
               chat_template_kwargs: { enable_thinking: false },
               reasoning_effort: 'none',
-            }
-          : {}),
+            }),
       }),
     });
     clearTimeout(timer);

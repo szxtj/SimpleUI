@@ -1029,7 +1029,7 @@ class SessionService {
 
     // RAG 检索规划由当前 chat model 担任：DeepSeek 走官方 API，本地走会话设置的引擎端口 + 模型 id
     const chatModelRef = isDeepSeek
-      ? { provider: 'deepseek', baseUrl: settings.deepseekBaseUrl, apiKey: settings.deepseekApiKey, model: settings.model }
+      ? { provider: 'deepseek', baseUrl: settings.deepseekBaseUrl, apiKey: settings.deepseekApiKey, model: settings.deepseekModelId || 'deepseek-flash' }
       : { provider: 'local', port: settings.apiPort, model: settings.model };
 
     // 1. Offline Wiki RAG Phase（shouldRunWiki 在轮次入口算好穿进来，避免两处判定漂移）
