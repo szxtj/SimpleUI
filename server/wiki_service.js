@@ -5,7 +5,6 @@ import http from 'http';
 import { fileURLToPath } from 'url';
 import { parse as parseHtml } from 'node-html-parser';
 import * as OpenCC from 'opencc-js';
-import { ttfService } from './ttf_service.js';
 import { startWatchdog } from './watchdog.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -13,55 +12,6 @@ const __dirname = path.dirname(__filename);
 
 export const DEFAULT_KIWIX_PORT = 31236;
 const KIWIX_PID_FILE = '/tmp/simpleui_kiwix.pid';
-
-// 主力模型（支持 TurboFieldfare 1235 与 Mference 1241 双引擎自适应）。承担实体规划、长文目录路由等辅助任务。
-// 注意：本地引擎不支持多路并发，禁止在并行分支里调用。
-export const MAIN_API_URL = process.env.MAIN_API_URL || 'http://127.0.0.1:1235';
-export const MAIN_MODEL = process.env.MAIN_MODEL || 'gemma-4-26b-a4b-it';
-
-let cachedModelInfo = { port: 0, model: '', fetchedAt: 0 };
-
-export async function getMainModelTarget() {
-  if (process.env.MAIN_API_URL) {
-    return {
-      apiUrl: process.env.MAIN_API_URL,
-      model: process.env.MAIN_MODEL || 'gemma-4-26b-a4b-it',
-    };
-  }
-
-  let port = 1235;
-  let defaultModel = 'gemma-4-26b-a4b-it';
-  try {
-    if (ttfService) {
-      port = ttfService.getActivePort ? ttfService.getActivePort() : 1235;
-      const isMference = ttfService.getActiveEngine && ttfService.getActiveEngine() === 'mference';
-      defaultModel = isMference ? 'qwen3.6-35b-a3b' : 'gemma-4-26b-a4b-it';
-    }
-  } catch (e) {
-    // ignore
-  }
-
-  const now = Date.now();
-  if (cachedModelInfo.port === port && cachedModelInfo.model && (now - cachedModelInfo.fetchedAt < 10000)) {
-    return { apiUrl: `http://127.0.0.1:${port}`, model: cachedModelInfo.model };
-  }
-
-  let resolvedModel = defaultModel;
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/v1/models`, { signal: AbortSignal.timeout(1000) });
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data.data) && data.data.length > 0 && data.data[0].id) {
-        resolvedModel = data.data[0].id;
-        cachedModelInfo = { port, model: resolvedModel, fetchedAt: now };
-      }
-    }
-  } catch (e) {
-    // fallback
-  }
-
-  return { apiUrl: `http://127.0.0.1:${port}`, model: resolvedModel };
-}
 
 const userConfigDir = path.join(
   process.env.HOME || '',
@@ -851,10 +801,16 @@ export async function callMainModel(
   prompt,
   { systemPrompt = null, maxTokens = 64, timeoutMs = 30000, temperature = 0, seed = null, signal = null, modelRef = null } = {}
 ) {
+  // 规划模型必须由调用方明确指定（跟随当前 chat model）——
+  // 不做任何兜底推断：缺失/不完整直接抛具体错误，让本轮失败原因可见。
+  if (!modelRef || (modelRef.provider !== 'deepseek' && !modelRef.port)) {
+    throw new Error('规划模型未指定：RAG 请求缺少当前对话模型信息（chatModel）');
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   // 外部中止信号并入内部超时控制器：fetch 与 body 读取会一并取消。
-  // 与超时区分开——超时按"规划失败"返回 null，用户中止必须向上传播。
+  // 用户中止按 abortError 向上传播；超时按具体超时错误抛出。
   let abortedByUser = false;
   if (signal) {
     if (signal.aborted) {
@@ -875,37 +831,31 @@ export async function callMainModel(
   if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
   messages.push({ role: 'user', content: prompt });
 
-  try {
-    // 规划模型跟随当前 chat model：DeepSeek 模式走官方 API（标准 OpenAI 字段），
-    // 本地模式优先用会话设置里的端口 + 模型 id（用户切了引擎/模型就跟着走），
-    // 都没有时回退 getMainModelTarget()（激活引擎自适应）。
-    let apiUrl;
-    let targetModel;
-    let authHeader = null;
-    let llamaSpecific = true;
-    if (modelRef && modelRef.provider === 'deepseek') {
-      const base = String(modelRef.baseUrl || 'https://api.deepseek.com').trim()
-        .replace(/\/+$/, '').replace(/\/chat\/completions\/?$/, '');
-      apiUrl = base.endsWith('/v1') ? base : `${base}/v1`;
-      targetModel = modelRef.model || 'deepseek-chat';
-      authHeader = `Bearer ${modelRef.apiKey || ''}`;
-      llamaSpecific = false; // DeepSeek 官方 API 不认 llama.cpp 的采样扩展字段
-    } else if (modelRef && (modelRef.port || modelRef.model)) {
-      const fallback = await getMainModelTarget();
-      apiUrl = modelRef.port ? `http://127.0.0.1:${modelRef.port}` : fallback.apiUrl;
-      targetModel = modelRef.model || fallback.model;
-    } else {
-      const t = await getMainModelTarget();
-      apiUrl = t.apiUrl;
-      targetModel = t.model;
+  let apiUrl;
+  let targetModel;
+  let headers = { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' };
+  let llamaSpecific;
+  if (modelRef.provider === 'deepseek') {
+    if (!String(modelRef.apiKey || '').trim()) {
+      clearTimeout(timer);
+      throw new Error('DeepSeek API Key 未配置，无法进行知识库检索规划');
     }
+    const base = String(modelRef.baseUrl || 'https://api.deepseek.com').trim()
+      .replace(/\/+$/, '').replace(/\/chat\/completions\/?$/, '');
+    apiUrl = base.endsWith('/v1') ? base : `${base}/v1`;
+    targetModel = modelRef.model || 'deepseek-chat';
+    headers.Authorization = `Bearer ${modelRef.apiKey.trim()}`;
+    llamaSpecific = false; // DeepSeek 官方 API 不认 llama.cpp 的采样扩展字段
+  } else {
+    apiUrl = `http://127.0.0.1:${modelRef.port}`;
+    targetModel = modelRef.model || 'default';
+    llamaSpecific = true;
+  }
+
+  try {
     const res = await fetch(`${apiUrl}/v1/chat/completions`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'text/event-stream',
-        ...(authHeader ? { Authorization: authHeader } : {}),
-      },
+      headers,
       signal: controller.signal,
       body: JSON.stringify({
         model: targetModel,
@@ -927,11 +877,14 @@ export async function callMainModel(
       }),
     });
     clearTimeout(timer);
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => '');
+      throw new Error(`规划模型请求失败 HTTP ${res.status}（${apiUrl}）${bodyText ? `：${bodyText.slice(0, 200)}` : ''}`);
+    }
 
     // 逐 SSE 片段拼接 content（与前端 streamChat 解析方式一致）
     const reader = res.body?.getReader();
-    if (!reader) return null;
+    if (!reader) throw new Error('规划模型响应无可读流');
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
     let out = '';
@@ -949,30 +902,31 @@ export async function callMainModel(
         try {
           const j = JSON.parse(d);
           const delta = j.choices?.[0]?.delta;
-          if (delta?.content) {
-            out += delta.content;
-          } else if (delta?.reasoning_content) {
-            // deepseek-reasoner 只吐 reasoning_content（思考流），content 恒空 ——
-            // 规划要的是最终 JSON，思考流里也包含它，兜底拼接
-            out += delta.reasoning_content;
-          }
+          if (delta?.content) out += delta.content;
         } catch (e) {
           // ignore malformed chunk
         }
       }
     }
-    return out.trim() || null;
-    } catch (err) {
-      clearTimeout(timer);
-      // 用户中止必须向上传播（吞成 null 会让管线带着中止信号继续跑完）
-      if (abortedByUser) throw abortError();
-      return null;
+    if (!out.trim()) {
+      throw new Error('规划模型返回空内容（若使用思考型模型，请检查其是否支持 system role 与非思考输出）');
     }
+    return out.trim();
+  } catch (err) {
+    clearTimeout(timer);
+    // 用户中止必须向上传播（吞掉会让管线带着中止信号继续跑完）
+    if (abortedByUser) throw abortError();
+    if (err?.name === 'AbortError') {
+      throw new Error(`规划模型请求超时（${Math.round(timeoutMs / 1000)}s，${apiUrl}）`);
+    }
+    // 连接失败（ECONNREFUSED 等）把目标地址带上一眼定位是哪个服务没起
+    if (err?.cause?.code === 'ECONNREFUSED') {
+      throw new Error(`无法连接规划模型 ${apiUrl}（服务未启动或端口不对）`);
+    }
+    throw err;
   }
+}
 
-
-// 规划规则放 system（Gemma 4 原生支持 system role，指令遵循更稳），示例与提问放 user。
-// 示例只保留 3 条「演示规则」性质的：消歧 / 事件名映射 / 不凑数。
 export const MAIN_PLANNER_SYSTEM = `[任务] 从用户的提问中，提取需要在中文百科全书里检索的条目名称。
 [输出] 只输出一个 JSON 对象：{"target_articles": ["条目名"]}，不要输出任何其他文字。
 [规则]
@@ -1007,27 +961,25 @@ export async function planQueryWithMainModel(query, signal, modelRef = null) {
     signal,
     modelRef,
   });
-  if (!out) return null;
 
   const parsed = safeParseJson(out);
-  if (parsed && Array.isArray(parsed.target_articles)) {
-    const articles = parsed.target_articles
-      .map((a) => String(a).replace(/[《》]/g, '').trim())
-      .filter(Boolean)
-      .slice(0, 2);
-    if (articles.length > 0) {
-      return {
-        needs_wiki: true,
-        target_articles: articles,
-        planner: 'main-model',
-      };
-    }
+  if (!(parsed && Array.isArray(parsed.target_articles))) {
+    throw new Error(`规划输出不是合法 JSON：${out.slice(0, 160)}`);
   }
-  return null;
+  const articles = parsed.target_articles
+    .map((a) => String(a).replace(/[《》]/g, '').trim())
+    .filter(Boolean)
+    .slice(0, 2);
+  // 空列表是模型的合法判断（无需检索特定实体）→ 调用方用归一化原始提问检索
+  return {
+    needs_wiki: true,
+    target_articles: articles,
+    planner: 'main-model',
+  };
 }
 
-// 实体规划入口：由主力模型承担（不做小模型回退——1234 服务已从链路中移除）。
-// 规划失败时返回 null，由 getRagContext 使用归一后的原始提问直接检索。
+// 实体规划入口：由当前 chat model 担任（不做小模型回退，也不做失败降级）。
+// 任何失败（服务不可达 / HTTP 错误 / 输出不合规）都向上抛具体错误，由本轮失败呈现。
 export async function planQuery(query, signal, modelRef = null) {
   return planQueryWithMainModel(query, signal, modelRef);
 }
@@ -2004,7 +1956,10 @@ class WikiService {
     return { articles: picked, trace: picked.length ? 'fulltext' : 'none' };
   }
   // Atomic High-Performance RAG Pipeline
-  async getRagContext(query, signal, modelRef = null) {
+  async getRagContext(query, signal, modelRef) {
+    if (!modelRef || (modelRef.provider !== 'deepseek' && !modelRef.port)) {
+      throw new Error('规划模型未指定：RAG 请求缺少当前对话模型信息（chatModel）');
+    }
     throwIfAborted(signal);
     if (!query || typeof query !== 'string' || !query.trim()) {
       return { needsWiki: false, citations: [], promptContext: '', metadata: { latencyMs: 0 } };
@@ -2040,9 +1995,9 @@ class WikiService {
     //    提示词要求人物用间隔号全名译名、问「X是谁」只输出 X 本身的条目
     //    （实测「拉格朗日是谁?」稳定输出「约瑟夫·路易·拉格朗日」，不再幻觉连字符音译或相关条目）。
     const plan = await planQuery(normalizedQuery, signal, modelRef);
-    const plannerName = plan?.planner || 'raw-fallback';
+    const plannerName = plan.planner;
     const targetArticles =
-      plan && Array.isArray(plan.target_articles) && plan.target_articles.length > 0
+      Array.isArray(plan.target_articles) && plan.target_articles.length > 0
         ? plan.target_articles.slice(0, 2)
         : [normalizedQuery];
 
