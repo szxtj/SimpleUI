@@ -17,3 +17,24 @@ export function formatBytes(bytes) {
   if (n >= MiB) return `${Math.round(n / MiB)} MB`;
   return `${Math.round(n / 1024)} KB`;
 }
+
+/**
+ * 十进制体积（1 GB = 10^9 B）—— 与 HuggingFace 页面、访达「显示简介」、系统设置同一口径。
+ *
+ * 只给「用户会拿去和外部数字对照」的地方用（目前仅 3D 场景构建的模型体积）。
+ * 其它服务继续用 formatBytes（1024 进制），两套不要混用、也不要互相替换：
+ * 同一个 3,568,995,926 B，这里显示 3.57 GB，formatBytes 显示 3.32 GB（GiB）。
+ */
+export function formatBytesSI(bytes) {
+  const n = Number(bytes) || 0;
+  if (n <= 0) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let v = n;
+  let i = 0;
+  while (v >= 1000 && i < units.length - 1) {
+    v /= 1000;
+    i += 1;
+  }
+  const digits = i >= 3 ? 2 : i === 2 ? 1 : 0;
+  return `${parseFloat(v.toFixed(digits))} ${units[i]}`;
+}

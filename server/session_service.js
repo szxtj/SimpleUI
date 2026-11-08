@@ -958,6 +958,39 @@ class SessionService {
     });
 
     // Execute RAG + LLM Streaming asynchronously in background
+    // 3D 会话且当前模型是「单图 → GLB」（Idol）：不走 chat completions，直接找 3D 服务出图。
+    if (isScene3d && scene3dService.selectedModel().kind === 'image') {
+      if (currentImages.length === 0) {
+        this.finalizeScene3dImageTurn(sessionId, assistantMessageId, {
+          error:
+            lang === 'en'
+              ? 'This model turns one photo into a 3D model — attach an image first.'
+              : '这个模型是「单图 → 3D 模型」，请先附上一张图片。',
+        });
+        return {
+          ok: true,
+          sessionId,
+          messageId: assistantMessageId,
+          session: this.sessions.find((s) => s.id === sessionId) || updatedSession,
+        };
+      }
+      this.runScene3dImageTurn({
+        sessionId,
+        assistantMessageId,
+        images: currentImages,
+        lang,
+        signal: abortController.signal,
+      }).catch((err) => {
+        console.error('[Session] 3D 单图生成未捕获错误:', err);
+      });
+      return {
+        ok: true,
+        sessionId,
+        messageId: assistantMessageId,
+        session: this.sessions.find((s) => s.id === sessionId) || updatedSession,
+      };
+    }
+
     this.executeTurnPipeline({
       sessionId,
       assistantMessageId,
@@ -1186,6 +1219,96 @@ class SessionService {
       stages,
       signal,
     });
+  }
+
+  // ==========================================================================
+  // 3D 会话 · 单图 → GLB（Idol / mlx-serve）
+  //
+  // 与代码生成（llama-server 流式吐 Three.js HTML）完全不同的通路：
+  //   一张图 → POST /v1/3d/generations → GLB 落盘 → 消息里只存 URL。
+  // 事件仍走同一套 SSE：结束时广播 turn-finished，前端组件无需感知差别。
+  // ==========================================================================
+
+  /** 统一收尾（成功/失败/中止）：关闭阶段、清 pending、广播 turn-finished */
+  finalizeScene3dImageTurn(sessionId, messageId, patch = {}) {
+    const tEnd = Date.now();
+    let finalMsg = null;
+    this.updateMessageInSession(sessionId, messageId, (m) => {
+      const stages = (m.stages || []).map((st) =>
+        st.endedAt === undefined
+          ? { ...st, endedAt: tEnd, durationMs: Math.max(0, tEnd - st.startedAt) }
+          : st
+      );
+      finalMsg = { ...m, isThinking: false, pending: false, stages, ...patch };
+      delete finalMsg.stage;
+      return finalMsg;
+    });
+
+    const session = this.sessions.find((s) => s.id === sessionId);
+    const contextUsed = session?.contextUsed ?? 0;
+    this.activeTurns.delete(sessionId);
+    this.flushSync();
+    this.broadcast('turn-finished', {
+      sessionId,
+      messageId,
+      message: finalMsg,
+      contextUsed,
+      calibrationFactors: this.calibrationFactors,
+    });
+    return finalMsg;
+  }
+
+  /** 把服务层错误码翻成人话（内存不足要让用户看到具体数字，而不是 swap 到底） */
+  describeScene3dImageError(err, lang = 'zh') {
+    const raw = (err?.message || '').trim();
+    const code = err?.code || '';
+    const en = lang === 'en';
+    if (code === 'OUT_OF_MEMORY' || /not enough free memory|out_of_memory/i.test(raw)) {
+      return en
+        ? `Not enough free memory for this model (~4.3 GB resident + headroom). Quit some apps and retry. ${raw}`
+        : `内存不足：该模型常驻约 4.3 GB，加上预热余量需要约 5.8 GB 可用内存。请先退出几个占用内存的应用再重试。${raw}`;
+    }
+    if (code === 'IMAGE_REQUIRED' || raw === 'IMAGE_REQUIRED') {
+      return en ? 'Attach an image first.' : '请先附上一张图片。';
+    }
+    if (code === 'MODEL_MISSING' || code === 'MODEL_NOT_READY') {
+      return en
+        ? 'Model files are not ready yet. Check the download progress in Settings → 3D Scene Builder.'
+        : '模型文件还没就绪，可在 设置 → 3D 场景构建 里查看下载进度。';
+    }
+    if (code === 'RUNTIME_MISSING') {
+      return en ? 'The bundled runtime is missing.' : '内置运行时缺失。';
+    }
+    if (raw === 'aborted' || raw === 'AbortError') {
+      return en ? 'Aborted.' : '已中止。';
+    }
+    return raw || (en ? 'Generation failed' : '生成失败');
+  }
+
+  async runScene3dImageTurn({ sessionId, assistantMessageId, images, lang, signal }) {
+    let usedService = false;
+    try {
+      if (signal.aborted) throw new Error('aborted');
+      // 拉起（缺模型会先等下载）+ 阻塞到权重进内存；内存不足在这里抛 OUT_OF_MEMORY
+      await scene3dService.beginUse();
+      usedService = true;
+
+      const result = await scene3dService.generateFromImage({ image: images[0], signal });
+      if (signal.aborted) throw new Error('aborted');
+
+      this.finalizeScene3dImageTurn(sessionId, assistantMessageId, {
+        content: '',
+        scene: { glb: result.url, bytes: result.bytes, steps: result.steps, gaussians: result.gaussians },
+        metrics: { totalTokens: 0, completionTokens: 0, renderMs: result.ms },
+      });
+    } catch (err) {
+      console.warn('[Session] 3D 单图生成失败:', err.message);
+      this.finalizeScene3dImageTurn(sessionId, assistantMessageId, {
+        error: this.describeScene3dImageError(err, lang),
+      });
+    } finally {
+      if (usedService) scene3dService.endUse();
+    }
   }
 
   async streamFromEngine({

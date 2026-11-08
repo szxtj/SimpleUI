@@ -32,7 +32,8 @@ class ProcessManager {
         "/tmp/simpleui_translate_quick.pid",
         "/tmp/simpleui_tts.pid",
         "/tmp/simpleui_ocr.pid",
-        "/tmp/simpleui_scene3d.pid"
+        "/tmp/simpleui_scene3d.pid",
+        "/tmp/simpleui_scene3d_idol.pid"
     ]
 
     /// 启动入口：先检测并彻底清理任何上次残留的旧代理、旧模型与孤儿进程，再拉起全新服务，杜绝模块版本不一致

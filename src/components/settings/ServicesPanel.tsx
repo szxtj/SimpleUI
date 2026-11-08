@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { AppSettings, WikiStatusInfo, AsrServiceStatus, AsrEngineId, VoicePermissionStatus, SubtitleServiceStatus, TtsServiceStatus, OcrServiceStatus, OcrConfig, Scene3dServiceStatus, TranslateServiceStatus } from '../../types/chat';
+import { AppSettings, WikiStatusInfo, AsrServiceStatus, AsrEngineId, VoicePermissionStatus, SubtitleServiceStatus, TtsServiceStatus, OcrServiceStatus, OcrConfig, Scene3dServiceStatus, Scene3dModelKey, TranslateServiceStatus } from '../../types/chat';
 import { WikiAPI, ModelServiceAPI, ModelServiceStatus, ModelServiceConfig, ModelEngine, MapleAssets, QwenQaAssets, ASRServiceAPI, SubtitleServiceAPI, TtsServiceAPI, OcrServiceAPI, Scene3dServiceAPI, TranslateServiceAPI, FolderSearchServiceAPI } from '../../services/api';
 import type { FolderSearchServiceStatus } from '../../services/api';
 import { resolveLanguage, formatArticleCount, translations, Language, TranslationKeys } from '../../i18n';
@@ -814,6 +814,64 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
 
   const handleScene3dOpenDir = async () => {
     await Scene3dServiceAPI.openModelsDir();
+  };
+
+  // ---- 3D：模型切换即时生效（与「语音输入」的引擎切换同一套语义），
+  //      闲置卸载时长走草稿 + 「保存配置」（也和语音输入一致）----
+  const [scene3dIdleDraft, setScene3dIdleDraft] = useState<number | null>(null);
+  const [scene3dSaved, setScene3dSaved] = useState(false);
+  const [scene3dNotice, setScene3dNotice] = useState<{ text: string; isError: boolean } | null>(null);
+
+  const scene3dSavedKey = (scene3dStatus?.config?.modelKey ?? 'code') as Scene3dModelKey;
+  const scene3dSavedIdle = scene3dStatus?.config?.idleUnloadMin ?? 3;
+  const scene3dIdleValue = scene3dIdleDraft ?? scene3dSavedIdle;
+  const scene3dIdleDirty = scene3dIdleDraft !== null && scene3dIdleDraft !== scene3dSavedIdle;
+
+  /** 提交配置补丁；BUSY（有生成在跑）时不改，只提示 */
+  const applyScene3dConfig = async (patch: {
+    modelKey?: Scene3dModelKey;
+    idleUnloadMin?: number;
+  }): Promise<boolean> => {
+    setScene3dBusy(true);
+    setScene3dNotice(null);
+    try {
+      const res = await Scene3dServiceAPI.saveConfig(patch);
+      if (res.rejected === 'BUSY') {
+        setScene3dNotice({ text: t('scene3dSwitchBusyBlocked'), isError: true });
+        await refreshScene3dStatus();
+        return false;
+      }
+      await refreshScene3dStatus();
+      return true;
+    } finally {
+      setScene3dBusy(false);
+    }
+  };
+
+  /** 点模型卡：立刻切（运行中的旧运行时会被服务端停掉并等它退出） */
+  const handleScene3dModelSwitch = async (key: Scene3dModelKey) => {
+    if (key === scene3dSavedKey || scene3dBusy) return;
+    setScene3dIdleDraft(null);
+    await applyScene3dConfig({ modelKey: key });
+  };
+
+  /** 保存配置：这里只剩「闲置卸载时长」需要保存 */
+  const handleScene3dSaveConfig = async () => {
+    const ok = await applyScene3dConfig({ idleUnloadMin: scene3dIdleValue });
+    if (!ok) return;
+    setScene3dIdleDraft(null);
+    setScene3dSaved(true);
+    window.setTimeout(() => setScene3dSaved(false), 1800);
+  };
+
+  /** 恢复默认：模型回代码生成、闲置 3 分钟（立即生效） */
+  const handleScene3dReset = async () => {
+    setScene3dIdleDraft(null);
+    const ok = await applyScene3dConfig({ modelKey: 'code', idleUnloadMin: 3 });
+    if (ok) {
+      setScene3dSaved(true);
+      window.setTimeout(() => setScene3dSaved(false), 1800);
+    }
   };
 
   // ---- 文件夹快速检索服务（EmbeddingGemma-2 int8 · ONNX Runtime 随包内置）----
@@ -4524,7 +4582,7 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                   {t('scene3dWindowTitle')}
                 </span>
                 <span className="text-[10px] px-1.5 py-0.5 rounded-md font-mono bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 font-medium">
-                  llama.cpp · GGUF Q4_K_M
+                  {scene3dStatus?.model?.tag ?? 'llama.cpp · GGUF Q4_K_M'}
                 </span>
               </div>
               {(() => {
@@ -4549,14 +4607,14 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                     </div>
                     <span className="text-[10px] text-zinc-400 dark:text-zinc-500 text-right leading-tight select-none">
                       {scene3dStatus?.download?.active
-                        ? `${t('scene3dDownload')} (${scene3dStatus.download.progressPercent.toFixed(1)}%)`
+                        ? `${t('scene3dDownload')} ${scene3dStatus.download.progressPercent.toFixed(0)}%`
                         : scene3dStatus?.status === 'loading'
-                        ? t('statusStarting')
+                        ? t('scene3dSubLoading')
                         : scene3dStatus?.running
-                        ? t('statusReady')
+                        ? `${t('scene3dSubRunning')}${scene3dStatus.port ? ` · :${scene3dStatus.port}` : ''}`
                         : scene3dStatus?.model?.ready
-                        ? t('statusStandby')
-                        : t('statusOffline')}
+                        ? t('scene3dSubReady')
+                        : t('scene3dSubMissing')}
                     </span>
                   </div>
                 );
@@ -4566,11 +4624,93 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
             {/* 功能定位说明 */}
             <div className="mb-3 px-2.5 py-2 rounded-lg bg-cyan-500/5 dark:bg-cyan-500/10 border border-cyan-500/20">
               <div className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
-                {t('scene3dEmptyTitle')}
+                {scene3dStatus?.model?.kind === 'image'
+                  ? t('scene3dIdolEmptyTitle')
+                  : t('scene3dEmptyTitle')}
               </div>
               <div className="text-[10px] text-zinc-500 dark:text-zinc-400 leading-snug">
-                {t('scene3dCardDesc')}
+                {scene3dStatus?.model?.kind === 'image'
+                  ? t('scene3dCardDescIdol')
+                  : t('scene3dCardDesc')}
               </div>
+            </div>
+
+            {/* 生成模型切换：两个模型产物不同（代码 / GLB），运行中切换会先停旧运行时 */}
+            <div className="space-y-1.5 mb-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
+                  {t('scene3dModelSelectorLabel')}
+                </span>
+                {scene3dBusy && (
+                  <span className="inline-flex items-center gap-1 text-[10px] text-cyan-600 dark:text-cyan-400">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>{t('scene3dModelSwitchBusy')}</span>
+                  </span>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {(
+                  scene3dStatus?.models ?? [
+                    {
+                      key: 'code' as Scene3dModelKey,
+                      shortName: 'Qwen3.5-4B-3D-Coder',
+                      kind: 'code' as const,
+                      ready: Boolean(scene3dStatus?.modelsReady),
+                    },
+                    {
+                      key: 'idol' as Scene3dModelKey,
+                      shortName: 'Idol',
+                      kind: 'image' as const,
+                      ready: false,
+                    },
+                  ]
+                ).map((m) => {
+                  const selected = m.key === scene3dSavedKey;
+                  const modelReady = Boolean(m.ready);
+                  return (
+                    <button
+                      key={m.key}
+                      type="button"
+                      disabled={scene3dBusy}
+                      onClick={() => handleScene3dModelSwitch(m.key)}
+                      className={`text-left px-2.5 py-2 rounded-lg border transition-all active:scale-[0.98] disabled:opacity-60 cursor-pointer ${
+                        selected
+                          ? 'border-cyan-500/50 bg-cyan-500/10'
+                          : 'border-black/5 dark:border-white/10 bg-white dark:bg-[#202127] hover:border-cyan-500/30'
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                            modelReady ? 'bg-emerald-500' : 'bg-amber-500'
+                          }`}
+                        />
+                        <span
+                          className={`text-[11px] font-medium truncate ${
+                            selected
+                              ? 'text-cyan-700 dark:text-cyan-300'
+                              : 'text-zinc-700 dark:text-zinc-200'
+                          }`}
+                        >
+                          {m.shortName}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-zinc-400 dark:text-zinc-500 truncate">
+                        {m.kind === 'image' ? t('scene3dModelIdolDesc') : t('scene3dModelCodeDesc')}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              {/* 只有本机 macOS 真不满足该模型的运行时要求时才提示（Idol = mlx-serve minOS 26.2） */}
+              {scene3dStatus?.models?.find((m) => m.key === scene3dSavedKey)?.supported === false && (
+                <div className="text-[10px] text-amber-600 dark:text-amber-400 leading-snug">
+                  {t('scene3dRuntimeUnsupported').replace(
+                    '{v}',
+                    scene3dStatus?.hostMacOS || '—'
+                  )}
+                </div>
+              )}
             </div>
 
             {/* 内置运行环境与模型状态 */}
@@ -4588,7 +4728,9 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                       {t('runtimeLabel')}
                     </div>
                     <div className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate">
-                      {t('scene3dRuntimeDesc')}
+                      {scene3dStatus?.model?.kind === 'image'
+                        ? t('scene3dRuntimeDescMlx')
+                        : t('scene3dRuntimeDesc')}
                     </div>
                   </div>
                 </div>
@@ -4714,11 +4856,11 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                 {scene3dStatus.download.phase === 'downloading' && (
                   <div className="flex items-center justify-between text-[10px] font-mono text-zinc-500 dark:text-zinc-400">
                     <span>
-                      {(scene3dStatus.download.downloadedBytes / (1024 * 1024)).toFixed(1)} MB /{' '}
-                      {(scene3dStatus.download.totalBytes / (1024 * 1024)).toFixed(1)} MB
+                      {(scene3dStatus.download.downloadedBytes / 1e6).toFixed(1)} MB /{' '}
+                      {(scene3dStatus.download.totalBytes / 1e6).toFixed(0)} MB
                     </span>
                     <span>
-                      {(scene3dStatus.download.speedBps / (1024 * 1024)).toFixed(2)} MB/s
+                      {(scene3dStatus.download.speedBps / 1e6).toFixed(1)} MB/s
                       {scene3dStatus.download.etaSeconds !== null &&
                       scene3dStatus.download.etaSeconds > 0
                         ? ` · ETA ${Math.floor(scene3dStatus.download.etaSeconds / 60)}m${String(
@@ -4731,17 +4873,11 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
               </div>
             )}
 
-            {/* 下载结果提示 */}
-            {!scene3dStatus?.download?.active &&
-              scene3dStatus?.download?.phase === 'completed' && (
-                <div className="mt-2.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
-                  {t('ocrDownloadCompleted')}
-                </div>
-              )}
+            {/* 下载结果提示：完成态不显示（模型行已是 Ready），只留取消/失败 */}
             {!scene3dStatus?.download?.active &&
               scene3dStatus?.download?.phase === 'cancelled' && (
                 <div className="mt-2.5 text-[11px] text-amber-600 dark:text-amber-400">
-                  {t('ocrDownloadCancelled')}
+                  {t('scene3dDownloadCancelled')}
                 </div>
               )}
             {!scene3dStatus?.download?.active &&
@@ -4752,8 +4888,46 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                 </div>
               )}
 
-            {/* 底部操作栏：只留打开模型目录（启停完全由 3D 建模窗口的开关驱动） */}
+            {/* 闲置内存释放：与「生成模型」同级的独立小节；两种模型共用这一个值。
+                到点没有新一轮生成就自动卸载（Idol 常驻 4.3GB，内存紧的机器别设太大）。 */}
+            <div className="space-y-1.5 mb-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-zinc-700 dark:text-zinc-200">
+                  {t('scene3dIdleLabel')}
+                </span>
+                <select
+                  value={String(scene3dIdleValue)}
+                  onChange={(e) => setScene3dIdleDraft(Number(e.target.value))}
+                  disabled={scene3dBusy}
+                  className="px-2 py-1 rounded-lg text-[11px] bg-white dark:bg-[#202127] border border-black/10 dark:border-white/10 text-zinc-700 dark:text-zinc-200 cursor-pointer focus:border-cyan-500 focus:outline-none disabled:opacity-50 flex-shrink-0"
+                >
+                  <option value="1">{t('scene3dIdleMinutes').replace('{n}', '1')}</option>
+                  <option value="3">{t('scene3dIdleMinutes').replace('{n}', '3')}</option>
+                  <option value="10">{t('scene3dIdleMinutes').replace('{n}', '10')}</option>
+                  <option value="30">{t('scene3dIdleMinutes').replace('{n}', '30')}</option>
+                  <option value="0">{t('scene3dIdleNever')}</option>
+                </select>
+              </div>
+              <div className="text-[10px] text-zinc-400 dark:text-zinc-500 leading-snug">
+                {t('scene3dIdleHint')}
+              </div>
+            </div>
+
+            {/* 底部操作栏：保存配置（模型切换/闲置时长）+ 打开模型目录 */}
             <div className="mt-3 flex items-center gap-2">
+              <button
+                type="button"
+                disabled={scene3dBusy || !scene3dIdleDirty}
+                onClick={handleScene3dSaveConfig}
+                className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 active:scale-[0.98] disabled:opacity-40 text-white text-xs font-medium transition-all shadow-sm cursor-pointer"
+              >
+                {scene3dBusy ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Check className="w-3.5 h-3.5" />
+                )}
+                <span>{scene3dSaved ? t('scene3dConfigSaved') : t('scene3dSaveConfig')}</span>
+              </button>
               <button
                 type="button"
                 onClick={handleScene3dOpenDir}
@@ -4763,6 +4937,20 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
                 <span>{t('scene3dOpenDir')}</span>
               </button>
             </div>
+
+            {cardResetButton(handleScene3dReset, scene3dBusy)}
+
+            {scene3dNotice && (
+              <div
+                className={`mt-2 text-[11px] ${
+                  scene3dNotice.isError
+                    ? 'text-amber-600 dark:text-amber-400'
+                    : 'text-emerald-600 dark:text-emerald-400'
+                }`}
+              >
+                {scene3dNotice.text}
+              </div>
+            )}
           </div>
       )}
 

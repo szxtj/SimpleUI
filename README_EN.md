@@ -40,7 +40,7 @@ SimpleUI is deeply tuned for [TurboFieldfare](https://github.com/drumih/turbo-fi
 - **Virtualized turn window & Turn Rail**: measured virtual window rendering (native mounting for ≤20 turns, dynamic budget for long chats) eliminating scroll lag; sidebar Turn Rail with hover preview and one-click jump navigation.
 - **Real-time bilingual subtitles**: SOTA SaT sentence segmentation, R2T2 streaming ASR, and Index-Translate sentence translation; source text streams live while translations are appended per sentence.
 - **Strong frontend & scientific computing**: Markdown / KaTeX / Mermaid, one-click code-block collapse/copy; built-in **Pyodide Python scientific computing sandbox** running client-side with zero local environment setup, two independent collapsible layers for source and execution output; formulas copyable as native Word/WPS equations, and tables retain formatting when pasted into Word; HTML blocks preview inline inside a strict sandbox, with open-in-browser and download of the original file.
-- **Standalone windows**: **Folder Quick Search** (local semantic / image-text retrieval; model loads on open and unloads on close), a **3D Scene Builder** (one sentence becomes a self-contained Three.js page; the model loads on open and releases VRAM on close) and a **Markdown Editor** (edit / split / read, reads and writes real `.md` files, previews with the *same* renderer component the chat uses; its toolbar shares the title-bar row with the window controls and collapses to icons-only on narrow widths).
+- **Standalone windows**: **Folder Quick Search** (local semantic / image-text retrieval; model loads on open and unloads on close), a **3D Scene Builder** (two models, switchable in Settings: one sentence becomes a self-contained Three.js page, or one photo becomes a rotatable 3D model GLB; the model loads on open and releases VRAM on close) and a **Markdown Editor** (edit / split / read, reads and writes real `.md` files, previews with the *same* renderer component the chat uses; its toolbar shares the title-bar row with the window controls and collapses to icons-only on narrow widths).
 - **Native macOS**: main window, Spotlight panel, quick translate, subtitle overlay, folder search, 3D scene builder, Markdown editor, full-screen OCR capture, and voice capsule; one shared resize overlay and animated zoom across four identically-styled windows; Chinese/English UI with light/dark themes.
 
 ---
@@ -63,7 +63,9 @@ Node.js proxy (127.0.0.1:31235)
         │     ├── R2T2 Q8_0 streaming ASR (:1250 · Metal)
         │     ├── SaT-3L-sm CoreML segmentation (ANE / CPU)
         │     └── Index-Translate-2B Q4_K_M (:1249 · Metal)
-        ├── 3D scene builder (Qwen3.5-4B-3D-Coder · llama.cpp :1257 · loads on open, unloads on close)
+        ├── 3D scene builder (loads on open / unloads on close; pick the model in Settings)
+        │     ├── Qwen3.5-4B-3D-Coder: text → Three.js page (llama.cpp :1257)
+        │     └── Idol: one photo → 3D model GLB (mlx-serve :1258)
         └── Quick Translate (separate native floating panel · :1248 on-device model / cloud DeepSeek)
 ```
 
@@ -77,7 +79,8 @@ Node.js proxy (127.0.0.1:31235)
 | R2T2 subtitle ASR | `1250` | Append-only streaming recognition with native punctuation (subtitle pipeline stage 1) |
 | Index-Translate subtitle translation | `1249` | Specialized NMT (subtitle pipeline stage 3, runs parallel to Quick Translate 1248) |
 | Quick Translate on-device engine | `1248` | `⌃Space` fast selection translation (llama-server standalone instance, 4096 context, unloads on idle) |
-| 3D scene builder | `1257` | Opens a standalone window from the sidebar; generates a self-contained Three.js page; loads on open and unloads on close |
+| 3D scene builder (code) | `1257` | Opens a standalone window from the sidebar; generates a self-contained Three.js page; loads on open and unloads on close |
+| 3D scene builder (image) | `1258` | Same window, other model: one photo becomes a 3D model GLB (mlx-serve + MLX); loads on open and unloads on close |
 | Folder search (EmbeddingGemma-2) | `—` (in proxy process) | Standalone window for local semantic / image-text retrieval; model downloaded manually, loads on open and unloads on close |
 | Base models | `1235` / `1241` / `1242` / `1243` | TTF / Mference / Maple MLX / Qwen 3.5 9B / other OpenAI-compatible services |
 | Maple MLX runtime | `—` | Dedicated Python venv (~363 MB), bundled with the app |
@@ -239,7 +242,7 @@ How it works:
 - **Standalone windows**:
   - **Folder quick search**: standalone local semantic / image-text retrieval window (list / grid result views, resumable indexing, pause / resume); the model loads when the window opens and unloads on close.
   - **Markdown editor**: edit / split / read modes; opens and saves `.md` files through native panels, and blocks window close or app quit when there is unsaved content; the editor supports `⌘S` / `⌘O` / `⌘B` / `⌘I` / `⌘K` and Tab indentation.
-  - **3D scene builder**: the model emits a self-contained Three.js page with full-screen preview, reload, and copy-scene-code; the model loads when the window opens and is released when it closes.
+  - **3D scene builder**: two models switchable in Settings — **Qwen3.5-4B-3D-Coder** emits a self-contained Three.js page (full-screen preview, reload, copy-scene-code); **Idol** turns one photo into a 3D model (GLB) you can orbit with drag, zoom with the wheel, and download. Both load on window open, release memory on close, and never run at the same time.
   - **One renderer, two surfaces**: the editor preview renders the very same `MarkdownRenderer` used by chat (KaTeX / Mermaid / tables / Python code execution / HTML preview / selection toolbar / formula copy buttons) — not a simplified re-implementation.
 - **Window resize overlay & zoom**: the main window, folder search, 3D builder, and Markdown editor share `WindowResizeChrome` — dragging an edge freezes the WebView and shows a centered `W × H` overlay (per-frame relayout: 10 → 0, one final layout on mouse-up); double-clicking the title bar or the green button runs the same animated zoom, and dragging a zoomed window restores its previous size first.
 - **Built-in Python scientific computing sandbox**:
@@ -270,7 +273,7 @@ Word-compatible formula/table serialization lives in `src/utils/selectionToMarkd
 ### Prerequisites
 
 - Node.js ≥ 18
-- macOS 15+ (for the native app build)
+- macOS 15+ (for the native app build; the bundled mlx-serve runtime behind the 3D builder's image-to-GLB model requires **macOS 26.2+** — on older systems that model is unavailable, the code model is unaffected)
 - Optional: a local base-model service (TTF / Mference / Maple MLX / Qwen 3.5 9B / Ollama / vLLM / llama.cpp / LM Studio)
 - Optional: a DeepSeek API key (cloud chat/translation)
 - Optional: a local Kiwix ZIM file (offline wiki)
@@ -306,6 +309,7 @@ Builds the Swift native shell, frontend assets, and bundled runtimes, then insta
 - Voice synthesis model: Download Qwen3-TTS 1.7B (~2.51 GB) via one-click speed-tested download under Service Manager → Voice Synthesis. The speech codec is byte-identical to the previous release, so integrity checks reuse it.
 - Visual OCR model: Download PaddleOCR-VL 1.6 (~1.02 GB) via one-click speed-tested download under Service Manager → Visual OCR.
 - Subtitle models: download in Service Manager → Live Subtitles; the set includes R2T2, SaT, Index-Translate, and the tokenizer.
+- 3D scene builder models: switch engines in Service Manager → 3D Scene Builder — **Qwen3.5-4B-3D-Coder** (~3.38 GB, text → self-contained Three.js page) and **Idol** (~3.57 GB, one photo → 3D model GLB, requires macOS 26.2+; ~4.3 GB resident, and it fails with an explicit memory error instead of silently swapping). Both runtimes ship inside the app; the mlx-serve distribution (301 MB, including a 213 MB `mlx.metallib` that exceeds the repo's per-file limit) is not committed — `./build_mac_app.sh` calls `./scripts/sync_mlxserve.sh` to fetch a pinned release, which you can also run by hand.
 - Model downloads use a **stage → commit** flow: files are written to `<model dir>/.incoming/<model>/` first and moved into place in one go only after everything is present and verified. The target directory therefore never contains half-finished files, and two concurrent downloads can never corrupt each other. Cancel clears the staging area; a failure keeps it for resuming later (leftovers older than 7 days are cleaned on the next download). A `.ready-*` marker is written once committed, as proof that the set was verified complete.
 - Quick Translate model: download in "Service Manager → Quick Translate" or directly reuse the Index-Translate-2B Q4_K_M weights (~1.22 GB) from Live Subtitles.
 - Offline wiki: select a local ZIM file under Service Manager → Knowledge Base.
@@ -321,7 +325,7 @@ SimpleUI/
 │   ├── proxy.js          HTTP/SSE entry and multi-layer process watchdog (`:31235`)
 │   ├── translate_service.js Index-Translate-2B standalone on-device translation service (`:1248`)
 │   ├── ocr_service.js    PaddleOCR-VL management service (`:1238`)
-│   ├── scene3d_service.js 3D scene builder service (`:1257` · loads on open, unloads on close)
+│   ├── scene3d_service.js 3D scene builder service (code `:1257` / image `:1258` · loads on open, unloads on close)
 │   ├── tts_service.js    Qwen3-TTS management service (`:1237`)
 │   ├── subtitle_service.js Subtitle pipeline service (ASR `:1250` / NMT `:1249`)
 │   ├── asr_service.js    Speech input service (`:1236` · dual engine: Qwen3-ASR / R2T2)

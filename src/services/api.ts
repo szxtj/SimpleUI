@@ -1,4 +1,4 @@
-import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, SubtitleServiceStatus, SubtitleDownloadState, TtsServiceStatus, TtsServiceConfig, TtsDownloadState, OcrServiceStatus, OcrDownloadState, OcrConfig, OcrRecognizeResult, Scene3dServiceStatus, Scene3dDownloadState, TranslateServiceStatus, TranslateServiceConfigPatch } from '../types/chat';
+import { AppSettings, ChatMessage, ServerHealthInfo, TurnMetrics, WikiCitation, WikiStatusInfo, AsrServiceConfig, AsrServiceStatus, SubtitleServiceStatus, SubtitleDownloadState, TtsServiceStatus, TtsServiceConfig, TtsDownloadState, OcrServiceStatus, OcrDownloadState, OcrConfig, OcrRecognizeResult, Scene3dServiceStatus, Scene3dModelKey, Scene3dDownloadState, TranslateServiceStatus, TranslateServiceConfigPatch } from '../types/chat';
 import { estimateHistoryTokens, setTokenCalibration, CalibrationProvider } from '../utils/token';
 
 /** 服务端 usage 的实际形状（TTF 会给出 cached / reasoning 明细） */
@@ -1482,16 +1482,10 @@ export class Scene3dServiceAPI {
     return null;
   }
 
-  /** 打开 3D 窗口时调用：模型不全则后台补下载，进程不在则后台拉起，立即返回当前状态 */
-  static async ensure(): Promise<Scene3dServiceStatus | null> {
-    try {
-      const res = await fetch('/api/scene3d/ensure', { method: 'POST' });
-      if (res.ok) return await res.json();
-    } catch (e) {
-      console.error('Scene3dService ensure failed:', e);
-    }
-    return null;
-  }
+  /**
+   * 打开 3D 窗口时**不再**做任何加载动作：只轮询 getStatus()。
+   * 模型加载一律由消息发出后的服务端 beginUse 驱动（与「发送之后再加载」的契约一致）。
+   */
 
   /** 关闭 3D 窗口时调用：终止进程、卸载模型 */
   static async release(): Promise<{ ok: boolean; status?: string }> {
@@ -1550,6 +1544,29 @@ export class Scene3dServiceAPI {
       if (res.ok) return await res.json();
     } catch (e) {
       console.error('Scene3dService openModelsDir failed:', e);
+    }
+    return { ok: false };
+  }
+
+  /** 设置页「保存配置」：切换生成模型 / 闲置卸载时长（运行中会先停旧运行时） */
+  static async saveConfig(patch: {
+    modelKey?: Scene3dModelKey;
+    idleUnloadMin?: number;
+  }): Promise<{
+    ok: boolean;
+    rejected?: 'BUSY' | null;
+    config?: { modelKey: Scene3dModelKey; idleUnloadMin: number };
+    status?: string;
+  }> {
+    try {
+      const res = await fetch('/api/scene3d/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch || {}),
+      });
+      if (res.ok) return await res.json();
+    } catch (e) {
+      console.error('Scene3dService saveConfig failed:', e);
     }
     return { ok: false };
   }

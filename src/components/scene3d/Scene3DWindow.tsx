@@ -4,6 +4,7 @@ import {
   Boxes,
   Copy,
   Check,
+  Download,
   Maximize2,
   Plus,
   RotateCw,
@@ -208,10 +209,212 @@ const SceneCard: React.FC<{
   );
 };
 
-const SceneMessageItem: React.FC<{ message: ChatMessage; generating?: boolean }> = ({
-  message,
-  generating = false,
-}) => {
+/**
+ * Idol（单图 → GLB）产物卡片。
+ *
+ * 产物是「贴图圆盘网格」GLB（KHR_materials_unlit），只用 three 核心 + GLTFLoader 就能画，
+ * 不需要泼溅着色器。沙箱 iframe（opaque origin）里用 module script 拉本地 vendor：
+ * /api/scene3d/vendor/{three.module.min.js,GLTFLoader.js}，模型走 /api/scene3d/asset/*.glb。
+ * 交互按普通 3D 查看器来：拖动旋转、滚轮缩放（不引 OrbitControls，保持 vendor 最小）。
+ */
+const buildGlbViewerHtml = (url: string) => `<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  html,body{margin:0;height:100%;background:#0b0c10;overflow:hidden}
+  canvas{display:block;width:100%;height:100%;cursor:grab;touch-action:none}
+  canvas.dragging{cursor:grabbing}
+  #err{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+       color:#f87171;font:12px ui-monospace,monospace;padding:24px;text-align:center;white-space:pre-wrap}
+</style></head><body>
+<div id="err"></div>
+<script type="module">
+import * as THREE from '/api/scene3d/vendor/three.module.min.js';
+import { GLTFLoader } from '/api/scene3d/vendor/GLTFLoader.js';
+
+const errBox = document.getElementById('err');
+const fail = (e) => { errBox.style.display = 'flex'; errBox.textContent = '加载失败: ' + (e && e.message ? e.message : e); };
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0c10);
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.01, 1000);
+// unlit 材质不吃光照；万一某个网格不是 unlit，这盏灯兜底不至于全黑
+scene.add(new THREE.HemisphereLight(0xffffff, 0x333344, 2.0));
+
+const pivot = new THREE.Group();
+scene.add(pivot);
+
+let radius = 1;
+let yaw = 0.6, pitch = 0.25, dist = 3;
+
+function applyCamera() {
+  const d = dist * radius;
+  camera.position.set(
+    d * Math.sin(yaw) * Math.cos(pitch),
+    d * Math.sin(pitch),
+    d * Math.cos(yaw) * Math.cos(pitch)
+  );
+  camera.lookAt(0, 0, 0);
+}
+
+new GLTFLoader().load(
+  ${JSON.stringify(url)},
+  (gltf) => {
+    const root = gltf.scene || gltf.scenes[0];
+    root.traverse((o) => {
+      if (o.isMesh && o.material) {
+        o.material.side = THREE.DoubleSide;
+        o.frustumCulled = false;
+      }
+    });
+    pivot.add(root);
+    // 居中 + 按包围球定相机距离（不同模型尺寸差很多，写死距离一定翻车）
+    const box = new THREE.Box3().setFromObject(root);
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+    radius = Math.max(sphere.radius, 1e-3);
+    root.position.sub(sphere.center);
+    dist = 2.4;
+    applyCamera();
+  },
+  undefined,
+  fail
+);
+
+// ---- 拖动旋转 / 滚轮缩放 ----
+let dragging = false, lastX = 0, lastY = 0;
+const el = renderer.domElement;
+el.addEventListener('pointerdown', (e) => {
+  dragging = true; lastX = e.clientX; lastY = e.clientY;
+  el.classList.add('dragging');
+  el.setPointerCapture(e.pointerId);
+});
+el.addEventListener('pointerup', (e) => {
+  dragging = false;
+  el.classList.remove('dragging');
+  try { el.releasePointerCapture(e.pointerId); } catch {}
+});
+el.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  yaw -= (e.clientX - lastX) * 0.008;
+  pitch += (e.clientY - lastY) * 0.006;
+  pitch = Math.max(-1.45, Math.min(1.45, pitch));
+  lastX = e.clientX; lastY = e.clientY;
+  applyCamera();
+});
+el.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  dist = Math.max(0.9, Math.min(8, dist * (1 + Math.sign(e.deltaY) * 0.08)));
+  applyCamera();
+}, { passive: false });
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+applyCamera();
+renderer.setAnimationLoop(() => renderer.render(scene, camera));
+</script></body></html>`;
+
+const SceneGlbCard: React.FC<{ url: string; bytes?: number }> = ({ url, bytes }) => {
+  const { t } = useI18n();
+  const [fullscreen, setFullscreen] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  // 与 HTML 场景卡一致：全屏时告诉原生把顶栏右侧工具区让出来
+  useEffect(() => {
+    const post = (preview: boolean) => {
+      try {
+        (window as any).webkit?.messageHandlers?.scene3dChrome?.postMessage({ preview });
+      } catch {
+        /* 浏览器里没有原生桥，忽略 */
+      }
+    };
+    post(fullscreen);
+    return () => post(false);
+  }, [fullscreen]);
+
+  const iframe = (
+    <iframe
+      key={reloadKey}
+      title="3D Model"
+      sandbox="allow-scripts"
+      srcDoc={buildGlbViewerHtml(url)}
+      className="w-full h-full border-0 bg-[#0b0c10]"
+    />
+  );
+
+  const sizeText = bytes ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : '';
+
+  if (fullscreen) {
+    return (
+      <div className="fixed inset-0 z-50 bg-black flex flex-col">
+        <div className="h-[52px] flex-shrink-0 flex items-center justify-between px-3 bg-black/80 backdrop-blur-md border-b border-white/10 select-none">
+          <div className="w-[78px] h-full flex-shrink-0" />
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setReloadKey((k) => k + 1)}
+              className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white backdrop-blur transition-colors"
+              title={t('scene3dGlbReload')}
+            >
+              <RotateCw className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setFullscreen(false)}
+              className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white backdrop-blur transition-colors"
+              title={t('scene3dClosePreview')}
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+        <div className="flex-1 min-h-0">{iframe}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 rounded-2xl overflow-hidden border border-black/10 dark:border-white/10 bg-black shadow-lg">
+      <div className="h-[320px] cq-md:h-[420px]">{iframe}</div>
+      <div className="flex items-center justify-between px-3 py-2 bg-white dark:bg-[#25262c] border-t border-black/5 dark:border-white/5">
+        <div className="flex items-center gap-3">
+          <a
+            href={url}
+            download
+            className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white transition-colors"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>
+              {t('scene3dGlbDownload')}
+              {sizeText ? ` · ${sizeText}` : ''}
+            </span>
+          </a>
+          <span className="text-[11px] text-zinc-400 dark:text-zinc-500 select-none">
+            {t('scene3dGlbHint')}
+          </span>
+        </div>
+        <button
+          onClick={() => setFullscreen(true)}
+          className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white transition-colors"
+        >
+          <Maximize2 className="w-3.5 h-3.5" />
+          <span>{t('scene3dOpenPreview')}</span>
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const SceneMessageItem: React.FC<{
+  message: ChatMessage;
+  generating?: boolean;
+  imageModel?: boolean;
+}> = ({ message, generating = false, imageModel = false }) => {
   const { t, lang } = useI18n();
 
   if (message.role === 'user') {
@@ -241,6 +444,7 @@ const SceneMessageItem: React.FC<{ message: ChatMessage; generating?: boolean }>
   // assistant：流式期间正文是整页 HTML 源码，不直接渲染——统一走「生成中」进度卡片
   const busy = message.pending || message.isThinking || !!message.stage || generating;
   const sceneHtml = message.scene?.html;
+  const sceneGlb = message.scene?.glb;
 
   return (
     <div className="my-3">
@@ -258,6 +462,8 @@ const SceneMessageItem: React.FC<{ message: ChatMessage; generating?: boolean }>
             {message.error ? `: ${message.error}` : ''}
           </span>
         </div>
+      ) : sceneGlb ? (
+        <SceneGlbCard url={sceneGlb} bytes={message.scene?.bytes} />
       ) : sceneHtml ? (
         <SceneCard html={sceneHtml} />
       ) : busy ? (
@@ -265,7 +471,7 @@ const SceneMessageItem: React.FC<{ message: ChatMessage; generating?: boolean }>
           <div className="flex items-center gap-2.5">
             <RotateCw className="w-4 h-4 text-blue-500 animate-spin flex-shrink-0" />
             <span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
-              {t('scene3dGenerating')}
+              {imageModel ? t('scene3dIdolGenerating') : t('scene3dGenerating')}
             </span>
             {message.metrics?.completionTokens ? (
               <span className="text-xs text-zinc-400 dark:text-zinc-500">
@@ -277,7 +483,9 @@ const SceneMessageItem: React.FC<{ message: ChatMessage; generating?: boolean }>
           <div className="mt-2.5 h-1 rounded-full overflow-hidden bg-black/5 dark:bg-white/10">
             <div className="h-full w-1/3 rounded-full bg-gradient-to-r from-transparent via-blue-500 to-transparent animate-[scene3dSlide_1.8s_ease-in-out_infinite]" />
           </div>
-          {lang === 'zh' ? (
+          {imageModel ? (
+            <div className="mt-2 text-xs text-zinc-400 dark:text-zinc-500">{t('scene3dIdolHint')}</div>
+          ) : lang === 'zh' ? (
             <div className="mt-2 text-xs text-zinc-400 dark:text-zinc-500">
               一个完整场景通常需要 5–30 分钟，可随时切走或停止
             </div>
@@ -377,7 +585,9 @@ export const Scene3DWindow: React.FC = () => {
 
   // 模型缺失（未下载）才拦发送；standby / starting 都放行 —— 服务端 beginUse 会按需拉起
   const modelMissing = status ? status.model?.ready === false : false;
-  const canSend = !modelMissing;
+  // 当前模型是「单图 → GLB」（Idol）：必须带一张图，纯文字发不出去
+  const imageModel = status?.model?.kind === 'image';
+  const canSend = !modelMissing && (!imageModel || images.length > 0);
 
   const handleSend = useCallback(() => {
     if (isGenerating || !canSend) return;
@@ -461,10 +671,10 @@ export const Scene3DWindow: React.FC = () => {
             <div className="h-full flex flex-col items-center justify-center text-center select-none">
               <Boxes className="w-10 h-10 text-zinc-300 dark:text-zinc-600 mb-4" />
               <div className="text-lg font-semibold text-zinc-700 dark:text-zinc-200">
-                {t('scene3dEmptyTitle')}
+                {imageModel ? t('scene3dIdolEmptyTitle') : t('scene3dEmptyTitle')}
               </div>
               <div className="mt-2 text-sm text-zinc-400 dark:text-zinc-500 max-w-md">
-                {t('scene3dEmptyHint')}
+                {imageModel ? t('scene3dIdolEmptyHint') : t('scene3dEmptyHint')}
               </div>
             </div>
           ) : (
@@ -473,6 +683,7 @@ export const Scene3DWindow: React.FC = () => {
                 key={m.id}
                 message={m}
                 generating={isGenerating && i === messages.length - 1}
+                imageModel={imageModel}
               />
             ))
           )}
@@ -504,7 +715,11 @@ export const Scene3DWindow: React.FC = () => {
                 {...imeBindings}
                 onPaste={handlePaste}
                 placeholder={
-                  messages.length > 0 ? t('scene3dPlaceholderFollowUp') : t('scene3dPlaceholder')
+                  imageModel
+                    ? t('scene3dIdolNeedsImage')
+                    : messages.length > 0
+                    ? t('scene3dPlaceholderFollowUp')
+                    : t('scene3dPlaceholder')
                 }
                 rows={1}
                 className="w-full bg-transparent resize-none text-[15px] text-[#1f2328] dark:text-[#f1f3f7] placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none leading-relaxed max-h-[200px]"
@@ -525,15 +740,17 @@ export const Scene3DWindow: React.FC = () => {
                 >
                   <Plus className="w-4 h-4 stroke-[2.5]" />
                 </button>
-                {!serviceReady && (
-                  <span className="text-xs text-amber-600 dark:text-amber-400 truncate">
-                    {status?.download?.active
-                      ? `${t('scene3dDownload')} ${status.download.progressPercent.toFixed(0)}%`
-                      : status?.status === 'incomplete'
-                      ? t('scene3dModelNotReady')
-                      : t('scene3dWaitingModel')}
-                  </span>
-                )}
+                {/* 只有「真在下载 / 真在加载 / 真缺模型」才提示；standby 已就绪时不打扰 */}
+                {!serviceReady &&
+                  (status?.download?.active || modelMissing || status?.status === 'loading') && (
+                    <span className="text-xs text-amber-600 dark:text-amber-400 truncate">
+                      {status?.download?.active
+                        ? `${t('scene3dDownload')} ${status.download.progressPercent.toFixed(0)}%`
+                        : status?.status === 'loading'
+                        ? t('scene3dWaitingModel')
+                        : t('scene3dModelNotReady')}
+                    </span>
+                  )}
               </div>
 
               <div className="flex items-center gap-2 flex-shrink-0">

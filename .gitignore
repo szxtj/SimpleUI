@@ -56,6 +56,11 @@ bin/subtitle_ml_helper
 # TTS 运行时（可移植 Python + mlx），构建时复制进 App，不入库
 bin/tts_runtime/
 
+# 3D 单图模型运行时 mlx-serve（301MB，其中 lib/mlx.metallib 单文件 213MB 超 GitHub
+# 100MB 上限）：与 bin/tts_runtime、bin/maple_runtime 同策略不入库，
+# 由 scripts/sync_mlxserve.sh 按固定 tag 拉到 bin/mlxserve/，打包时复制进 App。
+bin/mlxserve/
+
 # Maple MLX 随包运行时（由 scripts/build_maple_runtime.sh 预构建，363MB，
 # 与 bin/tts_runtime 同策略不入库；打包时复制进 App）
 bin/maple_runtime/

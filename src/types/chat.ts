@@ -64,8 +64,13 @@ export interface ChatMessage {
   timestamp: number;
   error?: string;
   citations?: WikiCitation[];   // Offline Wiki citations
-  /** 3D 场景构建（scene3d 会话）：助手完整回复渲染出的自包含 Three.js HTML */
-  scene?: { html: string };
+  /**
+   * 3D 场景构建（scene3d 会话）的产物，两种模型二选一：
+   * - `html`：代码生成模型（Qwen3.5-4B-3D-Coder）吐出的自包含 Three.js 网页；
+   * - `glb`：单图生成模型（Idol）产出的 GLB（高斯泼溅烘成的贴图圆盘网格），
+   *   只存同源 URL，由 GLTFLoader 在沙箱 iframe 里渲染。
+   */
+  scene?: { html?: string; glb?: string; bytes?: number; steps?: number; gaussians?: number };
 }
 
 export type SessionKind = 'chat' | 'scene3d';
@@ -661,11 +666,36 @@ export interface OcrRecognizeResult {
   error?: string;
 }
 
-/** 3D 场景构建服务：模型目录整体状态 */
-export interface Scene3dModelStatus {
-  key: 'scene3d';
+/** 3D 场景构建：可选模型键（code = 文字→Three.js 代码，idol = 单图→GLB） */
+export type Scene3dModelKey = 'code' | 'idol';
+
+/** 3D 场景构建：可选模型（设置页引擎切换用） */
+export interface Scene3dModelEntry {
+  key: Scene3dModelKey;
+  kind: 'code' | 'image';
   name: string;
   shortName: string;
+  tag: string;
+  port: number;
+  runtime: 'llama3d' | 'mlxserve';
+  ready: boolean;
+  bytes: number;
+  expectedBytes: number;
+  sizeDesc: string;
+  missing: number;
+  downloading: boolean;
+  /** 本机 macOS 是否满足该模型的运行时要求（Idol 需要 26.2+） */
+  supported: boolean;
+  minMacOS: string | null;
+}
+
+/** 3D 场景构建服务：模型目录整体状态（当前选中的那个） */
+export interface Scene3dModelStatus {
+  key: Scene3dModelKey;
+  kind: 'code' | 'image';
+  name: string;
+  shortName: string;
+  tag: string;
   dir: string;
   ready: boolean;
   missing: string[];
@@ -680,7 +710,7 @@ export interface Scene3dDownloadState {
   active: boolean;
   phase: 'idle' | 'probing' | 'downloading' | 'cleaning' | 'completed' | 'error' | 'cancelled';
   targetModel: string | null;
-  currentModelKey: 'scene3d' | null;
+  currentModelKey: Scene3dModelKey | null;
   currentModelName: string;
   currentFile: string;
   selectedSource: {
@@ -707,9 +737,26 @@ export interface Scene3dServiceStatus {
   ready: boolean;
   modelsReady: boolean;
   runtimeReady: boolean;
+  /** 当前选中的模型（窗口文案/发送拦截都看它） */
   model: Scene3dModelStatus;
-  runtime: { ready: boolean; path: string; bundled: boolean };
+  /** 全部可选模型（设置页引擎切换） */
+  models: Scene3dModelEntry[];
+  selectedKey: Scene3dModelKey;
+  runtime: {
+    id: string;
+    label: string;
+    ready: boolean;
+    path: string;
+    bundled: boolean;
+    minMacOS?: string;
+    hostMacOS?: string | null;
+    supported?: boolean;
+  };
+  config: { modelKey: Scene3dModelKey; idleUnloadMin: number };
+  /** 本机 macOS 版本（如 27.0.1），用于「这个模型能不能用」的提示 */
+  hostMacOS?: string | null;
   params: { temperature: number; top_p: number; top_k: number; repetition_penalty: number };
+  imageParams: { steps: number; gaussians: number };
   port: number;
   logFile?: string;
   download: Scene3dDownloadState;

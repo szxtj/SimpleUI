@@ -279,6 +279,28 @@ ensure_llama3d_runtime() {
 }
 ensure_llama3d_runtime
 
+# 3D 场景构建「单图 → GLB」模型的运行时：mlx-serve（MIT，Zig 原生二进制）。
+# 主程序 + lib/（libmlx / libllama / mlx.metallib）必须整体进包，dylib 走 @loader_path。
+# 二进制 minos = 26.2，macOS 更老的系统上这个模型不可用（见 README 的系统要求）。
+ensure_mlxserve_runtime() {
+  # 运行时不入库（301MB，单文件超 GitHub 上限），缺了先按固定 tag 拉一次
+  if [ ! -x "bin/mlxserve/mlx-serve" ]; then
+    echo "  · 未找到 mlx-serve 运行时，自动准备..."
+    ./scripts/sync_mlxserve.sh || true
+  fi
+
+  if [ -d "bin/mlxserve" ] && [ -x "bin/mlxserve/mlx-serve" ]; then
+    mkdir -p "$RESOURCES_DIR/mlxserve"
+    copy_item "bin/mlxserve/." "$RESOURCES_DIR/mlxserve/"
+    chmod +x "$RESOURCES_DIR/mlxserve/mlx-serve" 2>/dev/null || true
+    echo "  -> 已打包 3D 单图模型运行时 (mlx-serve): $(du -sh bin/mlxserve | cut -f1)"
+  else
+    echo "  ⚠ 未找到 mlx-serve 运行时：bin/mlxserve/ 缺失，Idol 模型将不可用"
+    echo "     手动执行：./scripts/sync_mlxserve.sh"
+  fi
+}
+ensure_mlxserve_runtime
+
 # 语音识别与字幕服务共用的 audio.cpp 原生引擎运行时（不随包打包大模型，由面板按需下载）
 ensure_audiocpp_runtime() {
   # 彻底清理旧架构遗留的 SenseVoice 模型残留
