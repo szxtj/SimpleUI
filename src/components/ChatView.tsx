@@ -528,6 +528,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       <MessageItem
                         key={message.id}
                         message={message}
+                        streaming={isGenerating && message.id === messages[messages.length - 1]?.id}
                         onOpenWiki={onOpenWiki}
                         onOpenRawText={onOpenRawText}
                         onOpenImage={onOpenImage}

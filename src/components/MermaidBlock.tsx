@@ -1,6 +1,14 @@
 import React, { useState, useRef, useEffect, useId } from 'react';
 import { Check, Copy, Image as ImageIcon, Code2, Eye } from 'lucide-react';
 import { useI18n } from '../i18n';
+import {
+  BlockHeader,
+  BlockShell,
+  BLOCK_CODE_CLASS,
+  SegmentedToggle,
+  ToolButton,
+  useCopyFeedback,
+} from './markdown/BlockChrome';
 
 interface MermaidBlockProps {
   code: string;
@@ -244,8 +252,8 @@ async function getMermaid(isDark: boolean): Promise<Mermaid> {
 export const MermaidBlock: React.FC<MermaidBlockProps> = React.memo(({ code }) => {
   const { lang } = useI18n();
   const [viewMode, setViewMode] = useState<'diagram' | 'code'>('diagram');
-  const [copiedSource, setCopiedSource] = useState(false);
-  const [copiedImage, setCopiedImage] = useState(false);
+  const { copied: copiedSource, flash: flashCopiedSource } = useCopyFeedback();
+  const { copied: copiedImage, flash: flashCopiedImage } = useCopyFeedback();
   const [isDark, setIsDark] = useState<boolean>(() =>
     typeof document !== 'undefined' ? document.documentElement.classList.contains('dark') : true
   );
@@ -302,8 +310,7 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = React.memo(({ code }) =
     try {
       const fenced = `\`\`\`mermaid\n${code.replace(/\n$/, '')}\n\`\`\``;
       await navigator.clipboard.writeText(fenced);
-      setCopiedSource(true);
-      setTimeout(() => setCopiedSource(false), 2000);
+      flashCopiedSource();
     } catch (e) {
       console.error('Failed to copy mermaid source:', e);
     }
@@ -356,8 +363,7 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = React.memo(({ code }) =
       );
       if (pngBlob && typeof ClipboardItem !== 'undefined') {
         await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })]);
-        setCopiedImage(true);
-        setTimeout(() => setCopiedImage(false), 2000);
+        flashCopiedImage();
       }
     } catch (e) {
       console.error('Failed to copy mermaid image:', e);
@@ -367,97 +373,57 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = React.memo(({ code }) =
   const isEn = lang === 'en';
 
   return (
-    <div
+    <BlockShell
+      className="my-3"
       data-md-codeblock="true"
       data-language="mermaid"
       data-raw-code={code}
-      className="relative my-3 rounded-lg overflow-hidden border border-[#d0d7de] dark:border-[#33363d] bg-white dark:bg-[#1a1b1e]"
     >
-      {/* Header Toolbar (non-selectable, ignored by selection-to-markdown serializer) */}
-      <div
-        data-copy-ignore="true"
-        className="flex items-center justify-between px-3.5 py-1.5 bg-[#f6f8fa] dark:bg-[#22242a] border-b border-[#d0d7de] dark:border-[#33363d] text-xs text-zinc-500 dark:text-[#9aa0a6] select-none"
+      <BlockHeader
+        label="MERMAID"
+        leading={
+          svgMarkup ? (
+            <SegmentedToggle
+              options={[
+                { value: 'diagram', label: isEn ? 'Diagram' : '图表', icon: <Eye className="w-3 h-3" /> },
+                { value: 'code', label: isEn ? 'Code' : '源码', icon: <Code2 className="w-3 h-3" /> },
+              ]}
+              value={viewMode}
+              onChange={(v) => setViewMode(v as 'diagram' | 'code')}
+            />
+          ) : undefined
+        }
       >
-        <div className="flex items-center gap-2">
-          <span className="font-mono uppercase font-semibold text-[11px] tracking-wider text-zinc-600 dark:text-[#abb2bf]">
-            MERMAID
-          </span>
-          {svgMarkup && (
-            <div className="flex items-center bg-black/[0.04] dark:bg-[#18191e] rounded-md p-0.5 border border-black/5 dark:border-white/5">
-              <button
-                type="button"
-                onClick={() => setViewMode('diagram')}
-                className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] transition-colors cursor-pointer ${
-                  viewMode === 'diagram'
-                    ? 'bg-white dark:bg-[#32363e] text-zinc-900 dark:text-white font-medium shadow-xs'
-                    : 'text-zinc-500 dark:text-[#8b929e] hover:text-zinc-900 dark:hover:text-white'
-                }`}
-              >
-                <Eye className="w-3 h-3" />
-                <span>{isEn ? 'Diagram' : '图表'}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode('code')}
-                className={`flex items-center gap-1 px-2 py-0.5 rounded text-[11px] transition-colors cursor-pointer ${
-                  viewMode === 'code'
-                    ? 'bg-white dark:bg-[#32363e] text-zinc-900 dark:text-white font-medium shadow-xs'
-                    : 'text-zinc-500 dark:text-[#8b929e] hover:text-zinc-900 dark:hover:text-white'
-                }`}
-              >
-                <Code2 className="w-3 h-3" />
-                <span>{isEn ? 'Code' : '源码'}</span>
-              </button>
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center gap-1.5">
-          {svgMarkup && (
-            <button
-              type="button"
-              onClick={handleCopyImage}
-              className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-black/5 dark:hover:bg-[#32363e] text-zinc-600 dark:text-[#b0b4bd] transition-colors cursor-pointer"
-              title={isEn ? 'Copy rendered diagram image' : '复制渲染后的图表图像'}
-            >
-              {copiedImage ? (
-                <>
-                  <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
-                  <span className="text-emerald-600 dark:text-emerald-400 text-[11px]">
-                    {isEn ? 'Image Copied' : '已复制图像'}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <ImageIcon className="w-3.5 h-3.5" />
-                  <span className="text-[11px]">{isEn ? 'Copy Image' : '复制图像'}</span>
-                </>
-              )}
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={handleCopySource}
-            className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-black/5 dark:hover:bg-[#32363e] text-zinc-600 dark:text-[#b0b4bd] transition-colors cursor-pointer"
-            title={isEn ? 'Copy Mermaid Markdown source' : '复制 Mermaid Markdown 源码'}
-          >
-            {copiedSource ? (
-              <>
+        {svgMarkup && (
+          <ToolButton
+            icon={
+              copiedImage ? (
                 <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
-                <span className="text-emerald-600 dark:text-emerald-400 text-[11px]">
-                  {isEn ? 'Copied' : '已复制'}
-                </span>
-              </>
+              ) : (
+                <ImageIcon className="w-3.5 h-3.5" />
+              )
+            }
+            label={copiedImage ? (isEn ? 'Image Copied' : '已复制图像') : isEn ? 'Copy Image' : '复制图像'}
+            tone={copiedImage ? 'success' : 'default'}
+            title={isEn ? 'Copy rendered diagram image' : '复制渲染后的图表图像'}
+            onClick={handleCopyImage}
+          />
+        )}
+
+        <ToolButton
+          icon={
+            copiedSource ? (
+              <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
             ) : (
-              <>
-                <Copy className="w-3.5 h-3.5" />
-                <span className="text-[11px]">{isEn ? 'Copy Source' : '复制源码'}</span>
-              </>
-            )}
-          </button>
-        </div>
-      </div>
+              <Copy className="w-3.5 h-3.5" />
+            )
+          }
+          label={copiedSource ? (isEn ? 'Copied' : '已复制') : isEn ? 'Copy Source' : '复制源码'}
+          tone={copiedSource ? 'success' : 'default'}
+          title={isEn ? 'Copy Mermaid Markdown source' : '复制 Mermaid Markdown 源码'}
+          onClick={handleCopySource}
+        />
+      </BlockHeader>
 
       {/* Body: Rendered SVG Diagram or Selectable Raw Code */}
       {svgMarkup && viewMode === 'diagram' ? (
@@ -467,11 +433,11 @@ export const MermaidBlock: React.FC<MermaidBlockProps> = React.memo(({ code }) =
           dangerouslySetInnerHTML={{ __html: svgMarkup }}
         />
       ) : (
-        <pre className="!m-0 !p-3.5 overflow-x-auto overflow-y-hidden text-[0.88em] font-mono leading-relaxed bg-[#f8f9fb] dark:bg-[#1a1b1e] text-[#1f2328] dark:text-[#f0f3f6] border-0 whitespace-pre cursor-text">
+        <pre className={BLOCK_CODE_CLASS}>
           <code className="!bg-transparent !p-0 !text-inherit font-mono whitespace-pre">{code}</code>
         </pre>
       )}
-    </div>
+    </BlockShell>
   );
 });
 

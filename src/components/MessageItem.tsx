@@ -22,6 +22,11 @@ interface MessageItemProps {
    */
   onOpenRawText?: (payload: { messageId: string; content: string }) => void;
   onOpenImage?: (payload: { messageId: string; images: string[]; index: number }) => void;
+  /**
+   * 本条消息仍在流式输出（`isGenerating` 且是最后一条）。
+   * 只用于识别「末尾那个还没写完的代码块」—— 前面的块写完即可预览。
+   */
+  streaming?: boolean;
 }
 
 export const MessageItem: React.FC<MessageItemProps> = React.memo(({
@@ -32,6 +37,7 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
   retryTargetId,
   onOpenRawText,
   onOpenImage,
+  streaming = false,
 }) => {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
@@ -142,7 +148,7 @@ export const MessageItem: React.FC<MessageItemProps> = React.memo(({
               （思考中且尚无正文时不再额外渲染"Thinking..."——折叠条头部已表达同样状态） */}
           {message.content ? (
             <div data-readable="true" className="leading-relaxed min-w-0 max-w-full" style={{ fontSize: 'var(--chat-font-size, 15px)' }}>
-              <MarkdownRenderer content={message.content} />
+              <MarkdownRenderer content={message.content} streaming={streaming} />
             </div>
           ) : null}
 

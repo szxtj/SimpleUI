@@ -1122,7 +1122,10 @@ export const SpotlightView: React.FC = () => {
                     className="leading-relaxed min-w-0 max-w-full text-[#1f2328] dark:text-[#ecedf1]"
                     style={{ fontSize: 'var(--chat-font-size, 14.5px)' }}
                   >
-                    <MarkdownRenderer content={msg.content} />
+                    <MarkdownRenderer
+                      content={msg.content}
+                      streaming={isGenerating && msg.id === messages[messages.length - 1]?.id}
+                    />
                   </div>
                 )}
 
