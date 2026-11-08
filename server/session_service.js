@@ -1090,7 +1090,8 @@ class SessionService {
             isThinking: false,
             pending: false,
             stages: closedStages,
-            error: `知识库检索失败（${err.message}）`,
+            // err.message 已是中英双语（wiki_service.ragFailError 统一拼装），直接呈现
+            error: err.message,
           };
           delete finalMsg.stage;
           return finalMsg;

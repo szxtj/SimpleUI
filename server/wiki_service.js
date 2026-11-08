@@ -11,6 +11,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const DEFAULT_KIWIX_PORT = 31236;
+
+/**
+ * RAG 链路错误：中英双语消息（中 / EN），随轮次直接呈现在消息气泡上。
+ * code 供调用方做程序化判定；不做任何静默降级。
+ */
+function ragFailError(zh, en) {
+  return new Error(`${zh} / ${en}`);
+}
 const KIWIX_PID_FILE = '/tmp/simpleui_kiwix.pid';
 
 const userConfigDir = path.join(
@@ -804,7 +812,10 @@ export async function callMainModel(
   // 规划模型必须由调用方明确指定（跟随当前 chat model）——
   // 不做任何兜底推断：缺失/不完整直接抛具体错误，让本轮失败原因可见。
   if (!modelRef || (modelRef.provider !== 'deepseek' && !modelRef.port)) {
-    throw new Error('规划模型未指定：RAG 请求缺少当前对话模型信息（chatModel）');
+    throw ragFailError(
+      '规划模型未指定：RAG 请求缺少当前对话模型信息（chatModel）',
+      'Planning model not specified: the RAG request is missing the current chat model info (chatModel)'
+    );
   }
 
   const controller = new AbortController();
@@ -838,7 +849,10 @@ export async function callMainModel(
   if (modelRef.provider === 'deepseek') {
     if (!String(modelRef.apiKey || '').trim()) {
       clearTimeout(timer);
-      throw new Error('DeepSeek API Key 未配置，无法进行知识库检索规划');
+      throw ragFailError(
+        'DeepSeek API Key 未配置',
+        'DeepSeek API key is not configured'
+      );
     }
     const base = String(modelRef.baseUrl || 'https://api.deepseek.com').trim()
       .replace(/\/+$/, '').replace(/\/chat\/completions\/?$/, '');
@@ -879,12 +893,15 @@ export async function callMainModel(
     clearTimeout(timer);
     if (!res.ok) {
       const bodyText = await res.text().catch(() => '');
-      throw new Error(`规划模型请求失败 HTTP ${res.status}（${apiUrl}）${bodyText ? `：${bodyText.slice(0, 200)}` : ''}`);
+      throw ragFailError(
+        `规划模型请求失败 HTTP ${res.status}（${apiUrl}）${bodyText ? `：${bodyText.slice(0, 200)}` : ''}`,
+        `Planning model request failed with HTTP ${res.status} (${apiUrl})${bodyText ? `: ${bodyText.slice(0, 200)}` : ''}`
+      );
     }
 
     // 逐 SSE 片段拼接 content（与前端 streamChat 解析方式一致）
     const reader = res.body?.getReader();
-    if (!reader) throw new Error('规划模型响应无可读流');
+    if (!reader) throw ragFailError('规划模型响应无可读流', 'Planning model response has no readable stream');
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
     let out = '';
@@ -909,7 +926,10 @@ export async function callMainModel(
       }
     }
     if (!out.trim()) {
-      throw new Error('规划模型返回空内容（若使用思考型模型，请检查其是否支持 system role 与非思考输出）');
+      throw ragFailError(
+        '规划模型返回空内容（若使用思考型模型，请检查其是否支持关闭思考）',
+        'Planning model returned an empty response (if this is a thinking model, check that thinking can be disabled)'
+      );
     }
     return out.trim();
   } catch (err) {
@@ -917,11 +937,17 @@ export async function callMainModel(
     // 用户中止必须向上传播（吞掉会让管线带着中止信号继续跑完）
     if (abortedByUser) throw abortError();
     if (err?.name === 'AbortError') {
-      throw new Error(`规划模型请求超时（${Math.round(timeoutMs / 1000)}s，${apiUrl}）`);
+      throw ragFailError(
+        `规划模型请求超时（${Math.round(timeoutMs / 1000)}s，${apiUrl}）`,
+        `Planning model request timed out after ${Math.round(timeoutMs / 1000)}s (${apiUrl})`
+      );
     }
     // 连接失败（ECONNREFUSED 等）把目标地址带上一眼定位是哪个服务没起
     if (err?.cause?.code === 'ECONNREFUSED') {
-      throw new Error(`无法连接规划模型 ${apiUrl}（服务未启动或端口不对）`);
+      throw ragFailError(
+        `无法连接规划模型 ${apiUrl}（服务未启动或端口不对）`,
+        `Cannot reach the planning model at ${apiUrl} (service not running or wrong port)`
+      );
     }
     throw err;
   }
@@ -962,9 +988,15 @@ export async function planQueryWithMainModel(query, signal, modelRef = null) {
     modelRef,
   });
 
-  const parsed = safeParseJson(out);
+  // 思考内容清洗：<think> 块是推理过程而非规划结果 —— 剥离后再解析，
+  // 避免「不支持关闭思考的模型」污染格式化输出（这是格式清洗，不是失败降级）。
+  const cleaned = out.replace(/^\s*<think>[\s\S]*?<\/think>/i, '').trim();
+  const parsed = safeParseJson(cleaned);
   if (!(parsed && Array.isArray(parsed.target_articles))) {
-    throw new Error(`规划输出不是合法 JSON：${out.slice(0, 160)}`);
+    throw ragFailError(
+      `规划输出不是合法 JSON：${cleaned.slice(0, 160)}`,
+      `Planning output is not valid JSON: ${cleaned.slice(0, 160)}`
+    );
   }
   const articles = parsed.target_articles
     .map((a) => String(a).replace(/[《》]/g, '').trim())
@@ -1958,7 +1990,10 @@ class WikiService {
   // Atomic High-Performance RAG Pipeline
   async getRagContext(query, signal, modelRef) {
     if (!modelRef || (modelRef.provider !== 'deepseek' && !modelRef.port)) {
-      throw new Error('规划模型未指定：RAG 请求缺少当前对话模型信息（chatModel）');
+      throw ragFailError(
+      '规划模型未指定：RAG 请求缺少当前对话模型信息（chatModel）',
+      'Planning model not specified: the RAG request is missing the current chat model info (chatModel)'
+    );
     }
     throwIfAborted(signal);
     if (!query || typeof query !== 'string' || !query.trim()) {
