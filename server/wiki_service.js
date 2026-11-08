@@ -949,7 +949,13 @@ export async function callMainModel(
         try {
           const j = JSON.parse(d);
           const delta = j.choices?.[0]?.delta;
-          if (delta?.content) out += delta.content;
+          if (delta?.content) {
+            out += delta.content;
+          } else if (delta?.reasoning_content) {
+            // deepseek-reasoner 只吐 reasoning_content（思考流），content 恒空 ——
+            // 规划要的是最终 JSON，思考流里也包含它，兜底拼接
+            out += delta.reasoning_content;
+          }
         } catch (e) {
           // ignore malformed chunk
         }

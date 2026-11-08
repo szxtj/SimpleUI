@@ -971,7 +971,7 @@ class SessionService {
       },
       lang,
       isDeepSeek,
-      sessionEnableWiki,
+      shouldRunWiki,
       initialStages,
       abortController,
     }).catch((err) => {
@@ -1016,7 +1016,7 @@ class SessionService {
     settings,
     lang,
     isDeepSeek,
-    sessionEnableWiki,
+    shouldRunWiki,
     initialStages,
     abortController,
   }) {
@@ -1032,13 +1032,7 @@ class SessionService {
       ? { provider: 'deepseek', baseUrl: settings.deepseekBaseUrl, apiKey: settings.deepseekApiKey, model: settings.model }
       : { provider: 'local', port: settings.apiPort, model: settings.model };
 
-    // 1. Offline Wiki RAG Phase
-    const shouldRunWiki =
-      wikiService.enabled &&
-      sessionEnableWiki &&
-      wikiService.isOnline &&
-      Boolean(textToSend);
-
+    // 1. Offline Wiki RAG Phase（shouldRunWiki 在轮次入口算好穿进来，避免两处判定漂移）
     if (shouldRunWiki) {
       const unsubscribeStage = onRagStageChange(({ stage, detail, at }) => {
         if (signal.aborted) return;
