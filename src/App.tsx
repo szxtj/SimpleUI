@@ -445,7 +445,7 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
    * 知识库是否可用：服务总开关 && ZIM 就绪 && 非 DeepSeek。
    * 不可用时页面照常能打开，只是显示统一「未连接」提示且不发任何请求。
    */
-  const kbReady = wikiStatus.enabled && wikiStatus.connected && settings.apiProvider !== 'deepseek';
+  const kbReady = wikiStatus.enabled && wikiStatus.connected;
   /** 启动冷态遮罩展示状态（直到所需服务完全启动，再等半秒淡出） */
   const [showStartupOverlay, setShowStartupOverlay] = useState(true);
   const handleStartupFinished = useCallback(() => {
@@ -472,9 +472,9 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     };
   }, [refreshState, setSettings]);
 
+          const isDeepSeek = settings.apiProvider === 'deepseek';
   // Poll server health & fetch models (only trigger state updates when values actually change)
   useEffect(() => {
-    const isDeepSeek = settings.apiProvider === 'deepseek';
     const checkServer = async () => {
       const info = await TurboFieldfareAPI.checkHealth(settings);
       setHealthInfo((prev) =>
@@ -644,12 +644,11 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
     setInput('');
     setImages([]);
 
-    const isDeepSeek = settings.apiProvider === 'deepseek';
     // Maple 的 chat template 恒开 <think>，思考开关对它无效，这里直接按开处理；
     // Qwen 3.5 9B 则相反：开关就在对话框上，按会话状态下发。
     const sessionEnableThinking =
       settings.apiProvider === 'maple' ? true : (currentSession?.enableThinking ?? false);
-    const sessionEnableWiki = isDeepSeek ? false : (currentSession?.enableWikiSearch ?? false);
+    const sessionEnableWiki = currentSession?.enableWikiSearch ?? false;
     const sessionSettings = buildSessionSettings(settings, sessionEnableThinking, sessionEnableWiki);
 
     await sendTurn({
@@ -818,7 +817,6 @@ const MainWindowView: React.FC<MainWindowViewProps> = ({
               saveSettings(updated);
             }
           }}
-          isDeepSeek={settings.apiProvider === 'deepseek'}
           visionReady={healthInfo.vision === 'ready'}
           serviceOnline={healthInfo.online}
           lastMetrics={lastMetrics}

@@ -2385,11 +2385,6 @@ export const ServicesPanel: React.FC<ServicesPanelProps> = ({
       )}
       {activeTab === 'svc-kb' && (
           <div className="p-5 rounded-2xl bg-white dark:bg-[#202127] border border-black/5 dark:border-white/5 space-y-4 shadow-xs">
-            {settings.apiProvider === 'deepseek' && (
-              <div className="mb-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-[11px] leading-relaxed">
-                {t('wikiDisabledInDeepSeek')}
-              </div>
-            )}
             <div className="flex items-start justify-between mb-2.5">
               <div className="flex items-center gap-2 pt-0.5">
                 <BookOpen className="w-4 h-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />

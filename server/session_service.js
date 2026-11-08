@@ -863,9 +863,9 @@ class SessionService {
     // 3D 场景会话：思考恒开（模型按 thinking 轨迹训练）、知识库永不介入
     const isScene3d = sessionKind(targetSession) === 'scene3d';
     const sessionEnableThinking = isScene3d ? true : (targetSession.enableThinking ?? settings.enableThinking ?? false);
-    const sessionEnableWiki = isDeepSeek || isScene3d ? false : (targetSession.enableWikiSearch ?? settings.enableWikiSearch ?? false);
+    // DeepSeek 与本地模型同样可用知识库：检索规划由当前 chat model 担任（见 executeTurnPipeline 的 chatModelRef）
+    const sessionEnableWiki = isScene3d ? false : (targetSession.enableWikiSearch ?? settings.enableWikiSearch ?? false);
     const shouldRunWiki =
-      !isDeepSeek &&
       !isScene3d &&
       wikiService.enabled &&
       sessionEnableWiki &&
@@ -1027,9 +1027,13 @@ class SessionService {
     let promptToSend = textToSend;
     let foundCitations = [];
 
+    // RAG 检索规划由当前 chat model 担任：DeepSeek 走官方 API，本地走会话设置的引擎端口 + 模型 id
+    const chatModelRef = isDeepSeek
+      ? { provider: 'deepseek', baseUrl: settings.deepseekBaseUrl, apiKey: settings.deepseekApiKey, model: settings.model }
+      : { provider: 'local', port: settings.apiPort, model: settings.model };
+
     // 1. Offline Wiki RAG Phase
     const shouldRunWiki =
-      !isDeepSeek &&
       wikiService.enabled &&
       sessionEnableWiki &&
       wikiService.isOnline &&
@@ -1066,7 +1070,7 @@ class SessionService {
       });
 
       try {
-        const rag = await wikiService.getRagContext(textToSend, signal);
+        const rag = await wikiService.getRagContext(textToSend, signal, chatModelRef);
         if (rag && rag.needsWiki && Array.isArray(rag.citations) && rag.citations.length > 0) {
           promptToSend = buildGroundingPrompt(rag.promptContext, textToSend, lang);
           foundCitations = rag.citations;

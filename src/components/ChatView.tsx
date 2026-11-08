@@ -65,7 +65,6 @@ interface ChatViewProps {
   onRetry?: (messageId: string) => void;
   onDelete?: (messageId: string) => void;
   onShrinkToSpotlight?: () => void;
-  isDeepSeek?: boolean;
 }
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -104,7 +103,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onRetry,
   onDelete,
   onShrinkToSpotlight,
-  isDeepSeek = false,
 }) => {
   const { t } = useI18n();
   const visionOk = supportsVision(provider);
@@ -583,7 +581,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
             setEnableWikiSearch={setEnableWikiSearch}
             wikiConnected={wikiConnected}
             wikiEnabled={wikiEnabled}
-            isDeepSeek={isDeepSeek}
           />
         </div>
       </div>

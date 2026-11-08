@@ -92,6 +92,32 @@ export function formatServiceStateText(
   return normalized ? `${t('statusReady')} : ${normalized}` : t('statusReady');
 }
 
+/** 知识库按钮统一状态：大窗口 / 小窗口 / 相关入口共用同一条规则 */
+export interface WikiButtonState {
+  disabled: boolean;
+  tooltipKey: TranslationKeys;
+}
+
+/**
+ * 知识库按钮状态的唯一判定入口（与 deriveServiceState 同一思路）：
+ * - 按钮始终渲染，不再随供应商隐藏；
+ * - 仅「服务总开关关闭」或「ZIM 未就绪」两种情况置灰；
+ * - DeepSeek 与本地模型同样可用（RAG 检索规划由当前 chat model 担任）。
+ */
+export function resolveWikiButtonState(opts: {
+  wikiEnabled: boolean;
+  connected: boolean;
+  active: boolean;
+}): WikiButtonState {
+  const disabled = !opts.wikiEnabled || !opts.connected;
+  const tooltipKey: TranslationKeys = disabled
+    ? 'wikiDisconnectedTooltip'
+    : opts.active
+    ? 'wikiSearchOnTooltip'
+    : 'wikiSearchOffTooltip';
+  return { disabled, tooltipKey };
+}
+
 /** 设置卡片用的圆点样式（比左下角略大、光晕更亮，沿用卡片原有视觉） */
 export const SERVICE_STATE_CARD_DOT_CLASS: Record<ServiceState, string> = {
   online: 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.8)]',

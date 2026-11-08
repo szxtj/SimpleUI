@@ -40,6 +40,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { SpotlightPageLayer } from './SpotlightPageLayer';
+import { resolveWikiButtonState } from '../utils/serviceState';
 import { useSpotlightPage } from '../hooks/useSpotlightPage';
 import { useI18n } from '../i18n';
 import { ThinkingToggle } from './ThinkingToggle';
@@ -456,8 +457,8 @@ export const SpotlightView: React.FC = () => {
     }
   }, [visionOk, images]);
 
-  /** 知识库是否可用：服务开启 && ZIM 就绪 && 非 DeepSeek（与主窗口口径一致） */
-  const kbReady = wikiStatus.enabled && wikiStatus.connected && !isDeepSeek;
+  /** 知识库是否可用：服务开启 && ZIM 就绪（DeepSeek 同样可用，与主窗口口径一致） */
+  const kbReady = wikiStatus.enabled && wikiStatus.connected;
 
   /**
    * 搜索按钮：整页打开搜索界面。
@@ -887,38 +888,37 @@ export const SpotlightView: React.FC = () => {
 
                   <ThinkingToggle provider={settings.apiProvider} thinking={enableThinking} onToggle={toggleThinking} compact />
 
-                {wikiStatus.enabled && (
-                  <button
-                    type="button"
-                    onClick={() => !isDeepSeek && wikiStatus.connected && toggleWiki(!enableWikiSearch)}
-                    disabled={isDeepSeek || !wikiStatus.connected}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all active:scale-95 border ${
-                      isDeepSeek || !wikiStatus.connected
-                        ? 'opacity-40 cursor-not-allowed bg-black/5 text-zinc-400 dark:bg-white/5 dark:text-zinc-500 border-transparent'
-                        : enableWikiSearch
-                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border-emerald-500/40 dark:hover:bg-emerald-900/80'
-                        : 'bg-black/5 text-zinc-600 border-black/5 hover:bg-black/10 hover:text-black dark:bg-white/5 dark:text-zinc-300 dark:border-white/5 dark:hover:bg-white/10 dark:hover:text-white'
-                    }`}
-                    title={
-                      isDeepSeek
-                        ? t('wikiDisabledInDeepSeek')
-                        : !wikiStatus.connected
-                        ? t('wikiDisconnectedTooltip')
-                        : enableWikiSearch
-                        ? t('wikiSearchOnTooltip')
-                        : t('wikiSearchOffTooltip')
-                    }
-                  >
-                    <BookOpen
-                      className={`w-3.5 h-3.5 ${
-                        !isDeepSeek && enableWikiSearch && wikiStatus.connected
-                          ? 'text-emerald-600 dark:text-emerald-400'
-                          : ''
-                      }`}
-                    />
-                    <span>{t('offlineWiki')}</span>
-                  </button>
-                )}
+                  {(() => {
+                    const wikiBtn = resolveWikiButtonState({
+                      wikiEnabled: wikiStatus.enabled,
+                      connected: wikiStatus.connected,
+                      active: enableWikiSearch,
+                    });
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => !wikiBtn.disabled && toggleWiki(!enableWikiSearch)}
+                        disabled={wikiBtn.disabled}
+                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all active:scale-95 border ${
+                          wikiBtn.disabled
+                            ? 'opacity-40 cursor-not-allowed bg-black/5 text-zinc-400 dark:bg-white/5 dark:text-zinc-500 border-transparent'
+                            : enableWikiSearch
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border-emerald-500/40 dark:hover:bg-emerald-900/80'
+                            : 'bg-black/5 text-zinc-600 border-black/5 hover:bg-black/10 hover:text-black dark:bg-white/5 dark:text-zinc-300 dark:border-white/5 dark:hover:bg-white/10 dark:hover:text-white'
+                        }`}
+                        title={t(wikiBtn.tooltipKey)}
+                      >
+                        <BookOpen
+                          className={`w-3.5 h-3.5 ${
+                            enableWikiSearch && !wikiBtn.disabled
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : ''
+                          }`}
+                        />
+                        <span>{t('offlineWiki')}</span>
+                      </button>
+                    );
+                  })()}
               </div>
 
               <div className="flex items-center gap-2">
@@ -1290,38 +1290,37 @@ export const SpotlightView: React.FC = () => {
 
                   <ThinkingToggle provider={settings.apiProvider} thinking={enableThinking} onToggle={toggleThinking} compact />
 
-                  {wikiStatus.enabled && (
+                  {(() => {
+                    const wikiBtn = resolveWikiButtonState({
+                      wikiEnabled: wikiStatus.enabled,
+                      connected: wikiStatus.connected,
+                      active: enableWikiSearch,
+                    });
+                    return (
                     <button
                       type="button"
-                      onClick={() => !isDeepSeek && wikiStatus.connected && toggleWiki(!enableWikiSearch)}
-                      disabled={isDeepSeek || !wikiStatus.connected}
+                      onClick={() => !wikiBtn.disabled && toggleWiki(!enableWikiSearch)}
+                      disabled={wikiBtn.disabled}
                       className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all active:scale-95 border ${
-                        isDeepSeek || !wikiStatus.connected
+                        wikiBtn.disabled
                           ? 'opacity-40 cursor-not-allowed bg-black/5 text-zinc-400 dark:bg-white/5 dark:text-zinc-500 border-transparent'
                           : enableWikiSearch
                           ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border-emerald-500/40 dark:hover:bg-emerald-900/80'
                           : 'bg-black/5 text-zinc-600 border-black/5 hover:bg-black/10 hover:text-black dark:bg-white/5 dark:text-zinc-300 dark:border-white/5 dark:hover:bg-white/10 dark:hover:text-white'
                       }`}
-                      title={
-                        isDeepSeek
-                          ? t('wikiDisabledInDeepSeek')
-                          : !wikiStatus.connected
-                          ? t('wikiDisconnectedTooltip')
-                          : enableWikiSearch
-                          ? t('wikiSearchOnTooltip')
-                          : t('wikiSearchOffTooltip')
-                      }
+                      title={t(wikiBtn.tooltipKey)}
                     >
                       <BookOpen
                         className={`w-3.5 h-3.5 ${
-                          !isDeepSeek && enableWikiSearch && wikiStatus.connected
+                          enableWikiSearch && !wikiBtn.disabled
                             ? 'text-emerald-600 dark:text-emerald-400'
                             : ''
                         }`}
                       />
                       <span>{t('offlineWiki')}</span>
                     </button>
-                  )}
+                    );
+                  })()}
                 </div>
 
                 <div className="flex items-center gap-2">

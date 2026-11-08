@@ -74,14 +74,12 @@ export async function buildPromptWithWiki(opts: {
   wikiMasterEnabled: boolean;
   sessionEnableWiki: boolean;
   wikiConnected: boolean;
-  isDeepSeek?: boolean;
   /** 用户点"停止"时的中止信号：会中止检索请求，并沿服务端管线中止所有相关模型调用 */
   signal?: AbortSignal;
 }): Promise<WikiPromptResult> {
-  const { textToSend, lang, wikiMasterEnabled, sessionEnableWiki, wikiConnected, isDeepSeek, signal } = opts;
+  const { textToSend, lang, wikiMasterEnabled, sessionEnableWiki, wikiConnected, signal } = opts;
 
-  // 选用 DeepSeek 官方 API 时不使用知识库
-  if (isDeepSeek || !(wikiMasterEnabled && sessionEnableWiki && wikiConnected && textToSend)) {
+  if (!(wikiMasterEnabled && sessionEnableWiki && wikiConnected && textToSend)) {
     return { promptToSend: textToSend, citations: [] };
   }
 

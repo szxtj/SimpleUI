@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { ArrowUp, Plus, Square, BookOpen } from 'lucide-react';
+import { resolveWikiButtonState } from '../utils/serviceState';
 import { useI18n } from '../i18n';
 import { ThinkingToggle } from './ThinkingToggle';
 import { supportsVision } from '../utils/providerCapabilities';
@@ -28,7 +29,6 @@ interface ChatInputProps {
   setEnableWikiSearch?: (val: boolean) => void;
   wikiConnected?: boolean;
   wikiEnabled?: boolean;
-  isDeepSeek?: boolean;
   /** 当前对话的 provider（思考是否可关由 ThinkingToggle 按能力判定） */
   provider?: ApiProvider;
 }
@@ -51,12 +51,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   setEnableWikiSearch,
   wikiConnected = false,
   wikiEnabled = true,
-  isDeepSeek = false,
   provider,
 }) => {
   const { t } = useI18n();
   // 视觉能力统一按 provider 判定（原来散落的 isMference 布尔已收编）
   const visionOk = supportsVision(provider);
+  // 知识库按钮统一状态：始终渲染，仅服务关闭 / ZIM 未就绪时置灰（DeepSeek 同样可用）
+  const wikiBtn = resolveWikiButtonState({ wikiEnabled, connected: wikiConnected, active: enableWikiSearch });
   const [previewDraftIndex, setPreviewDraftIndex] = useState<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -166,30 +167,24 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           {/* 思考 / 快速 切换：主窗与浮窗共用 ThinkingToggle，锁定逻辑只此一份 */}
           <ThinkingToggle provider={provider} thinking={enableThinking} onToggle={setEnableThinking} />
 
-          {/* Offline Wiki Knowledge Toggle Button — 服务总开关关闭或 DeepSeek 模式下完全不渲染
-              （DeepSeek 用不到知识库，留着只会误导；知识库面板本身仍可打开查看） */}
-          {wikiEnabled && !isDeepSeek && (<button
+          {/* Offline Wiki Knowledge Toggle Button — 按钮始终渲染（大窗/小窗统一口径）：
+              仅服务总开关关闭或 ZIM 未就绪时置灰；DeepSeek 同样可用（规划由当前 chat model 担任） */}
+          <button
             type="button"
-            onClick={() => wikiConnected && setEnableWikiSearch?.(!enableWikiSearch)}
-            disabled={!wikiConnected}
+            onClick={() => !wikiBtn.disabled && setEnableWikiSearch?.(!enableWikiSearch)}
+            disabled={wikiBtn.disabled}
             className={`flex items-center gap-1.5 px-2 cq-md:px-3 py-1.5 rounded-full text-xs font-medium transition-all active:scale-95 border flex-shrink-0 ${
-              !wikiConnected
+              wikiBtn.disabled
                 ? 'opacity-40 cursor-not-allowed bg-black/5 text-zinc-400 dark:bg-white/5 dark:text-zinc-500 border-transparent'
                 : enableWikiSearch
                 ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/70 dark:text-emerald-300 dark:border-emerald-500/40 dark:hover:bg-emerald-900/80 shadow-sm'
                 : 'bg-black/5 text-zinc-600 border-black/5 hover:bg-black/10 hover:text-black dark:bg-white/5 dark:text-zinc-300 dark:border-white/5 dark:hover:bg-white/10 dark:hover:text-white'
             }`}
-            title={
-              !wikiConnected
-                ? t('wikiDisconnectedTooltip')
-                : enableWikiSearch
-                ? t('wikiSearchOnTooltip')
-                : t('wikiSearchOffTooltip')
-            }
+            title={t(wikiBtn.tooltipKey)}
           >
-            <BookOpen className={`w-3.5 h-3.5 ${enableWikiSearch && wikiConnected ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
+            <BookOpen className={`w-3.5 h-3.5 ${enableWikiSearch && !wikiBtn.disabled ? 'text-emerald-600 dark:text-emerald-400' : ''}`} />
             <span className="hidden cq-md:inline">{t('offlineWiki')}</span>
-          </button>)}
+          </button>
         </div>
 
         {/* Right: Send Button + Context Ring on its RIGHT */}

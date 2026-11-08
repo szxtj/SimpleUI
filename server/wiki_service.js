@@ -678,7 +678,7 @@ export function parseWikipediaDOM(rawHtml) {
 
 // 主力模型目录语义路由：超长条目（> 3500 字）从大纲目录与 Infobox 键名中
 // 挑选最可能包含答案的小节与属性。规则放 system，数据放 user。
-export async function routeArticleSectionsWithSLM(query, headings, infoboxKeys, signal) {
+export async function routeArticleSectionsWithSLM(query, headings, infoboxKeys, signal, modelRef = null) {
   if (!query || (!headings.length && !infoboxKeys.length)) {
     return { sections: [], keys: [] };
   }
@@ -702,6 +702,7 @@ export async function routeArticleSectionsWithSLM(query, headings, infoboxKeys, 
     maxTokens: 80,
     timeoutMs: 30000,
     signal,
+    modelRef,
   });
   if (!out) return { sections: [], keys: [] };
 
@@ -716,7 +717,7 @@ export async function routeArticleSectionsWithSLM(query, headings, infoboxKeys, 
 }
 
 // Assemble zero-truncation, high-fidelity article context
-export async function assembleArticleContext(rawHtml, userQuery, signal) {
+export async function assembleArticleContext(rawHtml, userQuery, signal, modelRef = null) {
   throwIfAborted(signal);
   const dom = parseWikipediaDOM(rawHtml);
 
@@ -772,7 +773,7 @@ export async function assembleArticleContext(rawHtml, userQuery, signal) {
 
   // 长文（>3500 字）走切分路由：主力模型从章节大纲里挑相关小节（单独打点）
   setRagStage('routing');
-  const route = await routeArticleSectionsWithSLM(userQuery, headings, infoboxKeys, signal);
+  const route = await routeArticleSectionsWithSLM(userQuery, headings, infoboxKeys, signal, modelRef);
 
   const parts = [];
 
@@ -845,9 +846,10 @@ function throwIfAborted(signal) {
   if (signal && signal.aborted) throw abortError();
 }
 
+/** 规划用模型引用：由当前 chat model 决定（DeepSeek API 或本地引擎的端口 + 模型 id） */
 export async function callMainModel(
   prompt,
-  { systemPrompt = null, maxTokens = 64, timeoutMs = 30000, temperature = 0, seed = null, signal = null } = {}
+  { systemPrompt = null, maxTokens = 64, timeoutMs = 30000, temperature = 0, seed = null, signal = null, modelRef = null } = {}
 ) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -874,10 +876,36 @@ export async function callMainModel(
   messages.push({ role: 'user', content: prompt });
 
   try {
-    const { apiUrl, model: targetModel } = await getMainModelTarget();
+    // 规划模型跟随当前 chat model：DeepSeek 模式走官方 API（标准 OpenAI 字段），
+    // 本地模式优先用会话设置里的端口 + 模型 id（用户切了引擎/模型就跟着走），
+    // 都没有时回退 getMainModelTarget()（激活引擎自适应）。
+    let apiUrl;
+    let targetModel;
+    let authHeader = null;
+    let llamaSpecific = true;
+    if (modelRef && modelRef.provider === 'deepseek') {
+      const base = String(modelRef.baseUrl || 'https://api.deepseek.com').trim()
+        .replace(/\/+$/, '').replace(/\/chat\/completions\/?$/, '');
+      apiUrl = base.endsWith('/v1') ? base : `${base}/v1`;
+      targetModel = modelRef.model || 'deepseek-chat';
+      authHeader = `Bearer ${modelRef.apiKey || ''}`;
+      llamaSpecific = false; // DeepSeek 官方 API 不认 llama.cpp 的采样扩展字段
+    } else if (modelRef && (modelRef.port || modelRef.model)) {
+      const fallback = await getMainModelTarget();
+      apiUrl = modelRef.port ? `http://127.0.0.1:${modelRef.port}` : fallback.apiUrl;
+      targetModel = modelRef.model || fallback.model;
+    } else {
+      const t = await getMainModelTarget();
+      apiUrl = t.apiUrl;
+      targetModel = t.model;
+    }
     const res = await fetch(`${apiUrl}/v1/chat/completions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+        ...(authHeader ? { Authorization: authHeader } : {}),
+      },
       signal: controller.signal,
       body: JSON.stringify({
         model: targetModel,
@@ -885,13 +913,17 @@ export async function callMainModel(
         stream: true,
         stream_options: { include_usage: true },
         temperature,
-        top_p: 0.95,
-        top_k: 64,
-        repetition_penalty: 1.0,
         max_tokens: maxTokens,
         ...(seed !== null ? { seed } : {}),
-        chat_template_kwargs: { enable_thinking: false },
-        reasoning_effort: 'none',
+        ...(llamaSpecific
+          ? {
+              top_p: 0.95,
+              top_k: 64,
+              repetition_penalty: 1.0,
+              chat_template_kwargs: { enable_thinking: false },
+              reasoning_effort: 'none',
+            }
+          : {}),
       }),
     });
     clearTimeout(timer);
@@ -956,7 +988,7 @@ export const MAIN_PLANNER_USER = (query) => `[示例]
 问：${query}
 答：`;
 
-export async function planQueryWithMainModel(query, signal) {
+export async function planQueryWithMainModel(query, signal, modelRef = null) {
   if (!query || typeof query !== 'string') return null;
   throwIfAborted(signal);
   const trimmed = query.trim();
@@ -967,6 +999,7 @@ export async function planQueryWithMainModel(query, signal) {
     maxTokens: 64,
     timeoutMs: 30000,
     signal,
+    modelRef,
   });
   if (!out) return null;
 
@@ -989,8 +1022,8 @@ export async function planQueryWithMainModel(query, signal) {
 
 // 实体规划入口：由主力模型承担（不做小模型回退——1234 服务已从链路中移除）。
 // 规划失败时返回 null，由 getRagContext 使用归一后的原始提问直接检索。
-export async function planQuery(query, signal) {
-  return planQueryWithMainModel(query, signal);
+export async function planQuery(query, signal, modelRef = null) {
+  return planQueryWithMainModel(query, signal, modelRef);
 }
 
 // ==========================================
@@ -1149,7 +1182,7 @@ const SENSE_PICK_SYSTEM = `[任务] 用户用某个词提问，该词在百科�
 2. 若没有任何候选与用户问题相关，输出 {"pick": null}。严禁猜测。`;
 
 /** 用主力模型从义项列表中选一个（返回 null 表示都不匹配 → 该关键字弃权） */
-async function pickSenseWithMainModel(question, senses, signal) {
+async function pickSenseWithMainModel(question, senses, signal, modelRef = null) {
   if (!senses || senses.length === 0) return null;
   throwIfAborted(signal);
   const lines = senses.map((s) => `- ${s.title}：${s.description}`).join('\n');
@@ -1160,6 +1193,7 @@ async function pickSenseWithMainModel(question, senses, signal) {
     maxTokens: 64,
     timeoutMs: 30000,
     signal,
+    modelRef,
   });
   if (!out) return null;
 
@@ -1880,7 +1914,7 @@ class WikiService {
     if (rejectStrongDisambig && detectDisambiguation(page.html).strong) return null;
 
     const queryStr = Array.isArray(userQuery) ? userQuery.join(' ') : userQuery || title;
-    const assembled = await assembleArticleContext(page.html, queryStr, signal);
+    const assembled = await assembleArticleContext(page.html, queryStr, signal, modelRef);
     if (!assembled || !assembled.context) return null;
 
     // 不再由小模型改写事实：直接返回归一后的原文，交给主力模型自行定位与综合
@@ -1927,7 +1961,7 @@ class WikiService {
         const senses = extractSenses(page.html);
         // 歧义页：主力模型读义项列表选 1 个（单独打点，这一步是整条检索里最耗时的环节之一）
         setRagStage('sense', keyword);
-        const pick = await pickSenseWithMainModel(question, senses, signal);
+        const pick = await pickSenseWithMainModel(question, senses, signal, modelRef);
         if (pick) {
           const article = await this._fetchSummaryForTitle(pick, question, false, signal);
           if (article) return { articles: [article], trace: 'disambig-picked' };
@@ -1964,7 +1998,7 @@ class WikiService {
     return { articles: picked, trace: picked.length ? 'fulltext' : 'none' };
   }
   // Atomic High-Performance RAG Pipeline
-  async getRagContext(query, signal) {
+  async getRagContext(query, signal, modelRef = null) {
     throwIfAborted(signal);
     if (!query || typeof query !== 'string' || !query.trim()) {
       return { needsWiki: false, citations: [], promptContext: '', metadata: { latencyMs: 0 } };
@@ -1999,7 +2033,7 @@ class WikiService {
     // 1. 实体规划（主力模型；不做任何小模型回退——规划失败时直接用归一后的原始提问检索）
     //    提示词要求人物用间隔号全名译名、问「X是谁」只输出 X 本身的条目
     //    （实测「拉格朗日是谁?」稳定输出「约瑟夫·路易·拉格朗日」，不再幻觉连字符音译或相关条目）。
-    const plan = await planQuery(normalizedQuery, signal);
+    const plan = await planQuery(normalizedQuery, signal, modelRef);
     const plannerName = plan?.planner || 'raw-fallback';
     const targetArticles =
       plan && Array.isArray(plan.target_articles) && plan.target_articles.length > 0
@@ -2247,7 +2281,7 @@ class WikiService {
           });
           try {
             const data = JSON.parse(body || '{}');
-            const result = await this.getRagContext(data.query || '', ac.signal);
+            const result = await this.getRagContext(data.query || '', ac.signal, data.chatModel || null);
             if (res.writableEnded || res.destroyed) return;
             res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify(result));
