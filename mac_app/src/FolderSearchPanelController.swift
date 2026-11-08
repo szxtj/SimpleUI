@@ -74,6 +74,8 @@ final class FolderSearchPanelController: NSObject, NSWindowDelegate, WKScriptMes
     private var webView: WKWebView?
     private var dragView: FolderSearchTitleBarDragView?
     private var resizeChrome: WindowResizeChrome?
+    /// 全屏下关窗先退全屏（与主窗口同一套处理，见 FullscreenAwareCloser）
+    private var fullscreenCloser: FullscreenAwareCloser?
     private var loaded = false
 
     private static let defaultSize = NSSize(width: 960, height: 660)
@@ -107,6 +109,9 @@ final class FolderSearchPanelController: NSObject, NSWindowDelegate, WKScriptMes
         p.backgroundColor = Self.windowBackgroundColor()
         p.minSize = NSSize(width: Self.minWidth, height: Self.minHeight)
         p.isReleasedWhenClosed = false
+        fullscreenCloser = FullscreenAwareCloser(window: p)
+        // 延迟关窗收尾：停索引 + 卸载模型（与 windowWillClose 同一套动作）
+        fullscreenCloser?.onClosed = { [weak self] in self?.notifyClose() }
         p.isRestorable = false
         p.hidesOnDeactivate = false
         p.animationBehavior = .utilityWindow
@@ -222,6 +227,14 @@ final class FolderSearchPanelController: NSObject, NSWindowDelegate, WKScriptMes
         req.httpBody = Data("{}".utf8)
         req.timeoutInterval = 15
         URLSession.shared.dataTask(with: req).resume()
+    }
+
+    // 全屏下直接收窗会留下整面黑屏：先退全屏，收完再走 onClosed（notifyClose）收尾
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if fullscreenCloser?.handleCloseRequest() == true { return false }
+        notifyClose()
+        sender.orderOut(nil)
+        return false
     }
 
     func windowWillClose(_ notification: Notification) {

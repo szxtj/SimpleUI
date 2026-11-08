@@ -100,6 +100,8 @@ final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDele
     private var dragView: Scene3DTitleBarDragView?
     /// 尺寸遮罩 + 双击缩放（与主窗口、Markdown 编辑器窗口共用，见 WindowResizeChrome）
     private var resizeChrome: WindowResizeChrome?
+    /// 全屏下关窗先退全屏（与主窗口同一套处理，见 FullscreenAwareCloser）
+    private var fullscreenCloser: FullscreenAwareCloser?
     private var webReady = false
     /// 关窗卸载的核对批次号：每次开/关窗自增，旧的核对链看到编号变了就自行放弃，
     /// 避免「关 → 立刻开」时上一次的补发 release 把刚拉起来的新进程杀掉。
@@ -152,6 +154,8 @@ final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDele
         p.backgroundColor = Self.windowBackgroundColor()
         p.minSize = NSSize(width: Self.minWidth, height: Self.minHeight)
         p.isReleasedWhenClosed = false
+        fullscreenCloser = FullscreenAwareCloser(window: p)
+        fullscreenCloser?.onClosed = { [weak self] in self?.requestServiceRelease() }
         p.isRestorable = false
         p.hidesOnDeactivate = false
         p.animationBehavior = .utilityWindow
@@ -333,6 +337,8 @@ final class Scene3DPanelController: NSObject, NSWindowDelegate, WKNavigationDele
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        // 全屏下直接收窗会留下整面黑屏：先退全屏，收完再走 onClosed 收尾
+        if fullscreenCloser?.handleCloseRequest() == true { return false }
         // 关闭 = 隐藏 + 卸载模型（WebView 常驻，重开免冷加载）
         requestServiceRelease()
         sender.orderOut(nil)

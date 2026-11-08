@@ -95,6 +95,8 @@ final class MarkdownEditorPanelController: NSObject, NSWindowDelegate, WKNavigat
     private var webReady = false
     /// 尺寸遮罩 + 双击缩放（与主窗口、3D 窗口共用，见 WindowResizeChrome）
     private var resizeChrome: WindowResizeChrome?
+    /// 全屏下关窗先退全屏（与主窗口同一套处理，见 FullscreenAwareCloser）
+    private var fullscreenCloser: FullscreenAwareCloser?
     /// Markdown 内容原生桥：与主窗口、浮窗**同一份实现**（复制富文本/公式块、表格导出 Word、
     /// 图片预览与保存、划选翻译）。少了它，预览里的这些按钮会静默降级或直接不显示。
     private var markdownBridge: MarkdownContentBridge?
@@ -144,6 +146,7 @@ final class MarkdownEditorPanelController: NSObject, NSWindowDelegate, WKNavigat
         p.backgroundColor = Self.windowBackgroundColor()
         p.minSize = NSSize(width: Self.minWidth, height: Self.minHeight)
         p.isReleasedWhenClosed = false
+        fullscreenCloser = FullscreenAwareCloser(window: p)
         p.isRestorable = false
         p.hidesOnDeactivate = false
         p.animationBehavior = .utilityWindow
@@ -487,6 +490,8 @@ final class MarkdownEditorPanelController: NSObject, NSWindowDelegate, WKNavigat
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        // 全屏下直接收窗会留下整面黑屏：先退全屏，收完再重新走一遍关窗流程
+        if fullscreenCloser?.handleCloseRequest() == true { return false }
         // 保存流程进行中：忽略重复关闭（落盘成功后页面会回传 closeNow）
         if awaitingSaveBeforeClose { return false }
 

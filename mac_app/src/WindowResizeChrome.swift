@@ -347,3 +347,57 @@ final class WindowResizeChrome {
         internalFrameChanges = max(0, internalFrameChanges - 1)
     }
 }
+
+
+/// 独立窗口的「全屏下关窗」兜底 —— 处理逻辑提取自主窗口的 windowShouldClose，供所有共用窗口复用。
+///
+/// 背景：原生全屏下直接 orderOut 会把全屏 Space 留在屏幕上（表现为整面黑屏，App 还活着）。
+/// macOS 惯例是先退全屏、动画收完再隐藏窗口 —— 由 `didExitFullScreen` 通知收尾。
+///
+/// 用法（三个独立窗口同构）：
+/// 1. makePanel 里 `fullscreenCloser = FullscreenAwareCloser(window: p)`，
+///    需要收尾动作（停索引 / 卸载模型）的窗口设置 `onClosed`；
+/// 2. windowShouldClose 里**最先**调用 `handleCloseRequest()`：返回 true 表示已代为
+///    启动退全屏动画，本轮直接 return false，不要 orderOut。
+final class FullscreenAwareCloser {
+    /// 延迟关窗的收尾动作（如：请求服务释放 / 停索引 + 卸载模型），在窗口真正隐藏前执行
+    var onClosed: (() -> Void)?
+
+    private weak var window: NSWindow?
+    private var pendingCloseAfterFullscreenExit = false
+    private var exitObserver: (any NSObjectProtocol)?
+
+    init(window: NSWindow) {
+        self.window = window
+        exitObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didExitFullScreenNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self, self.pendingCloseAfterFullscreenExit else { return }
+            self.pendingCloseAfterFullscreenExit = false
+            // 等系统跑完 Space 收起的收尾帧，再隐藏窗口并执行各窗口自己的收尾
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                guard let self = self else { return }
+                self.onClosed?()
+                self.window?.orderOut(nil)
+            }
+        }
+    }
+
+    deinit {
+        if let exitObserver = exitObserver {
+            NotificationCenter.default.removeObserver(exitObserver)
+        }
+    }
+
+    /// 在 windowShouldClose 里最先调用。返回 true 表示窗口当前处于原生全屏、
+    /// 已代为启动退全屏动画 —— 本轮不要 orderOut（否则黑屏 Space 残留）。
+    func handleCloseRequest() -> Bool {
+        guard let win = window else { return false }
+        guard win.styleMask.contains(.fullScreen) else { return false }
+        pendingCloseAfterFullscreenExit = true
+        win.toggleFullScreen(nil)
+        return true
+    }
+}
