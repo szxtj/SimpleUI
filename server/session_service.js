@@ -1070,11 +1070,37 @@ class SessionService {
           foundCitations = rag.citations;
         }
       } catch (err) {
+        // 不降级：检索失败 = 本轮失败，把具体原因呈现到消息上
+        //（消息收尾与 streamFromEngine.failTurn 同构）
         if (err?.name === 'AbortError' || signal.aborted) {
           unsubscribeStage();
           return;
         }
-        console.warn('[SessionService] Wiki RAG retrieval error:', err);
+        this.activeTurns.delete(sessionId);
+        const tEnd = Date.now();
+        const closedStages = stages.map((st) =>
+          st.endedAt === undefined
+            ? { ...st, endedAt: tEnd, durationMs: Math.max(0, tEnd - st.startedAt) }
+            : st
+        );
+        let finalMsg = null;
+        this.updateMessageInSession(sessionId, assistantMessageId, (m) => {
+          finalMsg = {
+            ...m,
+            isThinking: false,
+            pending: false,
+            stages: closedStages,
+            error: `知识库检索失败（${err.message}）`,
+          };
+          delete finalMsg.stage;
+          return finalMsg;
+        });
+        this.flushSync();
+        this.broadcast('turn-finished', {
+          sessionId,
+          messageId: assistantMessageId,
+          message: finalMsg,
+        });
       } finally {
         unsubscribeStage();
       }
