@@ -150,43 +150,39 @@ fi
 safe_remove "bin/subtitle_stream_asr"
 safe_remove "$RESOURCES_DIR/bin/subtitle_stream_asr"
 
-# 随包分发字幕第 3 级神经机器翻译所需的 llama-server 运行时及自包含动态库
+# 随包分发字幕第 3 级神经机器翻译所需的 llama-server 运行时（自包含，ggml 后端静态链接）。
+#
+# 唯一来源是仓库内 bin/llama3d 的官方构建：libggml-cpu / libggml-metal / libggml-blas 都直接
+# 链接进 llama-server（otool -L 可见），下面的自包含复制器能完整收集。
+# 明确不接受 homebrew / 用户级目录等 GGML_BACKEND_DL 构建：那类构建的后端是运行时 dlopen 的
+# .so 插件，otool 看不到，复制出来必然缺后端，模型加载即 "no backends are loaded"（2026-11 踩过）。
 ensure_llama_runtime() {
-  local LOCAL_LLAMA_DIR="$REAL_HOME/Library/Application Support/SimpleUI/runtime/llama"
-  if [ ! -x "bin/llama/bin/llama-server" ] || ! bin/llama/bin/llama-server --version >/dev/null 2>&1; then
-    echo "  · 正在构建自包含的内置 llama-server 运行时 → bin/llama/"
-    safe_remove "bin/llama"
-    mkdir -p "bin/llama/bin" "bin/llama/lib"
+  local SRC_BIN="bin/llama3d/llama-server"
+  local RUNTIME="bin/llama"
+  local STAGE="bin/.llama_runtime_stage"
 
-    local SRC_BIN=""
-    if [ -x "$LOCAL_LLAMA_DIR/bin/llama-server" ]; then
-      SRC_BIN="$LOCAL_LLAMA_DIR/bin/llama-server"
-    elif command -v llama-server >/dev/null 2>&1; then
-      SRC_BIN="$(command -v llama-server)"
-    fi
+  if [ ! -x "$SRC_BIN" ]; then
+    echo "✗ 缺少 llama-server 源构建：$SRC_BIN —— 翻译运行时无法自包含，打包终止" >&2
+    exit 1
+  fi
 
-    if [ -n "$SRC_BIN" ]; then
-      python3 - "$SRC_BIN" "bin/llama" <<'PYEOF'
+  # 每次打包都重建：不沿用上一次的产物，杜绝残缺运行时被跳过检查后带进包里
+  echo "  · 正在构建自包含的翻译 llama-server 运行时 → $RUNTIME/"
+  safe_remove "$STAGE"
+  mkdir -p "$STAGE/bin" "$STAGE/lib"
+
+  python3 - "$SRC_BIN" "$STAGE" <<'PYEOF'
 import os, sys, shutil, subprocess
 
 src_bin = os.path.realpath(sys.argv[1])
+src_dir = os.path.dirname(src_bin)
 dest_root = os.path.abspath(sys.argv[2])
 dest_bin_dir = os.path.join(dest_root, "bin")
 dest_lib_dir = os.path.join(dest_root, "lib")
-os.makedirs(dest_bin_dir, exist_ok=True)
-os.makedirs(dest_lib_dir, exist_ok=True)
 
 dest_bin = os.path.join(dest_bin_dir, "llama-server")
 shutil.copy2(src_bin, dest_bin)
 os.chmod(dest_bin, 0o755)
-
-search_dirs = [
-    os.path.abspath(os.path.join(os.path.dirname(src_bin), "..", "lib")),
-    "/opt/homebrew/lib",
-    "/opt/homebrew/opt/ggml/lib",
-    "/opt/homebrew/opt/llama.cpp/lib",
-    "/usr/local/lib",
-]
 
 def get_deps(binary_path):
     out = subprocess.check_output(["otool", "-L", binary_path], text=True)
@@ -201,21 +197,10 @@ def get_deps(binary_path):
         deps.append(dep)
     return deps
 
-def resolve_dep(dep_str, origin_dir=None):
-    if dep_str.startswith("@"):
-        base = os.path.basename(dep_str)
-        dirs = ([origin_dir] if origin_dir else []) + search_dirs
-        for d in dirs:
-            if not d:
-                continue
-            cand = os.path.join(d, base)
-            if os.path.exists(cand):
-                return os.path.realpath(cand), base
-    elif os.path.exists(dep_str):
-        return os.path.realpath(dep_str), os.path.basename(dep_str)
-    return None, os.path.basename(dep_str)
-
-queue = [(dest_bin, os.path.dirname(src_bin))]
+# 依赖只在「源运行时自己的目录」里解析，不设任何额外搜索路径：
+# 解析不到就是真缺库，立刻失败，绝不静默跳过。
+missing = []
+queue = [(dest_bin, src_dir)]
 visited = set()
 
 while queue:
@@ -224,12 +209,18 @@ while queue:
         continue
     visited.add(target)
     is_exe = (target == dest_bin)
-    deps = get_deps(target)
 
-    for dep in deps:
-        real_src, base_name = resolve_dep(dep, origin_dir)
+    for dep in get_deps(target):
+        base_name = os.path.basename(dep)
+        if dep.startswith("@"):
+            cand = os.path.join(origin_dir, base_name)
+            real_src = os.path.realpath(cand) if os.path.exists(cand) else None
+        else:
+            real_src = os.path.realpath(dep) if os.path.exists(dep) else None
         if not real_src:
+            missing.append((os.path.basename(target), dep))
             continue
+
         dst_lib = os.path.join(dest_lib_dir, base_name)
         if not os.path.exists(dst_lib):
             shutil.copy2(real_src, dst_lib)
@@ -238,35 +229,60 @@ while queue:
 
         new_ref = f"@loader_path/../lib/{base_name}" if is_exe else f"@loader_path/{base_name}"
         if dep != new_ref:
-            subprocess.run(["install_name_tool", "-change", dep, new_ref, target], check=False, stderr=subprocess.DEVNULL)
+            subprocess.run(["install_name_tool", "-change", dep, new_ref, target], check=True)
 
     if not is_exe:
-        base_name = os.path.basename(target)
-        subprocess.run(["install_name_tool", "-id", f"@loader_path/{base_name}", target], check=False, stderr=subprocess.DEVNULL)
+        subprocess.run(["install_name_tool", "-id", f"@loader_path/{os.path.basename(target)}", target], check=True)
+
+if missing:
+    for owner, dep in missing:
+        print(f"✗ {owner} 依赖无法解析：{dep}", file=sys.stderr)
+    sys.exit(1)
 
 for f in os.listdir(dest_lib_dir):
     fp = os.path.join(dest_lib_dir, f)
     if os.path.isfile(fp):
-        subprocess.run(["codesign", "--force", "--sign", "-", fp], check=False, stderr=subprocess.DEVNULL)
-subprocess.run(["codesign", "--force", "--sign", "-", dest_bin], check=False, stderr=subprocess.DEVNULL)
+        subprocess.run(["codesign", "--force", "--sign", "-", fp], check=True)
+subprocess.run(["codesign", "--force", "--sign", "-", dest_bin], check=True)
 PYEOF
-    fi
+
+  # 验收 1：后端库必须齐——缺任何一个，模型加载都会失败
+  if ! ls "$STAGE"/lib/libggml-cpu*.dylib >/dev/null 2>&1 || ! ls "$STAGE"/lib/libggml-metal*.dylib >/dev/null 2>&1; then
+    echo "✗ 自包含运行时缺 ggml 后端库（libggml-cpu / libggml-metal），实际内容：" >&2
+    ls "$STAGE"/lib >&2
+    exit 1
   fi
 
-  if [ -d "bin/llama" ] && [ -x "bin/llama/bin/llama-server" ]; then
-    mkdir -p "$RESOURCES_DIR/llama"
-    copy_item "bin/llama/." "$RESOURCES_DIR/llama/"
-    chmod +x "$RESOURCES_DIR/llama/bin/llama-server" 2>/dev/null || true
-    echo "  -> 已打包自包含字幕翻译运行时 (llama-server): $(du -sh bin/llama | cut -f1)"
-  else
-    echo "  ⚠ 未找到 llama-server 运行时：请确认 bin/llama 存在"
+  # 验收 2：二进制必须真的加载后端并枚举出 Metal 设备
+  local DEVICES
+  DEVICES="$("$STAGE/bin/llama-server" --list-devices 2>&1 || true)"
+  if ! printf '%s' "$DEVICES" | grep -q 'MTL'; then
+    echo "✗ 翻译运行时后端未就绪，--list-devices 未列出 Metal 设备：" >&2
+    printf '%s\n' "$DEVICES" >&2
+    exit 1
   fi
+
+  safe_remove "$RUNTIME"
+  mv "$STAGE" "$RUNTIME"
+
+  # 打包态复验：复制过程若有丢失，在这里终止，而不是等用户点翻译才报错
+  mkdir -p "$RESOURCES_DIR/llama"
+  copy_item "$RUNTIME/." "$RESOURCES_DIR/llama/"
+  chmod +x "$RESOURCES_DIR/llama/bin/llama-server"
+  local PACKED_DEVICES
+  PACKED_DEVICES="$("$RESOURCES_DIR/llama/bin/llama-server" --list-devices 2>&1 || true)"
+  if ! printf '%s' "$PACKED_DEVICES" | grep -q 'MTL'; then
+    echo "✗ 打包后的翻译运行时无法加载后端：" >&2
+    printf '%s\n' "$PACKED_DEVICES" >&2
+    exit 1
+  fi
+  echo "  -> 已打包自包含翻译运行时 (llama-server): $(du -sh "$RUNTIME" | cut -f1)，后端设备: $(printf '%s' "$PACKED_DEVICES" | grep MTL | head -1)"
 }
 ensure_llama_runtime
 
 # 3D 场景构建服务专用 llama.cpp 运行时（官方 b12040+，支持 qwen35 架构与 mmproj）。
-# 与字幕翻译的自研 fork（bin/llama）物理隔离：内置 fork 不认识 Qwen3.5 的 GGUF，
-# 两套运行时各自平铺 dylib（rpath=@loader_path），互不影响。
+# 平铺 dylib（rpath=@loader_path）。bin/llama（翻译）重建时取自同一份源构建，
+# 但两者物理隔离：翻译侧是自包含 bin/+lib/ 布局，3D 侧保持原样平铺，互不影响。
 ensure_llama3d_runtime() {
   if [ -d "bin/llama3d" ] && [ -x "bin/llama3d/llama-server" ]; then
     mkdir -p "$RESOURCES_DIR/llama3d"
