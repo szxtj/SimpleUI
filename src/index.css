@@ -21,6 +21,16 @@
 }
 
 /**
+ * Markdown 块（代码块 / 表格 / Mermaid）自身的内联尺寸容器。
+ * 块头按钮标签根据块自身实际宽度自适应，不依赖外层是否有 .chat-container，
+ * 因此在主窗口侧栏展开、编辑器分栏预览、引用块嵌套等场景下都能准确响应。
+ */
+.block-container {
+  container-type: inline-size;
+  container-name: block;
+}
+
+/**
  * 隐藏原生滚动条（保留滚动手感与键盘/触控板滚动）。
  *
  * 对话区去掉了可见滚动条，长距离定位交给右侧「定位横线」：

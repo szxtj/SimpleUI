@@ -11,6 +11,7 @@ import {
   getActiveContextMessages,
 } from '../services/chatTurn';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { BlockCompactProvider } from './markdown/BlockChrome';
 import { MessageSpeechBar, MessageSpeechTrigger } from './MessageSpeech';
 import { ThinkingAccordion } from './ThinkingAccordion';
 import { StageLadder } from './StageLadder';
@@ -1016,6 +1017,7 @@ export const SpotlightView: React.FC = () => {
         </div>
 
         {/* Message Scroll Area（只挂载当前轮 ± 2 轮，右侧紧凑版定位横线） */}
+        <BlockCompactProvider compact>
         <div className="relative flex-1 min-h-0">
         <div
           ref={scrollContainerRef}
@@ -1250,6 +1252,7 @@ export const SpotlightView: React.FC = () => {
           compact
         />
         </div>
+        </BlockCompactProvider>
 
         {/* Bottom Input Capsule */}
         <div className="p-2.5 bg-[#f8f9fb] dark:bg-[#17181c] border-t border-black/5 dark:border-white/5">

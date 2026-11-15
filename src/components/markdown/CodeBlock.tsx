@@ -24,6 +24,7 @@ import {
   SegmentedToggle,
   ToolButton,
   cx,
+  useBlockCompact,
   useCopyFeedback,
 } from './BlockChrome';
 
@@ -76,6 +77,7 @@ export interface CodeBlockProps {
 
 export const CodeBlock: React.FC<CodeBlockProps> = React.memo(({ language, code, generating = false }) => {
   const { t, lang } = useI18n();
+  const compact = useBlockCompact();
   const isEn = lang === 'en';
   const isPython = ['python', 'py', 'python3'].includes((language || '').toLowerCase().trim());
   const isHtml = isHtmlLanguage(language);
@@ -222,7 +224,8 @@ export const CodeBlock: React.FC<CodeBlockProps> = React.memo(({ language, code,
               type="button"
               onClick={handleRunPython}
               className={cx(
-                'flex items-center gap-1.5 px-2 py-0.5 rounded transition-colors cursor-pointer',
+                'flex items-center gap-1.5 py-0.5 rounded transition-colors cursor-pointer',
+                compact ? 'px-1.5' : 'px-1.5 cq-block-lg:px-2',
                 isRunning
                   ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20'
                   : 'hover:bg-black/5 dark:hover:bg-[#32363e] text-emerald-600 dark:text-emerald-400'
@@ -232,14 +235,20 @@ export const CodeBlock: React.FC<CodeBlockProps> = React.memo(({ language, code,
               {isRunning ? (
                 <>
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span className="text-[11px] font-medium">{runStatus || t('runningCode')}</span>
+                  {!compact && (
+                    <span className="hidden cq-block-lg:inline text-[11px] font-medium whitespace-nowrap">
+                      {runStatus || t('runningCode')}
+                    </span>
+                  )}
                 </>
               ) : (
                 <>
                   <Play className="w-3.5 h-3.5 fill-current" />
-                  <span className="text-[11px] font-medium">
-                    {executionResult ? t('rerunCode') : t('runCode')}
-                  </span>
+                  {!compact && (
+                    <span className="hidden cq-block-lg:inline text-[11px] font-medium whitespace-nowrap">
+                      {executionResult ? t('rerunCode') : t('runCode')}
+                    </span>
+                  )}
                 </>
               )}
             </button>

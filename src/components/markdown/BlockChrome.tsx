@@ -1,4 +1,19 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+
+/**
+ * 小窗口（SpotlightView）强制纯图标模式：
+ * 默认 false（大窗口按块自身宽度通过 cq-block-sm / cq-block-lg 自适应）。
+ */
+const BlockCompactContext = createContext(false);
+
+export const BlockCompactProvider: React.FC<{ compact?: boolean; children: React.ReactNode }> = ({
+  compact = true,
+  children,
+}) => <BlockCompactContext.Provider value={compact}>{children}</BlockCompactContext.Provider>;
+
+export function useBlockCompact(): boolean {
+  return useContext(BlockCompactContext);
+}
 
 /**
  * 对话区「块」的统一外壳 —— 代码块 / 表格 / Mermaid 三处共用这一份。
@@ -21,9 +36,9 @@ export function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
 }
 
-/** 外壳：圆角 + 1px 描边 + 裁边。刻意不含外边距，由各块自己决定（代码块还要接输出层）。 */
+/** 外壳：圆角 + 1px 描边 + 裁边 + 块级宽度容器。刻意不含外边距，由各块自己决定（代码块还要接输出层）。 */
 export const BLOCK_SHELL_CLASS =
-  'relative rounded-lg overflow-hidden border border-[#d0d7de] dark:border-[#33363d] bg-white dark:bg-[#1a1b1e]';
+  'block-container relative rounded-lg overflow-hidden border border-[#d0d7de] dark:border-[#33363d] bg-white dark:bg-[#1a1b1e]';
 
 /** 头部一行：左标签 + 右动作，30px 高，永不被划选 */
 export const BLOCK_HEADER_CLASS =
@@ -82,12 +97,12 @@ export const BlockHeader: React.FC<BlockHeaderProps> = ({
     data-copy-ignore="true"
     className={cx(BLOCK_HEADER_CLASS, bordered && BLOCK_HEADER_BORDER_CLASS)}
   >
-    <div className="flex items-center gap-2 min-w-0">
-      <span className={cx(BLOCK_LABEL_CLASS, 'flex items-center gap-1.5 shrink-0')}>
-        {icon}
+    <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
+      <span className={cx(BLOCK_LABEL_CLASS, 'flex items-center gap-1.5 min-w-0 shrink')}>
+        {icon ? <span className="shrink-0 flex items-center">{icon}</span> : null}
         <span className="truncate">{label}</span>
       </span>
-      {leading}
+      {leading ? <div className="shrink-0">{leading}</div> : null}
     </div>
     <div className="flex items-center gap-1 shrink-0">{children}</div>
   </div>
@@ -123,24 +138,31 @@ export const ToolButton: React.FC<ToolButtonProps> = ({
   tone = 'default',
   disabled = false,
   className,
-}) => (
-  <button
-    type="button"
-    onClick={disabled ? undefined : onClick}
-    disabled={disabled}
-    title={title}
-    aria-disabled={disabled || undefined}
-    className={cx(
-      'flex items-center gap-1.5 px-2 py-0.5 rounded transition-colors text-[11px]',
-      TONE_CLASS[tone],
-      disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer',
-      className
-    )}
-  >
-    {icon}
-    {label ? <span className="whitespace-nowrap">{label}</span> : null}
-  </button>
-);
+}) => {
+  const compact = useBlockCompact();
+  return (
+    <button
+      type="button"
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      title={title || label}
+      aria-label={!title && label ? label : undefined}
+      aria-disabled={disabled || undefined}
+      className={cx(
+        'flex items-center gap-1.5 py-0.5 rounded transition-colors text-[11px]',
+        compact || !label ? 'px-1.5' : 'px-1.5 cq-block-lg:px-2',
+        TONE_CLASS[tone],
+        disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer',
+        className
+      )}
+    >
+      {icon}
+      {label && !compact ? (
+        <span className="hidden cq-block-lg:inline whitespace-nowrap">{label}</span>
+      ) : null}
+    </button>
+  );
+};
 
 export interface SegmentedOption {
   value: string;
@@ -165,42 +187,54 @@ export const SegmentedToggle: React.FC<SegmentedToggleProps> = ({
   onChange,
   disabled = false,
   disabledHint,
-}) => (
-  <div
-    className={cx(
-      'flex items-center rounded-md p-[1px] border h-[21px] bg-black/[0.04] dark:bg-[#18191e] border-black/5 dark:border-white/5',
-      disabled && 'opacity-50'
-    )}
-  >
-    {options.map((opt) => {
-      const active = opt.value === value;
-      return (
-        <button
-          key={opt.value}
-          type="button"
-          onClick={disabled ? undefined : () => onChange(opt.value)}
-          disabled={disabled}
-          title={disabled ? disabledHint || opt.title : opt.title}
-          aria-pressed={active}
-          className={cx(
-            'flex items-center gap-1 px-2 h-[17px] rounded text-[11px] leading-none transition-colors',
-            active
-              ? 'bg-white dark:bg-[#32363e] text-zinc-900 dark:text-white font-medium shadow-xs'
-              : 'text-zinc-500 dark:text-[#8b929e]',
-            disabled
-              ? 'cursor-not-allowed'
-              : active
-                ? 'cursor-pointer'
-                : 'cursor-pointer hover:text-zinc-900 dark:hover:text-white'
-          )}
-        >
-          {opt.icon}
-          <span>{opt.label}</span>
-        </button>
-      );
-    })}
-  </div>
-);
+}) => {
+  const compact = useBlockCompact();
+  return (
+    <div
+      className={cx(
+        'flex items-center rounded-md p-[1px] border h-[21px] bg-black/[0.04] dark:bg-[#18191e] border-black/5 dark:border-white/5',
+        disabled && 'opacity-50'
+      )}
+    >
+      {options.map((opt) => {
+        const active = opt.value === value;
+        const tip = disabled ? disabledHint || opt.title || opt.label : opt.title || opt.label;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={disabled ? undefined : () => onChange(opt.value)}
+            disabled={disabled}
+            title={tip}
+            aria-label={opt.label}
+            aria-pressed={active}
+            className={cx(
+              'flex items-center gap-1 h-[17px] rounded text-[11px] leading-none transition-colors',
+              compact && opt.icon ? 'px-1.5' : 'px-1.5 cq-block-sm:px-2',
+              active
+                ? 'bg-white dark:bg-[#32363e] text-zinc-900 dark:text-white font-medium shadow-xs'
+                : 'text-zinc-500 dark:text-[#8b929e]',
+              disabled
+                ? 'cursor-not-allowed'
+                : active
+                  ? 'cursor-pointer'
+                  : 'cursor-pointer hover:text-zinc-900 dark:hover:text-white'
+            )}
+          >
+            {opt.icon}
+            {opt.icon ? (
+              !compact ? (
+                <span className="hidden cq-block-sm:inline whitespace-nowrap">{opt.label}</span>
+              ) : null
+            ) : (
+              <span className="whitespace-nowrap">{opt.label}</span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+};
 
 /**
  * 复制定态（点了变「已复制」，N 秒后回弹）。

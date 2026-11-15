@@ -67,6 +67,11 @@ export default {
       // >= 800px 才放按钮文字，>= 864px 才放文件名 —— 再窄就先丢描述文字，避免换行/挤压
       addVariant('cq-xl', '@container (min-width: 50rem)');
       addVariant('cq-2xl', '@container (min-width: 54rem)');
+      // Markdown 块顶栏（CodeBlock / TableBlock / MermaidBlock）按块自身宽度分级：
+      // >= 384px 才显示分段切换（Preview/Source、Diagram/Code）文字；
+      // >= 688px 才显示右侧 ToolButton 文字（按最宽的英文 HTML 块头 6 个控件总宽 ~630px 留足余量）
+      addVariant('cq-block-sm', '@container block (min-width: 24rem)');
+      addVariant('cq-block-lg', '@container block (min-width: 43rem)');
     }),
   ],
 }
