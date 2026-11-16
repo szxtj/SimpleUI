@@ -1,15 +1,16 @@
 import React, { useRef } from 'react';
-import { Check, FileText, Table as TableIcon } from 'lucide-react';
+import { Check, FileText, Image as ImageIcon, Table as TableIcon } from 'lucide-react';
 import { useI18n } from '../../i18n';
 import {
   serializeTableElementToDocxXml,
   serializeTableElementToMarkdown,
   serializeTableElementToRichData,
 } from '../../utils/selectionToMarkdown';
+import { renderTableToPngBlob } from '../../utils/tableToImage';
 import { BlockHeader, BlockShell, ToolButton, useCopyFeedback } from './BlockChrome';
 
 /**
- * GFM 表格块：头部三个动作（在 Word 打开 / 复制表格 / 复制 Markdown 原文）。
+ * GFM 表格块：头部四个动作（在 Word 打开 / 复制图像 / 复制表格 / 复制 Markdown 原文）。
  * 外壳与按钮全部来自 BlockChrome —— 与代码块、Mermaid 保持同一套描边、底色、按钮尺寸。
  */
 interface TableBlockProps {
@@ -21,6 +22,7 @@ export const TableBlock: React.FC<TableBlockProps> = React.memo(({ children }) =
   const tableRef = useRef<HTMLTableElement | null>(null);
   const { copied: copiedMd, flash: flashMd } = useCopyFeedback();
   const { copied: copiedRich, flash: flashRich } = useCopyFeedback();
+  const { copied: copiedImage, flash: flashImage } = useCopyFeedback();
   const { copied: openedWord, flash: flashWord } = useCopyFeedback();
 
   const isEn = lang === 'en';
@@ -88,6 +90,20 @@ export const TableBlock: React.FC<TableBlockProps> = React.memo(({ children }) =
     }
   };
 
+  const handleCopyImage = async () => {
+    if (!tableRef.current) return;
+    try {
+      const isDark = document.documentElement.classList.contains('dark');
+      const pngBlob = await renderTableToPngBlob(tableRef.current, isDark);
+      if (pngBlob && typeof ClipboardItem !== 'undefined') {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })]);
+        flashImage();
+      }
+    } catch (e) {
+      console.error('Failed to copy table image:', e);
+    }
+  };
+
   return (
     <BlockShell className="my-3">
       <BlockHeader label={isEn ? 'TABLE' : '表格'} icon={<TableIcon className="w-3.5 h-3.5 opacity-80" />}>
@@ -107,6 +123,20 @@ export const TableBlock: React.FC<TableBlockProps> = React.memo(({ children }) =
               : '在 Microsoft Word 中直接打开原生表格与公式'
           }
           onClick={handleOpenInWord}
+        />
+
+        <ToolButton
+          icon={
+            copiedImage ? (
+              <Check className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
+            ) : (
+              <ImageIcon className="w-3.5 h-3.5" />
+            )
+          }
+          label={copiedImage ? (isEn ? 'Image Copied' : '已复制图像') : isEn ? 'Copy Image' : '复制图像'}
+          tone={copiedImage ? 'success' : 'default'}
+          title={isEn ? 'Copy rendered table image' : '复制渲染后的表格图像'}
+          onClick={handleCopyImage}
         />
 
         <ToolButton
